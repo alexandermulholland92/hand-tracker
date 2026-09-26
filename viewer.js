@@ -70,20 +70,20 @@
     e.stopPropagation();
     fileInput.click();
   });
+  // Both pickers (and dropping) take recordings and videos; each file goes where it belongs.
+  fileInput.accept = `${fileInput.accept},${VideoFormats.IMPORT_ACCEPT}`;
   videoInput.accept = VideoFormats.IMPORT_ACCEPT;
   videoBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     videoInput.click();
   });
   dropZone.addEventListener("click", () => fileInput.click());
-  fileInput.addEventListener("change", (e) => {
-    if (e.target.files[0]) openFile(e.target.files[0]);
-    fileInput.value = "";
-  });
-  videoInput.addEventListener("change", (e) => {
-    if (e.target.files[0]) openVideo(e.target.files[0]);
-    videoInput.value = "";
-  });
+  for (const input of [fileInput, videoInput]) {
+    input.addEventListener("change", (e) => {
+      if (e.target.files[0]) openAny(e.target.files[0]);
+      input.value = "";
+    });
+  }
   ["dragover", "dragenter"].forEach((evt) =>
     dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.add("drag"); })
   );
@@ -91,18 +91,14 @@
     dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.remove("drag"); })
   );
   dropZone.addEventListener("drop", (e) => {
-    const file = e.dataTransfer.files[0];
-    if (!file) return;
-    if (isVideoFile(file)) openVideo(file);
-    else openFile(file);
+    if (e.dataTransfer.files[0]) openAny(e.dataTransfer.files[0]);
   });
 
-  // Dropped files: recordings by extension, anything that looks like a video goes to the video converter.
-  const VIDEO_EXTENSIONS = new Set(VideoFormats.IMPORT_ACCEPT.split(",").filter((a) => a.startsWith(".")));
-  function isVideoFile(file) {
-    if (/\.(json|csv|c3d|trc|tak)$/i.test(file.name)) return false;
-    const ext = (/\.[^.]+$/.exec(file.name) || [""])[0].toLowerCase();
-    return /^video\//.test(file.type) || VIDEO_EXTENSIONS.has(ext);
+  // Recordings are known by their extension; everything else is opened as a video (the
+  // converter says so if there's no video in it), never parsed as motion data.
+  const isRecording = (file) => /\.(json|csv|c3d|trc|tak)$/i.test(file.name);
+  function openAny(file) {
+    return isRecording(file) ? openFile(file) : openVideo(file);
   }
 
   function showError(message) {
@@ -1034,6 +1030,7 @@
     openBytes,
     openTake,
     openVideo,
+    openAny,
     current: () => current,
   };
 })();

@@ -6,7 +6,8 @@
  *   await HandTracker.init({ videoEl, canvasEl, overlay: true, mirror: true, maxNumHands: 2,
  *                            deviceId, width: 1280, height: 720 });
  *   HandTracker.onHandLandmarks((data) => { ... });   // fires every processed frame, even with 0 hands
- *     data = { hands: [{ landmarks, imageLandmarks, handedness, handednessScore, features, orientation }, ...], timestamp }
+ *     data = { hands: [{ landmarks, imageLandmarks, rawImageLandmarks, handedness, handednessScore, features, orientation }, ...], timestamp }
+ *     imageLandmarks are smoothed (see "Smoothing" below); rawImageLandmarks are MediaPipe's, unfiltered
  *     orientation = { palm: quaternion, palmEuler: {yaw,pitch,roll} degrees, bones: {thumb..pinky: quaternion} }
  *   HandTracker.setOverlay(true/false);   // skeleton on/off (the camera image is always drawn)
  *   HandTracker.setMirror(true/false);    // selfie-style mirrored display; overlays drawn afterwards stay readable
@@ -26,8 +27,17 @@
  *   HandTracker.stop();
  *
  * Pipeline (per hand):
- *   webcam or video file -> MediaPipe Hands inference -> extract 21 landmarks
- *   -> normalize relative to wrist -> EWMA smoothing -> callback
+ *   webcam or video file -> MediaPipe Hands inference -> 21 landmarks
+ *   -> matched to the hands already being tracked (steady Left/Right labels)
+ *   -> One Euro smoothing -> features, orientation, wrist-relative landmarks -> callback
+ *
+ * Smoothing: MediaPipe's landmarks jitter by a few pixels from frame to frame even
+ * when the hand is still. Each landmark goes through a One Euro filter (Casiez et al.,
+ * CHI 2012), a low-pass filter whose cutoff rises with speed: a still or slow hand is
+ * smoothed strongly, a fast one hardly at all, so there's little lag. Speeds are in
+ * hand lengths per second, so near and far hands behave the same. Everything else
+ * (the drawn skeleton, gestures, finger curl, palm angles, wrist speed, recordings)
+ * is computed from the smoothed landmarks.
  *
  * Handedness is reported as the user's actual (anatomical) hand. MediaPipe
  * assumes a mirrored selfie image, but we feed it the raw camera frame, so its
@@ -44,7 +54,15 @@
     PINKY_MCP: 17, PINKY_PIP: 18, PINKY_DIP: 19, PINKY_TIP: 20,
   };
 
-  const EWMA_ALPHA = 0.5; // higher = less smoothing, more responsive
+  // One Euro filter settings, tuned on MediaPipe landmarks from real hand videos:
+  // cutoff (Hz) = MIN_CUTOFF + BETA × speed (hand lengths/s), speed low-passed at D_CUTOFF.
+  const SMOOTHING = { minCutoff: 1.0, beta: 3.0, dCutoff: 1.0 };
+  // Landmarks that move more than this (average, in hand lengths) between two frames
+  // have jumped (a re-detection or a tracking glitch): the filter restarts there
+  // rather than sliding across.
+  const JUMP_HAND_LENGTHS = 1.5;
+  // MediaPipe must call a hand the other side this many frames in a row before its label changes.
+  const LABEL_FLIP_FRAMES = 6;
   const HANDS_ASSET_PATH = "node_modules/@mediapipe/hands/";
   // A hand unseen for longer than this is treated as a brand-new hand when it
   // returns, so smoothing/velocity never blend with a stale pose.
@@ -80,19 +98,107 @@
   // Per-hand state, keyed by handedness label ("Left" / "Right"), so
   // smoothing/velocity stay stable even if MediaPipe's array order
   // changes between frames.
-  const state = {}; // { Left: {smoothed, prevWrist, prevTs, lastFeatures, lastSeen}, Right: {...} }
+  const state = {}; // { Left: { filter, flipVotes, lastFeatures, lastSeen }, Right: {...} }
 
   function freshState() {
-    return { smoothed: null, prevWrist: null, prevTs: null, smoothedWorldWrist: null, lastFeatures: null, lastSeen: null };
+    return { filter: null, flipVotes: 0, lastFeatures: null, lastSeen: null };
+  }
+
+  // A hand seen recently enough to carry on smoothing from (not after a gap or a seek back).
+  function isLive(s, timestamp) {
+    return !!s && s.lastSeen !== null && timestamp >= s.lastSeen && timestamp - s.lastSeen <= STALE_MS;
   }
 
   function getState(label, timestamp) {
-    const s = state[label];
-    if (!s || (s.lastSeen !== null && (timestamp - s.lastSeen > STALE_MS || timestamp < s.lastSeen))) {
+    if (!isLive(state[label], timestamp) && !(state[label] && state[label].lastSeen === null)) {
       state[label] = freshState();
     }
     state[label].lastSeen = timestamp;
     return state[label];
+  }
+
+  // ---------- One Euro smoothing ----------
+  const lowPassAlpha = (cutoffHz, dt) => 1 / (1 + 1 / (2 * Math.PI * cutoffHz * dt));
+
+  // Hand size in the picture: wrist to middle-finger knuckle.
+  const handLength = (lm) => Math.max(1e-3, Math.hypot(lm[LM.MIDDLE_MCP].x - lm[LM.WRIST].x, lm[LM.MIDDLE_MCP].y - lm[LM.WRIST].y));
+
+  // raw: MediaPipe's 21 landmarks this frame -> the smoothed landmarks.
+  // s.filter keeps each landmark's smoothed position and speed (hand lengths/s).
+  function smoothLandmarks(raw, timestamp, s) {
+    const scale = handLength(raw);
+    const f = s.filter;
+    if (f && timestamp <= f.t) return f.pos.map(([x, y, z]) => ({ x, y, z })); // the same frame again
+    let jumped = false;
+    if (f) {
+      let moved = 0;
+      for (let i = 0; i < raw.length; i++) moved += Math.hypot(raw[i].x - f.pos[i][0], raw[i].y - f.pos[i][1]) / scale;
+      jumped = moved / raw.length > JUMP_HAND_LENGTHS;
+    }
+    if (!f || jumped) {
+      s.filter = { t: timestamp, scale, pos: raw.map((p) => [p.x, p.y, p.z]), vel: raw.map(() => [0, 0, 0]) };
+      return raw.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    }
+    const dt = (timestamp - f.t) / 1000;
+    const aD = lowPassAlpha(SMOOTHING.dCutoff, dt);
+    for (let i = 0; i < raw.length; i++) {
+      const pos = f.pos[i], vel = f.vel[i];
+      const now = [raw[i].x, raw[i].y, raw[i].z];
+      for (let k = 0; k < 3; k++) vel[k] += aD * ((now[k] - pos[k]) / dt / scale - vel[k]);
+      const cutoff = SMOOTHING.minCutoff + SMOOTHING.beta * Math.hypot(vel[0], vel[1], vel[2]);
+      const a = lowPassAlpha(cutoff, dt);
+      for (let k = 0; k < 3; k++) pos[k] += a * (now[k] - pos[k]);
+    }
+    f.t = timestamp;
+    f.scale = scale;
+    return f.pos.map(([x, y, z]) => ({ x, y, z }));
+  }
+
+  // ---------- Which hand is which ----------
+  // MediaPipe labels each hand Left or Right on every frame, and now and then flips a
+  // label for a frame or two, which swapped the hand cards and restarted smoothing.
+  // Each detection is matched to the hands tracked on the previous frames, mostly by
+  // where it is (MediaPipe's label breaks ties), and a tracked hand only changes label
+  // once MediaPipe has called it the other side LABEL_FLIP_FRAMES frames in a row.
+  function assignLabels(rawList, handednessList, timestamp) {
+    const dets = rawList.map((raw, i) => {
+      const h = handednessList[i];
+      return { raw, said: h ? swapLabel(h.label) : null, score: h ? h.score : 0, scale: handLength(raw) };
+    });
+    const cost = (d, label) => {
+      const s = state[label];
+      const tracked = isLive(s, timestamp) && s.filter;
+      const distance = tracked
+        ? Math.hypot(d.raw[LM.WRIST].x - s.filter.pos[LM.WRIST][0], d.raw[LM.WRIST].y - s.filter.pos[LM.WRIST][1]) / d.scale
+        : 3; // starting a new hand
+      return Math.min(distance, 3) + (d.said && d.said !== label ? 1.5 : 0);
+    };
+    let best = null;
+    const options = dets.length === 1 ? [["Left"], ["Right"]] : dets.length === 2 ? [["Left", "Right"], ["Right", "Left"]] : [];
+    for (const labels of options) {
+      const total = labels.reduce((sum, label, i) => sum + cost(dets[i], label), 0);
+      if (!best || total < best.total) best = { labels, total };
+    }
+    const labels = best ? best.labels : dets.map((_, i) => `Hand${i}`);
+
+    return dets.map((d, i) => {
+      let label = labels[i];
+      const s = state[label];
+      if (d.said && d.said !== label && isLive(s, timestamp)) {
+        // MediaPipe disagrees: count it, and follow MediaPipe once it keeps disagreeing.
+        s.flipVotes++;
+        const other = swapLabel(label);
+        if (s.flipVotes >= LABEL_FLIP_FRAMES && !labels.includes(other)) {
+          s.flipVotes = 0;
+          state[other] = s;
+          delete state[label];
+          label = other;
+        }
+      } else if (s) {
+        s.flipVotes = 0;
+      }
+      return { label, score: d.score };
+    });
   }
 
   // --- FPS: processed (inferred) frames per second, measured continuously ---
@@ -236,21 +342,8 @@
     }));
   }
 
-  function ewmaSmooth(current, s) {
-    if (!s.smoothed) {
-      s.smoothed = current.map((p) => ({ ...p }));
-      return s.smoothed;
-    }
-    s.smoothed = current.map((p, i) => ({
-      x: EWMA_ALPHA * p.x + (1 - EWMA_ALPHA) * s.smoothed[i].x,
-      y: EWMA_ALPHA * p.y + (1 - EWMA_ALPHA) * s.smoothed[i].y,
-      z: EWMA_ALPHA * p.z + (1 - EWMA_ALPHA) * s.smoothed[i].z,
-    }));
-    return s.smoothed;
-  }
-
-  // Gesture-ready helper features computed from the ORIGINAL (unnormalized,
-  // 0-1 image-space) landmarks so distances/velocity are in a stable frame.
+  // Gesture-ready helper features computed from the smoothed image-space (0-1,
+  // not wrist-relative) landmarks, so distances and speeds are in a stable frame.
   function computeFeatures(rawLandmarks, timestamp, s) {
     const thumbIndexDistance = distance3D(
       rawLandmarks[LM.THUMB_TIP],
@@ -258,30 +351,16 @@
     );
 
     const wrist = rawLandmarks[LM.WRIST];
-    let velocity = { x: 0, y: 0, z: 0, speed: 0 };
-    if (s.prevWrist && s.prevTs) {
-      const dt = Math.max((timestamp - s.prevTs) / 1000, 1e-3); // seconds
-      velocity = {
-        x: (wrist.x - s.prevWrist.x) / dt,
-        y: (wrist.y - s.prevWrist.y) / dt,
-        z: (wrist.z - s.prevWrist.z) / dt,
-      };
-      velocity.speed = Math.hypot(velocity.x, velocity.y, velocity.z);
-    }
-    s.prevWrist = { ...wrist };
-    s.prevTs = timestamp;
+    // Wrist velocity in image units per second: the One Euro filter's own low-passed
+    // speed estimate, which is far steadier than differencing two noisy frames.
+    const v = s.filter ? s.filter.vel[LM.WRIST].map((c) => c * s.filter.scale) : [0, 0, 0];
+    const velocity = { x: v[0], y: v[1], z: v[2], speed: Math.hypot(v[0], v[1], v[2]) };
 
-    // Smoothed RAW (non-wrist-relative) wrist position — this is the closest
-    // thing to a "world" trajectory reference we have from a single camera.
+    // The (smoothed) wrist in the picture — the closest thing to a "world"
+    // trajectory reference we have from a single camera.
     // NOTE: this is camera-frame, not true calibrated 3D world space; a
     // monocular webcam cannot fully achieve camera-position invariance.
-    s.smoothedWorldWrist = s.smoothedWorldWrist
-      ? {
-          x: EWMA_ALPHA * wrist.x + (1 - EWMA_ALPHA) * s.smoothedWorldWrist.x,
-          y: EWMA_ALPHA * wrist.y + (1 - EWMA_ALPHA) * s.smoothedWorldWrist.y,
-          z: EWMA_ALPHA * wrist.z + (1 - EWMA_ALPHA) * s.smoothedWorldWrist.z,
-        }
-      : { ...wrist };
+    const worldWrist = { x: wrist.x, y: wrist.y, z: wrist.z };
 
     const fingerCurls = {
       thumb: curlFromAngle(
@@ -305,7 +384,7 @@
       thumbIndexDistance,
       wristVelocity: velocity,
       fingerCurls,
-      worldPosition: { ...s.smoothedWorldWrist }, // approximate camera-frame trajectory reference
+      worldPosition: worldWrist, // approximate camera-frame trajectory reference
     };
     return s.lastFeatures;
   }
@@ -355,21 +434,6 @@
     return label;
   }
 
-  // Resolve per-hand labels for this frame. MediaPipe occasionally reports
-  // both hands with the same label; when that happens the less confident one
-  // takes the other label so the two hands never share smoothing state.
-  function resolveLabels(rawList, handednessList) {
-    const labels = rawList.map((_, i) => {
-      const h = handednessList[i];
-      return h ? { label: swapLabel(h.label), score: h.score } : { label: `Hand${i}`, score: 0 };
-    });
-    if (labels.length === 2 && labels[0].label === labels[1].label) {
-      const weaker = labels[0].score < labels[1].score ? 0 : 1;
-      labels[weaker].label = swapLabel(labels[weaker].label);
-    }
-    return labels;
-  }
-
   function onResults(results) {
     if (switching) return;
     // Video files are timed by the video's own clock, so motion data matches the
@@ -379,32 +443,32 @@
     const handednessList = results.multiHandedness || [];
 
     tickFps();
-    drawStage(results.image || videoEl, rawList);
 
-    const labels = resolveLabels(rawList, handednessList);
+    const labels = assignLabels(rawList, handednessList, timestamp);
     const outHands = [];
     for (let i = 0; i < rawList.length; i++) {
       const raw = rawList[i];
       const { label, score } = labels[i];
       const s = getState(label, timestamp);
+      const smoothed = smoothLandmarks(raw, timestamp, s);
 
-      const normalized = normalizeRelativeToWrist(raw);
-      const smoothedNormalized = ewmaSmooth(normalized, s);
-      const features = computeFeatures(raw, timestamp, s);
-
-      const palm = computePalmOrientation(raw);
+      const features = computeFeatures(smoothed, timestamp, s);
+      const palm = computePalmOrientation(smoothed);
       const palmEuler = quatToEuler(palm);
-      const bones = computeBoneOrientations(raw);
+      const bones = computeBoneOrientations(smoothed);
 
       outHands.push({
-        landmarks: smoothedNormalized,
-        imageLandmarks: raw, // unsmoothed 0-1 image coordinates (unmirrored), for drawing
+        landmarks: normalizeRelativeToWrist(smoothed),
+        imageLandmarks: smoothed, // smoothed 0-1 image coordinates (unmirrored), for drawing
+        rawImageLandmarks: raw, // MediaPipe's, unfiltered
         handedness: label,
         handednessScore: score,
         features,
         orientation: { palm, palmEuler, bones },
       });
     }
+    // The skeleton is drawn from the smoothed landmarks, so it doesn't shake.
+    drawStage(results.image || videoEl, outHands.map((h) => h.imageLandmarks));
 
     // Always notify — including with zero hands — so consumers can clear
     // their UI when hands leave the frame.

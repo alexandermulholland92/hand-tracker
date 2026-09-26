@@ -157,36 +157,55 @@
     return reversals >= 2; // at least one full back-and-forth rock
   }
 
-  // The Bird's shape, measured from the picture. Landmarks are wrist-relative
-  // fractions of the picture's width (x) and height (y), so x is scaled by the aspect
-  // ratio to compare real directions and lengths.
-  // Checked against photos of the gesture (scripts/fixtures/gesture-hands.json): the
-  // curl readings for the other fingers run low in this pose, since the ring finger
-  // can't fully curl while the middle one is straight, but how far each fingertip
-  // reaches from the wrist separates cleanly. Curled fingertips reach under 0.6 of
-  // the middle fingertip's distance; straight ones over 0.9.
-  function isTheBird(landmarks) {
-    if (!landmarks) return false;
+  // The hand's shape in the picture: landmarks relative to the wrist, in the picture's
+  // real proportions (MediaPipe gives x and y as fractions of its width and height), and
+  // distances in palm lengths (wrist to middle knuckle), so near and far hands compare.
+  function handShape(landmarks) {
     const cam = HandTracker.getCamera();
     const aspect = cam.width && cam.height ? cam.width / cam.height : 1;
-    const at = (i) => ({ x: landmarks[i].x * aspect, y: landmarks[i].y });
-    const reach = (i) => Math.hypot(at(i).x, at(i).y);
-    // Only the middle finger up: the index, ring and little fingertips fall well short of it.
-    const middleReach = reach(12);
-    if (![8, 16, 20].every((tip) => reach(tip) < 0.65 * middleReach)) return false;
+    const pts = landmarks.map((p) => ({ x: p.x * aspect, y: p.y }));
+    const palm = Math.hypot(pts[9].x, pts[9].y) || 1e-6;
+    const dist = (i, j) => Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y) / palm;
+    return { pts, palm, dist, reach: (i) => dist(i, 0) };
+  }
+  const OTHER_FINGERS = ["index", "middle", "ring", "pinky"];
 
-    const knuckle = at(9), tip = at(12), indexKnuckle = at(5), pinkyKnuckle = at(17);
-    const palmLength = Math.hypot(knuckle.x, knuckle.y) || 1e-6; // wrist to middle knuckle
-    const fx = tip.x - knuckle.x, fy = tip.y - knuckle.y;
-    const fingerLength = Math.hypot(fx, fy);
+  // The rules for The Bird, Thumbs Down and Live Long and Prosper were measured on photos
+  // of real hands (scripts/fixtures/gesture-hands.json), where MediaPipe's curl readings
+  // for folded fingers run lower than for a clenched fist.
+
+  // The Bird: only the middle finger up, raised, with the hand facing the camera.
+  // Curled fingertips reach under 0.6 of the middle fingertip's distance from the wrist;
+  // straight ones over 0.9.
+  function isTheBird({ pts, palm, dist, reach }) {
+    if (![8, 16, 20].every((tip) => reach(tip) < 0.65 * reach(12))) return false;
     // Raised: up or sideways on screen, just not pointing down. Sideways counts because
     // a phone held on its side with auto-rotate off turns the whole picture. A finger
     // pointing at the camera looks short, and its on-screen direction means little.
-    const raised = fingerLength > 0.5 * palmLength && fy < 0.7 * fingerLength;
+    const finger = dist(9, 12);
+    const raised = finger > 0.5 && (pts[12].y - pts[9].y) / palm < 0.7 * finger;
     // Facing the camera: side-on, the knuckles line up one behind another and their
     // spread nearly vanishes.
-    const facing = Math.hypot(pinkyKnuckle.x - indexKnuckle.x, pinkyKnuckle.y - indexKnuckle.y) > 0.4 * palmLength;
-    return raised && facing;
+    return raised && dist(5, 17) > 0.4;
+  }
+
+  // Thumbs Down: thumb straight and pointing down with its tip well below all four
+  // knuckles, the other fingers folded, and the thumb well away from the index finger
+  // (so a pinch with the hand pointing down isn't one).
+  function isThumbsDown({ pts, palm, dist }, c) {
+    const below = (pts[4].y - Math.max(pts[5].y, pts[9].y, pts[13].y, pts[17].y)) / palm;
+    return c.thumb < 0.35 && OTHER_FINGERS.every((f) => c[f] > 0.45) && below > 0.35 && pts[4].y > pts[2].y && dist(4, 8) > 0.5;
+  }
+
+  // Live Long and Prosper (the Vulcan salute): all four fingers straight, index and middle
+  // together, ring and little together, with a wide V between the middle and ring fingers.
+  // An open or relaxed hand spreads its fingers more evenly. Straight means both a low
+  // curl reading and fingertips reaching nearly as far as the middle one (a peace sign's
+  // folded ring and little fingers can read as only slightly curled).
+  function isVulcanSalute({ dist, reach }, c) {
+    const gap = dist(12, 16);
+    const straight = OTHER_FINGERS.every((f) => c[f] < 0.35) && reach(8) > 0.75 * reach(12) && reach(16) > 0.75 * reach(12) && reach(20) > 0.6 * reach(12);
+    return straight && gap > 0.45 && gap > 1.3 * Math.max(dist(8, 12), dist(16, 20));
   }
 
   // Gesture classifier built from data we already compute (finger curl,
@@ -202,12 +221,13 @@
     const avgCurl = (c.thumb + c.index + c.middle + c.ring + c.pinky) / 5;
     const EXTENDED = 0.35, CURLED = 0.6;
 
-    // The Bird: only the middle finger up (the thumb can be tucked or out), raised
-    // with the hand facing the camera. Checked first: a thumb tucked over the curled
-    // index finger would otherwise read as Pinch.
-    if (c.middle < EXTENDED && isTheBird(hand.landmarks)) {
-      return { label: "The Bird", color: "#da77f2" };
-    }
+    // The most specific shapes come first. The Bird: a thumb tucked over the curled
+    // index finger would otherwise read as Pinch. Live Long and Prosper would otherwise
+    // read as Open Palm, and Thumbs Down as Fist.
+    const shape = hand.landmarks ? handShape(hand.landmarks) : null;
+    if (shape && c.middle < EXTENDED && isTheBird(shape)) return { label: "The Bird", color: "#da77f2" };
+    if (shape && isThumbsDown(shape, c)) return { label: "Thumbs Down", color: "#e64980" };
+    if (shape && isVulcanSalute(shape, c)) return { label: "Live Long and Prosper", color: "#748ffc" };
 
     // OK Sign: thumb+index touching (same signal as Pinch) but with the
     // other three fingers held out — that's what makes it a ring, not a fist.

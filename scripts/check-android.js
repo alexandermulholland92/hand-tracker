@@ -295,6 +295,19 @@ async function run() {
   const phoneFiles = await pullFiles(js);
   const viewerExports = verifyExports(outDir, "phone-viewer", viewerFormats, true);
   check("…each decodes as the right format, with the sound kept", viewerExports.ok && Object.keys(phoneFiles).some((n) => n.startsWith("phone-viewer")), viewerExports.summary);
+
+  // A video chosen with the recordings picker (or dropped) opens as a video, not as motion data.
+  const routed = await js(`(async () => {
+    const bytes = Uint8Array.from(atob(${JSON.stringify(fs.readFileSync(vids["phone.mp4"]).toString("base64"))}), (c) => c.charCodeAt(0));
+    const input = document.getElementById("fileInput"), dt = new DataTransfer();
+    dt.items.add(new File([bytes], "Holiday Clip.MP4", { type: "video/mp4" }));
+    input.files = dt.files;
+    input.dispatchEvent(new Event("change"));
+    const v = () => document.getElementById("videoPreview");
+    for (let i = 0; i < 100 && !(v() && v().videoWidth > 0); i++) await new Promise((r) => setTimeout(r, 100));
+    return { video: !!v() && v().videoWidth, error: (document.querySelector("#results .error") || {}).textContent || "", accepts: /\.mp4/.test(input.accept) && /\.csv/.test(input.accept) };
+  })()`);
+  check("A video picked with Choose Recording opens as a video (no motion-data error)", routed.video === 640 && !routed.error && routed.accepts, JSON.stringify(routed));
 }
 
 app.whenReady().then(() =>

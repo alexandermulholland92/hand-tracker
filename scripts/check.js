@@ -198,17 +198,20 @@ async function run(win) {
     JSON.stringify(g));
 
   // The same on real hands: landmarks measured from photos (upright, phone-portrait crops
-  // and turned sideways), each fed through the tracker as if from a camera that size.
+  // and turned sideways), each fed through the tracker as if from a camera that size, as a
+  // hand newly appearing (so smoothing starts fresh).
   const real = await js(`(async () => {
     const cases = ${fs.readFileSync(path.join(__dirname, "fixtures", "gesture-hands.json"), "utf8")}.cases;
     const cameraOf = HandTracker.getCamera;
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const wrong = [];
+    const SPECIAL = ["The Bird", "Thumbs Down", "Live Long and Prosper"];
+    const wrong = [], tally = {};
     for (const c of cases) {
+      await sleep(300); // longer than the tracker keeps a lost hand, so this is a new hand
       HandTracker.getCamera = () => ({ ...cameraOf(), width: c.width, height: c.height });
       const frame = Object.assign(document.createElement("canvas"), { width: c.width, height: c.height });
       const landmarks = c.landmarks.map(([x, y, z]) => ({ x, y, z }));
-      for (let f = 0; f < 8; f++) {
+      for (let f = 0; f < 12; f++) {
         HandTracker._processResults({ image: frame, multiHandLandmarks: [landmarks], multiHandedness: [{ label: c.handedness, score: 0.9 }] });
         await sleep(20);
       }
@@ -216,15 +219,19 @@ async function run(win) {
       const side = c.handedness === "Left" ? "Right" : "Left"; // HandTracker swaps MediaPipe's labels
       const badge = document.querySelector("#slot" + side + " .gesture-badge");
       const got = badge ? badge.textContent : "(no card)";
-      if ((got === "The Bird") !== (c.expect === "The Bird")) wrong.push(c.photo + " " + c.variant + ": " + got);
+      const right = c.expect === "other" ? !SPECIAL.includes(got) : got === c.expect;
+      tally[c.expect] = tally[c.expect] || [0, 0];
+      tally[c.expect][1]++;
+      if (right) tally[c.expect][0]++;
+      else wrong.push(c.photo + " " + c.variant + ": " + got + " (expected " + c.expect + ")");
       HandTracker._processResults({ image: frame, multiHandLandmarks: [], multiHandedness: [] });
       await sleep(30);
     }
     HandTracker.getCamera = cameraOf;
-    return { total: cases.length, birds: cases.filter((c) => c.expect === "The Bird").length, wrong };
+    return { wrong, tally };
   })()`);
-  check("Real hands from photos: The Bird recognised, other gestures not", real.wrong.length === 0,
-    real.wrong.length ? real.wrong.join(" | ") : `${real.birds} of ${real.birds} middle-finger hands recognised, none of the other ${real.total - real.birds}`);
+  check("Real hands from photos: The Bird, Thumbs Down and Live Long and Prosper recognised, and no other hand taken for them", real.wrong.length === 0,
+    real.wrong.length ? real.wrong.join(" | ") : Object.entries(real.tally).map(([k, [ok, n]]) => `${k}: ${ok}/${n}`).join(", "));
 
   const relevantErrors = consoleErrors.filter((m) => !/DevTools|Autofill/i.test(m));
   check("No errors in the page console", relevantErrors.length === 0, relevantErrors.slice(0, 3).join(" | "));
