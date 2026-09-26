@@ -1,0 +1,49 @@
+# Publishes the website (https://hand-tracker.pages.dev) whenever main changes.
+# Needs one repository secret, CLOUDFLARE_API_TOKEN: a Cloudflare API token with the
+# "Cloudflare Pages: Edit" permission. Until it's added, the site is built but not published.
+name: Deploy website
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-website
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The web build only copies files out of node_modules, so the install scripts
+      # (Electron's and ffmpeg's desktop downloads) aren't needed.
+      - run: npm ci --ignore-scripts
+
+      - run: node scripts/build-web.js
+
+      - name: Publish to Cloudflare Pages
+        if: env.HAS_TOKEN == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: a3a73b4057d3f3f35423cbd87752820b
+        # The project's production branch is named "hand tracker"; main.hand-tracker.pages.dev is kept current too.
+        run: |
+          npx --yes wrangler@4 pages deploy www --project-name hand-tracker --branch "hand tracker" --commit-hash "$GITHUB_SHA"
+          npx --yes wrangler@4 pages deploy www --project-name hand-tracker --branch main --commit-hash "$GITHUB_SHA"
+
+      - name: Explain the skipped publish
+        if: env.HAS_TOKEN != 'true'
+        run: echo "::notice::Built the website but didn't publish it. Add a CLOUDFLARE_API_TOKEN repository secret (Cloudflare Pages Edit permission) to publish automatically."

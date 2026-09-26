@@ -1,0 +1,89 @@
+/**
+ * simulated-hands.js — page scripts used by the automated checks. They stop real
+ * camera results and drive synthetic hands through HandTracker's real processing
+ * pipeline: PAGE_SIMULATION moves two hands (one opening, one closing into a fist)
+ * for about two seconds; gesturePoses() holds one hand in each given pose.
+ */
+
+// Open right hand in image space (y down), wrist-relative.
+const TEMPLATE = `[[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],
+    [0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]]`;
+
+const PAGE_SIMULATION = `
+(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Stop real camera results so only the simulated hands reach the app.
+  if (!window.__realSend) window.__realSend = Hands.prototype.send; // restored by the checks afterwards
+  Hands.prototype.send = async function () {};
+  await sleep(200);
+
+  const T = ${TEMPLATE};
+  const TIPS = new Set([4, 8, 12, 16, 20]), DIPS = new Set([3, 7, 11, 15, 19]);
+  function hand(cx, cy, flip, curl) {
+    return T.map(([x, y], i) => {
+      // Curl: pull the outer joints back toward the palm.
+      const k = TIPS.has(i) ? curl * 1.25 : DIPS.has(i) ? curl * 0.7 : 0;
+      const px = x * (1 - k * 0.3), py = y + Math.abs(y) * k * 0.85;
+      return { x: cx + (flip ? -px : px), y: cy + py, z: -0.02 * k };
+    });
+  }
+
+  const frames = 60;
+  window.__seenBothCards = false;
+  for (let f = 0; f < frames; f++) {
+    const t = f / frames;
+    const results = {
+      image: document.getElementById("video"),
+      // Raw MediaPipe labels assume a mirrored image; HandTracker swaps them.
+      multiHandLandmarks: [hand(0.32 + 0.1 * t, 0.7, false, 0), hand(0.68, 0.72 - 0.1 * t, true, Math.min(1, t * 1.6))],
+      multiHandedness: [{ label: "Left", score: 0.97 }, { label: "Right", score: 0.95 }],
+    };
+    HandTracker._processResults(results);
+    if (document.querySelector("#slotLeft .hand-card.left:not(.missing)") && document.querySelector("#slotRight .hand-card.right:not(.missing)")) {
+      window.__seenBothCards = true;
+    }
+    await sleep(33);
+  }
+  return true;
+})()`;
+
+// poses: { name: { curls: { thumb, index, middle, ring, pinky } (0 straight .. 1 curled),
+//   squeezeX (1; smaller turns the hand side-on), flipY (point the fingers down),
+//   rotate (degrees clockwise on screen, as when a phone is held on its side) } }.
+// Each is held for half a second; resolves { name: gesture badge on the hand card }.
+function gesturePoses(poses) {
+  return `(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  if (!window.__realSend) window.__realSend = Hands.prototype.send;
+  Hands.prototype.send = async function () {};
+  const T = ${TEMPLATE};
+  const FINGER = ["thumb", "index", "middle", "ring", "pinky"];
+  const cam = HandTracker.getCamera();
+  const aspect = cam.width && cam.height ? cam.width / cam.height : 1;
+  const pose = ({ curls, squeezeX = 1, flipY = false, rotate = 0 }) => T.map(([x, y], i) => {
+    const curl = i ? curls[FINGER[Math.floor((i - 1) / 4)]] : 0;
+    const k = i && i % 4 === 0 ? curl * 1.25 : i % 4 === 3 ? curl * 0.7 : 0; // tip, then DIP
+    let px = x * (1 - k * 0.3) * squeezeX, py = y + Math.abs(y) * k * 0.85;
+    if (rotate) {
+      // Turn the hand in real proportions (x is a fraction of the picture's width).
+      const a = (rotate * Math.PI) / 180, rx = px * aspect;
+      [px, py] = [(rx * Math.cos(a) - py * Math.sin(a)) / aspect, rx * Math.sin(a) + py * Math.cos(a)];
+    }
+    return { x: (rotate ? 0.4 : 0.5) + px, y: flipY ? 0.3 - py : rotate ? 0.5 + py : 0.65 + py, z: -0.02 * k };
+  });
+  const out = {};
+  for (const [name, p] of Object.entries(${JSON.stringify(poses)})) {
+    for (let f = 0; f < 15; f++) {
+      // Raw MediaPipe label "Left" is the user's right hand once HandTracker swaps it.
+      HandTracker._processResults({ image: document.getElementById("video"), multiHandLandmarks: [pose(p)], multiHandedness: [{ label: "Left", score: 0.97 }] });
+      await sleep(33);
+    }
+    const badge = document.querySelector("#slotRight .gesture-badge");
+    out[name] = badge ? badge.textContent : "(no hand card)";
+  }
+  HandTracker._processResults({ image: document.getElementById("video"), multiHandLandmarks: [], multiHandedness: [] });
+  return out;
+})()`;
+}
+
+module.exports = { PAGE_SIMULATION, gesturePoses };

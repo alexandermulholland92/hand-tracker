@@ -1,0 +1,11 @@
+plugins {
+    // Lets Gradle download a matching JDK when a module asks for a specific Java
+    // toolchain (@capacitor/filesystem uses Java 21; Android Studio bundles a newer JDK).
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
+include ':app'
+include ':capacitor-cordova-android-plugins'
+project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
+
+apply from: 'capacitor.settings.gradle'

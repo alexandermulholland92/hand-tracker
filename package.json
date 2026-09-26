@@ -1,0 +1,89 @@
+{
+  "name": "hand-tracker",
+  "productName": "Hand Tracker",
+  "version": "1.1.0",
+  "description": "Real-time hand landmark tracking with 3D visualization, robot-motion capture and multi-format video export.",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexandermulholland92/hand-tracker.git"
+  },
+  "homepage": "https://hand-tracker.pages.dev",
+  "main": "electron/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "web": "node scripts/serve.js",
+    "check": "electron scripts/check.js",
+    "dist": "node scripts/dist.js portable",
+    "dist:installer": "node scripts/dist.js nsis",
+    "build:web": "node scripts/build-web.js",
+    "android:sync": "node scripts/build-web.js && cap sync android",
+    "android:apk": "node scripts/build-android.js",
+    "check:android": "electron scripts/check-android.js",
+    "deploy:web": "node scripts/build-web.js && npx --yes wrangler@4 pages deploy www --project-name hand-tracker --commit-dirty=true --branch \"hand tracker\" && npx --yes wrangler@4 pages deploy www --project-name hand-tracker --commit-dirty=true --branch main"
+  },
+  "dependencies": {
+    "@mediapipe/drawing_utils": "0.3.1620248257",
+    "@mediapipe/hands": "0.4.1646424915",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "ffmpeg-static": "^5.3.0",
+    "tesseract.js": "^7.0.0",
+    "three": "0.128.0"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/filesystem": "^8.1.3",
+    "@capacitor/share": "^8.0.2",
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.handtracker.app",
+    "productName": "Hand Tracker",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**",
+      "index.html",
+      "viewer.html",
+      "*.js",
+      "*.css",
+      "!scripts/**",
+      "!node_modules/three/src/**",
+      "!node_modules/three/examples/jsm/**",
+      "!node_modules/three/examples/fonts/**",
+      "!node_modules/ffmpeg-static/*.md",
+      "!node_modules/tesseract.js/dist/*.map",
+      "!node_modules/tesseract.js/dist/tesseract.esm.min.js",
+      "!node_modules/tesseract.js/src/**",
+      "!node_modules/tesseract.js-core/*.wasm",
+      "!node_modules/tesseract.js-core/*-lstm.js",
+      "!node_modules/tesseract.js-core/tesseract-core{,-simd,-relaxedsimd}.{js,wasm.js}",
+      "!node_modules/@tesseract.js-data/eng/4.0.0/**"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "electron/tak-convert.ps1"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "build/icon.png"
+    },
+    "portable": {
+      "artifactName": "HandTracker-${version}-portable.exe"
+    },
+    "nsis": {
+      "artifactName": "HandTracker-${version}-setup.exe",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": null
+  }
+}

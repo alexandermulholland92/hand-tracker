@@ -1,0 +1,8 @@
+{
+  "appId": "com.handtracker.app",
+  "appName": "Hand Tracker",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#0e0f12"
+  }
+}
