@@ -286,3 +286,7 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 - Readable-text detection scans about twice a second, so text that moves quickly can briefly appear mirrored.
 - On the website and the Android app, a video is converted in the device's memory, so very large files (roughly over 1 GB) may fail; use the Windows app for those.
 - Tracking and recording keep running when the window is covered by other windows, but pause while it is minimized (Windows stops drawing minimized windows).
+
+## License
+
+Hand Tracker is licensed under the GNU Affero General Public License v3.0; see [LICENSE](LICENSE).
