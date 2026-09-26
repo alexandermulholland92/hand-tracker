@@ -45,6 +45,32 @@ contextBridge.exposeInMainWorld("desktop", {
     return () => ipcRenderer.removeListener("video:import-progress", listener);
   },
 
+  // Screens and windows usable as the tracking source: [{ id, name, screen, thumbnail (data URL) }].
+  // The page opens one with getUserMedia({ video: { mandatory: { chromeMediaSource: "desktop", chromeMediaSourceId: id } } }).
+  listCaptureSources: () => ipcRenderer.invoke("capture:sources"),
+
+  // OptiTrack Motive's live NatNet stream: labelled markers, rigid bodies and skeletons,
+  // in millimetres, Z-up. start({ server, multicast }) keeps trying until Motive answers.
+  natnet: {
+    start: (opts) => ipcRenderer.invoke("natnet:start", opts),
+    stop: () => ipcRenderer.invoke("natnet:stop"),
+    // While motion capture records: every frame, returned by recordStop().
+    recordStart: () => ipcRenderer.invoke("natnet:record-start"),
+    recordStop: () => ipcRenderer.invoke("natnet:record-stop"),
+    // cb({ state: "waiting" | "connected" | "stopped", server, app, appVersion, version, error, warning })
+    onStatus: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("natnet:status", listener);
+      return () => ipcRenderer.removeListener("natnet:status", listener);
+    },
+    // cb({ t, markers: [{ id, model, p }], rigidBodies: [{ id, name, p, q, valid }], skeletons: [{ id, name, bones: [{ name, p, valid }] }] }), up to 30/s
+    onFrame: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("natnet:frame", listener);
+      return () => ipcRenderer.removeListener("natnet:frame", listener);
+    },
+  },
+
   // OptiTrack .tak takes, read through the Motive installed on this PC.
   // pathForFile(file) gives the on-disk path of a file the user picked or dropped.
   pathForFile: (file) => webUtils.getPathForFile(file),

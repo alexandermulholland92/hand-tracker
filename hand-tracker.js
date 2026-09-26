@@ -12,6 +12,8 @@
  *   HandTracker.setOverlay(true/false);   // skeleton on/off (the camera image is always drawn)
  *   HandTracker.setMirror(true/false);    // selfie-style mirrored display; overlays drawn afterwards stay readable
  *   HandTracker.setCamera({ deviceId, width, height });   // switch camera / resolution
+ *   HandTracker.setCamera({ desktopSourceId, desktopName, crop }); // track a screen or window (Windows app),
+ *                                         // optionally just crop = { x, y, w, h } (fractions of it)
  *   await HandTracker.useVideoFile(url, { name });         // track a video file instead of the camera
  *   HandTracker.file.play() / pause() / seek(s) / setRate(r) / time() / duration() / fps() / playing()
  *   HandTracker.onVideoEnded(() => { ... });               // the video file reached its end
@@ -19,7 +21,8 @@
  *   HandTracker.onCameraStatus((status) => { ... });      // "stalled" while reconnecting, then "ok"
  *   HandTracker.onSourceChange((camera) => { ... });      // a camera or video file was opened, before its
  *                                                         // first frame is drawn; camera = getCamera()
- *   HandTracker.getCamera();              // { source, deviceId, facing: "user" | "environment" | null, width, height }
+ *   HandTracker.getCamera();              // { source, deviceId, facing: "user" | "environment" | null, width, height,
+ *                                         //   screen: true for a screen/window source, name, crop }
  *   HandTracker.listCameras();            // [{ deviceId, label }]
  *   HandTracker.setModelComplexity(0 | 1);   // 0 = lite/fast, 1 = full/accurate
  *   HandTracker.setMaxHands(1 | 2);          // how many hands to track at once
@@ -86,7 +89,10 @@
   let cameraStalled = false;
   let maxHands = 2;
   let modelComplexity = 0;
-  let cameraOpts = { deviceId: null, width: 1280, height: 720, facing: null };
+  // desktopSourceId: a screen or window (Electron desktopCapturer id) instead of a camera;
+  // crop: the part of the picture to track, as fractions { x, y, w, h }.
+  let cameraOpts = { deviceId: null, width: 1280, height: 720, facing: null, desktopSourceId: null, desktopName: "", crop: null };
+  let cropCanvas = null;
   let loopId = 0; // bumping this cancels the running capture loop
   let source = "camera"; // "camera" | "file"
   let frameTime = null; // ms timestamp of the video-file frame being processed (null: use the clock)
@@ -394,8 +400,10 @@
   // what gets recorded to video.
   function drawStage(image, rawLandmarksList) {
     if (!ctx || !canvasEl) return;
-    const w = videoEl.videoWidth || canvasEl.width;
-    const h = videoEl.videoHeight || canvasEl.height;
+    // The picture MediaPipe processed: the video, or its cropped part.
+    const crop = cropPixels();
+    const w = (crop && crop.w) || videoEl.videoWidth || canvasEl.width;
+    const h = (crop && crop.h) || videoEl.videoHeight || canvasEl.height;
     if (canvasEl.width !== w || canvasEl.height !== h) {
       canvasEl.width = w;
       canvasEl.height = h;
@@ -478,21 +486,56 @@
 
   async function openCamera() {
     closeCamera();
-    const video = {
-      width: { ideal: cameraOpts.width },
-      height: { ideal: cameraOpts.height },
-    };
-    if (cameraOpts.deviceId) video.deviceId = { exact: cameraOpts.deviceId };
-    else video.facingMode = "user";
-
-    stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+    if (cameraOpts.desktopSourceId) {
+      // A screen or window (e.g. OptiTrack Motive's camera view), captured at full size.
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { mandatory: { chromeMediaSource: "desktop", chromeMediaSourceId: cameraOpts.desktopSourceId, maxWidth: 3840, maxHeight: 2160, maxFrameRate: 60 } },
+      });
+    } else {
+      const video = {
+        width: { ideal: cameraOpts.width },
+        height: { ideal: cameraOpts.height },
+      };
+      if (cameraOpts.deviceId) video.deviceId = { exact: cameraOpts.deviceId };
+      else video.facingMode = "user";
+      stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+    }
     videoEl.srcObject = stream;
     await videoEl.play();
     const track = stream.getVideoTracks()[0];
     const settings = track.getSettings();
-    cameraOpts.deviceId = settings.deviceId || cameraOpts.deviceId;
-    cameraOpts.facing = cameraFacing(track, settings);
+    if (cameraOpts.desktopSourceId) {
+      cameraOpts.facing = null;
+    } else {
+      cameraOpts.deviceId = settings.deviceId || cameraOpts.deviceId;
+      cameraOpts.facing = cameraFacing(track, settings);
+    }
     notifySource();
+  }
+
+  // The crop, in pixels of the source picture (even sizes), or null for the whole picture.
+  function cropPixels() {
+    const c = source === "camera" && cameraOpts.crop;
+    const vw = videoEl ? videoEl.videoWidth : 0, vh = videoEl ? videoEl.videoHeight : 0;
+    if (!c || !vw || !vh) return null;
+    const x = Math.max(0, Math.round(c.x * vw)), y = Math.max(0, Math.round(c.y * vh));
+    const w = Math.max(16, Math.min(vw - x, Math.round((c.w * vw) / 2) * 2));
+    const h = Math.max(16, Math.min(vh - y, Math.round((c.h * vh) / 2) * 2));
+    return { x, y, w, h };
+  }
+
+  // What MediaPipe sees: the video, or just the cropped part of it.
+  function frameImage() {
+    const c = cropPixels();
+    if (!c) return videoEl;
+    if (!cropCanvas) cropCanvas = document.createElement("canvas");
+    if (cropCanvas.width !== c.w || cropCanvas.height !== c.h) {
+      cropCanvas.width = c.w;
+      cropCanvas.height = c.h;
+    }
+    cropCanvas.getContext("2d").drawImage(videoEl, c.x, c.y, c.w, c.h, 0, 0, c.w, c.h);
+    return cropCanvas;
   }
 
   // Which way a camera points: "user" (front / selfie), "environment" (rear), or null
@@ -549,7 +592,9 @@
         gotFrame = true;
         setStalled(false);
         await sendFrame();
-      } else if (!reopening && performance.now() - lastNewFrame > (gotFrame ? STALL_MS : FIRST_FRAME_MS)) {
+      } else if (!reopening && !cameraOpts.desktopSourceId && performance.now() - lastNewFrame > (gotFrame ? STALL_MS : FIRST_FRAME_MS)) {
+        // (Screens and windows only send a frame when something in them changes, so a
+        // still one isn't a stalled camera.)
         reopening = true;
         setStalled(true);
         console.warn("Camera stopped delivering frames; reopening it.");
@@ -568,7 +613,7 @@
 
 
   function sendFrame() {
-    inflight = hands.send({ image: videoEl }).catch((err) => console.error("Hand tracking frame failed:", err));
+    inflight = hands.send({ image: frameImage() }).catch((err) => console.error("Hand tracking frame failed:", err));
     return inflight;
   }
 
@@ -827,12 +872,17 @@
   }
 
   function getCamera() {
+    const crop = cropPixels();
     return {
       source,
-      deviceId: cameraOpts.deviceId,
+      deviceId: cameraOpts.desktopSourceId ? `screen:${cameraOpts.desktopName}` : cameraOpts.deviceId,
       facing: source === "camera" ? cameraOpts.facing : null,
-      width: videoEl ? videoEl.videoWidth : 0,
-      height: videoEl ? videoEl.videoHeight : 0,
+      screen: source === "camera" && !!cameraOpts.desktopSourceId,
+      name: cameraOpts.desktopName,
+      crop: source === "camera" ? cameraOpts.crop : null,
+      // The size of the picture being tracked (the cropped part, when cropped).
+      width: crop ? crop.w : videoEl ? videoEl.videoWidth : 0,
+      height: crop ? crop.h : videoEl ? videoEl.videoHeight : 0,
     };
   }
 

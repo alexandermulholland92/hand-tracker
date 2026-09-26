@@ -7,7 +7,7 @@
  * .tak support (through the Motive installed on this PC) over IPC.
  */
 
-const { app, BrowserWindow, protocol, session, ipcMain, dialog, shell, Menu } = require("electron");
+const { app, BrowserWindow, protocol, session, ipcMain, dialog, shell, Menu, desktopCapturer } = require("electron");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -221,6 +221,47 @@ function handle(channel, fn) {
   });
 }
 
+// ---------- OptiTrack Motive: live NatNet data ----------
+// One connection for the app; every window that asks gets its status and (at most 30 a
+// second) its frames. While motion capture records, every frame is kept here, in full.
+const { NatNetClient } = require("./natnet");
+const natnet = { client: null, windows: new Set(), lastSent: 0, latest: null, recording: null };
+
+// A frame in the app's units: millimetres, Z-up (Motive streams metres, Y-up; this is the
+// same axis mapping as Motive's own C3D export, so it matches a .tak opened in the viewer).
+const MM = (p) => [-p[0] * 1000, p[2] * 1000, p[1] * 1000];
+function compactFrame(f) {
+  return {
+    n: f.frame,
+    t: f.timestamp,
+    markers: f.markers.map((m) => ({ id: m.id, model: m.model, p: MM(m.position) })),
+    rigidBodies: f.rigidBodies.map((rb) => ({ id: rb.id, name: rb.name, p: MM(rb.position), q: rb.rotation, valid: rb.valid })),
+    skeletons: f.skeletons.map((sk) => ({ id: sk.id, name: sk.name, bones: sk.bones.map((b) => ({ name: b.name, p: MM(b.position), valid: b.valid })) })),
+  };
+}
+
+function natnetClient() {
+  if (natnet.client) return natnet.client;
+  const client = new NatNetClient();
+  const send = (channel, payload) => {
+    for (const wc of natnet.windows) if (!wc.isDestroyed()) wc.send(channel, payload);
+  };
+  client.on("status", (s) => send("natnet:status", s));
+  client.on("warning", (w) => send("natnet:status", { ...client.lastStatus, warning: w }));
+  client.on("frame", (f) => {
+    const frame = compactFrame(f);
+    natnet.latest = frame;
+    if (natnet.recording) natnet.recording.push(frame);
+    const now = Date.now();
+    if (now - natnet.lastSent >= 33) {
+      natnet.lastSent = now;
+      send("natnet:frame", frame);
+    }
+  });
+  natnet.client = client;
+  return client;
+}
+
 function registerIpc() {
   // When this copy was built (stamped into package.json by scripts/dist.js); null when
   // running from the source folder.
@@ -334,6 +375,41 @@ function registerIpc() {
 
   handle("video:cancel-export", () => exporter.cancel());
 
+  // Screens and windows that can be used as the tracking source (e.g. Motive's camera
+  // view, since Motive keeps the OptiTrack cameras to itself). This window is left out.
+  handle("capture:sources", async (event) => {
+    const own = BrowserWindow.fromWebContents(event.sender);
+    const ownId = own ? own.getMediaSourceId() : "";
+    const sources = await desktopCapturer.getSources({ types: ["window", "screen"], thumbnailSize: { width: 320, height: 200 } });
+    return sources
+      .filter((s) => s.id !== ownId && !s.thumbnail.isEmpty())
+      .map((s) => ({ id: s.id, name: s.name, screen: s.id.startsWith("screen:"), thumbnail: s.thumbnail.toDataURL() }));
+  });
+
+  // OptiTrack Motive's NatNet stream.
+  handle("natnet:start", (event, opts = {}) => {
+    natnet.windows.add(event.sender);
+    event.sender.once("destroyed", () => natnet.windows.delete(event.sender));
+    const server = String(opts.server || "127.0.0.1").trim();
+    if (!/^[\w.-]+$/.test(server)) throw new Error("That isn't a valid address for Motive's PC.");
+    natnetClient().start({ server, multicast: opts.multicast !== false });
+    return true;
+  });
+  handle("natnet:stop", () => {
+    if (natnet.client) natnet.client.stop();
+    natnet.latest = null;
+    return true;
+  });
+  handle("natnet:record-start", () => {
+    natnet.recording = [];
+    return true;
+  });
+  handle("natnet:record-stop", () => {
+    const frames = natnet.recording || [];
+    natnet.recording = null;
+    return frames;
+  });
+
   // A video file on disk (Recording Viewer): what's in it, and converting it to other formats.
   function videoFileArg(value) {
     const input = String(value || "");
@@ -415,5 +491,6 @@ app.on("window-all-closed", () => {
 });
 
 app.on("will-quit", () => {
+  if (natnet.client) natnet.client.stop();
   if (mediaDir) fs.rmSync(mediaDir, { recursive: true, force: true });
 });

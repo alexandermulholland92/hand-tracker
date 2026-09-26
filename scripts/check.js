@@ -16,7 +16,10 @@
  *     Mirror is on for selfie cameras and off for rear cameras and video files,
  *  7. opens the Recording Viewer with JSON, CSV (incl. spreadsheet-saved), C3D, TRC,
  *     Motive CSV and — when OptiTrack Motive is installed — a sample .tak take,
- *  8. opens a WMV with sound in the Recording Viewer and converts it to all 27 formats.
+ *  8. opens a WMV with sound in the Recording Viewer and converts it to all 27 formats,
+ *  9. OptiTrack: receives a stand-in Motive's NatNet stream (scripts/natnet-sim.js) over
+ *     multicast and unicast, records it with motion capture and checks the exported
+ *     markers; tracks a crop of the screen picked in the "Screen or window" picker.
  * Output goes to a temp folder that is printed at the end.
  */
 
@@ -40,6 +43,7 @@ require("../electron/main.js");
 const exporter = require("../electron/exporter.js");
 const validators = require("./motion-validators.js");
 const { verifyExports } = require("./video-validators.js");
+const { startNatNetSim } = require("./natnet-sim.js");
 const { PAGE_SIMULATION, gesturePoses } = require("./simulated-hands.js");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -241,6 +245,7 @@ async function run(win) {
   await js("Hands.prototype.send = window.__realSend; document.getElementById('discardBtn').click();");
   await checkVideoFiles(win, js);
   await checkMirrorDefaults(js);
+  await checkOptiTrack(js);
 
   if (jsonPath) await checkViewer(jsonPath, { csv: mfile(".csv"), c3d: mfile(".c3d"), trc: mfile(".trc") });
   await checkViewerVideo();
@@ -382,6 +387,120 @@ async function checkMirrorDefaults(js) {
 }
 
 // 7. Recording Viewer: open and convert hand recordings (JSON, CSV), C3D and OptiTrack .tak.
+// 9. OptiTrack: Motive's live NatNet data, and a screen/window as the tracking source.
+async function checkOptiTrack(js) {
+  const status = () => js("({ status: document.getElementById('motiveStatus').textContent, info: document.getElementById('motiveInfo').textContent, button: document.getElementById('motiveConnect').textContent })");
+  const waitFor = async (test, tries = 60) => {
+    let s;
+    for (let i = 0; i < tries; i++) {
+      s = await status();
+      if (test(s)) return s;
+      await sleep(250);
+    }
+    return s;
+  };
+  const connect = (multicast) => js(`(() => {
+    document.getElementById("motiveServer").value = "127.0.0.1";
+    document.getElementById("motiveMulticast").checked = ${multicast};
+    document.getElementById("motiveConnect").click();
+    return true;
+  })()`);
+  const disconnect = async () => {
+    await js("document.getElementById('motiveConnect').click(); true");
+    return waitFor((s) => s.button === "Connect");
+  };
+  check("The Motive panel is shown in the Windows app", await js("!document.getElementById('motiveCard').hidden"));
+
+  // Multicast (Motive's default), then unicast.
+  const results = {};
+  for (const multicast of [true, false]) {
+    const sim = await startNatNetSim({ rate: 100, multicast });
+    await connect(multicast);
+    results[multicast ? "multicast" : "unicast"] = await waitFor((s) => /Connected to Motive 3\.5 \(NatNet 4\.1\)/.test(s.status) && /rigid body/.test(s.info));
+    if (!multicast) {
+      // Record with motion capture (the test camera shows no hands, so it's Motive's data only).
+      await js("document.getElementById('motionBtn').click(); true");
+      await sleep(2000);
+      await js("document.getElementById('motionBtn').click(); true");
+      for (let i = 0; i < 20 && (await js("document.getElementById('motionExportCard').hidden")); i++) await sleep(250);
+      results.export = await js(`(async () => {
+        const info = document.getElementById("motionInfo").textContent;
+        document.getElementById("motionName").value = "motive-take";
+        document.querySelectorAll("#motionFormatGrid input").forEach((i) => { i.checked = ["c3d", "trc", "json"].includes(i.value); });
+        document.getElementById("motionExportBtn").click();
+        for (let i = 0; i < 40 && document.querySelectorAll("#motionResults li").length < 3; i++) await new Promise((r) => setTimeout(r, 250));
+        return { info, saved: document.querySelectorAll("#motionResults li.ok").length, note: document.getElementById("motionNote").textContent };
+      })()`);
+    }
+    await disconnect();
+    sim.stop();
+    await sleep(300);
+  }
+  check("Connects to Motive's NatNet stream over multicast (Motive's default)", /3 labelled \+ 1 unlabelled markers · 1 rigid body · 1 skeleton \(2 bones\)/.test(results.multicast.info),
+    `${results.multicast.status} ${results.multicast.info}`);
+  check("…and over unicast", /Connected/.test(results.unicast.status) && /rigid body/.test(results.unicast.info), `${results.unicast.status} ${results.unicast.info}`);
+
+  // The exported Motive markers: names from Motive, its frame rate, and positions in mm, Z-up.
+  const c3dFile = path.join(outDir, "motive-take-motive.c3d");
+  let detail = results.export ? `${results.export.info}; ${results.export.note}` : "no export";
+  let ok = false;
+  if (fs.existsSync(c3dFile) && fs.existsSync(path.join(outDir, "motive-take-motive.trc"))) {
+    const c3d = validators.readC3D(c3dFile);
+    const labels = c3d.params["POINT:LABELS"];
+    const pivot = labels.indexOf("Wand_pivot");
+    // Wand pivot: a 0.3 m circle 1 m up in Motive (Y-up) -> radius 300 mm around Z, at z = 1000 mm.
+    const pts = c3d.data.map((f) => f[pivot]).filter((p) => p && p[3] >= 0);
+    const radii = pts.map((p) => Math.hypot(p[0], p[1]));
+    const heights = pts.map((p) => p[2]);
+    const rate = c3d.header.rate;
+    ok = ["Wand_1", "Wand_2", "Wand_3", "Wand_pivot", "Performer_Hip", "Performer_Chest"].every((l) => labels.includes(l)) &&
+      pts.length > 50 && radii.every((r) => Math.abs(r - 300) < 1) && heights.every((z) => Math.abs(z - 1000) < 1) && Math.abs(rate - 100) < 40;
+    detail = `${labels.length} points (${labels.join(", ")}), ${c3d.data.length} frames at ${rate.toFixed(1)} Hz; wand radius ${Math.min(...radii).toFixed(1)}–${Math.max(...radii).toFixed(1)} mm, height ${Math.min(...heights).toFixed(1)} mm`;
+  }
+  check("Motive's data records with motion capture and exports (names, rate, mm Z-up)", ok && results.export.saved === 3, detail);
+
+  // A crop of the screen, picked in the picker, as the tracking source.
+  const picked = await js(`(async () => {
+    HandTrackerApp.openCapturePicker();
+    const grid = document.getElementById("captureGrid");
+    for (let i = 0; i < 40 && !grid.querySelector("button"); i++) await new Promise((r) => setTimeout(r, 250));
+    const screen = [...grid.querySelectorAll("button")].find((b) => /Whole screen/.test(b.textContent));
+    if (!screen) return { error: "no screen listed: " + grid.textContent.slice(0, 80) };
+    screen.click();
+    const v = document.getElementById("capturePreview");
+    for (let i = 0; i < 40 && !(v.videoWidth > 0); i++) await new Promise((r) => setTimeout(r, 250));
+    // Drag a box over the middle half of the preview.
+    const stage = document.getElementById("cropStage"), r = v.getBoundingClientRect();
+    const at = (type, fx, fy) => stage.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, clientX: r.left + fx * r.width, clientY: r.top + fy * r.height }));
+    at("pointerdown", 0.25, 0.25); at("pointermove", 0.5, 0.5); at("pointermove", 0.75, 0.75); at("pointerup", 0.75, 0.75);
+    const areaButton = document.getElementById("captureUseArea");
+    const enabled = !areaButton.disabled;
+    const full = { w: v.videoWidth, h: v.videoHeight };
+    areaButton.click();
+    for (let i = 0; i < 40 && !HandTracker.getCamera().screen; i++) await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 2000));
+    const cam = HandTracker.getCamera();
+    const select = document.getElementById("cameraSelect");
+    return { enabled, full, cam: { screen: cam.screen, width: cam.width, height: cam.height, crop: cam.crop }, fps: HandTracker.getFPS(),
+      mirrored: HandTracker.isMirrored(), dialogClosed: document.getElementById("captureDialog").hidden,
+      selected: select.options[select.selectedIndex].textContent };
+  })()`);
+  const half = picked.cam && picked.full && Math.abs(picked.cam.width / (picked.full.w || 1) - 0.5) < 0.05;
+  check("Tracks the part of a screen dragged out in the picker (not mirrored)",
+    !picked.error && picked.enabled && picked.cam.screen && half && picked.fps > 0 && !picked.mirrored && picked.dialogClosed && /^Window: .*\(part\)/.test(picked.selected),
+    JSON.stringify(picked));
+  // Back to the camera from the list.
+  const back = await js(`(async () => {
+    const select = document.getElementById("cameraSelect");
+    select.value = select.options[0].value;
+    select.dispatchEvent(new Event("change"));
+    for (let i = 0; i < 40 && HandTracker.getCamera().screen; i++) await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 1500));
+    return { screen: HandTracker.getCamera().screen, width: HandTracker.getCamera().width, mirrored: HandTracker.isMirrored() };
+  })()`);
+  check("…and back to the camera", !back.screen && back.width > 0 && back.mirrored, JSON.stringify(back));
+}
+
 // 8. Recording Viewer: open a video the page can't play (WMV, with sound) and convert it to every format.
 async function checkViewerVideo() {
   const src = path.join(outDir, "viewer-source.wmv");

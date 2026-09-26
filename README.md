@@ -101,6 +101,21 @@ In the frame table for hand recordings, joint positions are measured **from the 
 - **Exporting**: C3D, TRC, CSV (Motive's format, including rigid bodies) and FBX come from **Motive's own exporters**. BVH is also available when the take contains a skeleton; Motive only writes BVH for skeletons. GLB, NPZ and JSON come from Hand Tracker.
 - **Without Motive** (another PC, the Android app, or the website): in Motive, use *File → Export Tracking Data* to save the take as **C3D**, then open that C3D in the viewer.
 
+## OptiTrack cameras and Motive (Windows app)
+
+OptiTrack cameras belong to one program at a time: while Motive has them open, nothing else can read them (the Motive API reports the cameras as taken). The Windows app works alongside Motive in two ways.
+
+**Track a camera's picture from Motive's window.** In the camera list, choose **Screen or window…**, pick Motive's window, and drag a box around one camera's view in Motive's 2D Camera viewport (or track the whole window). Hand Tracker then tracks hands in that picture live while Motive keeps recording. The picture isn't mirrored, and it works with any other window or screen too.
+- Prime Color cameras give full-colour video, which tracks well.
+- Infrared cameras only show a usable picture when Motive displays them in grayscale or MJPEG video mode, and hand detection on infrared pictures is less reliable.
+- Motive's window must stay open, not minimised. It can be covered by other windows.
+
+**Receive Motive's live data.** The **OptiTrack Motive** panel connects to Motive's NatNet stream: labelled markers, rigid bodies and skeletons, shown live from the front with the stream's rate. In Motive, open View → Streaming Pane and turn on **Broadcast Frame Data**. Enter the address of Motive's PC (127.0.0.1 if it's this one) and match its **Transmission Type** (multicast is Motive's default). NatNet 3.0 to 4.1 (Motive 2 and 3) are supported.
+- While motion capture records, every Motive frame is recorded too.
+- Motive's data is exported next to the hand files as `<name>-motive.c3d`, `.trc`, `.csv`, `.glb`, `.npz` or `.json`, in each chosen format that holds markers. It includes labelled markers, rigid-body pivots and skeleton bones.
+- Positions are in millimetres, Z-up: the same axes as Motive's own C3D export, so a live recording lines up with the same take opened as `.tak`.
+- Both recordings start together. Motive's keeps its own frame rate and numbering, and dropped network packets leave gaps.
+
 ## Tracking a video file
 
 Click **Open Video…** next to the camera picker to track hands in a recorded video instead of the live camera. A transport bar appears with restart, play/pause, seek, speed, **Capture Whole Video** and **Use Camera**.
@@ -248,7 +263,7 @@ This launches the app with Chromium's built-in fake camera. It simulates two han
 - **NPZ** is loaded with NumPy (so it needs Python with NumPy).
 - **Videos** are decoded with ffmpeg and checked to be the right codec, with sound where the source had it (animated WebP by its structure, since ffmpeg 6.1 can't read it back).
 
-It also opens the Recording Viewer with new, old and deliberately malicious files, and converts a WMV with sound to all 27 video formats in it. Windows will briefly appear on screen while it runs.
+It also opens the Recording Viewer with new, old and deliberately malicious files, and converts a WMV with sound to all 27 video formats in it. For OptiTrack, it connects to a stand-in Motive (NatNet 4.1, over multicast and unicast), records its stream with motion capture and checks the exported markers' names, rate, axes and scale. It also tracks a part of the screen chosen in the Screen or window picker. Windows will briefly appear on screen while it runs.
 
 There is also a check for the Android code:
 
@@ -277,9 +292,9 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 | `app.js`, `index.html` | Main window |
 | `viewer.js`, `viewer.html` | Recording Viewer |
 | `mobile-bridge.js` | Android: saving to Documents/Hand Tracker and sharing (Capacitor plugins) |
-| `electron/` | Desktop app: secure local file serving, camera permission, save dialogs, ffmpeg export, and `.tak` support through Motive (`tak.js`, `tak-convert.ps1`) |
+| `electron/` | Desktop app: secure local file serving, camera permission, save dialogs, ffmpeg export, `.tak` support through Motive (`tak.js`, `tak-convert.ps1`), and Motive's live NatNet stream (`natnet.js`) |
 | `android/`, `capacitor.config.json` | Android app project (Capacitor): permissions, icon, keep-screen-on |
-| `scripts/` | `serve.js` (browser mode), `build-web.js` + `build-android.js` (APK build), `check.js`, `check-android.js`, `motion-validators.js`, `video-validators.js`, `fake-capacitor.js`, `simulated-hands.js`, `fixtures/` (automated checks) |
+| `scripts/` | `serve.js` (browser mode), `build-web.js` + `build-android.js` (APK build), `check.js`, `check-android.js`, `motion-validators.js`, `video-validators.js`, `natnet-sim.js` (a stand-in Motive for the checks), `fake-capacitor.js`, `simulated-hands.js`, `fixtures/` (automated checks) |
 
 ## Limitations
 

@@ -460,6 +460,20 @@
       cameraSelect.appendChild(opt);
     }
     if (current && cams.some((c) => c.deviceId === current)) cameraSelect.value = current;
+    if (canCaptureScreens) {
+      const cam = HandTracker.getCamera();
+      if (cam.screen) {
+        const opt = document.createElement("option");
+        opt.value = "__screen_active";
+        opt.textContent = `Window: ${cam.name}${cam.crop ? " (part)" : ""}`;
+        cameraSelect.appendChild(opt);
+        cameraSelect.value = opt.value;
+      }
+      const pick = document.createElement("option");
+      pick.value = "__screen";
+      pick.textContent = "Screen or window…";
+      cameraSelect.appendChild(pick);
+    }
   }
 
   function parseResolution(value) {
@@ -470,7 +484,7 @@
   async function switchCamera(opts) {
     stageMessage.hidden = false;
     stageMessage.className = "";
-    stageMessage.textContent = "Switching camera…";
+    stageMessage.textContent = opts.desktopSourceId ? "Starting window capture…" : "Switching camera…";
     try {
       await HandTracker.setCamera(opts);
       stageMessage.hidden = true;
@@ -479,9 +493,115 @@
     }
   }
 
+  // ---------- A screen or window as the source (Windows app) ----------
+  // OptiTrack Motive keeps its cameras to itself, so while it runs the way to track hands
+  // in an OptiTrack camera's picture is to capture Motive's window (just that camera's
+  // view, with a crop). Works for any other window or screen too.
+  const canCaptureScreens = !!(desktop && desktop.listCaptureSources);
+  const captureDialog = $("captureDialog"), captureGrid = $("captureGrid"), captureSources = $("captureSources");
+  const captureCrop = $("captureCrop"), capturePreview = $("capturePreview"), cropStage = $("cropStage"), cropBox = $("cropBox");
+  const captureUseArea = $("captureUseArea");
+  let capture = { source: null, stream: null, rect: null };
+
+  function stopCapturePreview() {
+    if (capture.stream) for (const t of capture.stream.getTracks()) t.stop();
+    capture.stream = null;
+    capturePreview.srcObject = null;
+  }
+  function closeCapturePicker() {
+    stopCapturePreview();
+    captureDialog.hidden = true;
+  }
+  async function openCapturePicker() {
+    captureDialog.hidden = false;
+    captureSources.hidden = false;
+    captureCrop.hidden = true;
+    captureGrid.textContent = "Looking for screens and windows…";
+    try {
+      const sources = await desktop.listCaptureSources();
+      captureGrid.textContent = "";
+      for (const src of sources) {
+        const b = document.createElement("button");
+        const img = document.createElement("img");
+        img.src = src.thumbnail;
+        img.alt = "";
+        const name = document.createElement("span");
+        name.textContent = src.screen ? `Whole screen: ${src.name}` : src.name;
+        b.append(img, name);
+        b.addEventListener("click", () => chooseCaptureSource(src));
+        captureGrid.appendChild(b);
+      }
+      if (!sources.length) captureGrid.textContent = "No screens or windows were found.";
+    } catch (err) {
+      captureGrid.textContent = `Couldn't list windows: ${err.message}`;
+    }
+  }
+  async function chooseCaptureSource(src) {
+    capture = { source: src, stream: null, rect: null };
+    captureSources.hidden = true;
+    captureCrop.hidden = false;
+    cropBox.hidden = true;
+    captureUseArea.disabled = true;
+    try {
+      capture.stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { mandatory: { chromeMediaSource: "desktop", chromeMediaSourceId: src.id, maxWidth: 1920, maxHeight: 1080 } },
+      });
+      capturePreview.srcObject = capture.stream;
+      await capturePreview.play();
+    } catch (err) {
+      captureCrop.querySelector(".note").textContent = `Couldn't capture this window: ${err.message}`;
+    }
+  }
+  // Dragging a box on the preview: the crop, as fractions of the picture.
+  let cropDrag = null;
+  const cropPoint = (e) => {
+    const r = capturePreview.getBoundingClientRect();
+    return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
+  };
+  function showCropBox(rect) {
+    cropBox.hidden = false;
+    Object.assign(cropBox.style, { left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%` });
+  }
+  cropStage.addEventListener("pointerdown", (e) => {
+    cropDrag = cropPoint(e);
+    cropStage.setPointerCapture(e.pointerId);
+  });
+  cropStage.addEventListener("pointermove", (e) => {
+    if (!cropDrag) return;
+    const p = cropPoint(e);
+    capture.rect = { x: Math.min(cropDrag.x, p.x), y: Math.min(cropDrag.y, p.y), w: Math.abs(p.x - cropDrag.x), h: Math.abs(p.y - cropDrag.y) };
+    showCropBox(capture.rect);
+  });
+  cropStage.addEventListener("pointerup", () => {
+    cropDrag = null;
+    captureUseArea.disabled = !(capture.rect && capture.rect.w > 0.03 && capture.rect.h > 0.03);
+  });
+  async function useCaptureSource(src, crop) {
+    closeCapturePicker();
+    await switchCamera({ desktopSourceId: src.id, desktopName: src.name, crop: crop || null });
+    populateCameras();
+  }
+  captureUseArea.addEventListener("click", () => useCaptureSource(capture.source, capture.rect));
+  $("captureUseAll").addEventListener("click", () => useCaptureSource(capture.source, null));
+  $("captureBack").addEventListener("click", () => {
+    stopCapturePreview();
+    openCapturePicker();
+  });
+  $("captureClose").addEventListener("click", closeCapturePicker);
+  captureDialog.addEventListener("click", (e) => {
+    if (e.target === captureDialog) closeCapturePicker();
+  });
+
   cameraSelect.addEventListener("change", () => {
+    if (cameraSelect.value === "__screen") {
+      populateCameras(); // back to the current choice until a window is picked
+      openCapturePicker();
+      return;
+    }
+    if (cameraSelect.value === "__screen_active") return;
     setPref("cameraId", cameraSelect.value || null);
-    switchCamera({ deviceId: cameraSelect.value || null });
+    switchCamera({ deviceId: cameraSelect.value || null, desktopSourceId: null, desktopName: "", crop: null }).then(populateCameras);
   });
   resolutionSelect.addEventListener("change", () => {
     setPref("resolution", resolutionSelect.value);
@@ -520,7 +640,8 @@
   function applyMirrorDefault(camera) {
     if (camera.source === "file") return setMirror(false);
     const chosen = camera.deviceId ? mirrorByCamera[camera.deviceId] : undefined;
-    setMirror(typeof chosen === "boolean" ? chosen : camera.facing !== "environment");
+    // Screens and windows (e.g. Motive's camera view) are shown as they are.
+    setMirror(typeof chosen === "boolean" ? chosen : !camera.screen && camera.facing !== "environment");
   }
   HandTracker.onSourceChange(applyMirrorDefault);
 
@@ -577,13 +698,146 @@
     motionStatus.textContent = `${RobotMotion.frameCount()} frames${parts.length ? " · " + parts.join(" · ") : " · waiting for a hand"}`;
   }
 
-  let motion = null; // { data, exported } — the last capture, waiting to be exported
+  let motion = null; // { data, motive, exported } — the last capture, waiting to be exported
+
+  // ---------- OptiTrack Motive's live data (Windows app, NatNet) ----------
+  const natnetApi = desktop && desktop.natnet;
+  const motiveCard = $("motiveCard"), motiveServer = $("motiveServer"), motiveMulticast = $("motiveMulticast");
+  const motiveConnect = $("motiveConnect"), motiveStatus = $("motiveStatus"), motiveView = $("motiveView"), motiveInfo = $("motiveInfo");
+  let motiveState = "stopped";
+  let motiveRecording = false;
+  let motiveLast = null; // { n, t, at } for the frame rate
+  let motiveRate = 0;
+
+  function motiveStatusText(s) {
+    if (s.state === "connected") return `Connected to ${s.app || "Motive"} ${s.appVersion ? s.appVersion.split(".").slice(0, 2).join(".") : ""} (NatNet ${s.version}) at ${s.server}.`;
+    if (s.state === "waiting")
+      return `Waiting for Motive at ${s.server}… In Motive, open View → Streaming Pane and turn on Broadcast Frame Data${motiveMulticast.checked ? "" : " (Transmission Type: Unicast)"}.`;
+    return s.error ? `Not connected: ${s.error}` : "Not connected.";
+  }
+
+  // Motive's markers seen from the front (x across, z up), scaled to fit.
+  function drawMotive(f) {
+    const ctx = motiveView.getContext("2d");
+    const W = motiveView.width, H = motiveView.height;
+    ctx.fillStyle = "#0e0f12";
+    ctx.fillRect(0, 0, W, H);
+    const pts = [...f.markers.map((m) => m.p), ...f.rigidBodies.map((r) => r.p), ...f.skeletons.flatMap((s) => s.bones.map((b) => b.p))];
+    if (!pts.length) return;
+    let x0 = Infinity, x1 = -Infinity, z0 = 0, z1 = -Infinity;
+    for (const p of pts) {
+      x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); z0 = Math.min(z0, p[2]); z1 = Math.max(z1, p[2]);
+    }
+    const span = Math.max(x1 - x0, z1 - z0, 500) * 1.15;
+    const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+    const scale = Math.min(W, H) / span;
+    const at = (p) => [W / 2 + (p[0] - cx) * scale, H / 2 - (p[2] - cz) * scale];
+    const [, floor] = at([0, 0, 0]);
+    ctx.strokeStyle = "#2a2b31";
+    ctx.beginPath();
+    ctx.moveTo(0, floor);
+    ctx.lineTo(W, floor);
+    ctx.stroke();
+    for (const m of f.markers) {
+      const [x, y] = at(m.p);
+      ctx.fillStyle = m.model ? "#74c0fc" : "#868e96";
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#63e6be";
+    for (const s of f.skeletons) for (const b of s.bones) {
+      const [x, y] = at(b.p);
+      ctx.fillRect(x - 2, y - 2, 4, 4);
+    }
+    ctx.font = "12px Segoe UI, system-ui, sans-serif";
+    for (const r of f.rigidBodies) {
+      const [x, y] = at(r.p);
+      ctx.fillStyle = r.valid ? "#ff922b" : "#5c3a1a";
+      ctx.fillRect(x - 5, y - 5, 10, 10);
+      ctx.fillText(r.name, x + 8, y - 6);
+    }
+  }
+
+  if (natnetApi) {
+    motiveCard.hidden = false;
+    motiveServer.value = prefs.motiveServer || "127.0.0.1";
+    motiveMulticast.checked = prefs.motiveMulticast !== false;
+    motiveConnect.addEventListener("click", () => {
+      if (motiveState === "stopped") {
+        setPref("motiveServer", motiveServer.value.trim() || "127.0.0.1");
+        setPref("motiveMulticast", motiveMulticast.checked);
+        natnetApi.start({ server: motiveServer.value.trim() || "127.0.0.1", multicast: motiveMulticast.checked }).catch((err) => {
+          motiveStatus.textContent = `Couldn't start: ${err.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "")}`;
+        });
+      } else natnetApi.stop();
+    });
+    natnetApi.onStatus((s) => {
+      motiveState = s.state;
+      motiveStatus.textContent = motiveStatusText(s) + (s.warning ? ` ${s.warning}` : "");
+      motiveConnect.textContent = s.state === "stopped" ? "Connect" : "Disconnect";
+      motiveServer.disabled = motiveMulticast.disabled = s.state !== "stopped";
+      motiveView.hidden = s.state !== "connected";
+      if (s.state !== "connected") motiveInfo.textContent = "";
+    });
+    natnetApi.onFrame((f) => {
+      const now = performance.now();
+      if (motiveLast && f.t > motiveLast.t && now - motiveLast.at > 900) {
+        motiveRate = Math.round((f.n - motiveLast.n) / (f.t - motiveLast.t));
+        motiveLast = { n: f.n, t: f.t, at: now };
+      } else if (!motiveLast || f.t < motiveLast.t) motiveLast = { n: f.n, t: f.t, at: now };
+      const labelled = f.markers.filter((m) => m.model).length;
+      const bones = f.skeletons.reduce((n, s) => n + s.bones.length, 0);
+      motiveInfo.textContent = `${labelled} labelled + ${f.markers.length - labelled} unlabelled markers · ${f.rigidBodies.length} rigid bod${f.rigidBodies.length === 1 ? "y" : "ies"} · ${f.skeletons.length} skeleton${f.skeletons.length === 1 ? "" : "s"}${bones ? ` (${bones} bones)` : ""}${motiveRate ? ` · ${motiveRate} Hz` : ""}${motiveRecording ? " · recording" : ""}`;
+      drawMotive(f);
+    });
+  }
+
+  // Motive's frames, recorded while motion capture ran, as a marker recording in the
+  // viewer's format: labelled markers, rigid-body pivots and skeleton bones (mm, Z-up),
+  // one row per Motive frame (numbered by Motive, so dropped network packets leave gaps).
+  function motiveMarkerData(frames, name) {
+    const rbNames = new Map();
+    for (const f of frames) for (const rb of f.rigidBodies) rbNames.set(rb.id, rb.name);
+    const columns = new Map();
+    const labels = [];
+    const column = (key, label) => {
+      if (!columns.has(key)) {
+        columns.set(key, labels.length);
+        labels.push(labels.includes(label) ? `${label}_${labels.length}` : label);
+      }
+      return columns.get(key);
+    };
+    for (const f of frames) {
+      for (const m of f.markers) if (m.model) column(`m${m.model}:${m.id}`, `${rbNames.get(m.model) || `Model${m.model}`}_${m.id}`);
+      for (const rb of f.rigidBodies) column(`rb${rb.id}`, `${rb.name}_pivot`);
+      for (const sk of f.skeletons) for (const b of sk.bones) column(`sk${sk.id}:${b.name}`, `${sk.name}_${b.name}`);
+    }
+    const first = frames[0], last = frames[frames.length - 1];
+    const rate = last.t > first.t && last.n > first.n ? Math.round(((last.n - first.n) / (last.t - first.t)) * 100) / 100 : 120;
+    const count = Math.max(1, last.n - first.n + 1);
+    const positions = new Float32Array(count * labels.length * 3).fill(NaN);
+    for (const f of frames) {
+      const k = f.n - first.n;
+      if (k < 0 || k >= count) continue;
+      const put = (key, p) => positions.set(p, (k * labels.length + columns.get(key)) * 3);
+      for (const m of f.markers) if (m.model) put(`m${m.model}:${m.id}`, m.p);
+      for (const rb of f.rigidBodies) if (rb.valid) put(`rb${rb.id}`, rb.p);
+      for (const sk of f.skeletons) for (const b of sk.bones) if (b.valid !== false) put(`sk${sk.id}:${b.name}`, b.p);
+    }
+    return {
+      kind: "markers", name, source: "natnet", labels, frame_rate: rate, first_frame: 1, frame_count: count, duration: count / rate, positions,
+      notes: ["Recorded live from OptiTrack Motive (NatNet): labelled markers, rigid-body pivots and skeleton bones, in millimetres, Z-up. Unlabelled markers aren't included."],
+    };
+  }
 
   function toggleMotion() {
     if (!RobotMotion.isRecording()) {
       if (motion && !motion.exported && !confirm("Discard the previous motion capture? It hasn't been exported yet.")) return;
       discardMotion();
       RobotMotion.start();
+      motiveRecording = !!natnetApi && motiveState === "connected";
+      if (motiveRecording) natnetApi.recordStart();
       motionBtn.firstChild.textContent = "Stop Motion Capture";
       motionBtn.classList.add("recording");
       setCaptureControlsLocked(false);
@@ -596,25 +850,36 @@
     motionBtn.firstChild.textContent = "Start Motion Capture";
     motionBtn.classList.remove("recording");
     setCaptureControlsLocked(false);
-    if (!data.hands.length) {
-      motionStatus.textContent = "No frames captured (no hand was visible).";
-      return;
-    }
-    motionStatus.textContent = "";
-    showMotionExport(data);
+    const motiveFrames = motiveRecording ? natnetApi.recordStop() : Promise.resolve(null);
+    motiveRecording = false;
+    return motiveFrames.then((frames) => {
+      const motive = frames && frames.length > 1 ? motiveMarkerData(frames, "Motive") : null;
+      if (!data.hands.length && !motive) {
+        motionStatus.textContent = "No frames captured (no hand was visible).";
+        return;
+      }
+      motionStatus.textContent = "";
+      showMotionExport(data, motive);
+    });
   }
   motionBtn.addEventListener("click", toggleMotion);
 
-  function showMotionExport(data) {
-    motion = { data, exported: false };
+  function showMotionExport(data, motive = null) {
+    motion = { data, motive, exported: false };
     const frames = data.hands.reduce((n, h) => n + h.frames.length, 0);
     const names = data.hands.map((h) => h.handedness).join(" + ");
-    motionInfo.textContent = `${formatClock(data.duration)} · ${names} hand${data.hands.length > 1 ? "s" : ""} · ${frames} frames · ${data.frame_rate || "—"} fps`;
+    const handText = data.hands.length
+      ? `${formatClock(data.duration)} · ${names} hand${data.hands.length > 1 ? "s" : ""} · ${frames} frames · ${data.frame_rate || "—"} fps`
+      : "No hand was visible";
+    const motiveText = motive ? ` · Motive: ${motive.labels.length} points × ${motive.frame_count} frames at ${motive.frame_rate} Hz` : "";
+    motionInfo.textContent = handText + motiveText;
     motionName.value = `robot-motion-${timestampName()}`;
     motionResults.innerHTML = "";
-    renderFormatGrid(motionFormatGrid, MotionExport.FORMATS, "motionFormats", ["json"]);
+    if (data.hands.length) renderFormatGrid(motionFormatGrid, MotionExport.FORMATS, "motionFormats", ["json"]);
+    else renderFormatGrid(motionFormatGrid, MotionExport.MARKER_FORMATS, "motiveFormats", ["c3d"]);
     motionNote.textContent =
-      "BVH, GLB, C3D and TRC are scaled to approximate real-world size, assuming an average adult hand (a single webcam can't measure distance). BVH writes one file per hand.";
+      (data.hands.length ? "BVH, GLB, C3D and TRC are scaled to approximate real-world size, assuming an average adult hand (a single webcam can't measure distance). BVH writes one file per hand." : "") +
+      (motive ? ` Motive's data is saved alongside, as <name>-motive.c3d, .trc and so on, in each chosen format that holds markers (not BVH).` : "");
     motionExportCard.hidden = false;
     motionExportCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
@@ -633,9 +898,15 @@
       return;
     }
     const baseName = motionName.value.trim() || `robot-motion-${timestampName()}`;
-    let files;
+    let files = [];
     try {
-      files = MotionExport.build(motion.data, formats, baseName);
+      if (motion.data.hands.length) files = MotionExport.build(motion.data, formats, baseName);
+      if (motion.motive) {
+        const markerIds = formats.filter((id) => MotionExport.MARKER_FORMATS.some((f) => f.id === id));
+        const motiveFiles = MotionExport.buildMarkers(motion.motive, markerIds, `${baseName}-motive`);
+        files.push(...motiveFiles.map((f) => ({ ...f, suffix: `-motive${f.suffix}` })));
+      }
+      if (!files.length) throw new Error("none of the chosen formats can hold this data (pick C3D, TRC, CSV, GLB, NPZ or JSON)");
     } catch (err) {
       motionNote.textContent = `Couldn't convert: ${err.message}`;
       return;
@@ -1173,7 +1444,7 @@
     HandTracker.onHandLandmarks(({ hands, timestamp }) => {
       syncStageAspect();
       updateGestures(hands);
-      ReadableText.process(video, stage, mirrorOn, hands); // un-flip text in the camera picture
+      if (!HandTracker.getCamera().crop) ReadableText.process(video, stage, mirrorOn, hands); // un-flip text in the camera picture
       drawStageLabels(hands);
       VideoRecorder.frame(); // after labels, so recordings match what's on screen
 
@@ -1192,7 +1463,7 @@
   }
 
   // Entry points for the automated checks (same code paths as the buttons).
-  window.HandTrackerApp = { openVideo, backToCamera };
+  window.HandTrackerApp = { openVideo, backToCamera, openCapturePicker, useCaptureSource };
 
   main().catch((err) => {
     console.error(err);

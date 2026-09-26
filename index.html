@@ -116,6 +116,25 @@
   .orientation-row span b { opacity: 0.5; font-weight: 500; margin-right: 3px; }
   .metric-row { font-size: 12.5px; opacity: 0.85; font-variant-numeric: tabular-nums; line-height: 1.6; }
 
+  /* OptiTrack Motive (Windows app) */
+  .motive-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12.5px; margin-bottom: 8px; }
+  .motive-row input[type="text"] { width: 130px; padding: 5px 8px; border-radius: 6px; border: 1px solid #333; background: #1a1b1f; color: #e8e8ea; font: inherit; }
+  #motiveStatus { font-size: 12px; opacity: 0.75; line-height: 1.5; margin-bottom: 8px; }
+  #motiveView { width: 100%; height: auto; display: block; background: #0e0f12; border-radius: 8px; }
+
+  /* Screen or window picker */
+  .modal { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, 0.66); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .modal-box { background: #17181c; border-radius: 12px; padding: 16px 18px; width: min(920px, 100%); max-height: 100%; overflow: auto; }
+  .modal-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .modal-head b { flex: 1; font-size: 14px; }
+  .source-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+  .source-grid button { display: flex; flex-direction: column; gap: 6px; align-items: stretch; text-align: left; padding: 8px; }
+  .source-grid img { width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #0e0f12; border-radius: 6px; }
+  .source-grid span { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crop-stage { position: relative; user-select: none; touch-action: none; cursor: crosshair; margin: 10px 0; }
+  .crop-stage video { width: 100%; display: block; border-radius: 6px; background: #000; }
+  #cropBox { position: absolute; border: 2px solid #4dabf7; background: rgba(77, 171, 247, 0.12); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45); pointer-events: none; }
+
   .curl-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
   .curl-label { width: 42px; font-size: 11.5px; opacity: 0.6; text-transform: capitalize; }
   .curl-bar { flex: 1; height: 6px; background: #2a2b30; border-radius: 3px; overflow: hidden; }
@@ -302,7 +321,37 @@
     <div id="slotLeft"></div>
     <div id="slotRight"></div>
     <div id="bothHands" class="card" hidden></div>
+    <div id="motiveCard" class="card" hidden>
+      <div class="section-label">OptiTrack Motive</div>
+      <div class="motive-row">
+        <label>Motive's PC <input type="text" id="motiveServer" spellcheck="false" autocomplete="off" value="127.0.0.1" /></label>
+        <label title="Motive's Streaming pane: Transmission Type"><input type="checkbox" id="motiveMulticast" checked /> Multicast</label>
+        <button id="motiveConnect">Connect</button>
+      </div>
+      <div id="motiveStatus">Receives Motive's live markers, rigid bodies and skeletons (Motive: View → Streaming Pane → Broadcast Frame Data). They're recorded with motion capture and exported alongside it.</div>
+      <canvas id="motiveView" width="640" height="360" hidden></canvas>
+      <div id="motiveInfo" class="metric-row"></div>
+    </div>
   </aside>
+</div>
+
+<div id="captureDialog" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="captureTitle">
+    <div class="modal-head"><b id="captureTitle">Track a screen or window</b><button id="captureClose" aria-label="Close">✕</button></div>
+    <div id="captureSources">
+      <p class="note">Pick the window to track, for example OptiTrack Motive with a camera's view showing. Motive keeps the cameras to itself, so this is how Hand Tracker can use them while Motive runs.</p>
+      <div id="captureGrid" class="source-grid"></div>
+    </div>
+    <div id="captureCrop" hidden>
+      <p class="note">Drag a box around the part to track, such as one camera's view, or track the whole window.</p>
+      <div class="crop-stage" id="cropStage"><video id="capturePreview" muted playsinline></video><div id="cropBox" hidden></div></div>
+      <div class="export-actions">
+        <button id="captureUseArea" class="primary" disabled>Track this area</button>
+        <button id="captureUseAll">Track the whole window</button>
+        <button id="captureBack">Back</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div id="viz3dCard" class="card">
