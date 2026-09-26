@@ -196,10 +196,19 @@ async function run(win) {
     birdSideOn: { curls: bird, squeezeX: 0.15 },
     peace: { curls: curls(0.5, 0, 0, 1, 1) },
     fist: { curls: curls(1, 1, 1, 1, 1) },
+    point: { curls: curls(0.5, 0, 1, 1, 1) },
+    rockOn: { curls: curls(0.5, 0, 1, 1, 0) },
+    callMe: { curls: curls(0, 1, 1, 1, 0) },
+    thumbsUp: { curls: curls(0, 1, 1, 1, 1), rotate: 45 },
+    thumbsDown: { curls: curls(0, 1, 1, 1, 1), rotate: -135 },
+    thumbSideways: { curls: curls(0, 1, 1, 1, 1) },
   }));
   check('Middle finger raised, facing the camera, reads "The Bird" (also on a phone held sideways; nothing else does)',
     g.bird === "The Bird" && g.birdSideways === "The Bird" && g.birdPointingDown !== "The Bird" && g.birdSideOn !== "The Bird" && g.peace === "Peace" && g.fist !== "The Bird",
     JSON.stringify(g));
+  check("Fist, Point, Rock On, Call Me, Thumbs Up and Thumbs Down read as themselves (a thumb out to the side is neither)",
+    g.fist === "Fist" && g.point === "Point" && g.rockOn === "Rock On" && g.callMe === "Call Me" && g.thumbsUp === "Thumbs Up" && g.thumbsDown === "Thumbs Down" &&
+      !/Thumbs/.test(g.thumbSideways), JSON.stringify(g));
 
   // The same on real hands: landmarks measured from photos (upright, phone-portrait crops
   // and turned sideways), each fed through the tracker as if from a camera that size, as a
@@ -236,6 +245,21 @@ async function run(win) {
   })()`);
   check("Real hands from photos: The Bird, Thumbs Down, Live Long and Prosper, Peace (any tilt) and OK Sign recognised, no other hand taken for them", real.wrong.length === 0,
     real.wrong.length ? real.wrong.join(" | ") : Object.entries(real.tally).map(([k, [ok, n]]) => `${k}: ${ok}/${n}`).join(", "));
+
+  // Readable text: OCR also reads hand shapes as letters; those must never become flipped
+  // boxes (they stayed on screen after the hand moved away). Same readings, three scans.
+  const ocr = await js(`(() => {
+    const word = (text, x0, y0, x1, y1) => ({ text, confidence: 90, bbox: { x0, y0, x1, y1 } });
+    const scanOf = (...w) => ({ blocks: [{ paragraphs: [{ lines: [{ words: w }] }] }] });
+    const hand = { x: 300, y: 200, w: 220, h: 260 };
+    ReadableText.clear();
+    for (let i = 0; i < 3; i++) ReadableText._ingest(scanOf(word("OK", 380, 300, 430, 330), word("12:30", 60, 40, 160, 80)), 1280, 720, 1000 + i * 400, [hand]);
+    const regions = ReadableText.getRegions();
+    ReadableText.clear();
+    return regions;
+  })()`);
+  check("Readable text: words read on a hand are ignored, text elsewhere is still kept readable",
+    ocr.length === 1 && ocr[0].x < 60 && ocr[0].x + ocr[0].w > 160, JSON.stringify(ocr));
 
   const relevantErrors = consoleErrors.filter((m) => !/DevTools|Autofill/i.test(m));
   check("No errors in the page console", relevantErrors.length === 0, relevantErrors.slice(0, 3).join(" | "));

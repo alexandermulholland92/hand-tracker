@@ -17,6 +17,11 @@
  * boxes on screen over 90% of the time before), at the cost of text un-flipping
  * about a second after it appears.
  *
+ * OCR also reads hand shapes as letters (an OK sign's ring as "O", fingers as "ll"),
+ * and a region confirmed on a hand stayed for HOLD_MS after the hand moved away,
+ * flipping that patch of the picture. So words found on or next to a hand when the
+ * scan was taken are ignored.
+ *
  *   ReadableText.process(sourceEl, stageCanvas, mirrored, hands);  // once per drawn frame
  *   ReadableText.getRegions();  // current text regions (raw pixel coords), for debugging
  */
@@ -78,7 +83,7 @@
     }
   }
 
-  function scan(source, width, height) {
+  function scan(source, width, height, hands) {
     busy = true;
     lastScan = performance.now();
     if (!grabCanvas) {
@@ -93,7 +98,7 @@
     const started = performance.now();
     worker
       .recognize(grabCanvas, {}, { blocks: true })
-      .then(({ data }) => ingest(data, width, height))
+      .then(({ data }) => ingest(data, width, height, performance.now(), hands))
       .catch((err) => console.warn("readable-text: scan failed:", err))
       .finally(() => {
         lastScanMs = performance.now() - started;
@@ -134,7 +139,8 @@
     return h >= 6 && h <= height * 0.3 && x1 - x0 <= width * 0.7;
   }
 
-  function ingest(data, width, height, now = performance.now()) {
+  // `hands`: where the hands were in the scanned frame (see handBoxes).
+  function ingest(data, width, height, now = performance.now(), hands = []) {
     const scan = ++scanCount;
     const window = Math.max(CONFIRM_WINDOW_MS, 4 * Math.max(OCR_INTERVAL_MS, lastScanMs * 3));
     candidates = candidates.filter((c) => now - c.seen <= window);
@@ -148,6 +154,7 @@
       let box = { x: Math.max(0, x0 - padX), y: Math.max(0, y0 - padY) };
       box.w = Math.min(width, x1 + padX) - box.x;
       box.h = Math.min(height, y1 + padY) - box.y;
+      if (hands.some((b) => overlaps(b, box))) continue;
 
       // Already shown: merge with the regions it touches (keeping the merged area from
       // growing without bound when text moves around).
@@ -206,13 +213,13 @@
     // it appears (and a busy, textured scene can't keep OCR running flat out).
     const quick = candidates.some((c) => c.scan === scanCount) && quickScans < CONFIRMATIONS - 1;
     const cooldown = quick ? Math.max(OCR_INTERVAL_MS, lastScanMs * 1.2) : Math.max(OCR_INTERVAL_MS, lastScanMs * 3);
+    const avoid = handBoxes(hands, width, height);
     if (workerState === "ready" && !busy && performance.now() - lastScan >= cooldown) {
       quickScans = quick ? quickScans + 1 : 0;
-      scan(source, width, height);
+      scan(source, width, height, avoid);
     }
 
     const now = performance.now();
-    const avoid = handBoxes(hands, width, height);
     const ctx = canvas.getContext("2d");
     for (const r of regions) {
       if (now - r.seen > HOLD_MS || avoid.some((b) => overlaps(b, r))) continue;
