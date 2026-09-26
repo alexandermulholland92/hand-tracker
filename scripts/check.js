@@ -208,7 +208,7 @@ async function run(win) {
     const cases = ${fs.readFileSync(path.join(__dirname, "fixtures", "gesture-hands.json"), "utf8")}.cases;
     const cameraOf = HandTracker.getCamera;
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const SPECIAL = ["The Bird", "Thumbs Down", "Live Long and Prosper"];
+    const SPECIAL = ["The Bird", "Thumbs Down", "Live Long and Prosper", "Peace", "OK Sign"];
     const wrong = [], tally = {};
     for (const c of cases) {
       await sleep(300); // longer than the tracker keeps a lost hand, so this is a new hand
@@ -234,7 +234,7 @@ async function run(win) {
     HandTracker.getCamera = cameraOf;
     return { wrong, tally };
   })()`);
-  check("Real hands from photos: The Bird, Thumbs Down and Live Long and Prosper recognised, and no other hand taken for them", real.wrong.length === 0,
+  check("Real hands from photos: The Bird, Thumbs Down, Live Long and Prosper, Peace (any tilt) and OK Sign recognised, no other hand taken for them", real.wrong.length === 0,
     real.wrong.length ? real.wrong.join(" | ") : Object.entries(real.tally).map(([k, [ok, n]]) => `${k}: ${ok}/${n}`).join(", "));
 
   const relevantErrors = consoleErrors.filter((m) => !/DevTools|Autofill/i.test(m));

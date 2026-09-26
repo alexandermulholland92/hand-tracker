@@ -31,6 +31,7 @@
   const modelSelect = $("modelSelect");
   const overlayToggle = $("overlayToggle");
   const mirrorToggle = $("mirrorToggle");
+  const readableToggle = $("readableToggle");
   const legendToggle = $("legendToggle");
   const legendEl = $("legend");
   const videoBtn = $("videoBtn");
@@ -99,6 +100,7 @@
   }
 
   let overlayOn = prefs.overlay !== undefined ? prefs.overlay : true;
+  let readableOn = prefs.readableText !== false; // text in the picture shown readable when mirrored
   // Mirror: on for selfie cameras, off for rear cameras and video files (see
   // applyMirrorDefault). Labels are drawn after the flip, and text in the camera
   // picture is detected and flipped back (readable-text.js), so numbers and words
@@ -197,6 +199,25 @@
     return c.thumb < 0.35 && OTHER_FINGERS.every((f) => c[f] > 0.45) && below > 0.35 && pts[4].y > pts[2].y && dist(4, 8) > 0.5;
   }
 
+  // OK Sign: thumb and index tips touching in a ring, the other three fingers straight.
+  // The gap is measured in palm lengths, so big (close) and small (far) hands alike: OK
+  // signs in photos were 0.14-0.24 apart, open hands 0.5 and more. The index bends to
+  // make the ring (its tip reaches about 2/3 as far as the middle one), unlike a relaxed
+  // hand whose thumb just rests against a straight index finger.
+  function isOkSign({ dist, reach }, c) {
+    return dist(4, 8) < 0.35 && reach(8) < 0.8 * reach(12) &&
+      ["middle", "ring", "pinky"].every((f) => c[f] < 0.35) && reach(12) > 1.3 && reach(16) > 1.2 && reach(20) > 1.0;
+  }
+
+  // Peace: index and middle straight, ring and little fingers folded, their tips reaching
+  // under 0.65 of the raised two's distance from the wrist (peace signs in photos: at most
+  // 0.58; open hands and the Vulcan salute: over 0.85). Only distances, never directions,
+  // so the V reads at any angle, upright, leaning or on its side.
+  function isPeace({ reach }, c) {
+    const raised = Math.min(reach(8), reach(12));
+    return c.index < 0.35 && c.middle < 0.35 && reach(16) < 0.65 * raised && reach(20) < 0.65 * raised;
+  }
+
   // Live Long and Prosper (the Vulcan salute): all four fingers straight, index and middle
   // together, ring and little together, with a wide V between the middle and ring fingers.
   // An open or relaxed hand spreads its fingers more evenly. Straight means both a low
@@ -223,18 +244,15 @@
 
     // The most specific shapes come first. The Bird: a thumb tucked over the curled
     // index finger would otherwise read as Pinch. Live Long and Prosper would otherwise
-    // read as Open Palm, and Thumbs Down as Fist.
+    // read as Open Palm, and Thumbs Down as Fist. OK Sign before Pinch (same touching
+    // thumb and index, but a ring with the other fingers out).
     const shape = hand.landmarks ? handShape(hand.landmarks) : null;
     if (shape && c.middle < EXTENDED && isTheBird(shape)) return { label: "The Bird", color: "#da77f2" };
     if (shape && isThumbsDown(shape, c)) return { label: "Thumbs Down", color: "#e64980" };
     if (shape && isVulcanSalute(shape, c)) return { label: "Live Long and Prosper", color: "#748ffc" };
 
-    // OK Sign: thumb+index touching (same signal as Pinch) but with the
-    // other three fingers held out — that's what makes it a ring, not a fist.
-    if (f.thumbIndexDistance < 0.06 && c.middle < EXTENDED && c.ring < EXTENDED && c.pinky < EXTENDED) {
-      return { label: "OK Sign", color: "#ffd43b" };
-    }
-    if (f.thumbIndexDistance < 0.06) return { label: "Pinch", color: "#f783ac" };
+    if (shape && isOkSign(shape, c)) return { label: "OK Sign", color: "#ffd43b" };
+    if (shape && isPeace(shape, c)) return { label: "Peace", color: "#66d9e8" };
 
     // Thumbs Up: thumb extended and pointing well above the wrist (screen-up,
     // i.e. negative Y in image space) relative to the hand's own scale, with
@@ -249,12 +267,11 @@
     }
 
     if (avgCurl > 0.7) return { label: "Fist", color: "#ff6b6b" };
+    // Pinch: thumb and index tips touching, in palm lengths (so a small, far-away hand
+    // isn't a pinch just because everything in it is close together). After Fist, so a
+    // thumb resting on a clenched fist's index finger stays a fist.
+    if (shape ? shape.dist(4, 8) < 0.35 : f.thumbIndexDistance < 0.06) return { label: "Pinch", color: "#f783ac" };
     if (avgCurl < 0.15) return { label: "Open Palm", color: "#51cf66" };
-
-    // Peace / Victory: index + middle extended, ring + pinky curled.
-    if (c.index < EXTENDED && c.middle < EXTENDED && c.ring > CURLED && c.pinky > CURLED) {
-      return { label: "Peace", color: "#66d9e8" };
-    }
     // Rock and Roll: index + pinky extended, middle + ring curled.
     if (c.index < EXTENDED && c.pinky < EXTENDED && c.middle > CURLED && c.ring > CURLED) {
       return { label: "Rock On", color: "#b197fc" };
@@ -625,6 +642,13 @@
     setToggle(overlayToggle, overlayOn, "Overlay");
   }
   overlayToggle.addEventListener("click", toggleOverlay);
+
+  readableToggle.addEventListener("click", () => {
+    readableOn = !readableOn;
+    setPref("readableText", readableOn);
+    setToggle(readableToggle, readableOn, "Readable text");
+    if (!readableOn) ReadableText.clear();
+  });
 
   function setMirror(on) {
     mirrorOn = on;
@@ -1381,6 +1405,7 @@
     videoFileInput.accept = VideoFormats.IMPORT_ACCEPT;
     setToggle(overlayToggle, overlayOn, "Overlay");
     setToggle(mirrorToggle, mirrorOn, "Mirror");
+    setToggle(readableToggle, readableOn, "Readable text");
     renderPanels([]);
     if (!VideoRecorder.isSupported()) {
       videoBtn.disabled = true;
@@ -1444,7 +1469,8 @@
     HandTracker.onHandLandmarks(({ hands, timestamp }) => {
       syncStageAspect();
       updateGestures(hands);
-      if (!HandTracker.getCamera().crop) ReadableText.process(video, stage, mirrorOn, hands); // un-flip text in the camera picture
+      // Un-flip text in the camera picture (not with a crop: OCR reads the whole picture).
+      if (readableOn && !HandTracker.getCamera().crop) ReadableText.process(video, stage, mirrorOn, hands);
       drawStageLabels(hands);
       VideoRecorder.frame(); // after labels, so recordings match what's on screen
 

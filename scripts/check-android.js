@@ -105,12 +105,22 @@ async function run() {
   check("Header shows which build is running", /^v\d+\.\d+\.\d+ · built /.test(build), build);
   // Mirrored view: the fake camera's clock must be found by OCR so it can be flipped back.
   let regions = 0;
-  for (let i = 0; i < 20 && !regions; i++) {
+  for (let i = 0; i < 40 && !regions; i++) { // text is shown once 3 scans agree
     await sleep(500);
     regions = await js("ReadableText.getRegions().length");
   }
   check("OCR starts from the APK bundle and finds the camera's text", regions > 0 && (await js("ReadableText.getStatus()")) === "ready",
     `status ${await js("ReadableText.getStatus()")}, ${regions} text region(s)`);
+  // The Readable text button turns it off (the mirror image is then shown as it is) and on again.
+  const toggled = await js(`(async () => {
+    const b = document.getElementById("readableToggle");
+    b.click();
+    await new Promise((r) => setTimeout(r, 300));
+    const off = { label: b.textContent, regions: ReadableText.getRegions().length };
+    b.click();
+    return { off, on: b.textContent };
+  })()`);
+  check("The Readable text button turns text un-mirroring off and on", /OFF/.test(toggled.off.label) && toggled.off.regions === 0 && /ON/.test(toggled.on), JSON.stringify(toggled));
   check("Layout fits a phone screen (no sideways scrolling)", await js("document.documentElement.scrollWidth <= window.innerWidth + 1"),
     await js("`page ${document.documentElement.scrollWidth}px wide, screen ${window.innerWidth}px`"));
 
