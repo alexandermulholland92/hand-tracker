@@ -8,6 +8,8 @@ Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmark
 
 **Windows app:** double-click `dist/HandTracker-1.1.0-portable.exe`. Nothing to install; it works offline.
 
+**Download the latest build:** every change to `main` rebuilds the Windows app and the Android app on GitHub and puts both on the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release (`.github/workflows/build-apps.yml`). Each APK built there installs over the last one, but it's signed with a different key from one built on your PC, so Android only installs it over a PC-built copy after that copy is uninstalled (and the other way round). The same happens after a week with no builds, when GitHub drops the saved key.
+
 **Android app:** install `dist/HandTracker-1.1.0.apk` on your phone (see [Android app](#android-app) below).
 
 **From source** (Node.js 18+):

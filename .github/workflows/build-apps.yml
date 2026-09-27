@@ -1,0 +1,97 @@
+# Builds the Windows app (.exe) and the Android app (.apk) whenever main changes, and
+# publishes both on the "Latest build" release, replacing the previous build:
+# https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build
+# Run it by hand from the Actions tab (Build apps → Run workflow) too.
+name: Build apps
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+concurrency:
+  group: build-apps
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # With install scripts: Electron and ffmpeg download their Windows binaries.
+      - run: npm ci
+
+      - run: npm run dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      # Every build is signed with the same debug key, so each APK installs over the last
+      # one. The key is kept in the Actions cache, which GitHub drops after 7 days without
+      # a build; the next build then makes a new key.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore
+
+      # The web bundle only copies files out of node_modules, so the install scripts
+      # (Electron's and ffmpeg's desktop downloads) aren't needed.
+      - run: npm ci --ignore-scripts
+
+      # Uses the runner's Android SDK (ANDROID_HOME) and the JDK above (JAVA_HOME).
+      - run: npm run android:apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/*.apk
+          if-no-files-found: error
+
+  release:
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the "Latest build" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete latest-build --yes --cleanup-tag || true
+          gh release create latest-build dist/* --target "$GITHUB_SHA" --prerelease --title "Latest build" \
+            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Android: HandTracker-*.apk."
