@@ -13,7 +13,8 @@
  *     gestures from simulated hand poses,
  *  6. opens video files in 10 formats as the tracking source (native and converted),
  *     re-times a recording made from a video file, and captures a whole video; checks
- *     Mirror is on for selfie cameras and off for rear cameras and video files,
+ *     Mirror is on for selfie cameras and off for rear cameras and video files, and that
+ *     Mirrored video flips a mirrored recording back before tracking,
  *  7. opens the Recording Viewer with JSON, CSV (incl. spreadsheet-saved), C3D, TRC,
  *     Motive CSV and — when OptiTrack Motive is installed — a sample .tak take,
  *  8. opens a WMV with sound in the Recording Viewer and converts it to all 27 formats,
@@ -365,6 +366,60 @@ async function checkVideoFiles(win, js) {
     return { started, stillRecording: RobotMotion.isRecording(), status: document.getElementById("motionStatus").textContent };
   })()`);
   check("Capture Whole Video runs from the start and stops at the end", cap.started && !cap.stillRecording && /No frames captured/.test(cap.status), JSON.stringify(cap));
+
+  // A video recorded mirrored (a selfie video saved as previewed): with Mirrored video on,
+  // MediaPipe gets each frame flipped back and the picture shows it that way. Measured as
+  // how far the tracked picture and the stage are from the video's frame drawn as it is
+  // and drawn flipped (mean difference per colour channel, 0-255).
+  await js(`window.__mirrorState = () => {
+    const v = document.getElementById("video");
+    const w = 160, h = 90;
+    const grab = (draw) => {
+      const c = Object.assign(document.createElement("canvas"), { width: w, height: h });
+      const x = c.getContext("2d");
+      draw(x);
+      return x.getImageData(0, 0, w, h).data;
+    };
+    const plain = grab((x) => x.drawImage(v, 0, 0, w, h));
+    const flipped = grab((x) => { x.translate(w, 0); x.scale(-1, 1); x.drawImage(v, 0, 0, w, h); });
+    const diff = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) if (i % 4 !== 3) s += Math.abs(a[i] - b[i]); return Math.round(s / (a.length * 0.75)); };
+    const from = (image) => { const got = grab((x) => x.drawImage(image, 0, 0, w, h)); return { plain: diff(got, plain), flipped: diff(got, flipped) }; };
+    return {
+      button: document.getElementById("vidMirrored").textContent.trim(),
+      on: HandTracker.isFileMirrored(),
+      tracked: from(HandTracker.getFrameImage()),
+      stage: from(document.getElementById("stage")),
+      frames: window.__videoFrames.length,
+      saved: Object.keys(JSON.parse(localStorage.getItem("hand-tracker:prefs")).mirroredVideos || {}),
+    };
+  }; true`);
+  const mirrorState = () => js("window.__mirrorState()");
+  const clickMirrored = () => js(`(async () => {
+    document.getElementById("vidMirrored").click();
+    await new Promise((r) => setTimeout(r, 500)); // the paused frame is tracked again
+    return true;
+  })()`);
+  const asIs = (s) => s.tracked.plain <= 2 && s.stage.plain <= 2 && s.tracked.flipped >= 20 && s.stage.flipped >= 20;
+  const flippedBack = (s) => s.tracked.flipped <= 2 && s.stage.flipped <= 2 && s.tracked.plain >= 20 && s.stage.plain >= 20;
+  await open(path.join(dir, "h264.mp4"));
+  const before = await mirrorState();
+  await clickMirrored();
+  const turnedOn = await mirrorState();
+  await open(path.join(dir, "vp9.webm"));
+  const other = await mirrorState();
+  await open(path.join(dir, "h264.mp4"));
+  const reopened = await mirrorState();
+  await clickMirrored();
+  const turnedOff = await mirrorState();
+  check("Mirrored video: the picture is flipped back before tracking and shown that way",
+    before.button === "Mirrored video: OFF" && !before.on && asIs(before) &&
+      turnedOn.button === "Mirrored video: ON" && turnedOn.on && flippedBack(turnedOn) && turnedOn.frames === before.frames + 1,
+    JSON.stringify({ before, turnedOn }));
+  check("Mirrored video is remembered for that video only",
+    !other.on && other.button === "Mirrored video: OFF" && asIs(other) &&
+      reopened.on && reopened.button === "Mirrored video: ON" && flippedBack(reopened) && reopened.saved.includes("h264.mp4") &&
+      !turnedOff.on && asIs(turnedOff) && !turnedOff.saved.includes("h264.mp4"),
+    JSON.stringify({ other, reopened, turnedOff }));
 
   await js("HandTrackerApp.backToCamera()");
   let camera = "";

@@ -14,7 +14,9 @@
  *   HandTracker.setCamera({ deviceId, width, height });   // switch camera / resolution
  *   HandTracker.setCamera({ desktopSourceId, desktopName, crop }); // track a screen or window (Windows app),
  *                                         // optionally just crop = { x, y, w, h } (fractions of it)
- *   await HandTracker.useVideoFile(url, { name });         // track a video file instead of the camera
+ *   await HandTracker.useVideoFile(url, { name, mirrored }); // track a video file instead of the camera;
+ *                                         // mirrored: it was recorded mirrored (see "Mirrored videos")
+ *   await HandTracker.setFileMirrored(true/false);         // change that for the open video
  *   HandTracker.file.play() / pause() / seek(s) / setRate(r) / time() / duration() / fps() / playing()
  *   HandTracker.onVideoEnded(() => { ... });               // the video file reached its end
  *   await HandTracker.useCamera();                         // back to the live camera
@@ -27,6 +29,7 @@
  *   HandTracker.setModelComplexity(0 | 1);   // 0 = lite/fast, 1 = full/accurate
  *   HandTracker.setMaxHands(1 | 2);          // how many hands to track at once
  *   HandTracker.getFeatures("Left" | "Right"); // single hand's features
+ *   HandTracker.getFrameImage();          // the picture being tracked (the video, or a flipped/cropped copy)
  *   HandTracker.stop();
  *
  * Pipeline (per hand):
@@ -45,6 +48,12 @@
  * Handedness is reported as the user's actual (anatomical) hand. MediaPipe
  * assumes a mirrored selfie image, but we feed it the raw camera frame, so its
  * labels are swapped here once instead of in every consumer.
+ *
+ * Mirrored videos: many phones and camera apps save front-camera videos mirrored, the
+ * way the preview looked. In those, every hand looks like the other one, so each would
+ * be labelled the wrong side and move the wrong way. With mirrored set, each frame is
+ * flipped back before MediaPipe sees it, so labels, positions and everything computed
+ * from them are as a normal camera would have seen them.
  */
 
 (function (global) {
@@ -92,7 +101,10 @@
   // desktopSourceId: a screen or window (Electron desktopCapturer id) instead of a camera;
   // crop: the part of the picture to track, as fractions { x, y, w, h }.
   let cameraOpts = { deviceId: null, width: 1280, height: 720, facing: null, desktopSourceId: null, desktopName: "", crop: null };
-  let cropCanvas = null;
+  let frameCanvas = null; // the cropped or flipped picture, when MediaPipe doesn't see the video as it is
+  let lastFrame = null; // the picture MediaPipe was last given
+  let fileMirrored = false; // the video file was recorded mirrored: flip it back (see "Mirrored videos")
+  let restartTracking = false; // the picture changed abruptly: forget the hands MediaPipe was following
   let loopId = 0; // bumping this cancels the running capture loop
   let source = "camera"; // "camera" | "file"
   let frameTime = null; // ms timestamp of the video-file frame being processed (null: use the clock)
@@ -525,17 +537,29 @@
     return { x, y, w, h };
   }
 
-  // What MediaPipe sees: the video, or just the cropped part of it.
+  // What MediaPipe sees: the video, just the cropped part of it, or a mirrored video
+  // file flipped back.
   function frameImage() {
     const c = cropPixels();
-    if (!c) return videoEl;
-    if (!cropCanvas) cropCanvas = document.createElement("canvas");
-    if (cropCanvas.width !== c.w || cropCanvas.height !== c.h) {
-      cropCanvas.width = c.w;
-      cropCanvas.height = c.h;
+    const flip = source === "file" && fileMirrored;
+    if (!c && !flip) return videoEl;
+    const w = c ? c.w : videoEl.videoWidth;
+    const h = c ? c.h : videoEl.videoHeight;
+    if (!frameCanvas) frameCanvas = document.createElement("canvas");
+    if (frameCanvas.width !== w || frameCanvas.height !== h) {
+      frameCanvas.width = w;
+      frameCanvas.height = h;
     }
-    cropCanvas.getContext("2d").drawImage(videoEl, c.x, c.y, c.w, c.h, 0, 0, c.w, c.h);
-    return cropCanvas;
+    const fctx = frameCanvas.getContext("2d");
+    fctx.save();
+    if (flip) {
+      fctx.translate(w, 0);
+      fctx.scale(-1, 1);
+    }
+    if (c) fctx.drawImage(videoEl, c.x, c.y, c.w, c.h, 0, 0, w, h);
+    else fctx.drawImage(videoEl, 0, 0, w, h);
+    fctx.restore();
+    return frameCanvas;
   }
 
   // Which way a camera points: "user" (front / selfie), "environment" (rear), or null
@@ -613,7 +637,15 @@
 
 
   function sendFrame() {
-    inflight = hands.send({ image: frameImage() }).catch((err) => console.error("Hand tracking frame failed:", err));
+    if (restartTracking) {
+      // MediaPipe follows each hand from where it was on the last frame. After the picture
+      // flips, that finds nothing (the hands moved, and are now the other way round).
+      restartTracking = false;
+      hands.reset();
+      resetHands();
+    }
+    lastFrame = frameImage();
+    inflight = hands.send({ image: lastFrame }).catch((err) => console.error("Hand tracking frame failed:", err));
     return inflight;
   }
 
@@ -718,7 +750,7 @@
     });
   }
 
-  async function useVideoFile(url, { name = "video" } = {}) {
+  async function useVideoFile(url, { name = "video", mirrored = false } = {}) {
     if (!hands) throw new Error("The tracker isn't ready yet.");
     if (!videoEl.requestVideoFrameCallback) throw new Error("This browser can't step through video frames (it needs requestVideoFrameCallback).");
     // Check the browser can show it before touching the camera, which keeps running if not.
@@ -734,12 +766,28 @@
     await loadVideo(videoEl, url);
     source = "file";
     file = { name, playing: true, rate: 1, lastMediaTime: null, intervals: [], seeking: false, refilling: false };
+    fileMirrored = !!mirrored;
     notifySource();
     videoEl.playbackRate = 0.25; // warm-up, see startFileLoop
     resetHands();
+    restartTracking = true;
     setStalled(false);
     await startFileLoop();
     await videoEl.play();
+  }
+
+  // Whether the open video file is flipped back before tracking (see "Mirrored videos").
+  // A paused video's frame is tracked again, so the picture and labels change at once.
+  async function setFileMirrored(value) {
+    if (!!value === fileMirrored) return;
+    fileMirrored = !!value;
+    if (source !== "file" || !file) return;
+    restartTracking = true;
+    if (file.playing && !videoEl.ended) return; // the next frame is tracked the new way
+    await inflight;
+    frameTime = videoEl.currentTime * 1000;
+    await sendFrame();
+    frameTime = null;
   }
 
   async function useCamera() {
@@ -751,7 +799,9 @@
     }
     source = "camera";
     file = null;
+    fileMirrored = false;
     resetHands();
+    restartTracking = true;
     await openCamera();
     startLoop();
   }
@@ -952,6 +1002,8 @@
     isMirrored: () => mirror,
     setCamera,
     useVideoFile,
+    setFileMirrored,
+    isFileMirrored: () => source === "file" && fileMirrored,
     useCamera,
     file: fileControls,
     onVideoEnded,
@@ -963,6 +1015,7 @@
     getMaxHands: () => maxHands,
     toCanvasPoint,
     getFeatures,
+    getFrameImage: () => lastFrame || videoEl,
     getFPS: () => fps,
     quaternionToEuler: quatToEuler,
     LANDMARK_INDEX: LM,

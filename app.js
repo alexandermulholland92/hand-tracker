@@ -50,6 +50,7 @@
   const vidTime = $("vidTime");
   const vidRate = $("vidRate");
   const vidCapture = $("vidCapture");
+  const vidMirrored = $("vidMirrored");
   const vidCamera = $("vidCamera");
   const vidName = $("vidName");
   const sourceNote = $("sourceNote");
@@ -111,6 +112,9 @@
   // Mirror choices made with the button, per camera: deviceId -> on/off.
   const mirrorByCamera = prefs.mirrorByCamera && typeof prefs.mirrorByCamera === "object" ? prefs.mirrorByCamera : {};
   delete prefs.mirror; // the old single setting for every camera
+  // Videos marked as recorded mirrored (selfie videos saved as previewed), by file name.
+  const mirroredVideos = prefs.mirroredVideos && typeof prefs.mirroredVideos === "object" ? prefs.mirroredVideos : {};
+  const MIRRORED_VIDEOS_KEPT = 200;
   if (prefs.resolution) resolutionSelect.value = prefs.resolution;
   if (prefs.hands) handsSelect.value = String(prefs.hands);
   if (prefs.model !== undefined) modelSelect.value = String(prefs.model);
@@ -729,6 +733,8 @@
     vidRestart.disabled = busy;
     vidCamera.disabled = busy;
     vidCapture.disabled = busy;
+    // Flipping the video mid-recording would mirror the rest of the motion.
+    vidMirrored.disabled = busy;
   }
 
   function showStageError(err) {
@@ -904,6 +910,9 @@
     const data = RobotMotion.stop();
     data.display_mirrored = mirrorOn; // lets the viewer draw paths the way they looked on screen
     data.image_size = [stage.width, stage.height]; // landmark x/y are normalized separately; exporters need the aspect
+    if (HandTracker.isFileMirrored()) {
+      data.notes.push("Tracked from a video recorded mirrored, flipped back before tracking, so Left/Right and positions are as a normal camera would have seen them.");
+    }
     motionBtn.firstChild.textContent = "Start Motion Capture";
     motionBtn.classList.remove("recording");
     setCaptureControlsLocked(false);
@@ -1272,6 +1281,9 @@
     sourceNote.hidden = !text;
   }
 
+  // A video marked as mirrored is flipped back before tracking (see the Mirrored video button).
+  const videoOptions = (name) => ({ name, mirrored: mirroredVideos[name] === true });
+
   // Converts a video the page can't play into an MP4 it can (ffmpeg.wasm), then tracks that.
   let convertedUrl = null;
   async function openConverted(name, file) {
@@ -1282,7 +1294,7 @@
     });
     if (convertedUrl) URL.revokeObjectURL(convertedUrl);
     convertedUrl = URL.createObjectURL(blob);
-    await HandTracker.useVideoFile(convertedUrl, { name });
+    await HandTracker.useVideoFile(convertedUrl, videoOptions(name));
   }
 
   // Opens a video to track. url: something the page can play (object URL);
@@ -1299,7 +1311,7 @@
     stageMessage.textContent = `Opening ${name}…`;
     try {
       try {
-        await HandTracker.useVideoFile(url, { name });
+        await HandTracker.useVideoFile(url, videoOptions(name));
       } catch (err) {
         // Formats the page can't play (AVI, MPEG, WMV, FLV…) are converted: by the Windows
         // app's ffmpeg, or by ffmpeg.wasm in a browser or on Android.
@@ -1318,7 +1330,7 @@
         });
         try {
           const converted = await desktop.importVideo(filePath);
-          await HandTracker.useVideoFile(converted.url, { name });
+          await HandTracker.useVideoFile(converted.url, videoOptions(name));
         } finally {
           off();
         }
@@ -1339,6 +1351,7 @@
     videoBar.hidden = false;
     vidName.textContent = name;
     vidRate.value = "1";
+    setToggle(vidMirrored, HandTracker.isFileMirrored(), "Mirrored video");
     setCaptureControlsLocked(false);
     clearInterval(videoUiTimer);
     videoUiTimer = setInterval(updateVideoBar, 200);
@@ -1394,6 +1407,20 @@
   });
   vidSeek.addEventListener("input", () => HandTracker.file.seek(Number(vidSeek.value)));
   vidRate.addEventListener("change", () => HandTracker.file.setRate(Number(vidRate.value)));
+  // A video recorded mirrored (many phones save front-camera videos the way the preview
+  // looked) shows every hand as the other one: flip it back before tracking. Remembered
+  // for that video.
+  vidMirrored.addEventListener("click", async () => {
+    const name = HandTracker.file.name();
+    const on = !HandTracker.isFileMirrored();
+    delete mirroredVideos[name]; // re-added last, so the oldest names are the ones dropped
+    if (on) mirroredVideos[name] = true;
+    const names = Object.keys(mirroredVideos);
+    for (const old of names.slice(0, Math.max(0, names.length - MIRRORED_VIDEOS_KEPT))) delete mirroredVideos[old];
+    setPref("mirroredVideos", mirroredVideos);
+    setToggle(vidMirrored, on, "Mirrored video");
+    await HandTracker.setFileMirrored(on);
+  });
   vidCamera.addEventListener("click", backToCamera);
   // Motion capture over the whole video: rewind, capture, and stop at the end.
   vidCapture.addEventListener("click", () => {
@@ -1504,7 +1531,7 @@
       updateGestures(hands);
       // Un-flip text in the camera picture, or only times with Readable text off (not with a
       // crop: OCR reads the whole picture).
-      if (!HandTracker.getCamera().crop) ReadableText.process(video, stage, mirrorOn, hands, !readableOn);
+      if (!HandTracker.getCamera().crop) ReadableText.process(HandTracker.getFrameImage(), stage, mirrorOn, hands, !readableOn);
       drawStageLabels(hands);
       VideoRecorder.frame(); // after labels, so recordings match what's on screen
 
