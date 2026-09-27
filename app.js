@@ -100,7 +100,9 @@
   }
 
   let overlayOn = prefs.overlay !== undefined ? prefs.overlay : true;
-  let readableOn = prefs.readableText !== false; // text in the picture shown readable when mirrored
+  // All text in the picture shown readable when mirrored: optional, off until turned on.
+  // Times (a clock, a timestamp) are kept the right way round either way.
+  let readableOn = prefs.readableText === true;
   // Mirror: on for selfie cameras, off for rear cameras and video files (see
   // applyMirrorDefault). Labels are drawn after the flip, and text in the camera
   // picture is detected and flipped back (readable-text.js), so numbers and words
@@ -679,7 +681,6 @@
     readableOn = !readableOn;
     setPref("readableText", readableOn);
     setToggle(readableToggle, readableOn, "Readable text");
-    if (!readableOn) ReadableText.clear();
   });
 
   function setMirror(on) {
@@ -1501,8 +1502,9 @@
     HandTracker.onHandLandmarks(({ hands, timestamp }) => {
       syncStageAspect();
       updateGestures(hands);
-      // Un-flip text in the camera picture (not with a crop: OCR reads the whole picture).
-      if (readableOn && !HandTracker.getCamera().crop) ReadableText.process(video, stage, mirrorOn, hands);
+      // Un-flip text in the camera picture, or only times with Readable text off (not with a
+      // crop: OCR reads the whole picture).
+      if (!HandTracker.getCamera().crop) ReadableText.process(video, stage, mirrorOn, hands, !readableOn);
       drawStageLabels(hands);
       VideoRecorder.frame(); // after labels, so recordings match what's on screen
 

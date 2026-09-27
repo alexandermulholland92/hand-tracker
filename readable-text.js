@@ -22,7 +22,11 @@
  * flipping that patch of the picture. So words found on or next to a hand when the
  * scan was taken are ignored.
  *
- *   ReadableText.process(sourceEl, stageCanvas, mirrored, hands);  // once per drawn frame
+ * Flipping all text is optional; times (a clock, a timestamp) are always kept the
+ * right way round. With onlyTimes, only readings like 12:30, 9:05 PM or 0:00:05 are
+ * flipped back and everything else is left as the mirror shows it.
+ *
+ *   ReadableText.process(sourceEl, stageCanvas, mirrored, hands, onlyTimes);  // once per drawn frame
  *   ReadableText.getRegions();  // current text regions (raw pixel coords), for debugging
  */
 
@@ -33,6 +37,8 @@
   const MIN_CHARS = 2;         // single characters are mostly noise (edges, corners)
   const CONFIRMATIONS = 3;     // scans in a row that must find text in the same place before it's shown
   const CONFIRM_WINDOW_MS = 1600; // ...each within this long of the last (longer on slow devices)
+  const TIME = /^\d{1,2}[:.]\d{2}([:.]\d{2})?([:.]\d{1,3})?([AaPp]\.?[Mm]\.?)?$/; // 9:05, 12:30:15, 0:00:05:123, 9:05pm
+  const AM_PM = /^[AaPp]\.?[Mm]\.?$/;
   const TESSERACT_PATHS = {
     workerPath: "node_modules/tesseract.js/dist/worker.min.js",
     corePath: "node_modules/tesseract.js-core",
@@ -83,7 +89,7 @@
     }
   }
 
-  function scan(source, width, height, hands) {
+  function scan(source, width, height, hands, onlyTimes) {
     busy = true;
     lastScan = performance.now();
     if (!grabCanvas) {
@@ -98,7 +104,7 @@
     const started = performance.now();
     worker
       .recognize(grabCanvas, {}, { blocks: true })
-      .then(({ data }) => ingest(data, width, height, performance.now(), hands))
+      .then(({ data }) => ingest(data, width, height, performance.now(), hands, onlyTimes))
       .catch((err) => console.warn("readable-text: scan failed:", err))
       .finally(() => {
         lastScanMs = performance.now() - started;
@@ -130,7 +136,7 @@
     const text = (word.text || "").trim();
     const alnum = text.replace(/[^A-Za-z0-9]/g, "");
     if (alnum.length < MIN_CHARS || word.confidence < MIN_CONFIDENCE) return false;
-    if (alnum.length / text.replace(/\s/g, "").length < 0.75) return false; // mostly symbols
+    if (alnum.length / text.replace(/\s/g, "").length < 0.75 && !isTime(text)) return false; // mostly symbols (a time's colons don't count)
     if (/^[Il1|iLjJtf!]+$/.test(alnum)) return false; // stripes and edges read as I, l, 1...
     const digits = alnum.replace(/[^0-9]/g, "").length;
     if (Math.min(digits, alnum.length - digits) > 1 && !/\d{1,2}[:.]\d{2}/.test(text)) return false; // letter-digit jumble
@@ -139,8 +145,14 @@
     return h >= 6 && h <= height * 0.3 && x1 - x0 <= width * 0.7;
   }
 
-  // `hands`: where the hands were in the scanned frame (see handBoxes).
-  function ingest(data, width, height, now = performance.now(), hands = []) {
+  function isTime(text) {
+    const t = text.trim().replace(/^[^0-9]+|[^0-9A-Za-z.]+$/g, ""); // quotes, brackets, commas
+    return TIME.test(t) || TIME.test(t.replace(/\.+$/, ""));
+  }
+
+  // `hands`: where the hands were in the scanned frame (see handBoxes). `onlyTimes`: keep
+  // only times (an AM/PM counts when it's next to a time already shown).
+  function ingest(data, width, height, now = performance.now(), hands = [], onlyTimes = false) {
     const scan = ++scanCount;
     const window = Math.max(CONFIRM_WINDOW_MS, 4 * Math.max(OCR_INTERVAL_MS, lastScanMs * 3));
     candidates = candidates.filter((c) => now - c.seen <= window);
@@ -155,6 +167,8 @@
       box.w = Math.min(width, x1 + padX) - box.x;
       box.h = Math.min(height, y1 + padY) - box.y;
       if (hands.some((b) => overlaps(b, box))) continue;
+      box.time = isTime(word.text);
+      if (onlyTimes && !box.time && !(AM_PM.test(word.text.trim()) && regions.some((r) => r.time && overlaps(r, box)))) continue;
 
       // Already shown: merge with the regions it touches (keeping the merged area from
       // growing without bound when text moves around).
@@ -163,7 +177,7 @@
         regions = regions.filter((r) => !touching.includes(r));
         let merged = touching.reduce(union, box);
         if (merged.w * merged.h > 4 * box.w * box.h) merged = box;
-        regions.push({ ...merged, seen: now });
+        regions.push({ ...merged, seen: now, time: box.time || touching.some((r) => r.time) });
         continue;
       }
       // New: only shown once the next scans find text there too.
@@ -175,10 +189,10 @@
       if (cand.scan === scan) continue; // another word of it in this same scan
       let merged = union(cand, box);
       if (merged.w * merged.h > 4 * box.w * box.h) merged = box;
-      Object.assign(cand, merged, { hits: cand.hits + 1, seen: now, scan });
+      Object.assign(cand, merged, { hits: cand.hits + 1, seen: now, scan, time: cand.time || box.time });
       if (cand.hits >= CONFIRMATIONS) {
         candidates = candidates.filter((c) => c !== cand);
-        regions.push({ x: cand.x, y: cand.y, w: cand.w, h: cand.h, seen: now });
+        regions.push({ x: cand.x, y: cand.y, w: cand.w, h: cand.h, seen: now, time: cand.time });
       }
     }
     regions = regions.filter((r) => now - r.seen <= HOLD_MS);
@@ -196,11 +210,15 @@
     });
   }
 
-  function process(source, canvas, mirrored, hands) {
+  function process(source, canvas, mirrored, hands, onlyTimes = false) {
     if (!mirrored) {
       regions = [];
       candidates = [];
       return;
+    }
+    if (onlyTimes) {
+      regions = regions.filter((r) => r.time);
+      candidates = candidates.filter((c) => c.time);
     }
     const width = canvas.width;
     const height = canvas.height;
@@ -216,7 +234,7 @@
     const avoid = handBoxes(hands, width, height);
     if (workerState === "ready" && !busy && performance.now() - lastScan >= cooldown) {
       quickScans = quick ? quickScans + 1 : 0;
-      scan(source, width, height, avoid);
+      scan(source, width, height, avoid, onlyTimes);
     }
 
     const now = performance.now();

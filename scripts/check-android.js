@@ -103,24 +103,27 @@ async function run() {
     await js("!document.querySelector('a[href=\"viewer.html\"]').hasAttribute('target') && exportBtn.textContent.startsWith('Save') && motionExportBtn.textContent.startsWith('Save')"));
   const build = await js("document.getElementById('buildInfo').textContent");
   check("Header shows which build is running", /^v\d+\.\d+\.\d+ · built /.test(build), build);
-  // Mirrored view: the fake camera's clock must be found by OCR so it can be flipped back.
-  let regions = 0;
-  for (let i = 0; i < 40 && !regions; i++) { // text is shown once 3 scans agree
-    await sleep(500);
-    regions = await js("ReadableText.getRegions().length");
-  }
-  check("OCR starts from the APK bundle and finds the camera's text", regions > 0 && (await js("ReadableText.getStatus()")) === "ready",
-    `status ${await js("ReadableText.getStatus()")}, ${regions} text region(s)`);
-  // The Readable text button turns it off (the mirror image is then shown as it is) and on again.
-  const toggled = await js(`(async () => {
-    const b = document.getElementById("readableToggle");
-    b.click();
-    await new Promise((r) => setTimeout(r, 300));
-    const off = { label: b.textContent, regions: ReadableText.getRegions().length };
-    b.click();
-    return { off, on: b.textContent };
-  })()`);
-  check("The Readable text button turns text un-mirroring off and on", /OFF/.test(toggled.off.label) && toggled.off.regions === 0 && /ON/.test(toggled.on), JSON.stringify(toggled));
+  // Readable text (all text) is optional and off by default, but times stay the right way
+  // round either way: in mirrored view, the fake camera's clock (0:00:05:123) must be found
+  // by OCR so it can be flipped back.
+  const waitForRegions = async () => {
+    let regions = 0;
+    for (let i = 0; i < 40 && !regions; i++) { // text is shown once 3 scans agree
+      await sleep(500);
+      regions = await js("ReadableText.getRegions().length");
+    }
+    return regions;
+  };
+  const offLabel = await js("readableToggle.textContent");
+  let regions = await waitForRegions();
+  check("Readable text is off by default, and OCR from the APK bundle still keeps the camera's clock readable",
+    /OFF/.test(offLabel) && regions > 0 && (await js("ReadableText.getStatus()")) === "ready", `${offLabel}, status ${await js("ReadableText.getStatus()")}, ${regions} text region(s)`);
+  await js("readableToggle.click()");
+  const onLabel = await js("readableToggle.textContent");
+  regions = await waitForRegions();
+  await js("readableToggle.click()");
+  check("The Readable text button turns all-text un-mirroring on and off", /ON/.test(onLabel) && regions > 0 && /OFF/.test(await js("readableToggle.textContent")),
+    `${onLabel}, ${regions} text region(s)`);
   check("Layout fits a phone screen (no sideways scrolling)", await js("document.documentElement.scrollWidth <= window.innerWidth + 1"),
     await js("`page ${document.documentElement.scrollWidth}px wide, screen ${window.innerWidth}px`"));
 

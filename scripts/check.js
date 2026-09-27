@@ -254,12 +254,19 @@ async function run(win) {
     const hand = { x: 300, y: 200, w: 220, h: 260 };
     ReadableText.clear();
     for (let i = 0; i < 3; i++) ReadableText._ingest(scanOf(word("OK", 380, 300, 430, 330), word("12:30", 60, 40, 160, 80)), 1280, 720, 1000 + i * 400, [hand]);
-    const regions = ReadableText.getRegions();
+    const onHand = ReadableText.getRegions();
+    // With Readable text off, only times: a clock (and its AM/PM) but not a sign.
     ReadableText.clear();
-    return regions;
+    for (let i = 0; i < 3; i++) ReadableText._ingest(scanOf(word("EXIT", 600, 500, 760, 540), word("12:30", 60, 40, 160, 80), word("PM", 168, 40, 210, 80)), 1280, 720, 1000 + i * 400, [], true);
+    const onlyTimes = ReadableText.getRegions();
+    ReadableText.clear();
+    return { onHand, onlyTimes };
   })()`);
   check("Readable text: words read on a hand are ignored, text elsewhere is still kept readable",
-    ocr.length === 1 && ocr[0].x < 60 && ocr[0].x + ocr[0].w > 160, JSON.stringify(ocr));
+    ocr.onHand.length === 1 && ocr.onHand[0].x < 60 && ocr.onHand[0].x + ocr.onHand[0].w > 160, JSON.stringify(ocr.onHand));
+  check("Readable text off: a time (with its AM/PM) is still flipped back, other text isn't",
+    ocr.onlyTimes.length === 1 && ocr.onlyTimes[0].x < 60 && ocr.onlyTimes[0].x + ocr.onlyTimes[0].w > 210 && ocr.onlyTimes[0].y + ocr.onlyTimes[0].h < 500,
+    JSON.stringify(ocr.onlyTimes));
 
   const relevantErrors = consoleErrors.filter((m) => !/DevTools|Autofill/i.test(m));
   check("No errors in the page console", relevantErrors.length === 0, relevantErrors.slice(0, 3).join(" | "));
