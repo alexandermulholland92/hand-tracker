@@ -40,12 +40,15 @@ function motive() {
 const NOT_INSTALLED =
   "Opening .tak files needs OptiTrack Motive installed on this PC — Hand Tracker reads takes through Motive. " +
   "Alternatively, export the take from Motive as C3D (File → Export Tracking Data) and open that.";
+const NOT_WINDOWS =
+  "Opening .tak files needs the Windows app on a PC with OptiTrack Motive (Motive only runs on Windows). " +
+  "Alternatively, export the take from Motive as C3D (File → Export Tracking Data) and open that here.";
 
 function checkTake(takePath) {
   if (!/\.tak$/i.test(takePath) || !fs.existsSync(takePath) || !fs.statSync(takePath).isFile()) {
     throw new Error("That isn't a .tak file that can be opened.");
   }
-  if (!motive()) throw new Error(NOT_INSTALLED);
+  if (!motive()) throw new Error(process.platform === "win32" ? NOT_INSTALLED : NOT_WINDOWS);
 }
 
 // Runs the converter; resolves with its JSON result.

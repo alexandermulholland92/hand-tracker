@@ -1,6 +1,6 @@
 # Hand Tracker
 
-Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmarks per hand), with a live 3D view, gesture and finger-curl readouts, **motion capture export in 7 formats**, **video recording**, and a **video converter** that opens nearly any video format and exports **36 formats**. Runs as a Windows desktop app, an Android app, or in a browser.
+Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmarks per hand), with a live 3D view, gesture and finger-curl readouts, **motion capture export in 7 formats**, **video recording**, and a **video converter** that opens nearly any video format and exports **36 formats**. Runs as a Windows or Linux desktop app, an Android app, or in a browser.
 
 ## Run it
 
@@ -8,7 +8,9 @@ Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmark
 
 **Windows app:** double-click `dist/HandTracker-1.1.0-portable.exe`. Nothing to install; it works offline.
 
-**Download the latest build:** every change to `main` rebuilds the Windows app and the Android app on GitHub and puts both on the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release (`.github/workflows/build-apps.yml`). Each APK built there installs over the last one, but it's signed with a different key from one built on your PC, so Android only installs it over a PC-built copy after that copy is uninstalled (and the other way round). The same happens after a week with no builds, when GitHub drops the saved key.
+**Linux app** (Ubuntu, Debian, Mint and others that install `.deb` packages): run `sudo apt install ./dist/hand-tracker_1.1.0_amd64.deb`, then open **Hand Tracker** from the app menu or run `hand-tracker`. It works offline and does everything the Windows app does except open OptiTrack `.tak` takes, which needs Motive, and Motive only runs on Windows (export a take from Motive as C3D and open that instead). Motive's live data does work. To remove it: `sudo apt remove hand-tracker`.
+
+**Download the latest build:** every change to `main` rebuilds the Windows, Linux and Android apps on GitHub and puts them on the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release (`.github/workflows/build-apps.yml`). Each APK built there installs over the last one, but it's signed with a different key from one built on your PC, so Android only installs it over a PC-built copy after that copy is uninstalled (and the other way round). The same happens after a week with no builds, when GitHub drops the saved key.
 
 **Android app:** install `dist/HandTracker-1.1.0.apk` on your phone (see [Android app](#android-app) below).
 
@@ -209,13 +211,19 @@ MPEG-1, MPG, VOB, MXF and DV only allow standard TV frame rates, so they use the
 
 Files from earlier single-hand versions (with `frames` at the top level) still open in the Recording Viewer.
 
-## Build the .exe
+## Build the desktop apps
 
 ```bash
 npm run dist
 ```
 
 This writes `dist/HandTracker-<version>-portable.exe`, a single file that runs without installing. For a regular installer with Start-menu shortcuts, use `npm run dist:installer`.
+
+```bash
+npm run dist:deb
+```
+
+This writes `dist/hand-tracker_<version>_amd64.deb`, the Linux app, with an app-menu entry and icon. Build it on Linux (or in WSL on Windows): the app bundles the ffmpeg that `npm install` downloaded, which is for the computer it ran on.
 
 ## Web version
 
