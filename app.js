@@ -112,7 +112,7 @@
   // Mirror choices made with the button, per camera: deviceId -> on/off.
   const mirrorByCamera = prefs.mirrorByCamera && typeof prefs.mirrorByCamera === "object" ? prefs.mirrorByCamera : {};
   delete prefs.mirror; // the old single setting for every camera
-  // Videos marked as recorded mirrored (selfie videos saved as previewed), by file name.
+  // Mirrored video choices made with the button, by file name: name -> on/off.
   const mirroredVideos = prefs.mirroredVideos && typeof prefs.mirroredVideos === "object" ? prefs.mirroredVideos : {};
   const MIRRORED_VIDEOS_KEPT = 200;
   if (prefs.resolution) resolutionSelect.value = prefs.resolution;
@@ -1281,12 +1281,17 @@
     sourceNote.hidden = !text;
   }
 
-  // A video marked as mirrored is flipped back before tracking (see the Mirrored video button).
-  const videoOptions = (name) => ({ name, mirrored: mirroredVideos[name] === true });
+  // Whether to flip a video back before tracking (see the Mirrored video button): as last
+  // chosen for it, or else flipped if it's a phone's selfie video (video-origin.js).
+  async function mirroredDefault(name, url, sourceFile) {
+    if (typeof mirroredVideos[name] === "boolean") return { mirrored: mirroredVideos[name], note: "" };
+    const file = sourceFile || (await fetch(url).then((r) => r.blob()).catch(() => null));
+    return file ? VideoOrigin.mirroredByDefault(await VideoOrigin.read(file)) : { mirrored: false, note: "" };
+  }
 
   // Converts a video the page can't play into an MP4 it can (ffmpeg.wasm), then tracks that.
   let convertedUrl = null;
-  async function openConverted(name, file) {
+  async function openConverted(name, file, options) {
     const blob = await VideoConvert.toPlayable(file, ({ progress, loading }) => {
       stageMessage.textContent = loading
         ? "Loading the video converter (about 32 MB, only the first time)…"
@@ -1294,7 +1299,7 @@
     });
     if (convertedUrl) URL.revokeObjectURL(convertedUrl);
     convertedUrl = URL.createObjectURL(blob);
-    await HandTracker.useVideoFile(convertedUrl, videoOptions(name));
+    await HandTracker.useVideoFile(convertedUrl, options);
   }
 
   // Opens a video to track. url: something the page can play (object URL);
@@ -1309,16 +1314,18 @@
     stageMessage.hidden = false;
     stageMessage.className = "";
     stageMessage.textContent = `Opening ${name}…`;
+    const flip = await mirroredDefault(name, url, sourceFile);
+    const options = { name, mirrored: flip.mirrored };
     try {
       try {
-        await HandTracker.useVideoFile(url, videoOptions(name));
+        await HandTracker.useVideoFile(url, options);
       } catch (err) {
         // Formats the page can't play (AVI, MPEG, WMV, FLV…) are converted: by the Windows
         // app's ffmpeg, or by ffmpeg.wasm in a browser or on Android.
         if (!desktop && canConvertHere() && sourceFile) {
-          await openConverted(name, sourceFile);
+          await openConverted(name, sourceFile, options);
           stageMessage.hidden = true;
-          enterVideoMode(name);
+          enterVideoMode(name, flip.note);
           return true;
         }
         if (!(desktop && desktop.importVideo && filePath)) {
@@ -1330,7 +1337,7 @@
         });
         try {
           const converted = await desktop.importVideo(filePath);
-          await HandTracker.useVideoFile(converted.url, videoOptions(name));
+          await HandTracker.useVideoFile(converted.url, options);
         } finally {
           off();
         }
@@ -1343,11 +1350,13 @@
       return false;
     }
     stageMessage.hidden = true;
-    enterVideoMode(name);
+    enterVideoMode(name, flip.note);
     return true;
   }
 
-  function enterVideoMode(name) {
+  // note: why the video was flipped back without being asked, if it was.
+  function enterVideoMode(name, note) {
+    showSourceNote(note);
     videoBar.hidden = false;
     vidName.textContent = name;
     vidRate.value = "1";
@@ -1408,13 +1417,14 @@
   vidSeek.addEventListener("input", () => HandTracker.file.seek(Number(vidSeek.value)));
   vidRate.addEventListener("change", () => HandTracker.file.setRate(Number(vidRate.value)));
   // A video recorded mirrored (many phones save front-camera videos the way the preview
-  // looked) shows every hand as the other one: flip it back before tracking. Remembered
-  // for that video.
+  // looked) shows every hand as the other one: flip it back before tracking. On or off,
+  // the choice is remembered for that video, over the phone default (see mirroredDefault).
   vidMirrored.addEventListener("click", async () => {
     const name = HandTracker.file.name();
     const on = !HandTracker.isFileMirrored();
     delete mirroredVideos[name]; // re-added last, so the oldest names are the ones dropped
-    if (on) mirroredVideos[name] = true;
+    mirroredVideos[name] = on;
+    showSourceNote(""); // any note about the default no longer applies
     const names = Object.keys(mirroredVideos);
     for (const old of names.slice(0, Math.max(0, names.length - MIRRORED_VIDEOS_KEPT))) delete mirroredVideos[old];
     setPref("mirroredVideos", mirroredVideos);

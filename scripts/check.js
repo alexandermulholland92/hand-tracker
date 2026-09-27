@@ -14,7 +14,8 @@
  *  6. opens video files in 10 formats as the tracking source (native and converted),
  *     re-times a recording made from a video file, and captures a whole video; checks
  *     Mirror is on for selfie cameras and off for rear cameras and video files, and that
- *     Mirrored video flips a mirrored recording back before tracking,
+ *     Mirrored video flips a mirrored recording back before tracking (by default for
+ *     Android front-camera videos, recognised from their metadata),
  *  7. opens the Recording Viewer with JSON, CSV (incl. spreadsheet-saved), C3D, TRC,
  *     Motive CSV and — when OptiTrack Motive is installed — a sample .tak take,
  *  8. opens a WMV with sound in the Recording Viewer and converts it to all 27 formats,
@@ -297,6 +298,27 @@ const TEST_VIDEOS = [
   ["prores.mov", ["-c:v", "prores_ks", "-profile:v", "0"]],
 ];
 
+// Adds metadata keys to an MP4/MOV the way phones write them: a QuickTime "meta" box
+// (hdlr "mdta", keys, ilst) at the end of moov, which must be the file's last box.
+function withPhoneMetadata(src, dst, keys) {
+  const buf = fs.readFileSync(src);
+  let moov = -1;
+  for (let pos = 0; pos + 8 <= buf.length; pos += buf.readUInt32BE(pos)) {
+    if (buf.toString("latin1", pos + 4, pos + 8) === "moov") moov = pos;
+  }
+  if (moov < 0 || moov + buf.readUInt32BE(moov) !== buf.length) throw new Error(`${src}: moov isn't the last box`);
+  const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32BE(n >>> 0); return b; };
+  const box = (type, ...parts) => { const body = Buffer.concat(parts); return Buffer.concat([u32(8 + body.length), typeof type === "number" ? u32(type) : Buffer.from(type, "latin1"), body]); };
+  const names = Object.keys(keys);
+  const meta = box("meta",
+    box("hdlr", u32(0), u32(0), Buffer.from("mdta"), Buffer.alloc(12), Buffer.from([0])),
+    box("keys", u32(0), u32(names.length), ...names.map((k) => Buffer.concat([u32(k.length + 8), Buffer.from("mdta"), Buffer.from(k)]))),
+    box("ilst", ...names.map((k, i) => box(i + 1, box("data", u32(1), u32(0), Buffer.from(keys[k]))))));
+  const out = Buffer.concat([buf, meta]);
+  out.writeUInt32BE(buf.readUInt32BE(moov) + meta.length, moov);
+  fs.writeFileSync(dst, out);
+}
+
 async function checkVideoFiles(win, js) {
   const dir = path.join(outDir, "videos");
   fs.mkdirSync(dir, { recursive: true });
@@ -390,7 +412,8 @@ async function checkVideoFiles(win, js) {
       tracked: from(HandTracker.getFrameImage()),
       stage: from(document.getElementById("stage")),
       frames: window.__videoFrames.length,
-      saved: Object.keys(JSON.parse(localStorage.getItem("hand-tracker:prefs")).mirroredVideos || {}),
+      saved: JSON.parse(localStorage.getItem("hand-tracker:prefs")).mirroredVideos || {},
+      note: document.getElementById("sourceNote").hidden ? "" : document.getElementById("sourceNote").textContent,
     };
   }; true`);
   const mirrorState = () => js("window.__mirrorState()");
@@ -417,9 +440,50 @@ async function checkVideoFiles(win, js) {
     JSON.stringify({ before, turnedOn }));
   check("Mirrored video is remembered for that video only",
     !other.on && other.button === "Mirrored video: OFF" && asIs(other) &&
-      reopened.on && reopened.button === "Mirrored video: ON" && flippedBack(reopened) && reopened.saved.includes("h264.mp4") &&
-      !turnedOff.on && asIs(turnedOff) && !turnedOff.saved.includes("h264.mp4"),
+      reopened.on && reopened.button === "Mirrored video: ON" && flippedBack(reopened) && reopened.saved["h264.mp4"] === true &&
+      !turnedOff.on && asIs(turnedOff) && turnedOff.saved["h264.mp4"] === false,
     JSON.stringify({ other, reopened, turnedOff }));
+
+  // Phone videos: Android saves front-camera videos mirrored, so they open flipped back
+  // unless their rotation says back camera (upright, the front camera's video is turned
+  // 270°, the back one's 90°); iPhones don't mirror them. Made like the phones make them:
+  // Android's metadata keys in moov/meta, and the rotation in the video track's matrix.
+  const h264 = path.join(dir, "h264.mp4");
+  const phoneVideos = {
+    "android-front.mp4": { rotation: 90, keys: { "com.android.version": "14" }, mirrored: true }, // ffmpeg's rotation is anticlockwise
+    "android-back.mp4": { rotation: 270, keys: { "com.android.version": "14" }, mirrored: false },
+    "android-sideways.mp4": { keys: { "com.android.version": "14" }, mirrored: true },
+    "iphone.mov": { keys: { "com.apple.quicktime.make": "Apple", "com.apple.quicktime.model": "iPhone 15" }, mirrored: false },
+    "h264.mp4": { mirrored: false },
+  };
+  for (const [name, spec] of Object.entries(phoneVideos)) {
+    if (!spec.keys) continue;
+    const rotated = path.join(dir, `rotated-${name}`);
+    spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", ...(spec.rotation ? ["-display_rotation", String(spec.rotation)] : []), "-i", h264, "-c", "copy", rotated]);
+    withPhoneMetadata(rotated, path.join(dir, name), spec.keys);
+  }
+  const origins = await js(`(async () => {
+    const out = {};
+    for (const [name, b64] of Object.entries(${JSON.stringify(Object.fromEntries(Object.keys(phoneVideos).map((n) => [n, fs.readFileSync(path.join(dir, n)).toString("base64")])))})) {
+      const origin = await VideoOrigin.read(new Blob([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))]));
+      out[name] = { ...origin, mirrored: VideoOrigin.mirroredByDefault(origin).mirrored };
+    }
+    return out;
+  })()`);
+  check("Phone videos: Android front camera (or held sideways) mirrored, back camera and iPhone not",
+    Object.entries(phoneVideos).every(([name, spec]) => origins[name] && origins[name].mirrored === spec.mirrored) &&
+      origins["android-front.mp4"].camera === "front" && origins["android-back.mp4"].camera === "back" && origins["iphone.mov"].phone === "iphone",
+    JSON.stringify(origins));
+
+  await open(path.join(dir, "android-sideways.mp4"));
+  const phoneDefault = await mirrorState();
+  await clickMirrored();
+  await open(path.join(dir, "android-sideways.mp4"));
+  const phoneChosen = await mirrorState();
+  check("An Android video opens flipped back, saying why; turning it off is remembered",
+    phoneDefault.on && phoneDefault.button === "Mirrored video: ON" && flippedBack(phoneDefault) && /Android phone/.test(phoneDefault.note) &&
+      !phoneChosen.on && asIs(phoneChosen) && !phoneChosen.note && phoneChosen.saved["android-sideways.mp4"] === false,
+    JSON.stringify({ phoneDefault, phoneChosen }));
 
   await js("HandTrackerApp.backToCamera()");
   let camera = "";
