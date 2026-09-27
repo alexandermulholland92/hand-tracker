@@ -1,6 +1,6 @@
 # Hand Tracker
 
-Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmarks per hand), with a live 3D view, gesture and finger-curl readouts, **motion capture export in 7 formats**, **video recording**, and a **video converter** that opens nearly any video format and exports **27 formats**. Runs as a Windows desktop app, an Android app, or in a browser.
+Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmarks per hand), with a live 3D view, gesture and finger-curl readouts, **motion capture export in 7 formats**, **video recording**, and a **video converter** that opens nearly any video format and exports **36 formats**. Runs as a Windows desktop app, an Android app, or in a browser.
 
 ## Run it
 
@@ -32,7 +32,7 @@ Video import and export work in all three: the Windows app converts with its bun
 - **Steady tracking**: every landmark is smoothed with a One Euro filter, which holds a still hand steady but follows fast movement closely, so the skeleton doesn't shake and gesture labels don't flicker. Each hand keeps its Left/Right label unless MediaPipe disagrees for several frames in a row.
 - **Camera controls**: choose the camera, resolution (640×480 to 1920×1080) and model (Lite for speed, Full for accuracy). Settings are remembered.
 - **Track a video file** instead of the camera: *Open Video…* accepts MP4, MOV, MKV, WebM, AVI, MPEG, WMV, FLV, 3GP, Ogg, MPEG-TS, MXF, DV, ProRes, GIF and more; see [Tracking a video file](#tracking-a-video-file). Android phone selfie videos, which are saved mirrored, are flipped back automatically; for any other video where Left and Right come out swapped, turn on *Mirrored video*.
-- **Convert any video**: the Recording Viewer's *Open Video…* opens nearly any video and converts it to any of 27 formats; see [Converting videos](#converting-videos).
+- **Convert any video**: the Recording Viewer's *Open Video…* opens nearly any video and converts it to any of 36 formats; see [Converting videos](#converting-videos).
 - **Mirror view with readable text**: front (selfie) cameras and webcams are shown mirrored so movements feel natural; rear cameras and video files are shown as they are. The Mirror button switches it, and the app remembers your choice for each camera. Times in the picture, like a clock or a timestamp, are always shown the right way round: the app finds them with on-device OCR (tesseract.js, bundled) and flips them back. Other text (signs, screens, printing) reads backwards unless you turn on the optional **Readable text** button (off by default; your choice is remembered), which flips all text back. The app's own labels are always drawn the right way round. To avoid flipping things that only look like text (cloth, shadows, stripes), an area is only shown the right way round once it has been read as text in three scans running, so real text straightens about a second after it appears. Anything read on or right next to a hand is ignored too (OCR takes an OK sign's ring for an "O"), so no flipped patch is left behind when the hand moves away.
 - **Gestures**: pinch, OK sign (thumb and index in a ring, the other fingers out), thumbs up, fist, open palm, peace (at any angle, upright, leaning or on its side), rock on, call me, shaka, point, thumbs down, *live long and prosper* (the Vulcan salute: fingers in two pairs with a V between the middle and ring fingers) and *the bird* (only the middle finger raised, pointing up or sideways but not down, with the hand facing the camera rather than side-on; sideways counts so it still works on a phone held on its side), plus palm yaw/pitch/roll and per-finger curl. Call Me and Shaka are the same hand shape: rocking the wrist back and forth makes it Shaka, holding it still is Call Me. A label must hold for a few frames before it changes, so it doesn't flicker. Gestures are judged mostly by how far each fingertip reaches from the wrist (in palm lengths), which holds up on real hands better than finger-bend angles do; the rules are checked against 202 hands measured from real photos (`scripts/fixtures/gesture-hands.json`) and were tuned on a live webcam session.
 - **Recording Viewer** (header link or *File → Open Recording Viewer*): opens hand recordings (JSON, CSV), **C3D** files and **OptiTrack `.tak`** takes. You can play them back, browse the frames, and convert them to other formats; see [Viewing and converting recordings](#viewing-and-converting-recordings).
@@ -132,10 +132,11 @@ Click **Open Video…** next to the camera picker to track hands in a recorded v
 - **Formats:**
   - Formats the device plays itself (MP4, MOV, M4V, MKV, WebM, and more depending on the device) open directly.
   - Anything else is converted automatically first, with progress shown over the camera view: AVI, MPEG-1/2 (`.mpg`, `.mpeg`, `.vob`), WMV/ASF, FLV, 3GP, Ogg Theora, MPEG-TS (`.ts`, `.m2ts`), MXF, DV, ProRes, Y4M, GIF and others ffmpeg can read. The Windows app uses its bundled ffmpeg; the website and Android app use ffmpeg.wasm on the device.
+  - The file picker also offers camcorder files (`.mod`, `.tod`, `.m2t`), GoPro and Insta360 files (`.lrv`, `.360`, `.insv`), Phantom high-speed camera files (`.cine`), Windows Media Center and TiVo recordings (`.wtv`, `.dvr-ms`, `.ty`), Dahua CCTV recordings (`.dav`), RealVideo (`.rm`, `.rmvb`, `.ivr`), broadcast GXF and LXF, raw AV1 (`.obu`), and game video (Bink, Smacker, FLIC, RoQ, THP, PlayStation STR, Xbox XMV). A file is recognised by what's inside it, not its name, so a video with an unusual extension still opens (choose *All files* in the picker).
 
 ## Video export
 
-Press **Record Video**, choosing whether to include just the camera view or the camera view with the 3D view below it. When you stop, a preview appears; pick one or more of the [27 formats](#video-formats) (and, in the Windows app, a folder).
+Press **Record Video**, choosing whether to include just the camera view or the camera view with the 3D view below it. When you stop, a preview appears; pick one or more of the [36 formats](#video-formats) (and, in the Windows app, a folder).
 
 ## Converting videos
 
@@ -169,21 +170,31 @@ In the **Recording Viewer**, click **Open Video…** (or drop a video on it) to 
 | FLV | H.264 | Flash Video players |
 | 3GP, 3G2 | H.264 (baseline) | Older phones |
 | OGV | Theora, Vorbis sound | Open-source players |
+| RM | RealVideo 2, up to 720 px wide, AC-3 sound | RealPlayer-era players |
 | **Newer codecs** (Windows app only) | | |
 | HEVC | H.265 in MP4 | About half the size of H.264 |
 | AV1 | AV1 in WebM | Smallest files; slow to make |
-| **Editing and archiving** | | |
+| AV1 MP4 | AV1 in MP4 | Small files that play on phones and Windows; slow to make |
+| **Editing** | | |
 | ProRes | ProRes 422 in MOV | Final Cut, Premiere, Resolve |
 | DNxHR | DNxHR HQ in MOV | Avid, Premiere, Resolve |
+| CineForm | GoPro CineForm, 10-bit, in MOV | Premiere, Resolve (width rounded to a multiple of 16) |
 | MXF | MPEG-2 4:2:2 | Broadcast |
 | Motion JPEG | MJPEG in AVI | Frame-accurate editing |
-| FFV1 | Lossless, in MKV | Archiving (large files) |
 | DV | DV, 720 × 480 (NTSC) or 576 (PAL) | MiniDV tools; letterboxed to fit |
+| **Lossless and uncompressed** | | |
+| FFV1 | Lossless, in MKV | Archiving; the smallest lossless files |
+| UT Video | Lossless, in AVI | Editors and capture software; fast |
+| HuffYUV | Lossless, in AVI | Older editors (VirtualDub and others) |
+| QuickTime Animation | Lossless RLE, in MOV | Classic editing format |
+| Uncompressed AVI | Raw RGB frames (Windows app only) | MATLAB, OpenCV and other research tools; about 80 MB a second at 720p |
+| Y4M | Raw YUV frames, no sound (Windows app only) | Encoders and research tools; about 40 MB a second at 720p |
 | **Animated images** | | |
 | WebP | Animated WebP, 15 fps, up to 800 px wide | Web pages, chat |
 | APNG | Animated PNG, 15 fps, up to 640 px wide | Lossless animations |
+| AVIF | Animated AV1, 15 fps, up to 800 px wide (Windows app only) | Far smaller than GIF; modern browsers |
 
-MPEG-1, MPG, VOB, MXF and DV only allow standard TV frame rates, so they use the nearest one (24, 25, 29.97, 30, 50, 59.94 or 60 fps). The Windows app converts with the ffmpeg bundled with it (`ffmpeg-static`); the website and the Android app with ffmpeg.wasm (`@ffmpeg/ffmpeg`), whose VP9 encoder crashes and whose HEVC encoder needs threads it doesn't have, hence VP8 for WebM there and no HEVC or AV1. Both are GPL builds of [FFmpeg](https://ffmpeg.org), whose source is available from the FFmpeg project.
+MPEG-1, MPG, VOB, MXF and DV only allow standard TV frame rates, so they use the nearest one (24, 25, 29.97, 30, 50, 59.94 or 60 fps). RealMedia can't hold a frame over 64 kB, so RM is kept to standard definition, as RealPlayer-era video was. The Windows app converts with the ffmpeg bundled with it (`ffmpeg-static`); the website and the Android app with ffmpeg.wasm (`@ffmpeg/ffmpeg`), whose VP9 encoder crashes and whose HEVC encoder needs threads it doesn't have, hence VP8 for WebM there and no HEVC or AV1 (it has no AV1 encoder, so no AVIF either). Uncompressed AVI and Y4M are too big to make in a browser's memory, so they're Windows-only too; the website and phone offer the other 30. Both are GPL builds of [FFmpeg](https://ffmpeg.org), whose source is available from the FFmpeg project.
 
 ## Motion JSON layout (format_version 2)
 
@@ -268,7 +279,7 @@ This launches the app with Chromium's built-in fake camera. It simulates two han
 - **NPZ** is loaded with NumPy (so it needs Python with NumPy).
 - **Videos** are decoded with ffmpeg and checked to be the right codec, with sound where the source had it (animated WebP by its structure, since ffmpeg 6.1 can't read it back).
 
-It also opens the Recording Viewer with new, old and deliberately malicious files, and converts a WMV with sound to all 27 video formats in it. For OptiTrack, it connects to a stand-in Motive (NatNet 4.1, over multicast and unicast), records its stream with motion capture and checks the exported markers' names, rate, axes and scale. It also tracks a part of the screen chosen in the Screen or window picker. Windows will briefly appear on screen while it runs.
+It also opens the Recording Viewer with new, old and deliberately malicious files, and converts a WMV with sound to all 36 video formats in it. For OptiTrack, it connects to a stand-in Motive (NatNet 4.1, over multicast and unicast), records its stream with motion capture and checks the exported markers' names, rate, axes and scale. It also tracks a part of the screen chosen in the Screen or window picker. Windows will briefly appear on screen while it runs.
 
 There is also a check for the Android code:
 
@@ -291,7 +302,7 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 | `export-ui.js` | Export panels shared by the main window and the viewer |
 | `hand-3d.js` | Three.js view of both hands and grippers |
 | `video-recorder.js` | Records the camera view (and the 3D view) with MediaRecorder |
-| `video-formats.js` | The 27 video export formats and their ffmpeg settings (shared by all three versions) |
+| `video-formats.js` | The 36 video export formats and their ffmpeg settings, and the file types the pickers offer (shared by all three versions) |
 | `video-convert.js` | Website and Android: opening and converting videos with ffmpeg.wasm |
 | `video-origin.js` | Reads a video's metadata to tell a phone's front-camera video (saved mirrored) from its back-camera one |
 | `readable-text.js` | Keeps text in the camera picture readable when mirrored |

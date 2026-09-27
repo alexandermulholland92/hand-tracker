@@ -1,7 +1,8 @@
 /**
  * video-validators.js — checks an exported video really is the format it claims:
  * decodes it with the bundled ffmpeg and compares the codec and sound. Animated
- * WebP is checked by its structure (ffmpeg 6.1 can write it but not read it back).
+ * WebP is checked by its structure (ffmpeg 6.1 can write it but not read it back), and
+ * so is AVIF where the ffmpeg can't read it (newer ones decode it as AV1).
  * Used by check.js and check-android.js.
  */
 
@@ -17,6 +18,8 @@ const EXPECTED_CODEC = {
   m4v: "h264", wmv: "wmv2", mpg: "mpeg2video", mpeg: "mpeg1video", vob: "mpeg2video", ts: "h264",
   m2ts: "h264", flv: "h264", "3gp": "h264", "3g2": "h264", ogv: "theora", hevc: "hevc", av1: "av1",
   prores: "prores", dnxhr: "dnxhd", mxf: "mpeg2video", mjpeg: "mjpeg", ffv1: "ffv1", dv: "dvvideo", apng: "apng",
+  rm: "rv20", av1mp4: "av1", cfhd: "cfhd", utvideo: "utvideo", huffyuv: "huffyuv", qtrle: "qtrle", rawavi: "rawvideo",
+  y4m: "rawvideo", avif: "av1",
 };
 
 // -> { ok, detail }. withSound: the source had sound (kept wherever the format allows it).
@@ -31,6 +34,10 @@ function verifyVideo(file, formatId, withSound) {
   }
   const probe = spawnSync(ffmpegPath, ["-hide_banner", "-i", file, "-f", "null", "-"], { encoding: "utf8" });
   const info = VideoFormats.parseProbe(probe.stderr);
+  if (formatId === "avif") {
+    const sequence = /^....ftypavis/s.test(fs.readFileSync(file).subarray(0, 12).toString("latin1")); // an animated AVIF
+    return { ok: sequence && (probe.status !== 0 || info.videoCodec === "av1"), detail: `AVIF image sequence, ${info.videoCodec || "not readable by this ffmpeg"}, ${size}` };
+  }
   const sound = format.audio && withSound;
   const ok = probe.status === 0 && [].concat(EXPECTED_CODEC[formatId]).includes(info.videoCodec) && info.hasAudio === sound;
   return { ok, detail: `${info.videoCodec || "?"} ${info.width}x${info.height}${info.hasAudio ? " + sound" : ""}, ${info.duration.toFixed(2)} s, ${size}` };

@@ -6,19 +6,19 @@
  *  1. waits for MediaPipe to load and process camera frames,
  *  2. simulates two hands (Left + Right) moving and gripping,
  *  3. records motion capture and a "Camera + 3D" video,
- *  4. exports motion capture to all 7 formats and video to all 27 formats,
+ *  4. exports motion capture to all 7 formats and video to every format (video-formats.js),
  *  5. verifies every output file with independent readers (BVH replayed with
  *     forward kinematics, GLB played in three.js, C3D read from the spec,
  *     NPZ loaded with NumPy, each video decoded by ffmpeg), and recognises
  *     gestures from simulated hand poses,
- *  6. opens video files in 10 formats as the tracking source (native and converted),
+ *  6. opens video files in 14 formats as the tracking source (native and converted),
  *     re-times a recording made from a video file, and captures a whole video; checks
  *     Mirror is on for selfie cameras and off for rear cameras and video files, and that
  *     Mirrored video flips a mirrored recording back before tracking (by default for
  *     Android front-camera videos, recognised from their metadata),
  *  7. opens the Recording Viewer with JSON, CSV (incl. spreadsheet-saved), C3D, TRC,
  *     Motive CSV and — when OptiTrack Motive is installed — a sample .tak take,
- *  8. opens a WMV with sound in the Recording Viewer and converts it to all 27 formats,
+ *  8. opens a WMV with sound in the Recording Viewer and converts it to every format,
  *  9. OptiTrack: receives a stand-in Motive's NatNet stream (scripts/natnet-sim.js) over
  *     multicast and unicast, records it with motion capture and checks the exported
  *     markers; tracks a crop of the screen picked in the "Screen or window" picker.
@@ -296,6 +296,12 @@ const TEST_VIDEOS = [
   ["theora.ogv", ["-c:v", "libtheora", "-q:v", "6"]],
   ["h264.ts", ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "mpegts"]],
   ["prores.mov", ["-c:v", "prores_ks", "-profile:v", "0"]],
+  // Formats known by other names: a GoPro low-res preview (MP4 inside), a camcorder's
+  // MPEG-2 .mod, a Windows Media Center recording and RealVideo.
+  ["gopro.lrv", ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "mp4"]],
+  ["camcorder.mod", ["-c:v", "mpeg2video", "-q:v", "4", "-f", "vob"]],
+  ["media-center.wtv", ["-c:v", "mpeg2video", "-q:v", "4", "-f", "wtv"]],
+  ["realvideo.rm", ["-c:v", "rv20", "-q:v", "4"]],
 ];
 
 // Adds metadata keys to an MP4/MOV the way phones write them: a QuickTime "meta" box
@@ -671,7 +677,7 @@ async function checkViewerVideo() {
     return { width: v.videoWidth, converted: v.currentSrc.startsWith("app://hand-tracker/__media/"), meta: document.getElementById("videoMeta").textContent,
       formats: document.querySelectorAll("#exportGrid input:not(:disabled)").length, groups: document.querySelectorAll("#exportGrid .format-group").length };
   })()`);
-  check("Viewer opens a WMV (converted preview) and describes it", opened.width === 640 && opened.converted && /wmv2/.test(opened.meta) && /with sound/.test(opened.meta) && opened.formats === exporter.FORMATS.length && opened.groups === 5,
+  check("Viewer opens a WMV (converted preview) and describes it", opened.width === 640 && opened.converted && /wmv2/.test(opened.meta) && /with sound/.test(opened.meta) && opened.formats === exporter.FORMATS.length && opened.groups === new Set(exporter.FORMATS.map((f) => f.group)).size,
     `${opened.meta}; ${opened.formats} formats in ${opened.groups} groups`);
   const done = await js(`(async () => {
     document.getElementById("exportName").value = "viewer-converted";

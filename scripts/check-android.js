@@ -144,6 +144,7 @@ async function run() {
   for (let i = 0; i < 40 && !(await js("document.querySelectorAll('#exportResults li.ok').length")); i++) await sleep(250);
   // 3a'. The recording converted on the phone (ffmpeg.wasm) to formats the phone doesn't record in.
   const phoneFormats = ["webm", "mpg", "gif", "wmv", "ogv"];
+  const offeredOnPhones = require("../video-formats.js").FORMATS.filter((f) => f.wasm).length;
   const converted = await js(`(async () => {
     document.getElementById("exportName").value = "phone-converted";
     document.querySelectorAll("#formatGrid input").forEach((i) => { i.checked = ${JSON.stringify(phoneFormats)}.includes(i.value); });
@@ -154,7 +155,7 @@ async function run() {
     return { offered: document.querySelectorAll("#formatGrid input:not(:disabled)").length, ok: document.querySelectorAll("#exportResults li.ok").length,
       note: document.getElementById("exportNote").textContent };
   })()`);
-  check("The recording converts on the phone to WebM, MPG, GIF, WMV and OGV", converted.ok === phoneFormats.length && converted.offered === 25, `${converted.note} (${converted.offered} formats offered)`);
+  check("The recording converts on the phone to WebM, MPG, GIF, WMV and OGV", converted.ok === phoneFormats.length && converted.offered === offeredOnPhones, `${converted.note} (${converted.offered} formats offered)`);
 
   // 3b. Motion capture, all formats
   await js("document.querySelectorAll('#motionFormatGrid input').forEach((i) => { i.checked = true; }); document.getElementById('motionExportBtn').click();");
@@ -288,7 +289,7 @@ async function run() {
   const wmv = path.join(outDir, "phone-source.wmv");
   spawnSync(require("../electron/exporter.js").ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
     "-t", "2", "-c:v", "wmv2", "-b:v", "2M", "-c:a", "wmav2", "-shortest", wmv]);
-  const viewerFormats = ["mp4", "avi", "mov", "mxf", "dv", "webp", "flv"];
+  const viewerFormats = ["mp4", "avi", "mov", "mxf", "dv", "webp", "flv", "rm", "cfhd", "utvideo"];
   const vv = await js(`(async () => {
     const bytes = Uint8Array.from(atob(${JSON.stringify(fs.readFileSync(wmv).toString("base64"))}), (c) => c.charCodeAt(0));
     await RecordingViewer.openVideo(new File([bytes], "phone-source.wmv"));
@@ -303,7 +304,7 @@ async function run() {
     return { ...preview, ok: document.querySelectorAll("#exportResults li.ok").length, share: document.querySelectorAll("#exportResults li button").length,
       note: document.getElementById("exportNote").textContent };
   })()`);
-  check("Viewer on the phone previews a WMV (converted) and converts it to 7 formats", vv.width === 640 && vv.ok === viewerFormats.length && vv.share === viewerFormats.length,
+  check(`Viewer on the phone previews a WMV (converted) and converts it to ${viewerFormats.length} formats`, vv.width === 640 && vv.ok === viewerFormats.length && vv.share === viewerFormats.length,
     JSON.stringify(vv));
   const phoneFiles = await pullFiles(js);
   const viewerExports = verifyExports(outDir, "phone-viewer", viewerFormats, true);

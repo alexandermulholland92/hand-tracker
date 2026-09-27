@@ -25,8 +25,8 @@
   const EVEN = "scale=trunc(iw/2)*2:trunc(ih/2)*2";
 
   // group: where the format is listed. audio: keeps the source's sound.
-  // wasm: available in the website/Android converter. ffmpeg.wasm has no AV1 encoder, and
-  // its HEVC encoder (x265) hangs without threads, so those two need the Windows app.
+  // wasm: available in the website/Android converter. ffmpeg.wasm has no AV1 encoder (so no
+  // AV1 or AVIF), and its HEVC encoder (x265) hangs without threads, so those need the Windows app.
   const FORMATS = [
     { id: "mp4", label: "MP4", detail: "H.264 · plays almost everywhere", ext: "mp4", group: "Common", audio: true },
     { id: "mov", label: "MOV", detail: "H.264 · QuickTime and editors", ext: "mov", group: "Common", audio: true },
@@ -46,19 +46,30 @@
     { id: "3gp", label: "3GP", detail: "Older phones · H.264", ext: "3gp", group: "More formats", audio: true },
     { id: "3g2", label: "3G2", detail: "Older CDMA phones · H.264", ext: "3g2", group: "More formats", audio: true },
     { id: "ogv", label: "OGV", detail: "Ogg Theora · open format", ext: "ogv", group: "More formats", audio: true },
+    { id: "rm", label: "RM", detail: "RealMedia · RealPlayer-era players, up to 720 px wide", ext: "rm", group: "More formats", audio: true },
 
     { id: "hevc", label: "HEVC", detail: "H.265 MP4 · about half the size of H.264", ext: "mp4", suffix: "-hevc", group: "Newer codecs", audio: true, wasm: false },
     { id: "av1", label: "AV1", detail: "AV1 WebM · smallest files, slow to make", ext: "webm", suffix: "-av1", group: "Newer codecs", audio: true, wasm: false },
+    { id: "av1mp4", label: "AV1 MP4", detail: "AV1 in MP4 · small files for phones and Windows, slow to make", ext: "mp4", suffix: "-av1", group: "Newer codecs", audio: true, wasm: false },
 
-    { id: "prores", label: "ProRes", detail: "ProRes 422 MOV · Final Cut, Premiere, Resolve", ext: "mov", suffix: "-prores", group: "Editing and archiving", audio: true },
-    { id: "dnxhr", label: "DNxHR", detail: "DNxHR HQ MOV · Avid, Premiere, Resolve", ext: "mov", suffix: "-dnxhr", group: "Editing and archiving", audio: true },
-    { id: "mxf", label: "MXF", detail: "Broadcast · MPEG-2 4:2:2", ext: "mxf", group: "Editing and archiving", audio: true },
-    { id: "mjpeg", label: "Motion JPEG", detail: "AVI · every frame a JPEG, easy to edit", ext: "avi", suffix: "-mjpeg", group: "Editing and archiving", audio: true },
-    { id: "ffv1", label: "FFV1", detail: "Lossless MKV · archiving, large files", ext: "mkv", suffix: "-lossless", group: "Editing and archiving", audio: true },
-    { id: "dv", label: "DV", detail: "MiniDV · 720 × 480 or 576", ext: "dv", group: "Editing and archiving", audio: true },
+    { id: "prores", label: "ProRes", detail: "ProRes 422 MOV · Final Cut, Premiere, Resolve", ext: "mov", suffix: "-prores", group: "Editing", audio: true },
+    { id: "dnxhr", label: "DNxHR", detail: "DNxHR HQ MOV · Avid, Premiere, Resolve", ext: "mov", suffix: "-dnxhr", group: "Editing", audio: true },
+    { id: "cfhd", label: "CineForm", detail: "GoPro CineForm MOV · 10-bit, Premiere, Resolve", ext: "mov", suffix: "-cineform", group: "Editing", audio: true },
+    { id: "mxf", label: "MXF", detail: "Broadcast · MPEG-2 4:2:2", ext: "mxf", group: "Editing", audio: true },
+    { id: "mjpeg", label: "Motion JPEG", detail: "AVI · every frame a JPEG, easy to edit", ext: "avi", suffix: "-mjpeg", group: "Editing", audio: true },
+    { id: "dv", label: "DV", detail: "MiniDV · 720 × 480 or 576", ext: "dv", group: "Editing", audio: true },
+
+    { id: "ffv1", label: "FFV1", detail: "Lossless MKV · archiving, smallest lossless files", ext: "mkv", suffix: "-lossless", group: "Lossless and uncompressed", audio: true },
+    { id: "utvideo", label: "UT Video", detail: "Lossless AVI · fast, for editors and capture", ext: "avi", suffix: "-utvideo", group: "Lossless and uncompressed", audio: true },
+    { id: "huffyuv", label: "HuffYUV", detail: "Lossless AVI · the classic, widely supported", ext: "avi", suffix: "-huffyuv", group: "Lossless and uncompressed", audio: true },
+    { id: "qtrle", label: "QuickTime Animation", detail: "Lossless MOV · classic editing format", ext: "mov", suffix: "-animation", group: "Lossless and uncompressed", audio: true },
+    // Far too big to make in a browser's memory (about 80 MB a second at 720p), so these two need the Windows app.
+    { id: "rawavi", label: "Uncompressed AVI", detail: "Raw RGB frames · MATLAB, OpenCV and other research tools; huge files", ext: "avi", suffix: "-uncompressed", group: "Lossless and uncompressed", audio: true, wasm: false },
+    { id: "y4m", label: "Y4M", detail: "YUV4MPEG raw frames · encoders and research tools; huge files, no sound", ext: "y4m", group: "Lossless and uncompressed", audio: false, wasm: false },
 
     { id: "webp", label: "WebP", detail: "Animated image · 15 fps, max 800 px wide", ext: "webp", group: "Animated images", audio: false },
     { id: "apng", label: "APNG", detail: "Animated PNG · 15 fps, max 640 px wide", ext: "apng", group: "Animated images", audio: false },
+    { id: "avif", label: "AVIF", detail: "Animated AV1 image · far smaller than GIF · 15 fps, max 800 px wide", ext: "avif", group: "Animated images", audio: false, wasm: false },
   ].map((f) => ({ suffix: "", wasm: true, ...f }));
   const BY_ID = new Map(FORMATS.map((f) => [f.id, f]));
 
@@ -165,6 +176,13 @@
         video = ["-c:v", "libtheora", "-q:v", "7", ...filters(EVEN), ...cfr];
         audio = ["-c:a", "libvorbis", "-q:a", "5"];
         break;
+      case "rm":
+        // RealMedia can't hold a frame over 64 kB, so the picture is kept to standard
+        // definition (as RealPlayer-era video was) and the bitrate buffer keeps every frame
+        // under that. RealVideo 2 needs a size divisible by 4; RealMedia holds AC-3 sound.
+        video = ["-c:v", "rv20", "-b:v", "1500k", "-maxrate", "1500k", "-bufsize", "400k", ...filters("scale=w='trunc(min(720,iw)/4)*4':h=-4"), ...cfr];
+        audio = ["-c:a", "ac3", "-b:a", "192k"];
+        break;
       case "hevc":
         video = [
           "-c:v", "libx265", "-preset", wasm ? "ultrafast" : "medium", "-crf", "26", "-pix_fmt", "yuv420p",
@@ -176,12 +194,21 @@
         video = ["-c:v", "libaom-av1", "-crf", "32", "-b:v", "0", "-cpu-used", "6", "-row-mt", "1", ...filters(EVEN), ...cfr];
         audio = ["-c:a", "libopus", "-b:a", "128k"];
         break;
+      case "av1mp4":
+        video = ["-c:v", "libaom-av1", "-crf", "32", "-b:v", "0", "-cpu-used", "6", "-row-mt", "1", ...filters(EVEN), ...cfr, "-movflags", "+faststart"];
+        audio = aac;
+        break;
       case "prores":
         video = ["-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le", "-vendor", "apl0", ...filters(EVEN), ...cfr];
         audio = pcm();
         break;
       case "dnxhr":
         video = ["-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p", ...filters(EVEN), ...cfr];
+        audio = pcm();
+        break;
+      case "cfhd":
+        // CineForm needs a width divisible by 16 (the picture is scaled by at most 15 pixels).
+        video = ["-c:v", "cfhd", "-pix_fmt", "yuv422p10le", ...filters("scale=trunc(iw/16)*16:-2"), ...cfr];
         audio = pcm();
         break;
       case "mxf":
@@ -195,6 +222,27 @@
       case "ffv1":
         video = ["-c:v", "ffv1", "-level", "3", "-g", "1", "-slicecrc", "1", ...(retime ? filters() : []), ...cfr];
         audio = ["-c:a", "flac"];
+        break;
+      case "utvideo":
+        video = ["-c:v", "utvideo", "-pix_fmt", "yuv420p", ...filters(EVEN), ...cfr];
+        audio = pcm();
+        break;
+      case "huffyuv":
+        video = ["-c:v", "huffyuv", "-pix_fmt", "yuv422p", ...filters(EVEN), ...cfr];
+        audio = pcm();
+        break;
+      case "qtrle":
+        video = ["-c:v", "qtrle", "-pix_fmt", "rgb24", ...(retime ? filters() : []), ...cfr];
+        audio = pcm();
+        break;
+      case "rawavi":
+        video = ["-c:v", "rawvideo", "-pix_fmt", "bgr24", ...(retime ? filters() : []), ...cfr];
+        audio = pcm();
+        break;
+      case "y4m":
+        // No codec named: older ffmpeg (as in ffmpeg.wasm) only takes the muxer's own default.
+        video = ["-pix_fmt", "yuv420p", ...filters(EVEN), ...cfr];
+        container = ["-f", "yuv4mpegpipe"];
         break;
       case "dv": {
         // DV is fixed at NTSC (720×480, 29.97 fps) or PAL (720×576, 25 fps); the picture is letterboxed to fit.
@@ -224,6 +272,10 @@
         video = ["-c:v", "apng", "-plays", "0", ...filters("fps=15", "scale='min(640,iw)':-1:flags=lanczos")];
         container = ["-f", "apng"];
         break;
+      case "avif":
+        video = ["-c:v", "libaom-av1", "-crf", "32", "-b:v", "0", "-cpu-used", "6", "-row-mt", "1", ...filters("fps=15", "scale='min(800,iw)':-2:flags=lanczos")];
+        container = ["-f", "avif"];
+        break;
       default:
         throw new Error(`Unknown format: ${id}`);
     }
@@ -231,12 +283,21 @@
     return [...streams, "-sn", "-dn", ...video, ...container];
   }
 
-  // Everything a file picker should offer for "any video".
+  // Everything a file picker should offer for "any video". Files are recognised by their
+  // contents, not their names, so this only decides what the picker shows.
   const IMPORT_ACCEPT = [
-    "video/*", ".mp4", ".m4v", ".mov", ".qt", ".mkv", ".webm", ".avi", ".mpg", ".mpeg", ".mpe", ".m1v", ".m2v",
-    ".mpv", ".vob", ".ts", ".mts", ".m2ts", ".wmv", ".asf", ".flv", ".f4v", ".3gp", ".3g2", ".ogv", ".ogg",
-    ".mxf", ".dv", ".y4m", ".rm", ".rmvb", ".divx", ".xvid", ".hevc", ".h264", ".264", ".h265", ".265", ".gif",
-    ".apng", ".webp", ".nut", ".ivf", ".swf", ".amv", ".mjpeg", ".mjpg",
+    "video/*", ".mp4", ".m4v", ".mp4v", ".mpg4", ".mov", ".qt", ".mkv", ".mk3d", ".webm", ".avi", ".mpg", ".mpeg",
+    ".mpe", ".m1v", ".m2v", ".mpv", ".m2p", ".vob", ".vro", ".evo", ".ts", ".mts", ".m2ts", ".m2t", ".trp",
+    ".tp", ".wmv", ".wm", ".asf", ".wtv", ".dvr-ms", ".flv", ".f4v", ".3gp", ".3gpp", ".3g2", ".3gp2", ".ogv",
+    ".ogg", ".ogm", ".mxf", ".gxf", ".lxf", ".dv", ".y4m", ".rm", ".rmvb", ".ivr", ".divx", ".xvid", ".hevc",
+    ".h264", ".264", ".h265", ".265", ".obu", ".gif", ".apng", ".webp", ".nut", ".ivf", ".swf", ".amv",
+    ".mjpeg", ".mjpg", ".ismv", ".nsv", ".viv", ".ty",
+    // Camcorders (JVC/Panasonic SD), action and 360° cameras (GoPro, Insta360)
+    ".mod", ".tod", ".lrv", ".360", ".insv",
+    // Phantom high-speed cameras, and Dahua CCTV recorders
+    ".cine", ".dav",
+    // Game and multimedia video: Bink, Smacker, FLIC, id RoQ, GameCube THP, PlayStation STR, Xbox XMV
+    ".bik", ".smk", ".fli", ".flc", ".roq", ".thp", ".str", ".xmv",
   ].join(",");
 
   function parseProbe(text) {
