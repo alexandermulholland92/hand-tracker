@@ -1366,7 +1366,11 @@
     frameTime = null;
   }
 
-  async function useCamera() {
+  function useCamera() {
+    return oneAtATime(backToCamera);
+  }
+
+  async function backToCamera() {
     await haltLoop();
     if (source === "file") {
       videoEl.pause();
@@ -1469,7 +1473,21 @@
     return true;
   }
 
-  async function setCamera(opts = {}) {
+  // Camera switches run one at a time. Two overlapping ones (say, back to the webcam while a
+  // capture rig's stream is being opened) could otherwise leave one source's picture on
+  // screen while the tracker's settings say it's the other.
+  let cameraSwitch = Promise.resolve();
+  function oneAtATime(fn) {
+    const run = cameraSwitch.then(fn);
+    cameraSwitch = run.catch(() => {});
+    return run;
+  }
+
+  function setCamera(opts = {}) {
+    return oneAtATime(() => applyCamera(opts));
+  }
+
+  async function applyCamera(opts) {
     cameraOpts = { ...cameraOpts, ...opts };
     await haltLoop(); // pause processing while the stream is swapped
     if (source === "external") {

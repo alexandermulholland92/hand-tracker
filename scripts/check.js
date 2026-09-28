@@ -643,22 +643,37 @@ async function checkCaptureSessions(js) {
 }
 
 // Live Rigs, against a stand-in capture-fleet dashboard on this computer: its sign-in page
-// sets a cookie, its rig list and pictures need that cookie, and one rig's camera sends
-// changing side-by-side stereo pictures (left half red, right half blue).
+// sets a cookie, and its rig list and pictures need that cookie. Rig A (recording) sends
+// changing side-by-side stereo JPEGs (left half red, right half blue) and has no keyframes;
+// rig D only has H.264 keyframes; rig E's camera is stale (like one that stopped sending);
+// rig F is recording with its preview flag off; B has no preview and C is offline.
 function startFleetSim() {
   const http = require("http");
-  const frames = [0, 1].map((i) => {
-    const file = path.join(outDir, `fleet-frame-${i}.jpg`);
-    spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=640x400", "-f", "lavfi", "-i", "color=c=blue:s=640x400",
-      "-filter_complex", `[0][1]hstack,drawbox=x=${100 + i * 200}:y=150:w=80:h=80:color=white:t=fill`, "-frames:v", "1", file]);
+  const ffmpeg = (args, file) => {
+    spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", ...args, file]);
     return fs.readFileSync(file);
-  });
+  };
+  const jpegs = [0, 1].map((i) => ffmpeg(["-f", "lavfi", "-i", "color=c=red:s=640x400", "-f", "lavfi", "-i", "color=c=blue:s=640x400",
+    "-filter_complex", `[0][1]hstack,drawbox=x=${100 + i * 200}:y=150:w=80:h=80:color=white:t=fill`, "-frames:v", "1"], path.join(outDir, `fleet-frame-${i}.jpg`)));
+  const monos = [0, 1].map((i) => ffmpeg(["-f", "lavfi", "-i", "color=c=gray:s=640x360", "-vf", `drawbox=x=${100 + i * 200}:y=100:w=80:h=80:color=white:t=fill`, "-frames:v", "1"], path.join(outDir, `fleet-mono-${i}.jpg`)));
+  // Annex B H.264 keyframes, as the rigs send them; the codec string comes from the SPS.
+  const keyframes = [0, 1].map((i) => ffmpeg(["-f", "lavfi", "-i", "color=c=green:s=640x360", "-vf", `drawbox=x=${100 + i * 200}:y=100:w=80:h=80:color=white:t=fill`,
+    "-frames:v", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-bsf:v", "h264_mp4toannexb", "-f", "h264"], path.join(outDir, `fleet-key-${i}.h264`)));
+  const k = keyframes[0];
+  let sps = -1;
+  for (let i = 0; i + 4 < k.length && sps < 0; i++) if (k[i] === 0 && k[i + 1] === 0 && k[i + 2] === 1 && (k[i + 3] & 0x1f) === 7) sps = i + 4;
+  const codec = "avc1." + [k[sps], k[sps + 1], k[sps + 2]].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const rig = (hostname, display_name, generation, capture_state, extra) => ({ hostname, display_name, generation, capture_state, online: true, reachable: true, via_relay: false, preview_active: false, preview_cameras: ["head"], ...extra });
   const rigs = [
-    { hostname: "rig-a", display_name: "Rig A", online: true, reachable: true, via_relay: false, generation: "rock5c", capture_state: "recording", recording_duration_s: 42, session_name: "s1", preview_active: false, preview_cameras: ["head"] },
-    { hostname: "rig-b", display_name: "Rig B", online: true, reachable: true, via_relay: false, generation: "rpi5", capture_state: "idle", preview_active: false, preview_cameras: ["chest"] },
-    { hostname: "rig-c", display_name: "Rig C", online: false, reachable: false, via_relay: false, generation: "rpi5", capture_state: "unknown", preview_active: false, preview_cameras: [] },
+    rig("rig-a", "Rig A", "rock5c", "recording", { recording_duration_s: 42, session_name: "s1" }),
+    rig("rig-b", "Rig B", "rpi5", "idle", { preview_cameras: ["chest"] }),
+    rig("rig-c", "Rig C", "rpi5", "unknown", { online: false, reachable: false, preview_cameras: [] }),
+    rig("rig-d", "Rig D", "rpi5", "preview", { preview_active: true }),
+    rig("rig-e", "Rig E", "rpi5", "preview", { preview_active: true }),
+    rig("rig-f", "Rig F", "rpi5", "recording", { recording_duration_s: 5, session_name: "s2", preview_cameras: ["head", "chest"] }),
   ];
   let served = 0;
+  const count = {};
   const writes = [];
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://x");
@@ -676,9 +691,21 @@ function startFleetSim() {
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ devices: rigs, summary: {} }));
     }
-    if (url.pathname === "/proxy/rig-a/api/preview/frame/head") {
-      res.writeHead(200, { "content-type": "image/jpeg" });
-      return res.end(frames[Math.floor(served++ / 2) % 2]); // a new picture every second request
+    const m = /^\/proxy\/([^/]+)\/api\/preview\/(frame|keyframe)\/([^/]+)$/.exec(url.pathname);
+    if (m) {
+      served++;
+      const key = `${m[1]} ${m[2]}`;
+      const n = (count[key] = (count[key] || 0) + 1);
+      const fresh = { "x-frame-age-ms": "300", "x-frame-unix-ns": `17906${String(Math.floor(n / 2)).padStart(14, "0")}` }; // a new picture every second request
+      const send = (status, type, body, headers = {}) => {
+        res.writeHead(status, { "content-type": type, ...headers });
+        res.end(body);
+      };
+      if (m[1] === "rig-a" && m[2] === "frame") return send(200, "image/jpeg", jpegs[Math.floor(n / 2) % 2], fresh);
+      if (m[1] === "rig-d" && m[2] === "keyframe") return send(200, "video/h264", keyframes[Math.floor(n / 2) % 2], { ...fresh, "x-codec-string": codec });
+      if (m[1] === "rig-e" && m[2] === "keyframe") return send(200, "video/h264", keyframes[0], { "x-codec-string": codec, "x-frame-stale": "1", "x-frame-age-ms": String(13 * 86400e3) });
+      if (m[1] === "rig-f" && m[2] === "frame") return send(200, "image/jpeg", monos[Math.floor(n / 2) % 2], fresh);
+      return send(503, "image/jpeg", "", { "x-frame-stale": "1" });
     }
     res.writeHead(404);
     res.end();
@@ -692,6 +719,13 @@ async function checkLiveRigs(js) {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const $ = (id) => document.getElementById(id);
     const until = async (test, ms = 10000) => { for (let t = 0; t < ms && !test(); t += 100) await sleep(100); return test(); };
+    const pick = async (host, cam = "head") => {
+      if ($("rigsDialog").hidden) $("rigsBtn").click();
+      const sel = '#rigsList button[data-host="' + host + '"][data-cam="' + cam + '"]';
+      await until(() => document.querySelector(sel));
+      document.querySelector(sel).click();
+    };
+    const watching = () => { const c = HandTracker.getCamera(); return c.stream ? c.name + " " + c.width + "x" + c.height : "camera"; };
     const out = {};
     RigLive.setShown(true);
     $("rigsBtn").click();
@@ -702,27 +736,53 @@ async function checkLiveRigs(js) {
     out.asksToSignIn = !$("rigsSignIn").hidden && $("rigsBrowse").hidden;
     $("rigsSignInBtn").click(); // the stand-in's sign-in page signs in by itself
     await until(() => document.querySelectorAll("#rigsList .rig-row").length > 0, 15000);
-    const rows = [...document.querySelectorAll("#rigsList .rig-row")];
-    out.rows = rows.map((row) => row.querySelector("b").textContent + ":" + [...row.querySelectorAll("button.rig-cam")].map((b) => b.textContent + (b.disabled ? "(off)" : "")).join(","));
+    out.rows = [...document.querySelectorAll("#rigsList .rig-row")].map((row) => row.querySelector("b").textContent + ":" + [...row.querySelectorAll("button.rig-cam")].map((b) => b.textContent + (b.disabled ? "(off)" : "")).join(","));
     $("rigsSide").value = "left";
     $("rigsSide").dispatchEvent(new Event("change"));
-    document.querySelector('#rigsList button[data-host="rig-a"]').click();
+    // A stereo JPEG camera: one view, not mirrored.
+    await pick("rig-a");
     await until(() => HandTracker.getCamera().stream && RigLive._state() && RigLive._state().frames >= 3, 10000);
     const cam = HandTracker.getCamera();
-    out.watching = { stream: cam.stream, name: cam.name, size: cam.width + "x" + cam.height, mirrored: HandTracker.isMirrored(), state: RigLive._state(), list: $("cameraSelect").selectedOptions[0].textContent, dialogClosed: $("rigsDialog").hidden };
-    // Both views of the stereo picture.
+    out.stereo = { name: cam.name, size: cam.width + "x" + cam.height, mirrored: HandTracker.isMirrored(), state: RigLive._state(), list: $("cameraSelect").selectedOptions[0].textContent, dialogClosed: $("rigsDialog").hidden };
     $("rigsSide").value = "both";
     $("rigsSide").dispatchEvent(new Event("change"));
     await until(() => HandTracker.getCamera().width === 1280, 5000);
     out.both = HandTracker.getCamera().width + "x" + HandTracker.getCamera().height;
     $("rigsSide").value = "left";
     $("rigsSide").dispatchEvent(new Event("change"));
-    // Picking it again goes back to the camera and stops asking for pictures.
-    $("rigsBtn").click();
-    await until(() => document.querySelector('#rigsList button[data-host="rig-a"]'));
-    document.querySelector('#rigsList button[data-host="rig-a"]').click();
+    // A stale camera can't be watched, and what was showing carries on.
+    await pick("rig-e");
+    await until(() => !$("rigsError").hidden, 8000);
+    out.stale = { error: $("rigsError").textContent, still: watching() };
+    // A camera with only keyframes: decoded, full size.
+    await pick("rig-d");
+    await until(() => RigLive._state() && RigLive._state().host === "rig-d" && RigLive._state().frames >= 2, 10000);
+    out.keyframes = { watching: watching(), kind: RigLive._state() && RigLive._state().kind, frames: RigLive._state() && RigLive._state().frames };
+    // A recording rig with its preview flag off can be watched too.
+    await pick("rig-f");
+    await until(() => RigLive._state() && RigLive._state().host === "rig-f" && RigLive._state().frames >= 2, 10000);
+    out.recording = watching();
+    await pick("rig-f"); // again: back to the camera
+    await until(() => !HandTracker.getCamera().stream, 10000);
+    // Lock onto a rig that starts recording: the one that started last (F, 5 s in); after you
+    // leave it, that recording isn't locked onto again.
+    if ($("rigsDialog").hidden) $("rigsBtn").click();
+    $("rigsFollow").checked = true;
+    $("rigsFollow").dispatchEvent(new Event("change"));
+    await until(() => RigLive._state() && RigLive._state().locked && /locked on/.test($("sourceNote").textContent), 10000);
+    out.locked = RigLive._state() && { host: RigLive._state().host, camera: RigLive._state().camera, locked: RigLive._state().locked, note: $("sourceNote").textContent.includes(", recording (locked on),") };
+    await pick("rig-f"); // leave it
+    await until(() => !RigLive.isActive() || RigLive._state().host !== "rig-f", 5000);
+    await RigLive._followTick();
+    await until(() => RigLive.isActive(), 5000);
+    out.afterLeaving = RigLive._state() && RigLive._state().host;
+    $("rigsFollow").checked = false;
+    $("rigsFollow").dispatchEvent(new Event("change"));
+    RigLive.stop();
     await until(() => !HandTracker.getCamera().stream && HandTracker.getCamera().width > 0, 10000);
     out.back = { stream: HandTracker.getCamera().stream, active: RigLive.isActive(), width: HandTracker.getCamera().width };
+    if ($("rigsDialog").hidden) $("rigsBtn").click();
+    await until(() => !$("rigsSignOut").hidden);
     $("rigsSignOut").click();
     await until(() => !$("rigsSignIn").hidden);
     out.signedOut = !$("rigsSignIn").hidden;
@@ -730,16 +790,23 @@ async function checkLiveRigs(js) {
     RigLive.setShown(false);
     return out;
   })()`).catch((err) => ({ error: String((err && err.message) || err) }));
-  const servedWhileWatching = sim.served();
+  const servedAtEnd = sim.served();
   await new Promise((res) => setTimeout(res, 1500));
-  const servedAfter = sim.served() - servedWhileWatching;
+  const servedAfter = sim.served() - servedAtEnd;
   sim.stop();
-  const w = r.watching || {};
-  check("Live Rigs: signs in on the dashboard's own page, lists rigs (recording first; ones without a preview can't be picked), and tracks a rig's camera as the source (one view of a stereo picture, not mirrored); picking it again goes back to the camera",
-    r.asksToSignIn && JSON.stringify(r.rows) === JSON.stringify(["Rig A:head", "Rig B:chest(off)", "Rig C:"]) &&
-      w.stream && w.name === "Rig A · head" && w.size === "640x400" && w.mirrored === false && w.state && w.state.stereo && w.state.frames >= 3 && /Live: Rig A/.test(w.list) && w.dialogClosed &&
-      r.both === "1280x400" && r.back && !r.back.stream && !r.back.active && r.back.width > 0 && r.signedOut && servedAfter === 0 && sim.writes.length === 0,
-    JSON.stringify({ ...r, servedAfter, writes: sim.writes }));
+  const st = r.stereo || {};
+  check("Live Rigs: signs in on the dashboard's own page and lists rigs (recording first; ones without a preview can't be picked); a stereo camera's JPEGs are tracked as the source (one view, not mirrored)",
+    r.asksToSignIn && JSON.stringify(r.rows) === JSON.stringify(["Rig A:head", "Rig F:head,chest", "Rig D:head", "Rig E:head", "Rig B:chest(off)", "Rig C:"]) &&
+      st.name === "Rig A · head" && st.size === "640x400" && st.mirrored === false && st.state && st.state.stereo && st.state.kind === "jpeg" && /Live: Rig A/.test(st.list) && st.dialogClosed && r.both === "1280x400",
+    JSON.stringify({ rows: r.rows, stereo: st, both: r.both, error: r.error }));
+  check("Live Rigs: a camera with only H.264 keyframes is decoded at full size; a stale camera says so and what was showing carries on; a recording rig can be watched even with its preview flag off",
+    r.keyframes && r.keyframes.kind === "keyframe" && r.keyframes.watching === "Rig D · head 640x360" && r.keyframes.frames >= 2 &&
+      r.stale && /isn't sending new pictures \(its latest is 13 days old\)/.test(r.stale.error) && /^Rig A · head/.test(r.stale.still) && r.recording === "Rig F · head 640x360",
+    JSON.stringify({ keyframes: r.keyframes, stale: r.stale, recording: r.recording }));
+  check("Live Rigs: locks onto the rig that started recording last and says so; a recording you leave isn't locked onto again; back to the camera, nothing more is asked for, and nothing on the dashboard is changed",
+    r.locked && r.locked.host === "rig-f" && r.locked.camera === "head" && r.locked.locked && r.locked.note && r.afterLeaving === "rig-a" &&
+      r.back && !r.back.stream && !r.back.active && r.back.width > 0 && r.signedOut && servedAfter === 0 && sim.writes.length === 0,
+    JSON.stringify({ locked: r.locked, afterLeaving: r.afterLeaving, back: r.back, signedOut: r.signedOut, servedAfter, writes: sim.writes }));
 }
 
 // Test videos made with the bundled ffmpeg: [file name, ffmpeg output options].

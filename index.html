@@ -527,12 +527,13 @@
     </div>
     <div id="rigsBrowse" hidden>
       <div class="toolbar">
+        <label title="As soon as a rig starts recording, watch its head camera (or its first), and stay on it while it records"><input type="checkbox" id="rigsFollow" /> Lock onto a rig that starts recording</label>
         <label><input type="checkbox" id="rigsFull" /> Full resolution</label>
         <label>Stereo cameras: <select id="rigsSide"><option value="left">Left view</option><option value="right">Right view</option><option value="both">Both views</option></select></label>
         <span class="spacer"></span><button id="rigsRefresh">Refresh</button>
       </div>
       <div id="rigsList" class="ops-list"></div>
-      <p class="note">Pick a camera to watch it and track its hands; pick it again to go back to your camera. The pictures are the dashboard's previews: a new one every second or two, so hands jump between pictures. Nothing on the rig is changed. Rigs recording now are listed first.</p>
+      <p class="note">Pick a camera to watch it and track its hands; pick it again to go back to your camera. Rigs recording now are listed first, and can always be watched. The pictures are the dashboard's previews (full-size keyframes where the camera has them): a new one every second or two, so hands jump between pictures. Nothing on the rig is changed.</p>
     </div>
     <p id="rigsError" class="note error-note" hidden></p>
   </div>

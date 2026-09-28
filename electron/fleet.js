@@ -3,9 +3,10 @@
  * hidden feature of the Windows and Linux app, next to Capture Sessions in ops.js).
  *
  * Built for dashboards that list their rigs at /api/fleet/status and pass each rig's own
- * preview through at /proxy/<rig>/api/preview/frame/<camera>: a JPEG of the camera's latest
- * picture. That's what the dashboard's own camera tiles show, so it's a new picture every
- * second or two, and it only ever reads: nothing on a rig or the dashboard is changed.
+ * preview through at /proxy/<rig>/api/preview/keyframe/<camera> (the camera's latest H.264
+ * keyframe, full size) and /proxy/<rig>/api/preview/frame/<camera> (a JPEG of it). That's
+ * what the dashboard's own camera tiles show, so it's a new picture every second or two,
+ * and it only ever reads: nothing on a rig or the dashboard is changed.
  *
  * Nothing specific to one dashboard is in the code: its web address is entered once and
  * kept in this app's data folder. The sign-in is the user's own, on the dashboard's own
@@ -16,7 +17,7 @@
  *   await fleet.configure("https://fleet.example.com");
  *   await fleet.signIn(parentWindow);           // resolves once the dashboard answers as signed in
  *   await fleet.rigs();                         // [{ host, name, state, cameras, canWatch, ... }]
- *   fleet.serveFrame(host, camera, { full });   // a Response with the camera's latest JPEG
+ *   fleet.serveFrame(host, camera, { kind, full }); // a Response with the camera's latest picture
  */
 
 const fs = require("fs");
@@ -27,6 +28,7 @@ const CAMERA_RE = /^[a-z0-9_]{1,32}$/i;
 // Generations whose previews start on demand; the others only show a picture while their
 // preview is already running (the dashboard's own rule; starting one would change the rig).
 const ON_DEMAND = new Set(["rock5c", "granite"]);
+const FRAME_TIMEOUT_MS = 10000;
 
 const isRedirect = (err) => /redirect/i.test(String((err && err.message) || err));
 
@@ -145,8 +147,10 @@ class FleetClient {
     return j.devices
       .filter((d) => d && HOST_RE.test(d.hostname || ""))
       .map((d) => {
-        const cameras = (Array.isArray(d.preview_cameras) ? d.preview_cameras : []).filter((c) => CAMERA_RE.test(c));
+        const roles = (Array.isArray(d.cameras_detail) ? d.cameras_detail : []).map((c) => c && c.role);
+        const cameras = [...new Set([...(Array.isArray(d.preview_cameras) ? d.preview_cameras : []), ...roles])].filter((c) => typeof c === "string" && CAMERA_RE.test(c));
         const online = !!d.online;
+        const recording = d.capture_state === "recording";
         return {
           host: d.hostname,
           name: d.display_name || d.readable_name || d.hostname,
@@ -156,37 +160,51 @@ class FleetClient {
           recordingS: Number(d.recording_duration_s) || 0,
           session: d.session_name || "",
           cameras,
-          // Mirrors the dashboard: a relayed rig has no proxy, and only on-demand previews
-          // (or ones already running) can be shown without starting anything on the rig.
-          canWatch: online && d.reachable !== false && !d.via_relay && cameras.length > 0 && (!!d.preview_active || ON_DEMAND.has(d.generation)),
+          // Mirrors the dashboard: a relayed rig has no proxy, and only on-demand previews,
+          // ones already running, or a recording's own pictures can be shown without starting
+          // anything on the rig.
+          canWatch: online && d.reachable !== false && !d.via_relay && cameras.length > 0 && (!!d.preview_active || recording || ON_DEMAND.has(d.generation)),
         };
       })
       .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
   }
 
-  // The camera's latest picture, as the dashboard's own camera tile gets it. Default: the
-  // preview size (about 854 wide); full: the camera's own resolution (bigger downloads).
-  async serveFrame(host, camera, { full = false } = {}) {
+  // The camera's latest picture, as the dashboard's own camera tile gets it. kind
+  // "keyframe": its latest H.264 keyframe (full size; x-codec-string says how to decode it);
+  // "jpeg": a JPEG, the preview size (about 854 wide) or with full, the camera's own size.
+  // The rig's x-frame-* headers (the picture's age, and whether it's stale) are passed on.
+  async serveFrame(host, camera, { kind = "jpeg", full = false } = {}) {
     if (!this.cfg.site || !HOST_RE.test(host) || !CAMERA_RE.test(camera)) return new Response("Not found", { status: 404 });
-    const query = full ? "quality=full" : "fps=2";
+    const endpoint = kind === "keyframe" ? `keyframe/${camera}?` : `frame/${camera}?${full ? "quality=full" : "fps=2"}&`;
     let res;
+    // A rig that doesn't answer mustn't hold up the next picture.
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), FRAME_TIMEOUT_MS);
     try {
-      res = await this.ses.fetch(`${this.cfg.site}/proxy/${host}/api/preview/frame/${camera}?${query}&t=${Date.now()}`, { cache: "no-store", redirect: "manual", credentials: "include" });
+      res = await this.ses.fetch(`${this.cfg.site}/proxy/${host}/api/preview/${endpoint}t=${Date.now()}`, { cache: "no-store", redirect: "manual", credentials: "include", signal: abort.signal });
     } catch (err) {
+      if (abort.signal.aborted) return new Response("The rig took too long to answer", { status: 504 });
       if (isRedirect(err)) {
         this.signedIn = false;
         return new Response("Signed out", { status: 401 });
       }
       return new Response(String(err.message || err), { status: 502 });
+    } finally {
+      clearTimeout(timer);
     }
     const type = res.headers.get("content-type") || "";
     // (A redirect comes back as status 0, "opaqueredirect".)
-    if ((res.ok && !type.startsWith("image/")) || res.status === 401 || res.status < 200 || (res.status >= 300 && res.status < 400)) {
+    if ((res.ok && !/^(image|video)\//.test(type)) || res.status === 401 || res.status < 200 || (res.status >= 300 && res.status < 400)) {
       // A sign-in page (or a redirect to one) instead of a picture: signed out.
       this.signedIn = false;
       return new Response("Signed out", { status: 401 });
     }
-    return new Response(res.body, { status: res.status, headers: { "content-type": type || "application/octet-stream", "cache-control": "no-store" } });
+    const headers = { "content-type": type || "application/octet-stream", "cache-control": "no-store" };
+    for (const h of ["x-codec-string", "x-frame-stale", "x-frame-age-ms", "x-frame-unix-ns"]) {
+      const v = res.headers.get(h);
+      if (v) headers[h] = v;
+    }
+    return new Response(res.body, { status: res.status, headers });
   }
 }
 

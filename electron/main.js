@@ -119,9 +119,12 @@ function serveAppFiles() {
     if (url.pathname.startsWith("/__media/")) return serveMedia(request, url.pathname.slice("/__media/".length));
     if (url.pathname.startsWith("/__ops/") && ops) return ops.serve(request, url.pathname.slice("/__ops/".length));
     if (url.pathname.startsWith("/__fleet/") && fleet) {
-      // /__fleet/<rig>/<camera>[?full=1]: that camera's latest picture.
+      // /__fleet/<rig>/<camera>[?kind=keyframe|jpeg][&full=1]: that camera's latest picture.
       const [host, camera] = url.pathname.slice("/__fleet/".length).split("/");
-      return fleet.serveFrame(decodeURIComponent(host || ""), decodeURIComponent(camera || ""), { full: url.searchParams.get("full") === "1" });
+      return fleet.serveFrame(decodeURIComponent(host || ""), decodeURIComponent(camera || ""), {
+        kind: url.searchParams.get("kind") === "keyframe" ? "keyframe" : "jpeg",
+        full: url.searchParams.get("full") === "1",
+      });
     }
     let rel = decodeURIComponent(url.pathname);
     if (rel === "/" || rel === "") rel = "/index.html";
