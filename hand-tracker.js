@@ -28,6 +28,8 @@
  *   HandTracker.listCameras();            // [{ deviceId, label }]
  *   HandTracker.setModelComplexity(0 | 1);   // 0 = lite/fast, 1 = full/accurate
  *   HandTracker.setMaxHands(1 | 2);          // how many hands to track at once
+ *   HandTracker.setConfidence({ detection, tracking }); // MediaPipe's cut-offs (0-1) for finding a
+ *                                         // hand and for keeping it
  *   HandTracker.getFeatures("Left" | "Right"); // single hand's features
  *   HandTracker.getFrameImage();          // the picture being tracked (the video, or a flipped/cropped copy)
  *   HandTracker.setSquareCrop(true/false); // track only the centre square of the picture
@@ -99,6 +101,13 @@
   // A hand unseen for longer than this is treated as a brand-new hand when it
   // returns, so smoothing/velocity never blend with a stale pose.
   const STALE_MS = 250;
+  // A hand MediaPipe loses for a moment (common with a hand in front of the face, where it
+  // stands out least) is still reported, where it was last, for this long, marked held:
+  // the skeleton, labels, cards and 3D view don't blink. Motion capture skips held frames.
+  const HOLD_MS = 150;
+  // MediaPipe now and then reports one hand twice, as two almost identical detections
+  // (often with different labels); boxes overlapping more than this are one hand.
+  const DUPLICATE_OVERLAP = 0.5;
   // A running camera that delivers no new frame for STALL_MS has stalled (driver
   // hiccup, unplugged): it's reopened and retried until it's back. Before the
   // first frame arrives, allow longer: some webcams take seconds to start.
@@ -118,6 +127,7 @@
   let cameraStalled = false;
   let maxHands = 2;
   let modelComplexity = 0;
+  let confidence = { detection: 0.7, tracking: 0.7 }; // MediaPipe's minDetectionConfidence / minTrackingConfidence
   // desktopSourceId: a screen or window (Electron desktopCapturer id) instead of a camera;
   // crop: the part of the picture to track, as fractions { x, y, w, h }.
   let cameraOpts = { deviceId: null, width: 1280, height: 720, facing: null, desktopSourceId: null, desktopName: "", crop: null };
@@ -574,6 +584,35 @@
     });
   }
 
+  // Indices of the hands to keep: of two detections whose boxes mostly overlap (one hand
+  // reported twice), the one with the higher handedness score.
+  function distinctHands(rawList, handednessList) {
+    const box = (lm) => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const p of lm) {
+        x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
+        y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+      }
+      return { x0, y0, x1, y1 };
+    };
+    const overlap = (a, b) => {
+      const w = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0), h = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+      if (w <= 0 || h <= 0) return 0;
+      const inter = w * h, area = (r) => (r.x1 - r.x0) * (r.y1 - r.y0);
+      return inter / Math.min(area(a), area(b)); // of the smaller box: a hand inside another's box counts too
+    };
+    const boxes = rawList.map(box);
+    const score = (i) => (handednessList[i] ? handednessList[i].score : 0);
+    const dropped = new Set();
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        if (dropped.has(i) || dropped.has(j)) continue;
+        if (overlap(boxes[i], boxes[j]) > DUPLICATE_OVERLAP) dropped.add(score(i) >= score(j) ? j : i);
+      }
+    }
+    return rawList.map((_, i) => i).filter((i) => !dropped.has(i));
+  }
+
   function onResults(results) {
     if (switching) return;
     // Video files are timed by the video's own clock, so motion data matches the
@@ -582,11 +621,18 @@
     const region = results.region !== undefined ? results.region : focusRegion;
     let rawList = results.multiHandLandmarks || [];
     if (region) rawList = rawList.map((raw) => fromRegion(raw, region));
-    const worldList = results.multiHandWorldLandmarks || [];
-    const handednessList = results.multiHandedness || [];
-    const extras = results.extras || []; // per hand, from an external source: { score, xyz }
+    let worldList = results.multiHandWorldLandmarks || [];
+    let handednessList = results.multiHandedness || [];
+    let extras = results.extras || []; // per hand, from an external source: { score, xyz }
 
     tickFps();
+
+    // One hand reported twice: keep the detection MediaPipe was surer of.
+    const keep = distinctHands(rawList, handednessList);
+    if (keep.length < rawList.length) {
+      const pick = (list) => keep.map((i) => list[i]);
+      [rawList, worldList, handednessList, extras] = [pick(rawList), pick(worldList), pick(handednessList), pick(extras)];
+    }
 
     const labels = assignLabels(rawList, handednessList, timestamp, far.enabled ? bodySidesFor(rawList) : []);
     const outHands = [];
@@ -618,6 +664,14 @@
         features,
         orientation: { palm, palmEuler, bones },
       });
+      s.lastOut = outHands[outHands.length - 1];
+    }
+    // Hands lost only a moment ago: still shown where they were (see HOLD_MS).
+    for (const [label, s] of Object.entries(state)) {
+      if (outHands.length >= maxHands) break;
+      if (!s.lastOut || outHands.some((h) => h.handedness === label)) continue;
+      const age = timestamp - s.lastSeen;
+      if (age >= 0 && age <= HOLD_MS) outHands.push({ ...s.lastOut, held: true });
     }
     // The skeleton is drawn from the smoothed landmarks, so it doesn't shake.
     drawStage(results.fullImage || (region && fullFrame) || results.image || videoEl, outHands.map((h) => h.imageLandmarks));
@@ -1203,8 +1257,8 @@
     hands.setOptions({
       maxNumHands: maxHands,
       modelComplexity,
-      minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.7,
+      minDetectionConfidence: confidence.detection,
+      minTrackingConfidence: confidence.tracking,
     });
 
     hands.onResults(onResults);
@@ -1329,6 +1383,11 @@
     }
   }
 
+  function setConfidence({ detection = confidence.detection, tracking = confidence.tracking } = {}) {
+    confidence = { detection: Math.min(0.95, Math.max(0.1, Number(detection))), tracking: Math.min(0.95, Math.max(0.1, Number(tracking))) };
+    if (hands) hands.setOptions({ minDetectionConfidence: confidence.detection, minTrackingConfidence: confidence.tracking });
+  }
+
   function setMaxHands(value) {
     maxHands = value === 1 ? 1 : 2;
     if (hands) hands.setOptions({ maxNumHands: maxHands });
@@ -1375,6 +1434,8 @@
     setModelComplexity,
     setMaxHands,
     getMaxHands: () => maxHands,
+    setConfidence,
+    getConfidence: () => ({ ...confidence }),
     toCanvasPoint,
     getFeatures,
     getFrameImage: () => lastFrame || videoEl,

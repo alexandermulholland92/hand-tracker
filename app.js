@@ -1158,6 +1158,10 @@
     };
   }
 
+  // Set while trackWholeVideo waits for a Capture Whole Video run: gets the motion data
+  // instead of the export panel.
+  let captureWaiter = null;
+
   function toggleMotion() {
     if (!RobotMotion.isRecording()) {
       if (motion && !motion.exported && !confirm("Discard the previous motion capture? It hasn't been exported yet.")) return;
@@ -1180,6 +1184,12 @@
     motionBtn.firstChild.textContent = "Start Motion Capture";
     motionBtn.classList.remove("recording");
     setCaptureControlsLocked(false);
+    if (captureWaiter) {
+      const done = captureWaiter;
+      captureWaiter = null;
+      done(data);
+      return;
+    }
     const motiveFrames = motiveRecording ? natnetApi.recordStop() : Promise.resolve(null);
     motiveRecording = false;
     return motiveFrames.then((frames) => {
@@ -1704,6 +1714,31 @@
     toggleMotion();
     HandTracker.file.play();
   });
+  // Tracks every frame of a video (by address) and resolves with its motion capture, the
+  // same way as Capture Whole Video; for batch tracking of capture sessions (ops-sessions.js).
+  // onProgress(seconds done, seconds total); stop() ends it early (resolving with what's done).
+  async function trackWholeVideo(name, url, { onProgress, rate = 2 } = {}) {
+    if (!(await openVideo(name, url))) throw new Error(sourceNote.textContent || `Couldn't open ${name}`);
+    HandTracker.file.setRate(rate); // every frame is still tracked; this only shortens the waits
+    return new Promise((resolve) => {
+      const timer = setInterval(() => onProgress && onProgress(HandTracker.file.time(), HandTracker.file.duration()), 500);
+      captureWaiter = (data) => {
+        clearInterval(timer);
+        resolve(data);
+      };
+      HandTracker.file.pause();
+      HandTracker.file.seek(0);
+      toggleMotion();
+      HandTracker.file.play();
+    });
+  }
+  function stopTracking() {
+    if (RobotMotion.isRecording()) {
+      HandTracker.file.pause();
+      toggleMotion();
+    }
+  }
+
   // At the end of the video, finish whatever was being recorded.
   HandTracker.onVideoEnded(() => {
     if (VideoRecorder.isRecording()) toggleVideo();
@@ -1762,6 +1797,16 @@
     }
     // Hand mouse, floating keyboard and gesture actions (Windows and Linux app only).
     PcControl.init({ desktop, prefs, setPref, gestureLabels: GESTURE_LABELS });
+    // Capture sessions from a capture-operations dashboard: hidden until Ctrl+Alt+P.
+    if (desktop && desktop.ops) {
+      OpsSessions.init({ desktop, prefs, setPref });
+      document.addEventListener("keydown", (e) => {
+        if (e.ctrlKey && e.altKey && !e.shiftKey && e.key.toLowerCase() === "p") {
+          e.preventDefault();
+          OpsSessions.toggleShown();
+        }
+      });
+    }
     const buildMeta = document.querySelector('meta[name="hand-tracker-build"]');
     if (buildMeta) showBuild(buildMeta.dataset.version, buildMeta.content);
     else if (!desktop) showBuild(null, null);
@@ -1844,7 +1889,7 @@
   }
 
   // Entry points for the automated checks (same code paths as the buttons).
-  window.HandTrackerApp = { openVideo, backToCamera, openCapturePicker, useCaptureSource };
+  window.HandTrackerApp = { openVideo, backToCamera, openCapturePicker, useCaptureSource, trackWholeVideo, stopTracking };
 
   main().catch((err) => {
     console.error(err);

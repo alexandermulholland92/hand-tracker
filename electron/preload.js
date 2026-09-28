@@ -79,6 +79,30 @@ contextBridge.exposeInMainWorld("desktop", {
   // job = { path, formats (Motive's: c3d/trc/csv/fbx/bvh), baseName, title, extraFiles: [{ format, suffix, ext, data }] }
   exportTake: (job) => ipcRenderer.invoke("tak:export", job),
 
+  // Saving many results into one folder: pick it once ({ token, dir } or { canceled }),
+  // then saveFilesTo(token, { baseName, files }) like saveFiles.
+  chooseFolder: (title) => ipcRenderer.invoke("files:choose-folder", { title }),
+  saveFilesTo: (token, job) => ipcRenderer.invoke("files:save-to", { token, ...job }),
+
+  // Capture sessions from a capture-operations dashboard (see electron/ops.js).
+  ops: {
+    status: () => ipcRenderer.invoke("ops:status"),
+    configure: (site) => ipcRenderer.invoke("ops:configure", { site }),
+    sendCode: (email) => ipcRenderer.invoke("ops:send-code", { email }),
+    verifyCode: (email, code) => ipcRenderer.invoke("ops:verify-code", { email, code }),
+    signInWithPassword: (email, password) => ipcRenderer.invoke("ops:password", { email, password }),
+    signOut: () => ipcRenderer.invoke("ops:sign-out"),
+    // Opens the dashboard's own sign-in page; resolves the new status once signed in there.
+    signInWithSite: () => ipcRenderer.invoke("ops:sign-in-with-site"),
+    // [{ id, when, duration, review, program, device, operator, venue, task }]
+    sessions: (query) => ipcRenderer.invoke("ops:sessions", query),
+    // { sessionId, window, clock, streams: [{ position, stream, path, bytes, fps, frames, resolution, startNs, device }] }
+    manifest: (sessionId) => ipcRenderer.invoke("ops:manifest", { sessionId }),
+    // An app:// address the video element can play (and seek) directly.
+    stream: (sessionId, path) => ipcRenderer.invoke("ops:stream", { sessionId, path }),
+    forget: (url) => ipcRenderer.invoke("ops:forget", { url }),
+  },
+
   // Luxonis OAK cameras (OAK-D, OAK-D Lite, OAK-1...): hand tracking on the camera itself.
   oak: {
     // { ready, python, models, reason, versions }

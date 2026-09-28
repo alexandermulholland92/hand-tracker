@@ -209,7 +209,8 @@
   function feed(handsOrHand, timestamp) {
     if (!recording || !handsOrHand) return;
     const list = Array.isArray(handsOrHand) ? handsOrHand : [handsOrHand];
-    for (const hand of list) feedHand(hand, timestamp);
+    // (A hand held on screen for a moment after it was lost isn't a new sample.)
+    for (const hand of list) if (!hand.held) feedHand(hand, timestamp);
   }
 
   // Average capture rate for one hand, measured across its own frames.
@@ -248,6 +249,9 @@
       frame_rate: busiest ? busiest.frame_rate : null,
       duration,
       recorded_at: recordedAt,
+      // The first sample's time on the source's clock, in seconds (for a video file, its media
+      // time), so recordings of several cameras can be lined up.
+      time_origin_s: sessionStart === null ? null : sessionStart / 1000,
       coordinate_frame: "wrist_relative + world_aligned",
       hands,
       notes: [

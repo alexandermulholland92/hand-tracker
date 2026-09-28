@@ -7,7 +7,7 @@
  * .tak support (through the Motive installed on this PC) over IPC.
  */
 
-const { app, BrowserWindow, protocol, session, ipcMain, dialog, shell, Menu, desktopCapturer, screen, globalShortcut, net } = require("electron");
+const { app, BrowserWindow, protocol, session, ipcMain, dialog, shell, Menu, desktopCapturer, screen, globalShortcut, net, safeStorage } = require("electron");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -17,6 +17,7 @@ const exporter = require("./exporter");
 const tak = require("./tak");
 const { InputDriver } = require("./input");
 const { OakCamera } = require("./oak");
+const { OpsClient } = require("./ops");
 
 const APP_ROOT = path.join(__dirname, "..");
 const SCHEME = "app";
@@ -57,6 +58,8 @@ let keyboardWindow = null; // the floating keyboard
 const input = new InputDriver(); // mouse and keyboard input to this computer (see input.js)
 let oak = null; // Luxonis OAK cameras (see oak.js), created once the app is ready
 let oakViewer = null; // the window receiving the OAK camera's frames
+let ops = null; // capture-session dashboard (see ops.js), created once the app is ready
+const outputFolders = new Map(); // token -> folder the user picked for batch saving
 const exportedPaths = new Set(); // files this session wrote; the only ones "show in folder" will reveal
 // Imported videos converted to MP4 for playback: id -> { file, owner: webContents id }. Only these are served under /__media/.
 const mediaFiles = new Map();
@@ -112,6 +115,7 @@ function serveAppFiles() {
     const url = new URL(request.url);
     if (url.host !== HOST) return new Response("Not found", { status: 404 });
     if (url.pathname.startsWith("/__media/")) return serveMedia(request, url.pathname.slice("/__media/".length));
+    if (url.pathname.startsWith("/__ops/") && ops) return ops.serve(request, url.pathname.slice("/__ops/".length));
     let rel = decodeURIComponent(url.pathname);
     if (rel === "/" || rel === "") rel = "/index.html";
     const filePath = path.normalize(path.join(APP_ROOT, rel));
@@ -426,6 +430,76 @@ function registerOakIpc() {
   });
 }
 
+// ---------- Capture sessions from a capture-operations dashboard (hidden feature) ----------
+function registerOpsIpc() {
+  ops = new OpsClient(app.getPath("userData"), (url, init) => net.fetch(url, init), safeStorage);
+  handle("ops:status", () => ops.status());
+  handle("ops:configure", (event, { site }) => ops.configure(site));
+  handle("ops:send-code", (event, { email }) => ops.sendCode(email));
+  handle("ops:verify-code", (event, { email, code }) => ops.verifyCode(email, code));
+  handle("ops:password", (event, { email, password }) => ops.signInWithPassword(email, password));
+  handle("ops:sign-out", () => ops.signOut());
+  // Sign in on the dashboard's own page, in a window of its own (a separate, private
+  // browser profile with no access to the app), then take the session it keeps.
+  handle("ops:sign-in-with-site", (event) => signInWithSite(BrowserWindow.fromWebContents(event.sender)));
+  handle("ops:sessions", (event, query) => ops.sessions(query || {}));
+  handle("ops:manifest", (event, { sessionId }) => ops.manifest(String(sessionId)));
+  handle("ops:stream", (event, { sessionId, path: rel }) => ({ url: `${SCHEME}://${HOST}/__ops/${ops.stream(String(sessionId), String(rel))}` }));
+  handle("ops:forget", (event, { url }) => {
+    const id = String(url || "").split("/__ops/")[1];
+    if (id) ops.forget(id);
+  });
+}
+
+function signInWithSite(parent) {
+  const site = ops.status().site;
+  if (!site) throw new Error("Connect to the dashboard first.");
+  return new Promise((resolve, reject) => {
+    const win = new BrowserWindow({
+      parent: parent || undefined,
+      width: 480,
+      height: 720,
+      title: "Sign in to your dashboard",
+      autoHideMenuBar: true,
+      webPreferences: { partition: "ops-sign-in", sandbox: true, contextIsolation: true, nodeIntegration: false },
+    });
+    let done = false;
+    const finish = (err, value) => {
+      if (done) return;
+      done = true;
+      clearInterval(timer);
+      if (!win.isDestroyed()) win.close();
+      err ? reject(err) : resolve(value);
+    };
+    // Links away from the dashboard open in the real browser, not here.
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:\/\//.test(url)) shell.openExternal(url);
+      return { action: "deny" };
+    });
+    const timer = setInterval(async () => {
+      if (win.isDestroyed()) return;
+      try {
+        const saved = await win.webContents.executeJavaScript(`(() => {
+          const k = Object.keys(localStorage).find((x) => /^sb-.*-auth-token$/.test(x));
+          if (!k) return null;
+          const v = JSON.parse(localStorage.getItem(k));
+          return v && v.access_token && v.refresh_token ? { access_token: v.access_token, refresh_token: v.refresh_token, expires_at: v.expires_at, user: { email: v.user && v.user.email } } : null;
+        })()`);
+        if (saved) {
+          const status = ops.adoptSession(saved);
+          // Sign that window's own copy out of this browser profile; the app keeps its own.
+          await win.webContents.session.clearStorageData().catch(() => {});
+          finish(null, status);
+        }
+      } catch {
+        // the page is still loading or navigating
+      }
+    }, 1000);
+    win.on("closed", () => finish(new Error("Sign-in window closed before signing in.")));
+    win.loadURL(`${site}/`); // the dashboard shows its sign-in page when signed out
+  });
+}
+
 function registerShortcuts() {
   try {
     globalShortcut.register(SHORTCUTS.mouse, () => {
@@ -501,6 +575,20 @@ function registerIpc() {
   handle("files:save", async (event, { title, baseName, files }) => {
     const dir = await chooseFolder(event, title);
     if (!dir) return { canceled: true, results: [] };
+    return { dir, results: await writeFiles(dir, baseName, files) };
+  });
+
+  // For saving many results into one folder: pick it once, then save into it by token.
+  handle("files:choose-folder", async (event, { title }) => {
+    const dir = await chooseFolder(event, title);
+    if (!dir) return { canceled: true };
+    const token = require("crypto").randomBytes(12).toString("hex");
+    outputFolders.set(token, dir);
+    return { token, dir };
+  });
+  handle("files:save-to", async (event, { token, baseName, files }) => {
+    const dir = outputFolders.get(String(token));
+    if (!dir) throw new Error("Choose the folder again.");
     return { dir, results: await writeFiles(dir, baseName, files) };
   });
 
@@ -658,6 +746,7 @@ app.whenReady().then(() => {
   registerIpc();
   registerPcIpc();
   registerOakIpc();
+  registerOpsIpc();
   buildMenu();
   mainWindow = createWindow();
   mainWindow.on("closed", () => {

@@ -363,6 +363,7 @@ async function run(win) {
       rot.back.startsWith("0 ") && rot.back.endsWith(rot.before), JSON.stringify(rot));
 
   await checkPcControl(js);
+  await checkCaptureSessions(js);
 
   // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
   // in go through the same tracking, with the camera's confidence and measured distance.
@@ -396,6 +397,34 @@ async function run(win) {
     ext.source === "external" && ext.size === "1152x648" && ext.stage === "1152x648" && ext.side === "Right" && ext.score === 0.9 &&
       JSON.stringify(ext.distance) === "[100,-50,850]" && ext.world === 21 && ext.back === "camera", JSON.stringify(ext));
 
+  // One hand reported twice (two overlapping detections) counts once; a hand lost for a
+  // moment is still shown (held) for up to 150 ms, then goes.
+  const dup = await js(`(async () => {
+    const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],
+      [0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]];
+    const hand = (dx) => T.map(([x, y]) => ({ x: 0.5 + x + dx, y: 0.7 + y, z: 0 }));
+    let last = null;
+    HandTracker.onHandLandmarks((p) => (last = p.hands));
+    HandTracker.setPaused(true); // only these frames
+    const image = document.getElementById("video");
+    const out = {};
+    HandTracker._processResults({ image, multiHandLandmarks: [hand(0), hand(0.004)], multiHandedness: [{ label: "Left", score: 0.95 }, { label: "Right", score: 0.6 }] });
+    out.twice = last.length + " " + (last[0] && last[0].handedness);
+    HandTracker._processResults({ image, multiHandLandmarks: [hand(0), hand(0.3)], multiHandedness: [{ label: "Left", score: 0.95 }, { label: "Right", score: 0.9 }] });
+    out.two = last.length;
+    await new Promise((r) => setTimeout(r, 250)); // past the hold for the second hand
+    HandTracker._processResults({ image, multiHandLandmarks: [hand(0)], multiHandedness: [{ label: "Left", score: 0.95 }] });
+    HandTracker._processResults({ image, multiHandLandmarks: [], multiHandedness: [] });
+    out.heldNow = last.length + " " + !!(last[0] && last[0].held);
+    await new Promise((r) => setTimeout(r, 250));
+    HandTracker._processResults({ image, multiHandLandmarks: [], multiHandedness: [] });
+    out.gone = last.length;
+    HandTracker.setPaused(false);
+    return out;
+  })()`);
+  check("A hand MediaPipe reports twice counts once; a hand lost for a moment is held on screen briefly, then goes",
+    dup.twice === "1 Right" && dup.two === 2 && dup.heldNow === "1 true" && dup.gone === 0, JSON.stringify(dup));
+
   // Tracking carries on with the window minimized (for the hand mouse).
   const framesIn = async (ms) => {
     await js("window.__frames = 0; if (!window.__countFrames) { window.__countFrames = true; HandTracker.onHandLandmarks(() => window.__frames++); } true");
@@ -406,7 +435,7 @@ async function run(win) {
   win.minimize();
   await new Promise((r) => setTimeout(r, 800));
   const minimizedFrames = await framesIn(3000);
-  win.restore();
+  win.showInactive(); // restored without taking the keyboard focus (typing elsewhere mustn't reach it)
   await new Promise((r) => setTimeout(r, 800));
   check("Tracking keeps going with the window minimized (at least half the usual rate)", shownFrames > 20 && minimizedFrames >= shownFrames / 2,
     `${shownFrames} frames in 3 s shown, ${minimizedFrames} minimized`);
@@ -549,6 +578,28 @@ async function checkPcControl(js) {
     o.fistEarly === 0 && o.fist.join() === "playpause tap" && o.thumbs >= 3 && o.thumbs <= 5 && o.wrongHand === 0 &&
       o.hold.join() === "left down,left up" && o.web.join() === "http://127.0.0.1:9/hook POST Point" && o.disabled === 0 && o.keyboardOff === 0,
     JSON.stringify(o));
+}
+
+// Capture Sessions is hidden: it stays out of sight until Ctrl+Alt+P, then asks for a
+// dashboard's address (no account is needed to check that), and Ctrl+Alt+P hides it again.
+async function checkCaptureSessions(js) {
+  const r = await js(`(async () => {
+    const $ = (id) => document.getElementById(id);
+    const key = () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "p", ctrlKey: true, altKey: true, bubbles: true }));
+    const saved = () => (JSON.parse(localStorage.getItem("hand-tracker:prefs")) || {}).captureSessions;
+    const out = { hiddenAtStart: $("opsBtn").hidden && $("opsDialog").hidden };
+    key();
+    await new Promise((r) => setTimeout(r, 400));
+    out.shown = !$("opsBtn").hidden && !$("opsDialog").hidden;
+    out.asksForSite = !$("opsSetup").hidden && $("opsSignIn").hidden && $("opsBrowse").hidden;
+    out.remembered = saved() === true;
+    key();
+    out.hiddenAgain = $("opsBtn").hidden && $("opsDialog").hidden && saved() === false;
+    out.batch = typeof HandTrackerApp.trackWholeVideo === "function";
+    return out;
+  })()`);
+  check("Capture Sessions stays hidden until Ctrl+Alt+P, then asks for the dashboard's address; Ctrl+Alt+P hides it again (remembered)",
+    r.hiddenAtStart && r.shown && r.asksForSite && r.remembered && r.hiddenAgain && r.batch, JSON.stringify(r));
 }
 
 // Test videos made with the bundled ffmpeg: [file name, ffmpeg output options].

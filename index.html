@@ -59,6 +59,15 @@
     font-size: 12px; font-weight: 600; letter-spacing: 0.03em;
   }
   /* More settings: the toggles after Overlay and Mirror, closed until opened. */
+  .ops-list { max-height: 46vh; overflow: auto; border: 1px solid #25272e; border-radius: 8px; margin-top: 8px; }
+  .ops-row { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: start; padding: 7px 10px; border-bottom: 1px solid #202227; font-size: 12.5px; cursor: pointer; }
+  .ops-row:hover { background: #1c1e23; }
+  .ops-row small { display: block; opacity: 0.65; margin-top: 2px; }
+  .ops-row .ops-cams { grid-column: 2 / -1; font-size: 12px; opacity: 0.8; }
+  .ops-streams label, #opsFormats label { margin-right: 10px; }
+  .error-note { color: #ffc9c9; }
+  .toolbar .spacer { flex: 1; }
+  #opsProgress { white-space: pre-line; }
   details.settings-box { margin-top: 10px; background: #15161a; border: 1px solid #25272e; border-radius: 8px; }
   details.settings-box > summary {
     cursor: pointer; list-style: none; padding: 7px 12px; font-size: 13px; color: #c9c9cf; user-select: none;
@@ -238,6 +247,7 @@
 
     <div class="toolbar">
       <button id="openVideoBtn" title="Track hands in a video file instead of the camera">Open Video…</button>
+      <button id="opsBtn" hidden title="Track recorded capture sessions from your capture-operations dashboard (Ctrl+Alt+P shows or hides this)">Capture Sessions…</button>
       <input type="file" id="videoFileInput" hidden
              accept="video/*,.mp4,.m4v,.mov,.qt,.mkv,.webm,.avi,.divx,.mpg,.mpeg,.mpe,.m2v,.m1v,.vob,.ts,.mts,.m2ts,.wmv,.asf,.flv,.f4v,.3gp,.3g2,.ogv,.ogg,.dv,.mxf,.rm,.rmvb,.y4m,.gif,.h264,.264,.hevc,.h265" />
       <label>Camera <select id="cameraSelect"><option value="">Default camera</option></select></label>
@@ -281,6 +291,7 @@
       <span id="vidName" class="status video-name"></span>
     </div>
     <div id="sourceNote" class="note" hidden></div>
+    <div id="opsRunBar" class="toolbar video-bar" hidden><span id="opsRunText" class="status"></span><span class="spacer"></span><button id="opsRunStop" hidden>Stop</button></div>
 
     <div class="toolbar">
       <button id="overlayToggle" class="active" aria-pressed="true" title="Show the skeleton and labels (O)">Overlay: ON<kbd>O</kbd></button>
@@ -444,6 +455,42 @@
   </div>
 </div>
 
+<div id="opsDialog" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="opsTitle">
+    <div class="modal-head"><b id="opsTitle">Capture sessions</b><span id="opsWho" class="status"></span><button id="opsSignOut" hidden>Sign out</button><button id="opsClose" aria-label="Close">✕</button></div>
+    <div id="opsSetup" hidden>
+      <p class="note">Track recorded sessions from your capture-operations dashboard. Enter its address once; Hand Tracker reads how to reach its data from the site itself and keeps that on this computer.</p>
+      <div class="toolbar"><input type="text" id="opsSite" placeholder="https://…" spellcheck="false" autocomplete="off" style="flex:1" /><button id="opsConnect" class="primary">Connect</button></div>
+    </div>
+    <div id="opsSignIn" hidden>
+      <p class="note">Sign in with your dashboard account.</p>
+      <div class="toolbar"><button id="opsSiteSignIn" class="primary">Sign in with the website…</button><span class="status">opens its own sign-in page; the easiest way</span></div>
+      <p class="note">Or here:</p>
+      <div class="toolbar"><input type="text" id="opsEmail" placeholder="Email" spellcheck="false" autocomplete="username" style="flex:1" /><button id="opsSendCode">Email me a code</button></div>
+      <div class="toolbar" id="opsCodeRow" hidden><input type="text" id="opsCode" placeholder="Code from the email" spellcheck="false" autocomplete="one-time-code" /><button id="opsVerify" class="primary">Sign in</button></div>
+      <div class="toolbar"><input type="password" id="opsPassword" placeholder="…or your password" autocomplete="current-password" /><button id="opsPasswordBtn">Sign in with password</button></div>
+    </div>
+    <div id="opsBrowse" hidden>
+      <div class="toolbar">
+        <input type="text" id="opsSearch" placeholder="Search contributor, task or venue" spellcheck="false" autocomplete="off" style="flex:1" />
+        <button id="opsSearchBtn">Search</button>
+      </div>
+      <div class="toolbar ops-streams">
+        <span class="bar-label">Track these cameras:</span>
+        <span id="opsStreamPicks"></span>
+      </div>
+      <div class="toolbar">
+        <span class="bar-label">Save as</span>
+        <span id="opsFormats"></span>
+      </div>
+      <div id="opsList" class="ops-list"></div>
+      <div class="toolbar"><button id="opsMore">Load more</button><span class="spacer"></span><span id="opsPicked" class="status"></span><button id="opsTrack" class="primary" disabled>Track selected…</button><button id="opsStop" hidden>Stop</button></div>
+      <div id="opsProgress" class="note"></div>
+    </div>
+    <p id="opsError" class="note error-note" hidden></p>
+  </div>
+</div>
+
 <div id="oakDialog" class="modal" hidden>
   <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="oakTitle">
     <div class="modal-head"><b id="oakTitle">Luxonis OAK camera</b></div>
@@ -491,6 +538,7 @@
 <script src="motion-export.js"></script>
 <script src="pc-control.js"></script>
 <script src="oak-source.js"></script>
+<script src="ops-sessions.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

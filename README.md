@@ -371,6 +371,7 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 ## Limitations
 
 - Depth (z) comes from MediaPipe's single-camera estimate, not a measurement; see the note on scale above.
+- A hand held in front of your face is hard for MediaPipe to find, because there's little contrast between skin and skin: an open hand already being tracked usually stays tracked, but a fist or a pointing hand in front of the face often isn't found at all (tested live; lowering MediaPipe's confidence thresholds didn't help and made it mistake the face for a hand). Keep the hand beside your face, or against a contrasting background. When MediaPipe reports the same hand twice it's counted once, and a hand lost for a moment (up to 150 ms) stays on screen so the skeleton and labels don't flicker.
 - Task phases (reach / grasp / manipulate / release) come from simple thresholds on finger curl and wrist speed, not a trained classifier.
 - BVH joint rotations are reconstructed from joint positions. Twist along a finger bone can't be recovered from landmarks, so fingers bend but never twist.
 - Readable-text detection scans about twice a second and waits for three matching scans, so text straightens about a second after it appears, and text that moves quickly can stay mirrored.
