@@ -382,6 +382,7 @@ async function run(win) {
 
   await checkPcControl(js);
   await checkCaptureSessions(js);
+  await checkOpsStreaming();
   await checkLiveRigs(js);
 
   // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
@@ -618,6 +619,59 @@ async function checkPcControl(js) {
     o.fistEarly === 0 && o.fist.join() === "playpause tap" && o.thumbs >= 3 && o.thumbs <= 5 && o.wrongHand === 0 &&
       o.hold.join() === "left down,left up" && o.web.join() === "http://127.0.0.1:9/hook POST Point" && o.disabled === 0 && o.keyboardOff === 0,
     JSON.stringify(o));
+}
+
+// Capture Sessions' video streaming (electron/ops.js serve), against a stand-in cloud store
+// serving an MP4 with its index at the end, as the rigs' are. The video player asks for
+// "byte N to the end" and drops the answer when it has enough: that must stop costing
+// anything (it used to stall playback a few seconds in), the bytes must be exactly the
+// file's, parts just fetched are reused, and the file's end (where the index is) is served.
+async function checkOpsStreaming() {
+  const { OpsClient } = require("../electron/ops.js");
+  const file = path.join(outDir, "session-video.mp4");
+  spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-t", "6",
+    "-c:v", "libx264", "-b:v", "12M", "-pix_fmt", "yuv420p", file]);
+  const video = fs.readFileSync(file);
+  const size = video.length;
+  const fetched = [];
+  const store = async (url, init) => {
+    const m = /^bytes=(\d+)-(\d*)$/.exec((init && init.headers && init.headers.Range) || "");
+    const from = m ? Number(m[1]) : 0, to = m && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+    fetched.push(`${from}-${to}`);
+    return new Response(video.subarray(from, to + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${from}-${to}/${size}` } });
+  };
+  const ops = new OpsClient(fs.mkdtempSync(path.join(os.tmpdir(), "ops-check-")), store);
+  ops.cfg = { base: "https://db.test", key: "k", bucket: "bucket" };
+  ops.sign = async (sessionId, paths) => ({ [paths[0]]: "https://storage.test/video.mp4" });
+  const id = ops.stream("00000000-0000-0000-0000-000000000000", "head/rgb/video.mp4");
+  const ask = (range) => ops.serve(new Request("app://hand-tracker/__ops/" + id, { headers: { Range: range } }), id);
+  const out = {};
+  // 1. Read a little, then drop it, as the player does: at most the part read and one ahead.
+  let res = await ask("bytes=0-");
+  out.first = { status: res.status, length: Number(res.headers.get("content-length")), range: res.headers.get("content-range") };
+  const reader = res.body.getReader();
+  await reader.read();
+  await reader.cancel();
+  await new Promise((r) => setTimeout(r, 300));
+  out.fetchedAfterDropping = fetched.length;
+  // 2. Read it all: exactly the file.
+  res = await ask("bytes=0-");
+  const all = Buffer.from(await res.arrayBuffer());
+  out.whole = all.equals(video);
+  out.fetchedForWhole = fetched.length;
+  // 3. Again from inside a part just fetched: nothing new is fetched for it.
+  const before = fetched.length;
+  res = await ask(`bytes=${size - 1500000}-`);
+  const tail = Buffer.from(await res.arrayBuffer());
+  out.tail = { status: res.status, same: tail.equals(video.subarray(size - 1500000)), newFetches: fetched.length - before };
+  // 4. The index at the end, as the player asks for it first.
+  res = await ask(`bytes=${size - 1000}-`);
+  out.end = { range: res.headers.get("content-range"), same: Buffer.from(await res.arrayBuffer()).equals(video.subarray(size - 1000)) };
+  const parts = Math.ceil(size / (4 * 1024 * 1024));
+  check("Capture Sessions: session videos stream a part at a time (a dropped request stops fetching), byte for byte, reusing parts just fetched",
+    out.first.status === 206 && out.first.length === size && out.first.range === `bytes 0-${size - 1}/${size}` && out.fetchedAfterDropping <= 2 &&
+      out.whole && out.fetchedForWhole === parts && out.tail.status === 206 && out.tail.same && out.tail.newFetches === 0 && out.end.same && parts >= 2,
+    JSON.stringify({ size, parts, ...out }));
 }
 
 // Capture Sessions is hidden: it stays out of sight until Ctrl+Alt+P, then asks for a

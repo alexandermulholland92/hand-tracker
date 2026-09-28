@@ -1656,8 +1656,10 @@
 
   // Opens a video to track. url: something the page can play (object URL);
   // filePath: the file on disk (Windows app), used to convert formats the page can't play;
-  // sourceFile: the File itself, converted in the page when it can't be played (browser, Android).
-  async function openVideo(name, url, filePath, sourceFile) {
+  // sourceFile: the File itself, converted in the page when it can't be played (browser, Android);
+  // mirrored: whether it was recorded mirrored, when that's known (else it's worked out from
+  // the file, which for a video streamed from elsewhere means downloading all of it).
+  async function openVideo(name, url, filePath, sourceFile, { mirrored } = {}) {
     if (VideoRecorder.isRecording() || RobotMotion.isRecording()) {
       showSourceNote("Stop recording before opening a video.");
       return false;
@@ -1666,7 +1668,7 @@
     stageMessage.hidden = false;
     stageMessage.className = "";
     stageMessage.textContent = `Opening ${name}…`;
-    const flip = await mirroredDefault(name, url, sourceFile);
+    const flip = typeof mirrored === "boolean" ? { mirrored, note: "" } : await mirroredDefault(name, url, sourceFile);
     const options = { name, mirrored: flip.mirrored };
     try {
       try {
@@ -1800,8 +1802,8 @@
   // and of several videos (multi-video.js). filePath / file: as for openVideo, so formats the
   // page can't play are converted first. onProgress(seconds done, seconds total); stop() ends
   // it early (resolving with what's done).
-  async function trackWholeVideo(name, url, { onProgress, rate = 2, filePath, file } = {}) {
-    if (!(await openVideo(name, url, filePath, file))) throw new Error(sourceNote.textContent || `Couldn't open ${name}`);
+  async function trackWholeVideo(name, url, { onProgress, rate = 2, filePath, file, mirrored } = {}) {
+    if (!(await openVideo(name, url, filePath, file, { mirrored }))) throw new Error(sourceNote.textContent || `Couldn't open ${name}`);
     HandTracker.file.setRate(rate); // every frame is still tracked; this only shortens the waits
     return new Promise((resolve, reject) => {
       const timer = setInterval(() => onProgress && onProgress(HandTracker.file.time(), HandTracker.file.duration()), 500);

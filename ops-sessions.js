@@ -161,6 +161,7 @@
         url = (await desktop.ops.stream(s.id, st.path)).url;
         els.runText.textContent = `Tracking ${label}…`;
         const data = await HandTrackerApp.trackWholeVideo(`${name}.mp4`, url, {
+          mirrored: false, // a capture rig's camera doesn't record mirrored like a phone's front camera
           onProgress: (t, total) => (els.runText.textContent = `Tracking ${label} · ${clock(t)} of ${clock(total)}`),
         });
         done++;

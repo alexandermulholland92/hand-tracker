@@ -28,6 +28,8 @@ const path = require("path");
 
 const SIGN_FOR_MS = 30 * 60 * 1000; // signed links last longer; re-sign well before that
 const PAGE_SIZE = 50;
+const CHUNK_BYTES = 4 * 1024 * 1024; // video is fetched this much at a time (see serve)
+const KEEP_PARTS = 6; // parts of a video kept for the player's next request (see part)
 
 class OpsClient {
   constructor(dataDir, fetchFn, safeStorage = null) {
@@ -253,35 +255,94 @@ class OpsClient {
     return id;
   }
 
-  // Answers the page's request for a registered stream, passing Range through to the
-  // signed link (so the video element can seek without downloading the whole file).
+  // Answers the page's request for a registered stream from the signed link. The video
+  // player asks for "byte N to the end" and drops the answer once it has read enough, again
+  // and again as it plays. Passing the whole rest of a large file straight through left
+  // those downloads open (nothing stopped them) until the connection stalled, and playback
+  // stopped a few seconds in. So the answer is still "byte N to the end", but it's made of
+  // parts of CHUNK_BYTES, each fetched in full and only as the player reads on (plus one
+  // ahead): a dropped answer stops costing anything. The last few parts are kept, since the
+  // player's next request usually starts inside one it has just had.
   async serve(request, id) {
     const r = this.remote.get(id);
     if (!r) return new Response("Not found", { status: 404 });
-    const get = async (fresh) => {
-      if (fresh || !r.url || Date.now() - r.signedAt > SIGN_FOR_MS) {
-        r.url = (await this.sign(r.sessionId, [r.gsPath]))[r.gsPath];
-        r.signedAt = Date.now();
-      }
-      const headers = {};
-      const range = request.headers.get("Range");
-      if (range) headers.Range = range;
-      return this.fetch(r.url, { headers });
-    };
-    let res;
+    const m = /^bytes=(\d+)-(\d*)$/.exec(request.headers.get("Range") || "bytes=0-");
+    if (!m) return new Response("Only byte ranges are served", { status: 416 });
+    const start = Number(m[1]);
+    let k = Math.floor(start / CHUNK_BYTES);
+    let first;
     try {
-      res = await get(false);
-      if (res.status === 400 || res.status === 401 || res.status === 403) res = await get(true);
+      first = await this.part(r, k);
     } catch (err) {
       return new Response(String(err.message || err), { status: 502 });
     }
-    const out = new Headers();
-    for (const h of ["content-type", "content-length", "content-range", "accept-ranges"]) {
-      const v = res.headers.get(h);
-      if (v) out.set(h, v);
+    if (first.status !== 206 || !first.total) return new Response(first.bytes, { status: first.status });
+    if (start >= first.total) return new Response("", { status: 416, headers: { "content-range": `bytes */${first.total}` } });
+    const last = Math.min(m[2] ? Number(m[2]) : Infinity, first.total - 1);
+    const lastPart = Math.floor(last / CHUNK_BYTES);
+    const slice = (p, index) => p.bytes.subarray(Math.max(0, start - index * CHUNK_BYTES), last + 1 - index * CHUNK_BYTES);
+    const ahead = (index) => index <= lastPart && this.part(r, index).catch(() => {});
+    ahead(k + 1);
+    const body = new ReadableStream(
+      {
+        start(controller) {
+          controller.enqueue(slice(first, k));
+          if (k >= lastPart) controller.close();
+        },
+        pull: async (controller) => {
+          k++;
+          const p = await this.part(r, k);
+          if (!p.bytes.length) throw new Error("The video ended early");
+          ahead(k + 1);
+          controller.enqueue(slice(p, k));
+          if (k >= lastPart) controller.close();
+        },
+      },
+      { highWaterMark: 1 }
+    );
+    return new Response(body, {
+      status: 206,
+      headers: {
+        "content-type": first.type || "video/mp4",
+        "content-range": `bytes ${start}-${last}/${first.total}`,
+        "content-length": String(last - start + 1),
+        "accept-ranges": "bytes",
+      },
+    });
+  }
+
+  // Part `index` of a registered stream (CHUNK_BYTES from index * CHUNK_BYTES), fetched once
+  // and kept among the last KEEP_PARTS used: { status, bytes, total, type }.
+  part(r, index) {
+    if (!r.parts) r.parts = new Map();
+    let p = r.parts.get(index);
+    if (p) {
+      r.parts.delete(index); // most recently used last
+      r.parts.set(index, p);
+      return p;
     }
-    if (!out.has("accept-ranges")) out.set("accept-ranges", "bytes");
-    return new Response(res.body, { status: res.status, headers: out });
+    p = (async () => {
+      const get = async (fresh) => {
+        if (fresh || !r.url || Date.now() - r.signedAt > SIGN_FOR_MS) {
+          r.url = (await this.sign(r.sessionId, [r.gsPath]))[r.gsPath];
+          r.signedAt = Date.now();
+        }
+        return this.fetch(r.url, { headers: { Range: `bytes=${index * CHUNK_BYTES}-${(index + 1) * CHUNK_BYTES - 1}` } });
+      };
+      let res = await get(false);
+      if (res.status === 400 || res.status === 401 || res.status === 403) {
+        await res.arrayBuffer().catch(() => {});
+        res = await get(true);
+      }
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const total = Number((/\/(\d+)$/.exec(res.headers.get("content-range") || "") || [])[1]);
+      if (res.status !== 206) r.parts.delete(index); // not kept: an error, or a server without ranges
+      return { status: res.status, bytes, total, type: res.headers.get("content-type") || "" };
+    })();
+    p.catch(() => r.parts.delete(index));
+    r.parts.set(index, p);
+    while (r.parts.size > KEEP_PARTS) r.parts.delete(r.parts.keys().next().value);
+    return p;
   }
 
   forget(id) {
