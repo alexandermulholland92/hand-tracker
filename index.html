@@ -58,6 +58,16 @@
     background: rgba(24, 44, 70, 0.9); border: 1px solid #4dabf7; color: #d0ebff;
     font-size: 12px; font-weight: 600; letter-spacing: 0.03em;
   }
+  /* More settings: the toggles after Overlay and Mirror, closed until opened. */
+  details.settings-box { margin-top: 10px; background: #15161a; border: 1px solid #25272e; border-radius: 8px; }
+  details.settings-box > summary {
+    cursor: pointer; list-style: none; padding: 7px 12px; font-size: 13px; color: #c9c9cf; user-select: none;
+  }
+  details.settings-box > summary::-webkit-details-marker { display: none; }
+  details.settings-box > summary::before { content: "▸"; display: inline-block; width: 14px; transition: transform 0.15s; }
+  details.settings-box[open] > summary::before { transform: rotate(90deg); }
+  details.settings-box > summary:hover { color: #fff; }
+  details.settings-box > .toolbar { margin: 0 10px 10px; }
   .show-bar { gap: 6px; }
   .show-bar .bar-label, .options-bar .bar-label { font-size: 12px; opacity: 0.7; margin-right: 2px; }
   .show-bar button { padding: 4px 9px; font-size: 12px; }
@@ -275,6 +285,10 @@
     <div class="toolbar">
       <button id="overlayToggle" class="active" aria-pressed="true" title="Show the skeleton and labels (O)">Overlay: ON<kbd>O</kbd></button>
       <button id="mirrorToggle" class="active" aria-pressed="true" title="Mirror the view like a selfie camera. On by default for front cameras and webcams, off for rear cameras and video files; your choice is remembered for each camera. Times in the camera picture (a clock) are always kept the right way round; the Readable text button does the same for all text.">Mirror: ON</button>
+    </div>
+    <details class="settings-box" id="moreSettings">
+    <summary>More settings</summary>
+    <div class="toolbar">
       <button id="readableToggle" aria-pressed="false" title="Optional, off by default. In mirrored view, find text in the camera picture (signs, screens, printing) and show it the right way round. Times (a clock) are kept the right way round either way. Your choice is remembered.">Readable text: OFF</button>
       <button id="legendToggle">What is Yaw / Pitch / Roll?</button>
     </div>
@@ -303,6 +317,7 @@
       <button data-show="focus" title="With far-away hands on: the body found and the area searched for hands (7)">Body &amp; search area<kbd>7</kbd></button>
       <button data-show="fps" title="The frames-per-second counter (F)">FPS<kbd>F</kbd></button>
     </div>
+    </details>
 
     <div id="legend" class="card">
       <h3>Palm Orientation, Explained</h3>
