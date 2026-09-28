@@ -29,10 +29,18 @@
   const resolutionSelect = $("resolutionSelect");
   const handsSelect = $("handsSelect");
   const modelSelect = $("modelSelect");
+  const rotateSelect = $("rotateSelect");
   const overlayToggle = $("overlayToggle");
   const mirrorToggle = $("mirrorToggle");
   const readableToggle = $("readableToggle");
   const legendToggle = $("legendToggle");
+  const pauseToggle = $("pauseToggle");
+  const pauseBadge = $("pauseBadge");
+  const squareToggle = $("squareToggle");
+  const farToggle = $("farToggle");
+  const farFocus = $("farFocus");
+  const farRaised = $("farRaised");
+  const showBar = $("showBar");
   const legendEl = $("legend");
   const videoBtn = $("videoBtn");
   const layoutSelect = $("layoutSelect");
@@ -119,6 +127,12 @@
   if (prefs.hands) handsSelect.value = String(prefs.hands);
   if (prefs.model !== undefined) modelSelect.value = String(prefs.model);
   if (prefs.layout) layoutSelect.value = prefs.layout;
+  let squareOn = prefs.squareCrop === true;
+  // Far-away hands (see far-hands.js): off by default; which hands to look for.
+  const farPrefs = { enabled: false, raisedOnly: true, focus: "both", ...(prefs.far && typeof prefs.far === "object" ? prefs.far : {}) };
+  // What's drawn on the picture (the Show buttons and keys 1-7, F).
+  const DISPLAY_DEFAULTS = { box: false, skeleton: true, side: true, scores: false, gesture: true, distance: true, focus: true, fps: true };
+  const display = { ...DISPLAY_DEFAULTS, ...(prefs.display && typeof prefs.display === "object" ? prefs.display : {}) };
 
   // ---------- Small helpers ----------
   function pad2(n) {
@@ -142,6 +156,11 @@
   // ---------- Gestures & hand cards ----------
 
   const NO_GESTURE = { label: "—", color: "#666" };
+  // Every label classifyGesture gives (for gesture actions).
+  const GESTURE_LABELS = [
+    "Open Palm", "Fist", "Point", "Two", "Three", "Four", "Peace", "OK Sign", "Pinch", "Thumbs Up", "Thumbs Down",
+    "Rock On", "Call Me", "Shaka", "The Bird", "Live Long and Prosper",
+  ];
 
   // Tracks recent palm-roll angles per hand to detect a genuine "shaka wave"
   // (the wrist rocking back and forth) vs. a hand held steady — the only
@@ -283,6 +302,32 @@
     return straight && gap > 0.45 && gap > 1.3 * Math.max(dist(8, 12), dist(16, 20));
   }
 
+  // Finger counting (after geaxgx/depthai_hand_tracker's ONE..FIVE; One is Point, Five is
+  // Open Palm). Two: thumb and index out, like an L. Three: thumb, index and middle out.
+  // Four: all four fingers up, the thumb folded in. "Clearly out" for a thumb means its tip
+  // is well away from the index knuckle (over 0.8 palm lengths): in fists, points and peace
+  // signs, on a live webcam and in photos, it stayed under 0.72; held out, 0.8 to 1.8.
+  function thumbClearlyOut({ reach, dist }, c) {
+    return c.thumb < 0.35 && reach(4) > 1.25 && dist(4, 5) > 0.8;
+  }
+  function thumbTucked({ reach, dist }) {
+    return reach(4) < 1.2 && dist(4, 5) < 0.65;
+  }
+  function isTwo(shape, c) {
+    return thumbClearlyOut(shape, c) && isPoint(shape, c);
+  }
+  function isThree(shape, c) {
+    const { reach } = shape;
+    const raised = Math.min(reach(8), reach(12));
+    return thumbClearlyOut(shape, c) && straight(shape, c, "index") && straight(shape, c, "middle") &&
+      reach(16) < 0.65 * raised && reach(20) < 0.65 * raised;
+  }
+  function isFour(shape, c) {
+    const { reach } = shape;
+    return thumbTucked(shape) && OTHER_FINGERS.every((f) => c[f] < 0.35) &&
+      reach(8) > 0.75 * reach(12) && reach(16) > 0.75 * reach(12) && reach(20) > 0.6 * reach(12) && reach(12) > 1.4;
+  }
+
   // Gesture classifier built from data we already compute (finger curl,
   // thumb-index distance) plus wrist-relative landmark positions for the
   // one gesture (Thumbs Up) that needs a spatial direction, not just curl.
@@ -306,7 +351,9 @@
       if (isThumbsUp(shape, c)) return { label: "Thumbs Up", color: "#69db7c" };
       if (isThumbsDown(shape, c)) return { label: "Thumbs Down", color: "#e64980" };
       if (isVulcanSalute(shape, c)) return { label: "Live Long and Prosper", color: "#748ffc" };
+      if (isFour(shape, c)) return { label: "Four", color: "#3bc9db" };
       if (isOkSign(shape, c)) return { label: "OK Sign", color: "#ffd43b" };
+      if (isThree(shape, c)) return { label: "Three", color: "#c0eb75" };
       if (isPeace(shape, c)) return { label: "Peace", color: "#66d9e8" };
       if (isRockOn(shape, c)) return { label: "Rock On", color: "#b197fc" };
       // Call Me / Shaka: identical finger shape — the real-world difference is motion, not
@@ -315,6 +362,7 @@
         const isWaving = detectWristWave(hand.handedness, hand.orientation.palmEuler.roll);
         return isWaving ? { label: "Shaka", color: "#20c997" } : { label: "Call Me", color: "#ff922b" };
       }
+      if (isTwo(shape, c)) return { label: "Two", color: "#e599f7" };
       if (isPoint(shape, c)) return { label: "Point", color: "#74c0fc" };
       if (isFist(shape) || avgCurl > 0.7) return { label: "Fist", color: "#ff6b6b" };
       // Pinch: thumb and index tips touching, in palm lengths (so a small, far-away hand
@@ -450,22 +498,96 @@
     renderBothHands(bySide.Left, bySide.Right);
   }
 
-  // Handedness + gesture tag drawn next to each wrist, directly on the stage
-  // canvas so it also appears in recorded video. Drawn in normal (unflipped)
-  // orientation, so the text reads correctly in mirrored view too.
+  // The tag drawn next to each wrist: which hand, its gesture, and (when shown) how sure
+  // the tracker is and how far the hand is from a depth camera.
+  const pct = (v) => `${Math.round(v * 100)}%`;
+  function labelText(hand) {
+    const parts = [];
+    if (display.side) parts.push(display.scores && hand.handednessConfidence ? `${hand.handedness} ${pct(hand.handednessConfidence)}` : hand.handedness);
+    const gesture = gestureOf(hand);
+    if (display.gesture && gesture.label !== "—") parts.push(gesture.label);
+    if (display.scores && hand.trackingScore !== null && hand.trackingScore !== undefined) parts.push(`hand ${pct(hand.trackingScore)}`);
+    if (display.distance && hand.distance) parts.push(`${(hand.distance[2] / 1000).toFixed(2)} m`);
+    return parts.join(" · ");
+  }
+
+  // A box around the hand, turned with it (wrist to middle knuckle is "up"), like the
+  // region MediaPipe tracks each hand in.
+  function drawHandBox(ctx, hand, unit) {
+    const p = hand.imageLandmarks.map((q) => HandTracker.toCanvasPoint(q));
+    let ux = p[9].x - p[0].x, uy = p[9].y - p[0].y;
+    const len = Math.hypot(ux, uy) || 1;
+    ux /= len;
+    uy /= len;
+    const vx = -uy, vy = ux;
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (const q of p) {
+      const u = q.x * ux + q.y * uy, v = q.x * vx + q.y * vy;
+      u0 = Math.min(u0, u); u1 = Math.max(u1, u);
+      v0 = Math.min(v0, v); v1 = Math.max(v1, v);
+    }
+    const mu = (u1 - u0) * 0.1, mv = (v1 - v0) * 0.1;
+    const corner = (u, v) => [u * ux + v * vx, u * uy + v * vy];
+    const pts = [corner(u0 - mu, v0 - mv), corner(u1 + mu, v0 - mv), corner(u1 + mu, v1 + mv), corner(u0 - mu, v1 + mv)];
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+    ctx.lineWidth = 2 * unit;
+    ctx.strokeStyle = SIDE_COLORS[hand.handedness] || "#adb5bd";
+    ctx.setLineDash([8 * unit, 5 * unit]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Far-away hands: the body the pose model found and the square searched for hands.
+  function drawFocus(ctx, unit) {
+    const { region, body } = HandTracker.getFocus();
+    if (body && performance.now() - body.time < 1500) {
+      ctx.fillStyle = "#fcc419";
+      ctx.strokeStyle = "rgba(252, 196, 25, 0.7)";
+      ctx.lineWidth = 2 * unit;
+      const pt = (q) => (q ? HandTracker.toCanvasPoint(q) : null);
+      for (const side of ["Left", "Right"]) {
+        const chain = [body.shoulders[side], body.elbows[side], body.wrists[side]].map(pt);
+        ctx.beginPath();
+        let started = false;
+        for (const q of chain) {
+          if (!q) { started = false; continue; }
+          if (started) ctx.lineTo(q.x, q.y);
+          else ctx.moveTo(q.x, q.y);
+          started = true;
+        }
+        ctx.stroke();
+        for (const q of chain) if (q) ctx.fillRect(q.x - 3 * unit, q.y - 3 * unit, 6 * unit, 6 * unit);
+      }
+    }
+    if (region) {
+      const a = HandTracker.toCanvasPoint({ x: region.x, y: region.y });
+      const b = HandTracker.toCanvasPoint({ x: region.x + region.w, y: region.y + region.h });
+      ctx.lineWidth = 2 * unit;
+      ctx.strokeStyle = "#fcc419";
+      ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+    }
+  }
+
+  // Tags, boxes and the search area, drawn directly on the stage canvas so they also
+  // appear in recorded video. Drawn in normal (unflipped) orientation, so the text reads
+  // correctly in mirrored view too.
   function drawStageLabels(hands) {
-    if (!overlayOn || !hands.length) return;
+    if (!overlayOn) return;
     const ctx = stage.getContext("2d");
     const unit = Math.max(1, stage.width / 640);
+    ctx.save();
+    if (display.focus && farPrefs.enabled) drawFocus(ctx, unit);
+    if (display.box) for (const hand of hands) drawHandBox(ctx, hand, unit);
     const h = 22 * unit;
     const padX = 9 * unit;
-    ctx.save();
     ctx.font = `600 ${Math.round(12.5 * unit)}px "Segoe UI", system-ui, sans-serif`;
     ctx.textBaseline = "middle";
     for (const hand of hands) {
+      const text = labelText(hand);
+      if (!text) continue;
       const wrist = HandTracker.toCanvasPoint(hand.imageLandmarks[0]);
-      const gesture = gestureOf(hand);
-      const text = gesture.label === "—" ? hand.handedness : `${hand.handedness} · ${gesture.label}`;
       const color = SIDE_COLORS[hand.handedness] || "#adb5bd";
       const w = ctx.measureText(text).width + padX * 2;
       const x = Math.min(Math.max(wrist.x - w / 2, 4), stage.width - w - 4);
@@ -515,6 +637,13 @@
       cameraSelect.appendChild(opt);
     }
     if (current && cams.some((c) => c.deviceId === current)) cameraSelect.value = current;
+    if (OakSource.available()) {
+      const opt = document.createElement("option");
+      opt.value = "__oak";
+      opt.textContent = "Luxonis OAK camera";
+      cameraSelect.appendChild(opt);
+      if (OakSource.isActive()) cameraSelect.value = "__oak";
+    }
     if (canCaptureScreens) {
       const cam = HandTracker.getCamera();
       if (cam.screen) {
@@ -648,6 +777,36 @@
     if (e.target === captureDialog) closeCapturePicker();
   });
 
+  // ---------- A Luxonis OAK camera as the source (Windows and Linux app) ----------
+  const oakSettings = () => ({ model: Number(modelSelect.value), hands: Number(handsSelect.value), far: { ...farPrefs } });
+  async function useOak() {
+    stageMessage.hidden = false;
+    stageMessage.className = "";
+    stageMessage.textContent = "Starting the OAK camera…";
+    try {
+      await OakSource.start(oakSettings());
+    } catch (err) {
+      if (err.canceled) {
+        stageMessage.hidden = true;
+        populateCameras();
+        return;
+      }
+      showStageError(err);
+    }
+  }
+  // Model, hands and far-away settings are the camera's own: restart it with the new ones.
+  const restartOak = () => OakSource.isActive() && useOak();
+  OakSource.onStatus((s) => {
+    if (s.status === "running") {
+      stageMessage.hidden = true;
+      showSourceNote(`${s.camera || "OAK camera"}: hands found on the camera${s.depth ? ", with each hand's distance (Show → Distance)" : ""}.`);
+    } else if (s.status === "error") {
+      showStageError(new Error(s.message));
+    } else if (s.status === "stopped" && OakSource.isActive() && s.code) {
+      showStageError(new Error(`The OAK camera stopped${s.detail ? `: ${s.detail}` : "."}`));
+    }
+  });
+
   cameraSelect.addEventListener("change", () => {
     if (cameraSelect.value === "__screen") {
       populateCameras(); // back to the current choice until a window is picked
@@ -655,6 +814,12 @@
       return;
     }
     if (cameraSelect.value === "__screen_active") return;
+    if (cameraSelect.value === "__oak") {
+      useOak();
+      return;
+    }
+    OakSource.stop();
+    showSourceNote("");
     setPref("cameraId", cameraSelect.value || null);
     switchCamera({ deviceId: cameraSelect.value || null, desktopSourceId: null, desktopName: "", crop: null }).then(populateCameras);
   });
@@ -666,20 +831,94 @@
     const n = Number(handsSelect.value);
     setPref("hands", n);
     HandTracker.setMaxHands(n);
+    restartOak();
   });
   modelSelect.addEventListener("change", () => {
     const m = Number(modelSelect.value);
     setPref("model", m);
     HandTracker.setModelComplexity(m);
+    restartOak();
   });
 
   function toggleOverlay() {
     overlayOn = !overlayOn;
     setPref("overlay", overlayOn);
-    HandTracker.setOverlay(overlayOn);
+    HandTracker.setOverlay(overlayOn && display.skeleton);
     setToggle(overlayToggle, overlayOn, "Overlay");
   }
   overlayToggle.addEventListener("click", toggleOverlay);
+
+  // ---------- What's shown, pause, square crop, far-away hands ----------
+  function applyDisplay() {
+    for (const btn of showBar.querySelectorAll("button[data-show]")) {
+      const on = !!display[btn.dataset.show];
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-pressed", String(on));
+    }
+    HandTracker.setOverlay(overlayOn && display.skeleton);
+    fpsBadge.hidden = !display.fps;
+  }
+  function toggleShow(key) {
+    display[key] = !display[key];
+    setPref("display", display);
+    applyDisplay();
+  }
+  showBar.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-show]");
+    if (btn) toggleShow(btn.dataset.show);
+  });
+
+  function applyPaused(paused) {
+    HandTracker.setPaused(paused);
+    pauseBadge.hidden = !paused;
+    pauseToggle.classList.toggle("active", paused);
+    pauseToggle.firstChild.textContent = paused ? "▶ Resume" : "❚❚ Pause";
+  }
+  function togglePause() {
+    if (HandTracker.getSource() === "file") {
+      // A video file: the same as its own play/pause button.
+      vidPlay.click();
+      return;
+    }
+    applyPaused(!HandTracker.isPaused());
+  }
+  pauseToggle.addEventListener("click", togglePause);
+
+  function applySquare() {
+    HandTracker.setSquareCrop(squareOn);
+    setToggle(squareToggle, squareOn, "Square crop");
+  }
+  squareToggle.addEventListener("click", () => {
+    squareOn = !squareOn;
+    setPref("squareCrop", squareOn);
+    applySquare();
+  });
+
+  function applyFar() {
+    HandTracker.setFarMode({ ...farPrefs });
+    setToggle(farToggle, farPrefs.enabled, "Far-away hands");
+    $("farFocusLabel").hidden = !farPrefs.enabled;
+    $("farRaisedLabel").hidden = !farPrefs.enabled;
+    farFocus.value = farPrefs.focus;
+    farRaised.checked = farPrefs.raisedOnly;
+  }
+  function saveFar() {
+    setPref("far", farPrefs);
+    applyFar();
+    restartOak();
+  }
+  farToggle.addEventListener("click", () => {
+    farPrefs.enabled = !farPrefs.enabled;
+    saveFar();
+  });
+  farFocus.addEventListener("change", () => {
+    farPrefs.focus = farFocus.value;
+    saveFar();
+  });
+  farRaised.addEventListener("change", () => {
+    farPrefs.raisedOnly = farRaised.checked;
+    saveFar();
+  });
 
   readableToggle.addEventListener("click", () => {
     readableOn = !readableOn;
@@ -705,6 +944,31 @@
     setMirror(typeof chosen === "boolean" ? chosen : !camera.screen && camera.facing !== "environment");
   }
   HandTracker.onSourceChange(applyMirrorDefault);
+
+  // ---------- Rotation: each camera and video keeps its own ----------
+  const rotations = prefs.rotations && typeof prefs.rotations === "object" ? prefs.rotations : {};
+  const ROTATIONS_KEPT = 200;
+  function rotationKey(camera) {
+    if (camera.source === "file") return `file:${HandTracker.file.name()}`;
+    return camera.deviceId || "default";
+  }
+  function applyRotation(camera) {
+    const r = rotations[rotationKey(camera)] || 0;
+    rotateSelect.value = String(r);
+    HandTracker.setRotation(r); // no-op when unchanged (it announces a source change otherwise)
+  }
+  HandTracker.onSourceChange(applyRotation);
+  function setRotation(r) {
+    const key = rotationKey(HandTracker.getCamera());
+    if (r) rotations[key] = r;
+    else delete rotations[key];
+    const keys = Object.keys(rotations);
+    if (keys.length > ROTATIONS_KEPT) delete rotations[keys[0]];
+    setPref("rotations", rotations);
+    rotateSelect.value = String(r);
+    HandTracker.setRotation(r);
+  }
+  rotateSelect.addEventListener("change", () => setRotation(Number(rotateSelect.value)));
 
   mirrorToggle.addEventListener("click", () => {
     setMirror(!mirrorOn);
@@ -1452,9 +1716,13 @@
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
     if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
     const key = e.key.toLowerCase();
+    const SHOW_KEYS = { 1: "box", 2: "skeleton", 3: "side", 4: "scores", 5: "gesture", 6: "distance", 7: "focus", f: "fps" };
     if (key === "r") toggleVideo();
     else if (key === "m") toggleMotion();
     else if (key === "o") toggleOverlay();
+    else if (key === " " && e.target.tagName !== "BUTTON") togglePause();
+    else if (key === "t") setRotation((HandTracker.getRotation() + 90) % 360);
+    else if (SHOW_KEYS[key]) toggleShow(SHOW_KEYS[key]);
     else return;
     e.preventDefault();
   });
@@ -1476,6 +1744,7 @@
     setToggle(overlayToggle, overlayOn, "Overlay");
     setToggle(mirrorToggle, mirrorOn, "Mirror");
     setToggle(readableToggle, readableOn, "Readable text");
+    setToggle(squareToggle, squareOn, "Square crop");
     renderPanels([]);
     if (!VideoRecorder.isSupported()) {
       videoBtn.disabled = true;
@@ -1491,6 +1760,8 @@
       exportBtn.firstChild.textContent = "Save";
       motionExportBtn.firstChild.textContent = "Save";
     }
+    // Hand mouse, floating keyboard and gesture actions (Windows and Linux app only).
+    PcControl.init({ desktop, prefs, setPref, gestureLabels: GESTURE_LABELS });
     const buildMeta = document.querySelector('meta[name="hand-tracker-build"]');
     if (buildMeta) showBuild(buildMeta.dataset.version, buildMeta.content);
     else if (!desktop) showBuild(null, null);
@@ -1506,6 +1777,13 @@
 
     Hand3D.init($("threeContainer"));
     Hand3D.setMirror(mirrorOn);
+    const shape3d = $("shape3d"), spin3d = $("spin3d");
+    if (prefs.shape3d) shape3d.value = prefs.shape3d;
+    if (prefs.spin3d) spin3d.value = prefs.spin3d;
+    const apply3d = () => Hand3D.setOptions({ shape: shape3d.value, spin: spin3d.value });
+    apply3d();
+    shape3d.addEventListener("change", () => { setPref("shape3d", shape3d.value); apply3d(); });
+    spin3d.addEventListener("change", () => { setPref("spin3d", spin3d.value); apply3d(); });
 
     await HandTracker.init({
       videoEl: video,
@@ -1518,6 +1796,10 @@
       ...parseResolution(resolutionSelect.value),
     });
     stageMessage.hidden = true;
+    applyDisplay();
+    applySquare();
+    applyFar();
+    applyRotation(HandTracker.getCamera());
     populateCameras();
 
     let stallShown = false;
@@ -1546,6 +1828,8 @@
       VideoRecorder.frame(); // after labels, so recordings match what's on screen
 
       Hand3D.update(hands);
+      const camNow = HandTracker.getCamera();
+      PcControl.update(hands, gestureOf, mirrorOn, camNow.width && camNow.height ? camNow.width / camNow.height : 16 / 9);
 
       if (RobotMotion.isRecording()) {
         RobotMotion.feed(hands, timestamp);

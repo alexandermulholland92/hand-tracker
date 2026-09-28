@@ -18,8 +18,8 @@ const OUT = path.join(ROOT, "www");
 const APP_FILES = [
   "index.html", "viewer.html",
   "app.js", "viewer.js", "mobile-bridge.js", "export-ui.js", "motion-import.js",
-  "hand-tracker.js", "robot-motion.js", "hand-3d.js",
-  "video-recorder.js", "readable-text.js", "motion-export.js",
+  "hand-tracker.js", "far-hands.js", "robot-motion.js", "hand-3d.js",
+  "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js",
   "video-formats.js", "video-convert.js", "video-origin.js",
 ];
 
@@ -29,6 +29,11 @@ const LIBRARY_FILES = [
     .readdirSync(path.join(ROOT, "node_modules/@mediapipe/hands"))
     .filter((f) => /\.(js|wasm|data|tflite|binarypb)$/.test(f))
     .map((f) => `node_modules/@mediapipe/hands/${f}`),
+  // MediaPipe Pose, for far-away hands (loaded only when that's turned on): the lite model only.
+  ...fs
+    .readdirSync(path.join(ROOT, "node_modules/@mediapipe/pose"))
+    .filter((f) => /\.(js|wasm|data|binarypb)$/.test(f) || f === "pose_landmark_lite.tflite")
+    .map((f) => `node_modules/@mediapipe/pose/${f}`),
   "node_modules/@mediapipe/drawing_utils/drawing_utils.js",
   "node_modules/three/build/three.min.js",
   "node_modules/three/examples/js/controls/OrbitControls.js",

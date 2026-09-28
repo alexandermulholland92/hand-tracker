@@ -31,14 +31,22 @@ Video import and export work in all three: the Windows app converts with its bun
 ## Features
 
 - **Two hands at once**: each hand gets its own card (Left in blue, Right in orange), an on-screen label with its gesture, a 3D skeleton and a simulated robot gripper. A *Both Hands* panel shows the distance between the wrists. Choose *Track: 1 hand* for a little extra speed.
-- **Steady tracking**: every landmark is smoothed with a One Euro filter, which holds a still hand steady but follows fast movement closely, so the skeleton doesn't shake and gesture labels don't flicker. Each hand keeps its Left/Right label unless MediaPipe disagrees for several frames in a row.
+- **Steady tracking**: every landmark is smoothed with a One Euro filter, which holds a still hand steady but follows fast movement closely, so the skeleton doesn't shake and gesture labels don't flicker. Each hand keeps its Left/Right label unless MediaPipe disagrees for several frames in a row and, on average, over the whole time the hand has been tracked, so a few doubtful frames never swap it.
+- **Far-away hands**: MediaPipe's hand detector was trained on hands within about 2 m. Turn on *Far-away hands* and a body model (MediaPipe Pose, lite) finds your wrists first, then the hand detector looks just around them, so hands are found up to about 5 m away. *Look for* picks both hands, the higher hand, or one side; *Raised hands only* ignores a hand hanging below its elbow (handy for gestures). Once a hand is found, a square follows it and the body model rests. Left and right come from the body, which is far more reliable at a distance. Adapted from depthai_hand_tracker's Body Pre Focusing.
+- **Rotate**: turn the picture 90° right, 180° or 90° left (or press `T` to turn it another 90° right), for a camera mounted on its side or upside down. It's turned before tracking, so gestures, the hand mouse, recordings and motion capture all follow the turned view. Remembered for each camera and each video, and it works for webcams, windows, video files and OAK cameras.
+- **Square crop**: track only the centre square of the picture. The hand detector works on squares, so a small or distant hand in the middle gets a bigger view.
+- **Pause** (Space or the button) freezes the live picture and tracking.
+- **What's drawn** (the *Show* buttons, keys 1–7 and F): a box around each hand turned with it, the skeleton, left/right, confidence (how sure the tracker is of left or right, on average since the hand was found; with an OAK camera, also of the hand itself), the gesture, the distance to each hand (OAK-D depth cameras), the body and search area in far-away mode, and the FPS counter. Recorded video shows the same.
 - **Camera controls**: choose the camera, resolution (640×480 to 1920×1080) and model (Lite for speed, Full for accuracy). Settings are remembered.
 - **Track a video file** instead of the camera: *Open Video…* accepts MP4, MOV, MKV, WebM, AVI, MPEG, WMV, FLV, 3GP, Ogg, MPEG-TS, MXF, DV, ProRes, GIF and more; see [Tracking a video file](#tracking-a-video-file). Android phone selfie videos, which are saved mirrored, are flipped back automatically; for any other video where Left and Right come out swapped, turn on *Mirrored video*.
 - **Convert any video**: the Recording Viewer's *Open Video…* opens nearly any video and converts it to any of 36 formats; see [Converting videos](#converting-videos).
 - **Mirror view with readable text**: front (selfie) cameras and webcams are shown mirrored so movements feel natural; rear cameras and video files are shown as they are. The Mirror button switches it, and the app remembers your choice for each camera. Times in the picture, like a clock or a timestamp, are always shown the right way round: the app finds them with on-device OCR (tesseract.js, bundled) and flips them back. Other text (signs, screens, printing) reads backwards unless you turn on the optional **Readable text** button (off by default; your choice is remembered), which flips all text back. The app's own labels are always drawn the right way round. To avoid flipping things that only look like text (cloth, shadows, stripes), an area is only shown the right way round once it has been read as text in three scans running, so real text straightens about a second after it appears. Anything read on or right next to a hand is ignored too (OCR takes an OK sign's ring for an "O"), so no flipped patch is left behind when the hand moves away.
-- **Gestures**: pinch, OK sign (thumb and index in a ring, the other fingers out), thumbs up, fist, open palm, peace (at any angle, upright, leaning or on its side), rock on, call me, shaka, point, thumbs down, *live long and prosper* (the Vulcan salute: fingers in two pairs with a V between the middle and ring fingers) and *the bird* (only the middle finger raised, pointing up or sideways but not down, with the hand facing the camera rather than side-on; sideways counts so it still works on a phone held on its side), plus palm yaw/pitch/roll and per-finger curl. Call Me and Shaka are the same hand shape: rocking the wrist back and forth makes it Shaka, holding it still is Call Me. A label must hold for a few frames before it changes, so it doesn't flicker. Gestures are judged mostly by how far each fingertip reaches from the wrist (in palm lengths), which holds up on real hands better than finger-bend angles do; the rules are checked against 202 hands measured from real photos (`scripts/fixtures/gesture-hands.json`) and were tuned on a live webcam session.
+- **Gestures**: pinch, OK sign (thumb and index in a ring, the other fingers out), thumbs up, fist, open palm, finger counting (*Two*: thumb and index out, like an L; *Three*: thumb, index and middle; *Four*: four fingers up with the thumb folded in; one is *Point* and five is *Open Palm*), peace (at any angle, upright, leaning or on its side), rock on, call me, shaka, point, thumbs down, *live long and prosper* (the Vulcan salute: fingers in two pairs with a V between the middle and ring fingers) and *the bird* (only the middle finger raised, pointing up or sideways but not down, with the hand facing the camera rather than side-on; sideways counts so it still works on a phone held on its side), plus palm yaw/pitch/roll and per-finger curl. Call Me and Shaka are the same hand shape: rocking the wrist back and forth makes it Shaka, holding it still is Call Me. A label must hold for a few frames before it changes, so it doesn't flicker. Gestures are judged mostly by how far each fingertip reaches from the wrist (in palm lengths), which holds up on real hands better than finger-bend angles do; the rules are checked against 202 hands measured from real photos (`scripts/fixtures/gesture-hands.json`) and were tuned on a live webcam session.
 - **Recording Viewer** (header link or *File → Open Recording Viewer*): opens hand recordings (JSON, CSV), **C3D** files and **OptiTrack `.tak`** takes. You can play them back, browse the frames, and convert them to other formats; see [Viewing and converting recordings](#viewing-and-converting-recordings).
 - **Recovers from camera dropouts**: if the camera stops sending frames, the app shows a notice and reconnects automatically.
+- **3D view**: *Hand shape: Real size* draws each hand at its real size and shape in metres (MediaPipe's world landmarks), and with an OAK-D at its measured distance; *From the picture* shows it as the camera sees it. *View* can rotate or swing back and forth by itself.
+- **Control your PC** (Windows and Linux app): a hand mouse, a floating keyboard and gesture actions; see [Control your PC](#control-your-pc).
+- **Luxonis OAK cameras** (Windows and Linux app): tracking on the camera itself, with each hand's distance on an OAK-D; see [Luxonis OAK cameras](#luxonis-oak-cameras).
 
 ### Keyboard shortcuts
 
@@ -47,6 +55,11 @@ Video import and export work in all three: the Windows app converts with its bun
 | `R` | Start / stop video recording |
 | `M` | Start / stop motion capture |
 | `O` | Toggle the skeleton overlay |
+| `Space` | Pause / resume |
+| `T` | Turn the picture another 90° right |
+| `1`–`7`, `F` | Show or hide: hand box, skeleton, left/right, confidence, gesture, distance, body & search area, FPS |
+| `Ctrl+Alt+M` | Hand mouse on / off (from any app, even with Hand Tracker minimized) |
+| `Ctrl+Alt+K` | Floating keyboard on / off (from any app) |
 
 ## Motion capture export
 
@@ -54,20 +67,49 @@ Press **Start Motion Capture**, do the movement, press **Stop**, then pick forma
 
 | Format | Opens in | Contents |
 | --- | --- | --- |
-| **JSON** | Anything; the Recording Viewer | Everything: 21 joints per frame with position, orientation, velocity and acceleration, plus trajectories and task phases |
-| **CSV** | Excel, Google Sheets, pandas, MATLAB | One row per hand per frame. Columns: `hand, frame, t, phase`, the wrist's camera-frame position (`wrist_world_x/y/z`), the palm quaternion, x/y/z for all 21 joints relative to the wrist (`wrist_x` … `pinky_tip_z`), and `image_width, image_height`. Can be imported back (see below) |
+| **JSON** | Anything; the Recording Viewer | Everything: 21 joints per frame with position, orientation, velocity and acceleration, plus trajectories and task phases; each frame also has `world_joints`, the hand's real shape in metres, and with an OAK-D `distance_mm` |
+| **CSV** | Excel, Google Sheets, pandas, MATLAB | One row per hand per frame. Columns: `hand, frame, t, phase`, the wrist's camera-frame position (`wrist_world_x/y/z`), the palm quaternion, x/y/z for all 21 joints relative to the wrist (`wrist_x` … `pinky_tip_z`), and `image_width, image_height`; then the real shape in metres (`wrist_real_x` … `pinky_tip_real_z`) and, with an OAK-D, `distance_x_mm, distance_y_mm, distance_z_mm`. Can be imported back (see below) |
 | **BVH** | Blender, Maya, MotionBuilder, Cinema 4D; Unity/Unreal via Blender | Animated skeleton, one file per hand (`…-left.bvh`, `…-right.bvh`) |
 | **GLB** (glTF 2.0) | Blender, three.js, Unity, Unreal, Windows 3D Viewer | Animated 3D hands (joints and bones) that play straight away |
 | **C3D** | Vicon Nexus, Qualisys, Visual3D, Mokka, ezc3d | 42 3D markers (21 per hand); frames where a hand wasn't visible are marked invalid |
 | **TRC** | OpenSim | The same 42 markers as a text table |
-| **NPZ** | Python / NumPy (`np.load`) | Per hand: `left_t`, `left_joints` (T×21×3), `left_wrist`, `left_palm_quat`, `left_phase`; plus `joint_names`, `parents` |
+| **NPZ** | Python / NumPy (`np.load`) | Per hand: `left_t`, `left_joints` (T×21×3), `left_wrist`, `left_palm_quat`, `left_phase`, `left_real_joints` (T×21×3, metres), with an OAK-D `left_distance_mm` (T×3); plus `joint_names`, `parents` |
 
 Units and axes:
 
 - **JSON, CSV and NPZ** keep MediaPipe's raw units: x and y as fractions of the image width/height, and z as relative depth. The joint positions are relative to the wrist.
 - **BVH, GLB, C3D and TRC** are converted to real-world-style units: BVH in cm, GLB in m, C3D and TRC in mm. They use right-handed axes: Y-up for BVH, GLB and TRC; Z-up for C3D.
+- The real shape (`world_joints`, `…_real_…`) is MediaPipe's own estimate of the hand in metres, around the hand's centre (x right, y down, z away from the camera). An OAK-D's `distance_mm` is measured: the wrist's position from the camera in mm (x right, y down, z forward).
 - A single webcam can't measure distance, so the size is **estimated** by assuming an average adult hand (wrist to middle fingertip ≈ 19 cm). Treat absolute distances as approximate; relative motion and angles are what's reliable.
 - The 3D formats show the hands as the camera saw them (not mirrored), so a left hand stays a left hand.
+
+## Control your PC
+
+In the Windows and Linux app, the **Control your PC** card turns your hands into a mouse and keyboard. Nothing happens until you turn each part on.
+
+- **Hand mouse** (`Ctrl+Alt+M` from anywhere): the pointer follows the centre of your palm, which hardly moves when a finger curls.
+  - A quick curl of the **index finger** is a left click; curl it and hold to **drag** (the button stays down until the finger straightens).
+  - A quick curl of the **middle finger** is a right click.
+  - Curl both, or make a fist, to **hold the pointer still** while you move your hand back to the middle.
+  - Pick the hand to follow, how far you move for the pointer to cross the screen, and the main screen or all screens. It keeps working with Hand Tracker minimized.
+- **Floating keyboard** (`Ctrl+Alt+K` from anywhere): a keyboard that stays on top of every window and never takes the focus, so what you click on it is typed into the app you were using, like Windows' on-screen keyboard. Click its keys with the hand mouse (or a mouse). Shift applies to the next key; Ctrl, Alt and Win make shortcuts with the next key (Ctrl, then C, copies). Its *Hand mouse* button turns the hand mouse on and off.
+- **Gesture actions**: make a gesture press keys (`ctrl+c`, `volumeup`, `playpause`, `f5`…), type text, click, double-click, right-click, drag, scroll, or call a web address (for smart-home hubs such as Home Assistant, IFTTT or Node-RED; POST sends the gesture, hand and time as JSON). For each action choose the gesture, the hand, and when it fires:
+  - when the gesture starts;
+  - when it starts and ends (keys and the mouse button are held down while it lasts);
+  - repeatedly while it's held;
+  - on every frame.
+
+  Also set how long the gesture must be held first; a few misread frames don't end it. The **Keyboard**, **Mouse** and **Web requests** switches turn whole kinds of action off, and each action has its own switch. Three examples (volume up and down with thumbs up and down, play/pause with a fist) are there but switched off. Adapted from depthai_hand_tracker's HandController.
+
+On Windows this uses Windows' own input functions (nothing to install). On Linux it needs **xdotool** (`sudo apt install xdotool`) and an X11 (Xorg) session: Wayland desktops don't let apps move the pointer or type into other apps.
+
+## Luxonis OAK cameras
+
+With a Luxonis OAK camera (OAK-D, OAK-D Lite, OAK-1…), pick **Luxonis OAK camera** in the camera list. The hands are found on the camera itself, using depthai_hand_tracker's Edge mode, and an OAK-D also measures each hand's distance (Show → Distance). Everything else works as with any camera: gestures, recording, motion capture, the hand mouse. Tested with an OAK-D Pro W over USB 3: about 20 frames a second with both hands, distances from 0.4 to 3 m, and far-away mode on the camera. *Model*, *Track* and *Far-away hands* apply too (far-away hands on the camera uses its own body model, MoveNet).
+
+- **One-time setup** (the first time you pick it, about 150 MB, a minute or so): Luxonis's depthai library version 2, which the tracking code is written for, needs Python 3.8–3.13, so Hand Tracker installs its own. It downloads [uv](https://github.com/astral-sh/uv), which installs a private Python 3.12 with depthai, OpenCV and NumPy, plus the camera models from depthai_hand_tracker. Everything goes in Hand Tracker's own data folder (`%APPDATA%\Hand Tracker\oak` on Windows); nothing else on your computer changes, and every download is checked against a known size or checksum.
+- **"The OAK camera couldn't be started: it's busy"**: close **OAK Viewer** or any other program using the camera. If that doesn't help, unplug it and plug it back in, ideally into a USB 3 port with its own cable.
+- **Linux**: allow access to the camera once: `echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/80-movidius.rules`, then `sudo udevadm control --reload-rules && sudo udevadm trigger`, and replug it.
 
 ## Viewing and converting recordings
 
@@ -303,7 +345,12 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 
 | File | Purpose |
 | --- | --- |
-| `hand-tracker.js` | Camera, MediaPipe, smoothing, features, orientation, stall recovery |
+| `hand-tracker.js` | Camera, MediaPipe, smoothing, features, orientation, stall recovery, square crop, pause, far-away focusing, external (OAK) frames |
+| `far-hands.js` | Far-away hands: MediaPipe Pose and the square to search around the wrists |
+| `pc-control.js` | Hand mouse, gesture actions and the Control your PC card |
+| `keyboard.html`, `keyboard.js` | The floating keyboard |
+| `oak-source.js` | A Luxonis OAK camera as the source: setup dialog, frames into HandTracker |
+| `oak/` | OAK tracking code from depthai_hand_tracker, and `oak_bridge.py`, which streams its hands and pictures to the app |
 | `robot-motion.js` | Two-hand motion capture recorder |
 | `motion-export.js` | CSV / BVH / GLB / C3D / TRC / NPZ writers (hands and markers) |
 | `motion-import.js` | Reads JSON, CSV and C3D back in (with a C3D reader built from the format's published description) |
@@ -317,7 +364,7 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 | `app.js`, `index.html` | Main window |
 | `viewer.js`, `viewer.html` | Recording Viewer |
 | `mobile-bridge.js` | Android: saving to Documents/Hand Tracker and sharing (Capacitor plugins) |
-| `electron/` | Desktop app: secure local file serving, camera permission, save dialogs, ffmpeg export, `.tak` support through Motive (`tak.js`, `tak-convert.ps1`), and Motive's live NatNet stream (`natnet.js`) |
+| `electron/` | Desktop app: secure local file serving, camera permission, save dialogs, ffmpeg export, `.tak` support through Motive (`tak.js`, `tak-convert.ps1`), Motive's live NatNet stream (`natnet.js`), mouse and keyboard input (`input.js`, `input-helper.ps1`), and OAK cameras (`oak.js`) |
 | `android/`, `capacitor.config.json` | Android app project (Capacitor): permissions, icon, keep-screen-on |
 | `scripts/` | `serve.js` (browser mode), `build-web.js` + `build-android.js` (APK build), `check.js`, `check-android.js`, `motion-validators.js`, `video-validators.js`, `natnet-sim.js` (a stand-in Motive for the checks), `fake-capacitor.js`, `simulated-hands.js`, `fixtures/` (automated checks) |
 
@@ -328,8 +375,9 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 - BVH joint rotations are reconstructed from joint positions. Twist along a finger bone can't be recovered from landmarks, so fingers bend but never twist.
 - Readable-text detection scans about twice a second and waits for three matching scans, so text straightens about a second after it appears, and text that moves quickly can stay mirrored.
 - On the website and the Android app, a video is converted in the device's memory, so very large files (roughly over 1 GB) may fail; use the Windows app for those.
-- Tracking and recording keep running when the window is covered by other windows, but pause while it is minimized (Windows stops drawing minimized windows).
+- Tracking keeps running when the window is covered or minimized (minimized, at a slightly lower frame rate), so the hand mouse keeps working.
+- Two, Three and Four are checked on simulated hands; unlike the other gestures, they haven't been tuned on photos or a live session yet.
 
 ## License
 
-Hand Tracker is licensed under the GNU Affero General Public License v3.0; see [LICENSE](LICENSE).
+Hand Tracker is licensed under the GNU Affero General Public License v3.0; see [LICENSE](LICENSE). It includes code from [depthai_hand_tracker](https://github.com/geaxgx/depthai_hand_tracker) by geaxgx (MIT licence) and uses Google's MediaPipe (Apache 2.0); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

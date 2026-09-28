@@ -179,6 +179,11 @@
     const hasQuat = quatCols.every((i) => i >= 0);
     const handCol = col("hand"), phaseCol = col("phase");
     const sizeCols = [col("image_width"), col("image_height")];
+    // The hand's real shape (metres) and a depth camera's distance (mm), when recorded.
+    const realCols = JOINTS.map((j) => ["x", "y", "z"].map((axis) => col(`${j}_real_${axis}`)));
+    const hasReal = realCols.every((c) => c.every((i) => i >= 0));
+    const distCols = ["distance_x_mm", "distance_y_mm", "distance_z_mm"].map(col);
+    const hasDist = distCols.every((i) => i >= 0);
 
     // Group rows by hand.
     const byHand = new Map();
@@ -196,6 +201,8 @@
       const quat = hasQuat ? quatCols.map((i) => numberAt(r, i)) : null;
       const phase = phaseCol >= 0 && r[phaseCol].trim() ? r[phaseCol].trim().toLowerCase() : "idle";
       if (!byHand.has(hand)) byHand.set(hand, []);
+      const real = hasReal ? realCols.map((cols) => cols.map((i) => numberAt(r, i))) : null;
+      const distance = hasDist ? distCols.map((i) => numberAt(r, i)) : null;
       byHand.get(hand).push({
         t,
         joints,
@@ -203,6 +210,8 @@
         quat: quat && quat.every(Number.isFinite) ? quat : null,
         phase,
         size: sizeCols.map((i) => numberAt(r, i)),
+        real: real && real.every((p) => p.every(Number.isFinite)) ? real : null,
+        distance: distance && distance.every(Number.isFinite) ? distance : null,
       });
     }
     if (skipped) warnings.push(`${skipped} row${skipped === 1 ? " was" : "s were"} skipped because of missing or non-numeric values.`);
@@ -252,7 +261,10 @@
           acceleration,
         };
       });
-      frames.push({ frame_index: i, t: r.t, joints });
+      const frame = { frame_index: i, t: r.t, joints };
+      if (r.real) frame.world_joints = r.real;
+      if (r.distance) frame.distance_mm = r.distance;
+      frames.push(frame);
       endEffector.push([r.t, ...(r.wrist || [0.5, 0.5, 0])]);
       palmTraj.push([r.t, ...palm]);
       const last = segments[segments.length - 1];

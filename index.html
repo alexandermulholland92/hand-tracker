@@ -53,6 +53,21 @@
     background: #ff6b6b; margin-right: 7px; vertical-align: 0; animation: blink 1s steps(1) infinite;
   }
   @keyframes blink { 50% { opacity: 0.2; } }
+  #pauseBadge {
+    position: absolute; top: 12px; right: 12px; padding: 4px 10px; border-radius: 20px;
+    background: rgba(24, 44, 70, 0.9); border: 1px solid #4dabf7; color: #d0ebff;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.03em;
+  }
+  .show-bar { gap: 6px; }
+  .show-bar .bar-label, .options-bar .bar-label { font-size: 12px; opacity: 0.7; margin-right: 2px; }
+  .show-bar button { padding: 4px 9px; font-size: 12px; }
+  .show-bar button kbd { margin-left: 4px; }
+  .action-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-top: 1px solid #25272e; font-size: 12px; }
+  .action-row select, .action-row input[type="text"] { padding: 4px 6px; font-size: 12px; }
+  .action-row input[type="text"] { min-width: 150px; flex: 1; }
+  .action-row input[type="number"] { width: 58px; padding: 3px 4px; background: #1a1b1f; color: #e8e8ea; border: 1px solid #333; border-radius: 5px; font: inherit; }
+  .action-row button { padding: 3px 9px; }
+  #actionLog { white-space: pre-line; }
 
   .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
   .toolbar label { font-size: 12px; opacity: 0.85; display: inline-flex; align-items: center; gap: 6px; }
@@ -208,6 +223,7 @@
       <canvas id="stage" width="1280" height="720"></canvas>
       <div id="stageMessage">Starting camera and loading the hand model…</div>
       <div id="recBadge" hidden>REC 00:00</div>
+      <div id="pauseBadge" hidden>❚❚ PAUSED</div>
     </div>
 
     <div class="toolbar">
@@ -220,6 +236,14 @@
           <option value="640x480">640 × 480</option>
           <option value="1280x720" selected>1280 × 720</option>
           <option value="1920x1080">1920 × 1080</option>
+        </select>
+      </label>
+      <label title="Turn the picture, for a camera mounted on its side or upside down. Remembered for each camera and each video. T turns it another 90° right.">Rotate
+        <select id="rotateSelect">
+          <option value="0">none</option>
+          <option value="90">90° right</option>
+          <option value="180">180°</option>
+          <option value="270">90° left</option>
         </select>
       </label>
       <label>Track
@@ -254,6 +278,31 @@
       <button id="readableToggle" aria-pressed="false" title="Optional, off by default. In mirrored view, find text in the camera picture (signs, screens, printing) and show it the right way round. Times (a clock) are kept the right way round either way. Your choice is remembered.">Readable text: OFF</button>
       <button id="legendToggle">What is Yaw / Pitch / Roll?</button>
     </div>
+    <div class="toolbar options-bar">
+      <button id="pauseToggle" title="Freeze the live picture and tracking (Space). For a video file, pauses it.">❚❚ Pause<kbd>Space</kbd></button>
+      <button id="squareToggle" aria-pressed="false" title="Track only the centre square of the picture. The hand detector works on squares, so small or far-away hands in the middle of the picture get a bigger, clearer view. Hands outside the square aren't tracked.">Square crop: OFF</button>
+      <button id="farToggle" aria-pressed="false" title="For hands far from the camera (about 1.5 to 5 m): a body model finds your wrists first, then the hand detector looks just around them. Slower while it's looking for a hand; as fast as usual once one is found.">Far-away hands: OFF</button>
+      <label id="farFocusLabel" hidden title="Which hands to look for">Look for
+        <select id="farFocus">
+          <option value="both">both hands</option>
+          <option value="higher">the higher hand</option>
+          <option value="right">the right hand</option>
+          <option value="left">the left hand</option>
+        </select>
+      </label>
+      <label id="farRaisedLabel" hidden title="Only look for a hand raised above its elbow, as when making a gesture: a hand hanging down isn't picked up. Once a hand is found, it stays tracked wherever it goes."><input type="checkbox" id="farRaised" checked /> Raised hands only</label>
+    </div>
+    <div class="toolbar show-bar" id="showBar" title="What's drawn on the picture (and in recorded video)">
+      <span class="bar-label">Show</span>
+      <button data-show="box" title="A box around each hand, turned with it (1)">Hand box<kbd>1</kbd></button>
+      <button data-show="skeleton" title="The hand skeleton (2)">Skeleton<kbd>2</kbd></button>
+      <button data-show="side" title="Which hand it is (3)">Left/right<kbd>3</kbd></button>
+      <button data-show="scores" title="How sure the tracker is: of left or right, and (OAK camera) of the hand itself (4)">Confidence<kbd>4</kbd></button>
+      <button data-show="gesture" title="The gesture each hand is making (5)">Gesture<kbd>5</kbd></button>
+      <button data-show="distance" title="Each hand's distance from the camera, measured by an OAK-D depth camera (6)">Distance<kbd>6</kbd></button>
+      <button data-show="focus" title="With far-away hands on: the body found and the area searched for hands (7)">Body &amp; search area<kbd>7</kbd></button>
+      <button data-show="fps" title="The frames-per-second counter (F)">FPS<kbd>F</kbd></button>
+    </div>
 
     <div id="legend" class="card">
       <h3>Palm Orientation, Explained</h3>
@@ -278,6 +327,30 @@
         <button id="motionBtn" title="Start / stop motion capture of both hands (M)">Start Motion Capture<kbd>M</kbd></button>
         <span id="motionStatus" class="status"></span>
       </div>
+    </div>
+
+    <div class="card" id="pcCard" hidden>
+      <div class="section-label">Control your PC</div>
+      <div class="toolbar">
+        <button id="mouseToggle" aria-pressed="false" title="Move the pointer by moving your hand. A quick curl of your index finger clicks (curl and hold to drag); a quick curl of your middle finger right-clicks. Curl both, or make a fist, to hold the pointer still while you move your hand back. Keeps working with this window minimized. Ctrl+Alt+M turns it on and off from anywhere.">Hand mouse: OFF<kbd>Ctrl+Alt+M</kbd></button>
+        <label>Hand <select id="mouseHand"><option value="Right">right</option><option value="Left">left</option><option value="either">either</option></select></label>
+        <label title="How far you move your hand to cross the screen">Moves
+          <select id="mouseReach"><option value="0.4">small</option><option value="0.55" selected>medium</option><option value="0.7">large</option></select>
+        </label>
+        <label>Screen <select id="mouseScreen"><option value="primary">main screen</option><option value="all">all screens</option></select></label>
+        <button id="keyboardToggle" aria-pressed="false" title="A keyboard that floats on top of every window. Type into any app by clicking its keys with the hand mouse (or a mouse). Ctrl+Alt+K shows and hides it from anywhere.">Floating keyboard: OFF<kbd>Ctrl+Alt+K</kbd></button>
+      </div>
+      <div id="mouseStatus" class="note">Hand mouse off</div>
+      <div class="section-label">Gesture actions</div>
+      <div class="toolbar">
+        <button id="actionsToggle" aria-pressed="false" title="Make gestures press keys, type, click, scroll or call a web address. Nothing happens until this is on, and each action has its own switch.">Gesture actions: OFF</button>
+        <label title="Allow actions that press keys or type"><input type="checkbox" id="allowKeys" checked /> Keyboard</label>
+        <label title="Allow actions that click, drag or scroll"><input type="checkbox" id="allowMouse" checked /> Mouse</label>
+        <label title="Allow actions that call a web address (for smart home hubs, IFTTT, Node-RED…)"><input type="checkbox" id="allowWeb" checked /> Web requests</label>
+        <button id="addAction">+ Add action</button>
+      </div>
+      <div id="actionList"></div>
+      <div id="actionLog" class="note"></div>
     </div>
 
     <div class="card" id="exportCard" hidden>
@@ -356,9 +429,30 @@
   </div>
 </div>
 
+<div id="oakDialog" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="oakTitle">
+    <div class="modal-head"><b id="oakTitle">Luxonis OAK camera</b></div>
+    <p class="note" id="oakReason"></p>
+    <p class="note">With an OAK camera (OAK-D, OAK-D Lite, OAK-1…) the hands are found on the camera itself, and an OAK-D also measures each hand's distance. It needs a one-time setup: Hand Tracker downloads its own copy of Python 3.12 with Luxonis's depthai library, OpenCV and NumPy, and the camera models (about 150 MB, into its own folder; nothing else on your computer changes). The tracking code comes from geaxgx/depthai_hand_tracker.</p>
+    <pre id="oakLog" class="note" hidden></pre>
+    <div class="export-actions">
+      <button id="oakSetup" class="primary">Set up OAK support</button>
+      <button id="oakCancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div id="viz3dCard" class="card">
   <div class="section-label">Live 3D Hands + Simulated Grippers</div>
   <div id="threeContainer"></div>
+  <div class="toolbar">
+    <label title="From the picture: as the camera sees it (a hand further away looks smaller). Real size: each hand's real shape and size in metres, estimated by the hand model, and with an OAK-D depth camera at its measured distance.">Hand shape
+      <select id="shape3d"><option value="picture">From the picture</option><option value="real">Real size (metres)</option></select>
+    </label>
+    <label>View
+      <select id="spin3d"><option value="off">Still (drag to turn)</option><option value="rotate">Rotate</option><option value="swing">Swing back and forth</option></select>
+    </label>
+  </div>
   <div class="viz3d-caption">Blue = left hand &nbsp;•&nbsp; Orange = right hand &nbsp;•&nbsp; Each hand drives its own simulated gripper &nbsp;•&nbsp; Drag to rotate the view</div>
 </div>
 
@@ -369,6 +463,7 @@
 <script src="node_modules/three/examples/js/controls/OrbitControls.js"></script>
 <script src="node_modules/tesseract.js/dist/tesseract.min.js"></script>
 <script src="hand-tracker.js"></script>
+<script src="far-hands.js"></script>
 <script src="robot-motion.js"></script>
 <script src="hand-3d.js"></script>
 <script src="video-recorder.js"></script>
@@ -379,6 +474,8 @@
 <script src="video-origin.js"></script>
 <script src="readable-text.js"></script>
 <script src="motion-export.js"></script>
+<script src="pc-control.js"></script>
+<script src="oak-source.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

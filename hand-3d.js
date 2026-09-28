@@ -10,6 +10,11 @@
  *   Hand3D.update(hands); // once per frame with the HandTracker hands array (a single hand also works)
  *   Hand3D.getCanvas();   // the WebGL canvas (kept readable so it can be recorded)
  *   Hand3D.setMirror(true/false); // match the 2D camera view's mirror setting
+ *   Hand3D.setOptions({ shape: "picture" | "real", spin: "off" | "rotate" | "swing" });
+ *     shape "real": each hand at its real size and shape (MediaPipe's world landmarks, in
+ *     metres), and where a depth camera measured it, at its real distance too (the "mixed"
+ *     view of geaxgx/depthai_hand_tracker's 3D example). "picture": as seen in the camera
+ *     picture (a hand further away looks smaller). spin: turn the view by itself.
  */
 
 (function (global) {
@@ -38,6 +43,8 @@
   const TRAIL_LENGTH = 60; // ~1-2 seconds of history depending on frame rate
 
   let scene, camera, renderer, controls, containerEl, mirrorGroup;
+  let options = { shape: "picture", spin: "off" };
+  const WORLD_SCALE = 8; // scene units per metre: a real hand about as big as in picture mode
   let rigs = {}; // { Left: rig, Right: rig }
   let ready = false;
 
@@ -167,7 +174,12 @@
         rig.trailPositions = [];
       }
     }
-    if (controls) controls.update();
+    if (controls) {
+      // Swing: turn one way then the other, about 5 seconds each.
+      controls.autoRotate = options.spin !== "off";
+      controls.autoRotateSpeed = options.spin === "swing" ? (Math.sin(now / 1600) >= 0 ? 3 : -3) : 2;
+      controls.update();
+    }
     if (renderer && scene && camera) renderer.render(scene, camera);
   }
 
@@ -197,14 +209,28 @@
     );
   }
 
+  // Real size: the world landmarks (metres) moved so the wrist is at the origin, scaled to
+  // the scene; toVec3's own SCALE is undone.
+  function realLandmarks(hand) {
+    const w = hand.worldLandmarks;
+    const k = WORLD_SCALE / SCALE;
+    return w.map((p) => ({ x: (p.x - w[0].x) * k, y: (p.y - w[0].y) * k, z: (p.z - w[0].z) * k }));
+  }
+
   function updateRig(rig, hand) {
-    const landmarks = hand.landmarks;
+    const real = options.shape === "real" && hand.worldLandmarks && hand.worldLandmarks.length === 21;
+    const landmarks = real ? realLandmarks(hand) : hand.landmarks;
     rig.lastSeen = performance.now();
     if (!rig.visible) setRigVisible(rig, true);
 
     // Move the whole hand + gripper based on the wrist's actual position in the
-    // camera frame — without this, only the fingers would visibly move.
-    const worldTranslation = toWorldTranslation(hand.features.worldPosition);
+    // camera frame — without this, only the fingers would visibly move. With a depth
+    // camera's measurement and real size on, at its measured place (x right, y down, z
+    // away from the camera, mm; 1 m from the camera is the middle of the scene).
+    const d = real && hand.distance;
+    const worldTranslation = d
+      ? new global.THREE.Vector3((d[0] / 1000) * WORLD_SCALE, -(d[1] / 1000) * WORLD_SCALE, -(d[2] / 1000 - 1) * WORLD_SCALE)
+      : toWorldTranslation(hand.features.worldPosition);
     rig.handGroup.position.copy(worldTranslation);
     rig.gripperGroup.position.set(rig.colors.offsetX + worldTranslation.x, worldTranslation.y, worldTranslation.z);
 
@@ -290,5 +316,9 @@
     if (mirrorGroup) mirrorGroup.scale.x = mirrored ? -1 : 1;
   }
 
-  global.Hand3D = { init, update, getCanvas, setMirror };
+  function setOptions(opts = {}) {
+    options = { ...options, ...opts };
+  }
+
+  global.Hand3D = { init, update, getCanvas, setMirror, setOptions };
 })(window);

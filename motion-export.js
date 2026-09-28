@@ -182,7 +182,12 @@
             // Isotropic image-axis units (y rescaled so x and y share a unit), centered on the frame.
             const wrist = [wristRaw[0] - 0.5, (wristRaw[1] - 0.5) * aspect, wristRaw[2]];
             const world = raw.map((p) => add(wrist, [p[0], p[1] * aspect, p[2]]));
-            return { t: f.t, raw, wristRaw, world, quat: pq[i] ? pq[i].slice(1, 5) : [0, 0, 0, 1], phase: phase[i] };
+            return {
+              t: f.t, raw, wristRaw, world, quat: pq[i] ? pq[i].slice(1, 5) : [0, 0, 0, 1], phase: phase[i],
+              // Real shape in metres and a depth camera's distance, when the recording has them.
+              real: Array.isArray(f.world_joints) && f.world_joints.length === 21 ? f.world_joints : null,
+              distance: Array.isArray(f.distance_mm) ? f.distance_mm : null,
+            };
           }),
         };
       });
@@ -234,10 +239,21 @@
     const cols = ["hand", "frame", "t", "phase", "wrist_world_x", "wrist_world_y", "wrist_world_z", "palm_qx", "palm_qy", "palm_qz", "palm_qw"];
     for (const j of JOINTS) cols.push(`${j}_x`, `${j}_y`, `${j}_z`);
     cols.push("image_width", "image_height"); // lets an imported CSV rebuild correctly proportioned 3D
+    // Real shape (metres, origin at the hand's centre) and a depth camera's distance (mm),
+    // at the end, when recorded; empty cells for frames without them.
+    const all = prep.tracks.flatMap((tr) => tr.samples);
+    const hasReal = all.some((s) => s.real), hasDistance = all.some((s) => s.distance);
+    if (hasReal) for (const j of JOINTS) cols.push(`${j}_real_x`, `${j}_real_y`, `${j}_real_z`);
+    if (hasDistance) cols.push("distance_x_mm", "distance_y_mm", "distance_z_mm");
     const [iw, ih] = prep.imageSize;
     const rows = [];
     for (const tr of prep.tracks) {
-      tr.samples.forEach((s, i) => rows.push({ t: s.t, cells: [tr.name, i, s.t.toFixed(4), s.phase, ...s.wristRaw, ...s.quat, ...s.raw.flat(), iw, ih] }));
+      tr.samples.forEach((s, i) => {
+        const cells = [tr.name, i, s.t.toFixed(4), s.phase, ...s.wristRaw, ...s.quat, ...s.raw.flat(), iw, ih];
+        if (hasReal) cells.push(...(s.real ? s.real.flat() : new Array(63).fill("")));
+        if (hasDistance) cells.push(...(s.distance ? s.distance : ["", "", ""]));
+        rows.push({ t: s.t, cells });
+      });
     }
     rows.sort((a, b) => a.t - b.t);
     const fmt = (v) => (typeof v === "number" && !Number.isInteger(v) ? v.toFixed(6) : String(v));
@@ -761,6 +777,13 @@
         { name: `${tr.key}_palm_quat.npy`, data: npy("<f4", [n, 4], new Float32Array(S.flatMap((s) => s.quat))) },
         { name: `${tr.key}_phase.npy`, data: npy("|i1", [n], new Int8Array(S.map((s) => Math.max(0, PHASES.indexOf(s.phase))))) }
       );
+      // Real shape in metres and a depth camera's distance in mm (NaN where not recorded).
+      if (S.some((s) => s.real)) {
+        files.push({ name: `${tr.key}_real_joints.npy`, data: npy("<f4", [n, 21, 3], new Float32Array(S.flatMap((s) => (s.real ? s.real.flat() : new Array(63).fill(NaN))))) });
+      }
+      if (S.some((s) => s.distance)) {
+        files.push({ name: `${tr.key}_distance_mm.npy`, data: npy("<f4", [n, 3], new Float32Array(S.flatMap((s) => s.distance || [NaN, NaN, NaN]))) });
+      }
     }
     return zip(files);
   }

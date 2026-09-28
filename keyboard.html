@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hand Tracker keyboard</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #15161a; color: #e8e8ea; font: 13px "Segoe UI", system-ui, sans-serif; user-select: none; overflow: hidden; }
+  body { display: flex; flex-direction: column; border: 1px solid #2c2e36; }
+  #bar { display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: #1d1f24; -webkit-app-region: drag; cursor: move; }
+  #bar .grip { opacity: 0.5; letter-spacing: -2px; }
+  #bar b { font-size: 12.5px; }
+  #status { flex: 1; font-size: 12px; opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #status.on { color: #8ce99a; opacity: 1; }
+  #bar button { -webkit-app-region: no-drag; }
+  button { font: inherit; color: inherit; background: #25272e; border: 1px solid #3a3d47; border-radius: 6px; cursor: pointer; }
+  button:hover { background: #30333c; border-color: #5c7cfa; }
+  button.active { background: #2b5c3f; border-color: #51cf66; color: #d3f9d8; }
+  #bar button { padding: 3px 10px; font-size: 12px; }
+  #keys { flex: 1; display: flex; flex-direction: column; gap: 5px; padding: 7px; min-height: 0; }
+  .row { flex: 1; display: flex; gap: 5px; min-height: 0; }
+  .key { flex: 1 1 0; min-width: 0; font-size: clamp(12px, 2.6vh, 20px); display: flex; align-items: center; justify-content: center; padding: 0; }
+  .key:hover { background: #3a3f52; border-color: #748ffc; }
+  .key:active, .key.pressed { background: #4c6ef5; border-color: #91a7ff; }
+  .key.mod.active { background: #1f4f7a; border-color: #4dabf7; color: #d0ebff; }
+  .key small { font-size: 0.7em; opacity: 0.8; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span class="grip">⋮⋮</span>
+    <b>Hand Tracker</b>
+    <span id="status">Hand mouse off</span>
+    <button id="mouseBtn" title="Turn the hand mouse on or off (Ctrl+Alt+M)">🖐 Hand mouse</button>
+    <button id="hideBtn" title="Hide the keyboard (Ctrl+Alt+K brings it back)">✕</button>
+  </div>
+  <div id="keys"></div>
+<script src="keyboard.js"></script>
+</body>
+</html>

@@ -30,7 +30,21 @@
  *   HandTracker.setMaxHands(1 | 2);          // how many hands to track at once
  *   HandTracker.getFeatures("Left" | "Right"); // single hand's features
  *   HandTracker.getFrameImage();          // the picture being tracked (the video, or a flipped/cropped copy)
+ *   HandTracker.setSquareCrop(true/false); // track only the centre square of the picture
+ *   HandTracker.setRotation(0 | 90 | 180 | 270); // turn the picture clockwise before tracking (a camera
+ *                                         // mounted on its side or upside down); getCamera() is then turned too
+ *   HandTracker.setPaused(true/false);    // freeze the live picture and tracking
+ *   HandTracker.setFarMode({ enabled, raisedOnly, focus: "both" | "higher" | "left" | "right" });
+ *                                         // far-away hands: find the body first, then look for hands
+ *                                         // around its wrists (see "Far-away hands")
+ *   HandTracker.getFocus();               // { region, body } of the last frame in far mode, for drawing
+ *   HandTracker.useExternalSource(name);  // hands and pictures come from elsewhere (an OAK camera):
+ *   HandTracker.pushExternalFrame(image, results, timestamp); // feed one, results shaped like MediaPipe's
  *   HandTracker.stop();
+ *
+ * Each hand also has worldLandmarks: MediaPipe's estimate of the hand's real shape, in
+ * metres, with the origin at the hand's centre (x right, y down, z away from the camera, as
+ * seen by the camera), smoothed like the picture landmarks.
  *
  * Pipeline (per hand):
  *   webcam or video file -> MediaPipe Hands inference -> 21 landmarks
@@ -54,6 +68,12 @@
  * be labelled the wrong side and move the wrong way. With mirrored set, each frame is
  * flipped back before MediaPipe sees it, so labels, positions and everything computed
  * from them are as a normal camera would have seen them.
+ *
+ * Far-away hands (adapted from geaxgx/depthai_hand_tracker's Body Pre Focusing, MIT): the
+ * hand detector was trained on hands within about 2 m and misses smaller ones. In far mode,
+ * while no hand is tracked, a body-pose model (far-hands.js) finds the wrists and the hand
+ * detector is given just a square around them; once a hand is found, the square follows
+ * it. Landmarks are mapped back to the whole picture, which is what's drawn.
  */
 
 (function (global) {
@@ -112,14 +132,31 @@
   let endedCallbacks = [];
   let inflight = Promise.resolve(); // the frame MediaPipe is working on right now
   let switching = false; // while swapping camera/file, late results from the old source are dropped
+  let squareCrop = false; // track only the centre square of the picture
+  let rotation = 0; // degrees clockwise the picture is turned before tracking: 0, 90, 180 or 270
+  let externalCanvas = null; // an external source's picture, turned
+  let paused = false; // the live picture and tracking are frozen
+  let external = null; // { name, width, height } while hands come from outside (an OAK camera)
+  let loopKick = null; // re-arms the capture loop when the window is hidden or shown again
+  // Far-away hands: settings, the square MediaPipe was given this frame (fractions of the
+  // picture, or null for all of it), and what the body-pose model last found.
+  let far = { enabled: false, raisedOnly: true, focus: "both" };
+  let focusRegion = null; // the region of the frame being processed now
+  let lastRegion = null; // the region used last frame (kept while the hand stays inside it)
+  let lastFocus = { region: null, body: null };
+  let farSearch = 0; // frames spent looking for a hand in far mode
+  let focusCanvas = null;
+  let fullFrame = null; // the whole picture of the frame being processed, drawn on the stage
 
   // Per-hand state, keyed by handedness label ("Left" / "Right"), so
   // smoothing/velocity stay stable even if MediaPipe's array order
   // changes between frames.
-  const state = {}; // { Left: { filter, flipVotes, lastFeatures, lastSeen }, Right: {...} }
+  const state = {}; // { Left: { filter, flipVotes, lastFeatures, lastSeen, rightSum, seen }, Right: {...} }
 
+  // rightSum / seen: how sure MediaPipe has been, on average since this hand was first
+  // tracked, that it's a right hand (see "Which hand is which").
   function freshState() {
-    return { filter: null, flipVotes: 0, lastFeatures: null, lastSeen: null };
+    return { filter: null, flipVotes: 0, lastFeatures: null, lastSeen: null, rightSum: 0, seen: 0 };
   }
 
   // A hand seen recently enough to carry on smoothing from (not after a gap or a seek back).
@@ -143,18 +180,22 @@
 
   // raw: MediaPipe's 21 landmarks this frame -> the smoothed landmarks.
   // s.filter keeps each landmark's smoothed position and speed (hand lengths/s).
-  function smoothLandmarks(raw, timestamp, s) {
+  // world (optional): the same hand's real-world landmarks (metres), smoothed along with
+  // the picture ones, landmark by landmark, as far as they move; the result is s.world.
+  function smoothLandmarks(raw, timestamp, s, world = null) {
     const scale = handLength(raw);
     const f = s.filter;
-    if (f && timestamp <= f.t) return f.pos.map(([x, y, z]) => ({ x, y, z })); // the same frame again
+    const points = (list) => list.map(([x, y, z]) => ({ x, y, z }));
+    if (f && timestamp <= f.t) return points(f.pos); // the same frame again
     let jumped = false;
     if (f) {
       let moved = 0;
       for (let i = 0; i < raw.length; i++) moved += Math.hypot(raw[i].x - f.pos[i][0], raw[i].y - f.pos[i][1]) / scale;
       jumped = moved / raw.length > JUMP_HAND_LENGTHS;
     }
-    if (!f || jumped) {
-      s.filter = { t: timestamp, scale, pos: raw.map((p) => [p.x, p.y, p.z]), vel: raw.map(() => [0, 0, 0]) };
+    if (!f || jumped || (world && !f.world)) {
+      s.filter = { t: timestamp, scale, pos: raw.map((p) => [p.x, p.y, p.z]), vel: raw.map(() => [0, 0, 0]), world: world ? world.map((p) => [p.x, p.y, p.z]) : null };
+      s.world = s.filter.world ? points(s.filter.world) : null;
       return raw.map((p) => ({ x: p.x, y: p.y, z: p.z }));
     }
     const dt = (timestamp - f.t) / 1000;
@@ -166,10 +207,18 @@
       const cutoff = SMOOTHING.minCutoff + SMOOTHING.beta * Math.hypot(vel[0], vel[1], vel[2]);
       const a = lowPassAlpha(cutoff, dt);
       for (let k = 0; k < 3; k++) pos[k] += a * (now[k] - pos[k]);
+      if (world && f.world) {
+        const w = f.world[i], p = world[i];
+        w[0] += a * (p.x - w[0]);
+        w[1] += a * (p.y - w[1]);
+        w[2] += a * (p.z - w[2]);
+      }
     }
+    if (!world) f.world = null;
+    s.world = f.world ? points(f.world) : null;
     f.t = timestamp;
     f.scale = scale;
-    return f.pos.map(([x, y, z]) => ({ x, y, z }));
+    return points(f.pos);
   }
 
   // ---------- Which hand is which ----------
@@ -177,10 +226,16 @@
   // label for a frame or two, which swapped the hand cards and restarted smoothing.
   // Each detection is matched to the hands tracked on the previous frames, mostly by
   // where it is (MediaPipe's label breaks ties), and a tracked hand only changes label
-  // once MediaPipe has called it the other side LABEL_FLIP_FRAMES frames in a row.
-  function assignLabels(rawList, handednessList, timestamp) {
+  // once MediaPipe has called it the other side LABEL_FLIP_FRAMES frames in a row, and
+  // its average over the whole time the hand has been tracked says so too (after
+  // geaxgx/depthai_hand_tracker's handedness averaging): a hand MediaPipe has been sure
+  // about for a minute isn't relabelled by a few doubtful frames. In far mode, a hand at a
+  // body's wrist takes that wrist's side (the body model knows left from right far better).
+  const rightness = (d) => (d.said === "Right" ? d.score : d.said === "Left" ? 1 - d.score : 0.5);
+  function assignLabels(rawList, handednessList, timestamp, bodySides = []) {
     const dets = rawList.map((raw, i) => {
       const h = handednessList[i];
+      if (bodySides[i]) return { raw, said: bodySides[i], score: 0.99, scale: handLength(raw) };
       return { raw, said: h ? swapLabel(h.label) : null, score: h ? h.score : 0, scale: handLength(raw) };
     });
     const cost = (d, label) => {
@@ -202,8 +257,12 @@
     return dets.map((d, i) => {
       let label = labels[i];
       const s = state[label];
-      if (d.said && d.said !== label && isLive(s, timestamp)) {
-        // MediaPipe disagrees: count it, and follow MediaPipe once it keeps disagreeing.
+      const live = isLive(s, timestamp);
+      // On average since it was first tracked (this frame included), which side is it?
+      const averageSays = live && s.seen ? ((s.rightSum + rightness(d)) / (s.seen + 1) >= 0.5 ? "Right" : "Left") : d.said;
+      if (d.said && d.said !== label && averageSays !== label && live) {
+        // MediaPipe disagrees, now and on average: count it, and follow MediaPipe once it
+        // keeps disagreeing.
         s.flipVotes++;
         const other = swapLabel(label);
         if (s.flipVotes >= LABEL_FLIP_FRAMES && !labels.includes(other)) {
@@ -215,7 +274,7 @@
       } else if (s) {
         s.flipVotes = 0;
       }
-      return { label, score: d.score };
+      return { label, score: d.score, rightness: rightness(d) };
     });
   }
 
@@ -410,12 +469,49 @@
   // Draws the exact frame MediaPipe processed plus (optionally) the skeleton,
   // so the picture and landmarks are always in sync — this canvas is also
   // what gets recorded to video.
+  // The size of the picture being tracked: the video, its cropped part, or an external
+  // source's frames.
+  function frameSize() {
+    if (external) return { w: external.width, h: external.height }; // already turned
+    const crop = cropPixels();
+    const w = (crop && crop.w) || videoEl.videoWidth || 0, h = (crop && crop.h) || videoEl.videoHeight || 0;
+    if (!w || !h) return { w: (canvasEl && canvasEl.width) || 0, h: (canvasEl && canvasEl.height) || 0 };
+    return rotation === 90 || rotation === 270 ? { w: h, h: w } : { w, h };
+  }
+
+  // Sets up ctx so that drawing a picture at 0,0 in its own (unturned) coordinates lands
+  // turned by `rotation` on a w x h (turned) canvas.
+  function turnContext(ctx, w, h) {
+    if (rotation === 90) {
+      ctx.translate(w, 0);
+      ctx.rotate(Math.PI / 2);
+    } else if (rotation === 180) {
+      ctx.translate(w, h);
+      ctx.rotate(Math.PI);
+    } else if (rotation === 270) {
+      ctx.translate(0, h);
+      ctx.rotate(-Math.PI / 2);
+    }
+  }
+  // A point in 0-1 picture coordinates, and a vector in camera axes (x right, y down),
+  // turned the same way.
+  function turnPoint(x, y) {
+    if (rotation === 90) return [1 - y, x];
+    if (rotation === 180) return [1 - x, 1 - y];
+    if (rotation === 270) return [y, 1 - x];
+    return [x, y];
+  }
+  function turnVector(x, y) {
+    if (rotation === 90) return [-y, x];
+    if (rotation === 180) return [-x, -y];
+    if (rotation === 270) return [y, -x];
+    return [x, y];
+  }
+
   function drawStage(image, rawLandmarksList) {
     if (!ctx || !canvasEl) return;
     // The picture MediaPipe processed: the video, or its cropped part.
-    const crop = cropPixels();
-    const w = (crop && crop.w) || videoEl.videoWidth || canvasEl.width;
-    const h = (crop && crop.h) || videoEl.videoHeight || canvasEl.height;
+    const { w, h } = frameSize();
     if (canvasEl.width !== w || canvasEl.height !== h) {
       canvasEl.width = w;
       canvasEl.height = h;
@@ -454,41 +550,77 @@
     return label;
   }
 
+  // Landmarks found in a square region of the picture (far mode), mapped back to the whole
+  // picture. z is in units of the input's width, like x, so it scales with the region too.
+  function fromRegion(list, r) {
+    return list.map((p) => ({ x: r.x + p.x * r.w, y: r.y + p.y * r.h, z: p.z * r.w }));
+  }
+
+  // In far mode: which body wrist (if any) each detected hand is at, "Left" / "Right".
+  function bodySidesFor(rawList) {
+    const body = lastFocus.body;
+    if (!body || performance.now() - body.time > 1500) return [];
+    const { w, h } = frameSize();
+    const aspect = w && h ? w / h : 1;
+    return rawList.map((raw) => {
+      let best = null;
+      for (const side of ["Left", "Right"]) {
+        const wrist = body.wrists[side];
+        if (!wrist) continue;
+        const d = Math.hypot((raw[LM.WRIST].x - wrist.x) * aspect, raw[LM.WRIST].y - wrist.y) / (handLength(raw) * aspect || 1);
+        if (d < 1.5 && (!best || d < best.d)) best = { side, d };
+      }
+      return best ? best.side : null;
+    });
+  }
+
   function onResults(results) {
     if (switching) return;
     // Video files are timed by the video's own clock, so motion data matches the
     // footage however fast or slow the frames were processed.
-    const timestamp = frameTime !== null ? frameTime : performance.now();
-    const rawList = results.multiHandLandmarks || [];
+    const timestamp = results.externalTime !== undefined ? results.externalTime : frameTime !== null ? frameTime : performance.now();
+    const region = results.region !== undefined ? results.region : focusRegion;
+    let rawList = results.multiHandLandmarks || [];
+    if (region) rawList = rawList.map((raw) => fromRegion(raw, region));
+    const worldList = results.multiHandWorldLandmarks || [];
     const handednessList = results.multiHandedness || [];
+    const extras = results.extras || []; // per hand, from an external source: { score, xyz }
 
     tickFps();
 
-    const labels = assignLabels(rawList, handednessList, timestamp);
+    const labels = assignLabels(rawList, handednessList, timestamp, far.enabled ? bodySidesFor(rawList) : []);
     const outHands = [];
     for (let i = 0; i < rawList.length; i++) {
       const raw = rawList[i];
-      const { label, score } = labels[i];
+      const { label, score, rightness: r } = labels[i];
       const s = getState(label, timestamp);
-      const smoothed = smoothLandmarks(raw, timestamp, s);
+      s.rightSum += r;
+      s.seen++;
+      const smoothed = smoothLandmarks(raw, timestamp, s, worldList[i] && worldList[i].length === 21 ? worldList[i] : null);
 
       const features = computeFeatures(smoothed, timestamp, s);
       const palm = computePalmOrientation(smoothed);
       const palmEuler = quatToEuler(palm);
       const bones = computeBoneOrientations(smoothed);
+      const averageRight = s.rightSum / s.seen;
 
       outHands.push({
         landmarks: normalizeRelativeToWrist(smoothed),
         imageLandmarks: smoothed, // smoothed 0-1 image coordinates (unmirrored), for drawing
         rawImageLandmarks: raw, // MediaPipe's, unfiltered
+        worldLandmarks: s.world, // metres, origin at the hand's centre (null if unavailable)
         handedness: label,
         handednessScore: score,
+        // How sure, on average since the hand was first tracked, that it's this side (0.5-1).
+        handednessConfidence: label === "Right" ? averageRight : label === "Left" ? 1 - averageRight : score,
+        trackingScore: extras[i] && extras[i].score !== undefined ? extras[i].score : null,
+        distance: extras[i] && extras[i].xyz ? extras[i].xyz : null, // [x, y, z] mm from the camera (depth cameras)
         features,
         orientation: { palm, palmEuler, bones },
       });
     }
     // The skeleton is drawn from the smoothed landmarks, so it doesn't shake.
-    drawStage(results.image || videoEl, outHands.map((h) => h.imageLandmarks));
+    drawStage(results.fullImage || (region && fullFrame) || results.image || videoEl, outHands.map((h) => h.imageLandmarks));
 
     // Always notify — including with zero hands — so consumers can clear
     // their UI when hands leave the frame.
@@ -526,10 +658,16 @@
     notifySource();
   }
 
-  // The crop, in pixels of the source picture (even sizes), or null for the whole picture.
+  // The crop, in pixels of the source picture (even sizes), or null for the whole picture:
+  // the part of a screen or window picked to track, or else (with square crop on) the
+  // centre square of the camera or video. A square picture gives the hand detector, which
+  // works on squares, a bigger view of each hand than a wide picture padded to a square.
   function cropPixels() {
-    const c = source === "camera" && cameraOpts.crop;
     const vw = videoEl ? videoEl.videoWidth : 0, vh = videoEl ? videoEl.videoHeight : 0;
+    let c = source === "camera" && cameraOpts.crop;
+    if (!c && squareCrop && source !== "external" && vw && vh && vw !== vh) {
+      c = vw > vh ? { x: (1 - vh / vw) / 2, y: 0, w: vh / vw, h: 1 } : { x: 0, y: (1 - vw / vh) / 2, w: 1, h: vw / vh };
+    }
     if (!c || !vw || !vh) return null;
     const x = Math.max(0, Math.round(c.x * vw)), y = Math.max(0, Math.round(c.y * vh));
     const w = Math.max(16, Math.min(vw - x, Math.round((c.w * vw) / 2) * 2));
@@ -542,9 +680,10 @@
   function frameImage() {
     const c = cropPixels();
     const flip = source === "file" && fileMirrored;
-    if (!c && !flip) return videoEl;
-    const w = c ? c.w : videoEl.videoWidth;
-    const h = c ? c.h : videoEl.videoHeight;
+    if (!c && !flip && !rotation) return videoEl;
+    const sw = c ? c.w : videoEl.videoWidth; // the picture before turning
+    const sh = c ? c.h : videoEl.videoHeight;
+    const { w, h } = frameSize();
     if (!frameCanvas) frameCanvas = document.createElement("canvas");
     if (frameCanvas.width !== w || frameCanvas.height !== h) {
       frameCanvas.width = w;
@@ -552,12 +691,13 @@
     }
     const fctx = frameCanvas.getContext("2d");
     fctx.save();
+    turnContext(fctx, w, h);
     if (flip) {
-      fctx.translate(w, 0);
+      fctx.translate(sw, 0);
       fctx.scale(-1, 1);
     }
-    if (c) fctx.drawImage(videoEl, c.x, c.y, c.w, c.h, 0, 0, w, h);
-    else fctx.drawImage(videoEl, 0, 0, w, h);
+    if (c) fctx.drawImage(videoEl, c.x, c.y, c.w, c.h, 0, 0, sw, sh);
+    else fctx.drawImage(videoEl, 0, 0, sw, sh);
     fctx.restore();
     return frameCanvas;
   }
@@ -602,14 +742,45 @@
     for (const cb of statusCallbacks) cb(stalled ? "stalled" : "ok");
   }
 
+  // The capture loop runs on animation frames, which nearly stop while the window is
+  // minimized (about one a second, and the page isn't even told it's hidden). So each tick
+  // also has a timer as a backup, which runs it when no animation frame has come in time
+  // (the desktop app doesn't slow background timers): tracking — and whatever it drives,
+  // like the hand mouse — carries on at the camera's pace.
   function startLoop() {
     const id = ++loopId;
     let lastTime = -1;
     let lastNewFrame = performance.now();
     let gotFrame = false;
     let reopening = false;
+    let busy = false;
+    let scheduled = 0; // only the latest scheduled tick runs
+    const schedule = () => {
+      const token = ++scheduled;
+      const run = () => {
+        if (token === scheduled) tick();
+      };
+      requestAnimationFrame(run);
+      setTimeout(run, document.hidden ? 15 : 40);
+    };
+    loopKick = () => {
+      if (id === loopId && !busy) schedule();
+    };
     const tick = async () => {
-      if (id !== loopId) return;
+      if (id !== loopId || busy) return;
+      busy = true;
+      try {
+        await step();
+      } finally {
+        busy = false;
+      }
+      if (id === loopId) schedule();
+    };
+    const step = async () => {
+      if (paused) {
+        lastNewFrame = performance.now(); // a frozen picture isn't a stalled camera
+        return;
+      }
       if (videoEl.readyState >= 2 && videoEl.videoWidth > 0 && videoEl.currentTime !== lastTime) {
         lastTime = videoEl.currentTime;
         lastNewFrame = performance.now();
@@ -630,11 +801,9 @@
             lastNewFrame = performance.now();
           });
       }
-      if (id === loopId) requestAnimationFrame(tick);
     };
-    requestAnimationFrame(tick);
+    schedule();
   }
-
 
   function sendFrame() {
     if (restartTracking) {
@@ -643,10 +812,161 @@
       restartTracking = false;
       hands.reset();
       resetHands();
+      lastRegion = null;
     }
     lastFrame = frameImage();
-    inflight = hands.send({ image: lastFrame }).catch((err) => console.error("Hand tracking frame failed:", err));
+    inflight = processFrame(lastFrame).catch((err) => console.error("Hand tracking frame failed:", err));
     return inflight;
+  }
+
+  async function processFrame(image) {
+    fullFrame = image;
+    focusRegion = far.enabled ? await chooseRegion(image) : null;
+    const moved = !sameRegion(focusRegion, lastRegion);
+    // MediaPipe follows each hand from where it was in its last input; when the region
+    // moves, that input moved under it, so it looks for the hands afresh.
+    if (moved) hands.reset();
+    lastRegion = focusRegion;
+    lastFocus.region = focusRegion;
+    await hands.send({ image: focusRegion ? regionImage(image, focusRegion) : image });
+  }
+
+  // ---------- Far-away hands ----------
+  const sameRegion = (a, b) => (!a && !b) || (a && b && a.x === b.x && a.y === b.y && a.w === b.w);
+
+  // The square of the picture to look for hands in this frame, in fractions of it, or null
+  // for the whole picture.
+  async function chooseRegion(image) {
+    const { w, h } = frameSize();
+    if (!w || !h) return null;
+    const now = frameTime !== null ? frameTime : performance.now();
+    const tracked = Object.values(state).filter((s) => s.filter && isLive(s, now));
+    if (tracked.length) {
+      farSearch = 0;
+      // Follow the hands: a square about twice their size around them, kept still while
+      // they stay well inside it and about the same size (so MediaPipe keeps tracking).
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const s of tracked) {
+        for (const [x, y] of s.filter.pos) {
+          x0 = Math.min(x0, x * w); x1 = Math.max(x1, x * w);
+          y0 = Math.min(y0, y * h); y1 = Math.max(y1, y * h);
+        }
+      }
+      const size = Math.max(x1 - x0, y1 - y0) * 2.2;
+      if (size >= Math.min(w, h) * 0.9) return null; // near, big hands: no need to focus
+      const r = lastRegion;
+      if (r) {
+        const rx = r.x * w, ry = r.y * h, rs = r.w * w, m = rs * 0.1;
+        const inside = x0 > rx + m && x1 < rx + rs - m && y0 > ry + m && y1 < ry + rs - m;
+        if (inside && rs > size * 0.7 && rs < size * 1.6) return r;
+      }
+      const s = Math.max(size, Math.min(w, h) * 0.12);
+      return toRegion((x0 + x1) / 2 - s / 2, (y0 + y1) / 2 - s / 2, s, w, h);
+    }
+    // No hand yet: every fourth frame look at the whole picture (a near hand without a
+    // body in view), otherwise where the body-pose model says the wrists are.
+    farSearch++;
+    if (farSearch % 4 === 0 || !global.FarHands) return null;
+    const body = await global.FarHands.detect(image);
+    lastFocus.body = body;
+    const zone = body && global.FarHands.zone(body, w, h, far);
+    if (!zone || zone.s >= Math.min(w, h) * 0.95) return null;
+    return toRegion(zone.x, zone.y, zone.s, w, h);
+  }
+
+  function toRegion(x, y, s, w, h) {
+    return { x: Math.round(x) / w, y: Math.round(y) / h, w: Math.round(s) / w, h: Math.round(s) / h };
+  }
+
+  // The region, cut out of the picture as a square image (black where it runs off the edge).
+  function regionImage(image, r) {
+    const { w, h } = frameSize();
+    const sx = r.x * w, sy = r.y * h, ss = r.w * w;
+    const n = Math.round(Math.min(512, Math.max(256, ss)));
+    if (!focusCanvas) focusCanvas = document.createElement("canvas");
+    if (focusCanvas.width !== n) focusCanvas.width = focusCanvas.height = n;
+    const c = focusCanvas.getContext("2d");
+    c.fillStyle = "#000";
+    c.fillRect(0, 0, n, n);
+    // Only the part inside the picture is copied (drawImage with a source rectangle off
+    // the edge is handled differently by different browsers).
+    const cx0 = Math.max(0, sx), cy0 = Math.max(0, sy), cx1 = Math.min(w, sx + ss), cy1 = Math.min(h, sy + ss);
+    if (cx1 > cx0 && cy1 > cy0) {
+      const k = n / ss;
+      c.drawImage(image, cx0, cy0, cx1 - cx0, cy1 - cy0, (cx0 - sx) * k, (cy0 - sy) * k, (cx1 - cx0) * k, (cy1 - cy0) * k);
+    }
+    return focusCanvas;
+  }
+
+  function setFarMode(opts = {}) {
+    const wasOn = far.enabled;
+    far = { ...far, ...opts };
+    if (far.enabled && global.FarHands) global.FarHands.load().catch((err) => console.warn("Far-away hands:", err.message || err));
+    if (wasOn !== far.enabled) {
+      lastRegion = null;
+      lastFocus = { region: null, body: null };
+      farSearch = 0;
+    }
+  }
+
+  // ---------- External source (an OAK camera) ----------
+  // The hands are found elsewhere; each frame arrives with its picture and MediaPipe-shaped
+  // results (normalized landmarks, MediaPipe's handedness labels, world landmarks).
+  async function useExternalSource(name = "External camera") {
+    await haltLoop();
+    if (source === "file") {
+      videoEl.pause();
+      videoEl.removeAttribute("src");
+      videoEl.load();
+      file = null;
+    }
+    closeCamera();
+    source = "external";
+    external = { name, width: 0, height: 0 };
+    resetHands();
+    setStalled(false);
+    notifySource();
+  }
+
+  function pushExternalFrame(image, results = {}, timestamp = performance.now()) {
+    if (source !== "external" || !external || paused) return;
+    const sw = image.width || image.videoWidth, sh = image.height || image.videoHeight;
+    const turned = rotation === 90 || rotation === 270;
+    const w = turned ? sh : sw, h = turned ? sw : sh;
+    const resized = w !== external.width || h !== external.height;
+    external.width = w;
+    external.height = h;
+    if (rotation) {
+      // The hands were found in the unturned picture: turn it and them.
+      if (!externalCanvas) externalCanvas = document.createElement("canvas");
+      if (externalCanvas.width !== w || externalCanvas.height !== h) {
+        externalCanvas.width = w;
+        externalCanvas.height = h;
+      }
+      const ectx = externalCanvas.getContext("2d");
+      ectx.save();
+      turnContext(ectx, w, h);
+      ectx.drawImage(image, 0, 0, sw, sh);
+      ectx.restore();
+      image = externalCanvas;
+      const pt = (p) => {
+        const [x, y] = turnPoint(p.x, p.y);
+        return { x, y, z: p.z };
+      };
+      const vec = (p) => {
+        const [x, y] = turnVector(p.x, p.y);
+        return { x, y, z: p.z };
+      };
+      results = {
+        ...results,
+        multiHandLandmarks: (results.multiHandLandmarks || []).map((lm) => lm.map(pt)),
+        multiHandWorldLandmarks: (results.multiHandWorldLandmarks || []).map((lm) => lm.map(vec)),
+        extras: (results.extras || []).map((e) => (e && e.xyz ? { ...e, xyz: [...turnVector(e.xyz[0], e.xyz[1]), e.xyz[2]] } : e)),
+      };
+    }
+    lastFrame = image;
+    if (resized) notifySource();
+    onResults({ ...results, fullImage: image, region: null, externalTime: timestamp });
   }
 
   // Stops the current loop and waits for its last frame, whose result is dropped.
@@ -765,6 +1085,7 @@
     closeCamera();
     await loadVideo(videoEl, url);
     source = "file";
+    external = null;
     file = { name, playing: true, rate: 1, lastMediaTime: null, intervals: [], seeking: false, refilling: false };
     fileMirrored = !!mirrored;
     notifySource();
@@ -798,6 +1119,7 @@
       videoEl.load();
     }
     source = "camera";
+    external = null;
     file = null;
     fileMirrored = false;
     resetHands();
@@ -887,6 +1209,7 @@
 
     hands.onResults(onResults);
     await hands.initialize();
+    document.addEventListener("visibilitychange", () => loopKick && loopKick());
 
     try {
       await openCamera();
@@ -906,6 +1229,13 @@
   async function setCamera(opts = {}) {
     cameraOpts = { ...cameraOpts, ...opts };
     await haltLoop(); // pause processing while the stream is swapped
+    if (source === "external") {
+      // Back from an external source (an OAK camera) to a camera.
+      source = "camera";
+      external = null;
+      resetHands();
+      restartTracking = true;
+    }
     try {
       await openCamera();
     } finally {
@@ -922,6 +1252,9 @@
   }
 
   function getCamera() {
+    if (external) {
+      return { source, deviceId: `external:${external.name}`, facing: null, screen: false, name: external.name, crop: null, square: false, rotation, width: external.width, height: external.height };
+    }
     const crop = cropPixels();
     return {
       source,
@@ -930,9 +1263,11 @@
       screen: source === "camera" && !!cameraOpts.desktopSourceId,
       name: cameraOpts.desktopName,
       crop: source === "camera" ? cameraOpts.crop : null,
-      // The size of the picture being tracked (the cropped part, when cropped).
-      width: crop ? crop.w : videoEl ? videoEl.videoWidth : 0,
-      height: crop ? crop.h : videoEl ? videoEl.videoHeight : 0,
+      square: !!crop && squareCrop && !(source === "camera" && cameraOpts.crop), // the centre-square crop
+      rotation,
+      // The size of the picture being tracked (the cropped part when cropped, turned when turned).
+      width: videoEl && videoEl.videoWidth ? frameSize().w : 0,
+      height: videoEl && videoEl.videoHeight ? frameSize().h : 0,
     };
   }
 
@@ -965,6 +1300,33 @@
   function setModelComplexity(value) {
     modelComplexity = value === 1 ? 1 : 0;
     if (hands) hands.setOptions({ modelComplexity });
+  }
+
+  // Track only the centre square of the picture (or all of it again).
+  function setSquareCrop(value) {
+    if (!!value === squareCrop) return;
+    squareCrop = !!value;
+    restartTracking = true; // every position in the picture changes
+    notifySource();
+  }
+
+  // Turn the picture clockwise by 0, 90, 180 or 270 degrees before tracking.
+  function setRotation(value) {
+    const r = ((Math.round(Number(value) / 90) * 90) % 360 + 360) % 360;
+    if (r === rotation) return;
+    rotation = r;
+    restartTracking = true; // every position in the picture changes
+    lastRegion = null;
+    if (external) resetHands();
+    notifySource();
+  }
+
+  function setPaused(value) {
+    paused = !!value;
+    if (source === "file" && file) {
+      if (paused) fileControls.pause();
+      else fileControls.play();
+    }
   }
 
   function setMaxHands(value) {
@@ -1016,6 +1378,17 @@
     toCanvasPoint,
     getFeatures,
     getFrameImage: () => lastFrame || videoEl,
+    setSquareCrop,
+    isSquareCrop: () => squareCrop,
+    setRotation,
+    getRotation: () => rotation,
+    setPaused,
+    isPaused: () => paused,
+    setFarMode,
+    getFarMode: () => ({ ...far }),
+    getFocus: () => (far.enabled ? { region: lastFocus.region, body: lastFocus.body } : { region: null, body: null }),
+    useExternalSource,
+    pushExternalFrame,
     getFPS: () => fps,
     quaternionToEuler: quatToEuler,
     LANDMARK_INDEX: LM,

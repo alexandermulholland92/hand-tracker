@@ -130,13 +130,17 @@ function startNatNetSim({ rate = 120, port = 1510, version = [4, 1], multicast =
       } else if (id === 4) sock.send(modelDef(version), from.port, from.address);
     });
     sock.on("error", reject);
+    // Paced by the clock, not by the timer: Windows' timers often tick only every 15.6 ms,
+    // which would cap a 100 Hz stream at about 64 Hz. Each tick sends the frames now due.
     const timer = setInterval(() => {
-      const t = (Date.now() - start) / 1000;
-      const p = frame(++n, t, version);
-      if (multicast) sock.send(p, 1511, "239.255.42.99");
-      else for (const c of clients.values()) sock.send(p, c.port, c.address);
-      sim.framesSent++;
-    }, 1000 / rate);
+      const due = Math.floor(((Date.now() - start) / 1000) * rate);
+      while (n < due) {
+        const p = frame(++n, n / rate, version);
+        if (multicast) sock.send(p, 1511, "239.255.42.99");
+        else for (const c of clients.values()) sock.send(p, c.port, c.address);
+        sim.framesSent++;
+      }
+    }, Math.min(5, 1000 / rate));
     sock.bind(port, "127.0.0.1", () => {
       if (multicast) {
         sock.setMulticastInterface("127.0.0.1");

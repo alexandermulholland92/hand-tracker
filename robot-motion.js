@@ -189,7 +189,12 @@
     track.prevJointVelocities = newVelocities;
     track.prevTimestamp = timestamp;
 
-    track.frames.push({ frame_index: frameIndex, t, joints });
+    const frame = { frame_index: frameIndex, t, joints };
+    // The hand's real shape (metres, origin at the hand's centre) and, from a depth camera,
+    // where it is (mm from the camera).
+    if (hand.worldLandmarks) frame.world_joints = hand.worldLandmarks.map((p) => [p.x, p.y, p.z]);
+    if (hand.distance) frame.distance_mm = hand.distance.slice(0, 3);
+    track.frames.push(frame);
 
     const w = hand.features.worldPosition;
     track.endEffectorTraj.push([t, w.x, w.y, w.z]);
@@ -248,6 +253,8 @@
       notes: [
         "Each entry in hands[] is one hand's track; t is seconds on a clock shared by all hands.",
         "Joint positions are wrist-relative (wrist = local origin).",
+        "world_joints (when present): each joint's real position in metres, estimated by the hand model, origin at the hand's centre (x right, y down, z away from the camera).",
+        "distance_mm (when present): the wrist's position measured by a depth camera, in mm from the camera (x right, y down, z forward).",
         "end_effector trajectory is camera-frame, not calibrated world 3D (monocular limitation).",
         "task_segments are heuristic (curl/speed thresholds), not learned classification.",
         "Orientation for non-root joints is each bone's direction relative to a fixed [0,1,0] reference axis, not true parent-relative joint rotation (twist is not recoverable from point landmarks alone).",

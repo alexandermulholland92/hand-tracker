@@ -7,7 +7,7 @@
  * .tak support (through the Motive installed on this PC) over IPC.
  */
 
-const { app, BrowserWindow, protocol, session, ipcMain, dialog, shell, Menu, desktopCapturer } = require("electron");
+const { app, BrowserWindow, protocol, session, ipcMain, dialog, shell, Menu, desktopCapturer, screen, globalShortcut, net } = require("electron");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -15,11 +15,15 @@ const { Readable } = require("stream");
 const { promisify } = require("util");
 const exporter = require("./exporter");
 const tak = require("./tak");
+const { InputDriver } = require("./input");
+const { OakCamera } = require("./oak");
 
 const APP_ROOT = path.join(__dirname, "..");
 const SCHEME = "app";
 const HOST = "hand-tracker";
 const PAGES = new Set(["index.html", "viewer.html"]);
+// Keys that work even while the app is minimized: the hand mouse and the floating keyboard on/off.
+const SHORTCUTS = { mouse: "CommandOrControl+Alt+M", keyboard: "CommandOrControl+Alt+K" };
 const ALLOWED_PERMISSIONS = new Set(["media", "fullscreen", "clipboard-sanitized-write"]);
 const SAVE_EXTENSIONS = new Set(["json", "csv", "bvh", "glb", "c3d", "trc", "npz"]); // motion capture exports
 const readFile = promisify(fs.readFile); // callback fs is asar-aware in packaged builds
@@ -49,6 +53,10 @@ const isPrimaryInstance = app.requestSingleInstanceLock();
 if (!isPrimaryInstance) app.quit();
 
 let mainWindow = null;
+let keyboardWindow = null; // the floating keyboard
+const input = new InputDriver(); // mouse and keyboard input to this computer (see input.js)
+let oak = null; // Luxonis OAK cameras (see oak.js), created once the app is ready
+let oakViewer = null; // the window receiving the OAK camera's frames
 const exportedPaths = new Set(); // files this session wrote; the only ones "show in folder" will reveal
 // Imported videos converted to MP4 for playback: id -> { file, owner: webContents id }. Only these are served under /__media/.
 const mediaFiles = new Map();
@@ -260,6 +268,176 @@ function natnetClient() {
   });
   natnet.client = client;
   return client;
+}
+
+// ---------- Controlling this computer: hand mouse, floating keyboard, gesture actions ----------
+// The floating keyboard never takes the keyboard focus (focusable: false), so what's typed
+// on it goes to the app you were using, like the Windows on-screen keyboard.
+function openKeyboard() {
+  if (keyboardWindow && !keyboardWindow.isDestroyed()) {
+    keyboardWindow.showInactive();
+    return;
+  }
+  const { workArea } = screen.getPrimaryDisplay();
+  const width = Math.min(900, workArea.width - 40), height = 320;
+  keyboardWindow = new BrowserWindow({
+    width,
+    height,
+    x: Math.round(workArea.x + (workArea.width - width) / 2),
+    y: Math.round(workArea.y + workArea.height - height - 16),
+    minWidth: 480,
+    minHeight: 200,
+    frame: false,
+    resizable: true,
+    alwaysOnTop: true,
+    focusable: false,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: "#15161a",
+    title: "Hand Tracker keyboard",
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
+  });
+  keyboardWindow.setAlwaysOnTop(true, "screen-saver");
+  keyboardWindow.webContents.on("will-navigate", (event) => event.preventDefault());
+  keyboardWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  keyboardWindow.loadURL(`${SCHEME}://${HOST}/keyboard.html`);
+  keyboardWindow.once("ready-to-show", () => keyboardWindow && keyboardWindow.showInactive());
+  keyboardWindow.on("closed", () => {
+    keyboardWindow = null;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("pc:keyboard-state", false);
+  });
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("pc:keyboard-state", true);
+}
+function closeKeyboard() {
+  if (keyboardWindow && !keyboardWindow.isDestroyed()) keyboardWindow.close();
+}
+
+// A point given as fractions of a screen ("primary", or "all" screens together) -> the
+// physical pixels the input helper works in.
+function screenPoint(nx, ny, which) {
+  const displays = screen.getAllDisplays();
+  let b = screen.getPrimaryDisplay().bounds;
+  if (which === "all" && displays.length > 1) {
+    const x0 = Math.min(...displays.map((d) => d.bounds.x)), y0 = Math.min(...displays.map((d) => d.bounds.y));
+    const x1 = Math.max(...displays.map((d) => d.bounds.x + d.bounds.width)), y1 = Math.max(...displays.map((d) => d.bounds.y + d.bounds.height));
+    b = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  }
+  const clamp = (v) => Math.min(1, Math.max(0, Number(v) || 0));
+  const dip = { x: Math.round(b.x + clamp(nx) * (b.width - 1)), y: Math.round(b.y + clamp(ny) * (b.height - 1)) };
+  return screen.dipToScreenPoint ? screen.dipToScreenPoint(dip) : dip;
+}
+
+function registerPcIpc() {
+  handle("pc:start", () => input.start());
+  // Pointer moves come many times a second: fire-and-forget, from our own pages only.
+  ipcMain.on("pc:pointer", (event, { nx, ny, screen: which } = {}) => {
+    if (!event.senderFrame || !isAppUrl(event.senderFrame.url)) return;
+    input
+      .start()
+      .then(() => {
+        const p = screenPoint(nx, ny, which);
+        input.move(p.x, p.y);
+      })
+      .catch(() => {});
+  });
+  handle("pc:button", async (event, { which, action }) => {
+    await input.start();
+    input.button(which, action);
+  });
+  handle("pc:wheel", async (event, { notches }) => {
+    await input.start();
+    input.wheel(notches);
+  });
+  handle("pc:key", async (event, { combo, action }) => {
+    await input.start();
+    input.key(combo, action);
+  });
+  handle("pc:text", async (event, { text }) => {
+    await input.start();
+    input.text(text);
+  });
+  // Gesture actions' web requests, from here (no browser cross-site limits), http(s) only.
+  handle("pc:web", async (event, { url, method = "GET", body = null } = {}) => {
+    let target;
+    try {
+      target = new URL(String(url));
+    } catch {
+      throw new Error("That isn't a web address.");
+    }
+    if (!/^https?:$/.test(target.protocol)) throw new Error("Only http:// and https:// addresses can be called.");
+    const m = String(method).toUpperCase();
+    if (!["GET", "POST", "PUT"].includes(m)) throw new Error("Unknown request method.");
+    const res = await net.fetch(target.href, {
+      method: m,
+      headers: body !== null && m !== "GET" ? { "Content-Type": "application/json" } : undefined,
+      body: body !== null && m !== "GET" ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(8000),
+    });
+    return { ok: res.ok, status: res.status };
+  });
+  handle("pc:keyboard", (event, { show }) => {
+    if (show) openKeyboard();
+    else closeKeyboard();
+    return !!show;
+  });
+  // Status from the main window to the floating keyboard, and the keyboard's hand-mouse
+  // button back to the main window.
+  ipcMain.on("pc:status", (event, status) => {
+    if (!event.senderFrame || !isAppUrl(event.senderFrame.url)) return;
+    if (keyboardWindow && !keyboardWindow.isDestroyed()) keyboardWindow.webContents.send("pc:status", status);
+  });
+  ipcMain.on("pc:toggle-mouse", (event) => {
+    if (!event.senderFrame || !isAppUrl(event.senderFrame.url)) return;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("pc:toggle-mouse");
+  });
+}
+
+// ---------- Luxonis OAK cameras ----------
+function registerOakIpc() {
+  oak = new OakCamera(app.getPath("userData"), (url) => net.fetch(url));
+  handle("oak:status", () => oak.status());
+  handle("oak:setup", (event) =>
+    oak.setup((line) => {
+      if (!event.sender.isDestroyed()) event.sender.send("oak:setup-progress", line);
+    })
+  );
+  handle("oak:start", (event, options = {}) => {
+    oakViewer = event.sender;
+    const viewer = event.sender;
+    let busy = false; // the page is still showing the last frame: drop this one
+    oak.start({ ...options, simulate: !!process.env.HAND_TRACKER_OAK_SIMULATE }, (msg) => {
+      if (viewer.isDestroyed()) return oak.stop();
+      if (msg.frame) {
+        if (busy) return;
+        busy = true;
+        viewer.send("oak:frame", { header: msg.frame, jpeg: msg.jpeg ? new Uint8Array(msg.jpeg) : null });
+      } else {
+        viewer.send("oak:status", msg);
+      }
+    });
+    // The page says when it has shown a frame.
+    ipcMain.removeAllListeners("oak:shown");
+    ipcMain.on("oak:shown", () => (busy = false));
+    return true;
+  });
+  handle("oak:stop", () => {
+    oak.stop();
+    return true;
+  });
+}
+
+function registerShortcuts() {
+  try {
+    globalShortcut.register(SHORTCUTS.mouse, () => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("pc:toggle-mouse");
+    });
+    globalShortcut.register(SHORTCUTS.keyboard, () => {
+      if (keyboardWindow && !keyboardWindow.isDestroyed()) closeKeyboard();
+      else openKeyboard();
+    });
+  } catch (err) {
+    console.warn("Couldn't register the Hand Tracker shortcuts:", err.message);
+  }
 }
 
 function registerIpc() {
@@ -478,11 +656,15 @@ app.whenReady().then(() => {
   serveAppFiles();
   restrictPermissions();
   registerIpc();
+  registerPcIpc();
+  registerOakIpc();
   buildMenu();
   mainWindow = createWindow();
   mainWindow.on("closed", () => {
     mainWindow = null;
+    closeKeyboard(); // the keyboard types for the hand mouse, which lives in the main window
   });
+  registerShortcuts();
 });
 
 app.on("window-all-closed", () => {
@@ -491,6 +673,9 @@ app.on("window-all-closed", () => {
 });
 
 app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
+  input.stop();
+  if (oak) oak.stop();
   if (natnet.client) natnet.client.stop();
   if (mediaDir) fs.rmSync(mediaDir, { recursive: true, force: true });
 });

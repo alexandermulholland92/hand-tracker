@@ -38,6 +38,11 @@ const PAGE_SIMULATION = `
       multiHandLandmarks: [hand(0.32 + 0.1 * t, 0.7, false, 0), hand(0.68, 0.72 - 0.1 * t, true, Math.min(1, t * 1.6))],
       multiHandedness: [{ label: "Left", score: 0.97 }, { label: "Right", score: 0.95 }],
     };
+    // Real-world landmarks as MediaPipe gives them: metres, around the hand's centre.
+    results.multiHandWorldLandmarks = results.multiHandLandmarks.map((lm) => {
+      const c = lm.reduce((a, p) => ({ x: a.x + p.x / 21, y: a.y + p.y / 21, z: a.z + p.z / 21 }), { x: 0, y: 0, z: 0 });
+      return lm.map((p) => ({ x: (p.x - c.x) * 0.75, y: (p.y - c.y) * 0.75, z: (p.z - c.z) * 0.75 }));
+    });
     HandTracker._processResults(results);
     if (document.querySelector("#slotLeft .hand-card.left:not(.missing)") && document.querySelector("#slotRight .hand-card.right:not(.missing)")) {
       window.__seenBothCards = true;
@@ -49,7 +54,8 @@ const PAGE_SIMULATION = `
 
 // poses: { name: { curls: { thumb, index, middle, ring, pinky } (0 straight .. 1 curled),
 //   squeezeX (1; smaller turns the hand side-on), flipY (point the fingers down),
-//   rotate (degrees clockwise on screen, as when a phone is held on its side) } }.
+//   rotate (degrees clockwise on screen, as when a phone is held on its side),
+//   thumbAcross (the thumb folded across the palm, as in counting four) } }.
 // Each is held for half a second; resolves { name: gesture badge on the hand card }.
 function gesturePoses(poses) {
   return `(async () => {
@@ -60,9 +66,11 @@ function gesturePoses(poses) {
   const FINGER = ["thumb", "index", "middle", "ring", "pinky"];
   const cam = HandTracker.getCamera();
   const aspect = cam.width && cam.height ? cam.width / cam.height : 1;
-  const pose = ({ curls, squeezeX = 1, flipY = false, rotate = 0 }) => T.map(([x, y], i) => {
+  const ACROSS = { 2: [-0.05, -0.06], 3: [-0.035, -0.085], 4: [-0.01, -0.1] }; // thumb joints folded across the palm
+  const pose = ({ curls, squeezeX = 1, flipY = false, rotate = 0, thumbAcross = false }) => T.map(([x0, y0], i) => {
+    const [x, y] = thumbAcross && ACROSS[i] ? ACROSS[i] : [x0, y0];
     const curl = i ? curls[FINGER[Math.floor((i - 1) / 4)]] : 0;
-    const k = i && i % 4 === 0 ? curl * 1.25 : i % 4 === 3 ? curl * 0.7 : 0; // tip, then DIP
+    const k = thumbAcross && i <= 4 ? 0 : i && i % 4 === 0 ? curl * 1.25 : i % 4 === 3 ? curl * 0.7 : 0; // tip, then DIP
     let px = x * (1 - k * 0.3) * squeezeX, py = y + Math.abs(y) * k * 0.85;
     if (rotate) {
       // Turn the hand in real proportions (x is a fraction of the picture's width).

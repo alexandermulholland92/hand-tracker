@@ -29,6 +29,7 @@
   "dependencies": {
     "@mediapipe/drawing_utils": "0.3.1620248257",
     "@mediapipe/hands": "0.4.1646424915",
+    "@mediapipe/pose": "0.5.1675469404",
     "@tesseract.js-data/eng": "^1.0.0",
     "ffmpeg-static": "^5.3.0",
     "tesseract.js": "^7.0.0",
@@ -54,12 +55,16 @@
     },
     "files": [
       "electron/**",
+      "oak/**",
+      "!oak/__pycache__/**",
       "index.html",
       "viewer.html",
+      "keyboard.html",
       "*.js",
       "*.css",
       "!scripts/**",
       "!node_modules/three/src/**",
+      "!node_modules/@mediapipe/pose/pose_landmark_{full,heavy}.tflite",
       "!node_modules/three/examples/jsm/**",
       "!node_modules/three/examples/fonts/**",
       "!node_modules/ffmpeg-static/*.md",
@@ -73,7 +78,9 @@
     ],
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
-      "electron/tak-convert.ps1"
+      "electron/tak-convert.ps1",
+      "electron/input-helper.ps1",
+      "oak/**"
     ],
     "win": {
       "target": "portable",

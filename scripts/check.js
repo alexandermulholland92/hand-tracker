@@ -124,6 +124,8 @@ async function run(win) {
     const labels = (data.hands || []).map((h) => h.handedness).join("+");
     check("JSON has both hands (format v2) and the image size", data.format_version === 2 && labels === "Left+Right" && Array.isArray(data.image_size), labels);
     check("Every frame has 21 joints", data.hands.every((h) => h.frames.length > 10 && h.frames.every((f) => f.joints.length === 21)));
+    check("Every frame has the hand's real shape (21 joints in metres, from MediaPipe's world landmarks)",
+      data.hands.every((h) => h.frames.every((f) => Array.isArray(f.world_joints) && f.world_joints.length === 21 && f.world_joints.every((p) => p.length === 3 && p.every(Number.isFinite)))));
     // The simulated hand on the image's right side is the user's left hand, and it closes into a fist.
     const gripping = data.hands.find((h) => h.handedness === "Left");
     check("Gripping hand gets a grasp/manipulate phase", !!gripping && gripping.task_segments.some((s) => s.phase === "grasp" || s.phase === "manipulate"),
@@ -204,10 +206,18 @@ async function run(win) {
     thumbsUp: { curls: curls(0, 1, 1, 1, 1), rotate: 45 },
     thumbsDown: { curls: curls(0, 1, 1, 1, 1), rotate: -135 },
     thumbSideways: { curls: curls(0, 1, 1, 1, 1) },
+    two: { curls: curls(0, 0, 1, 1, 1) },
+    three: { curls: curls(0, 0, 0, 1, 1) },
+    four: { curls: curls(0, 0, 0, 0, 0), thumbAcross: true },
+    fourSideways: { curls: curls(0, 0, 0, 0, 0), thumbAcross: true, rotate: 90 },
+    open: { curls: curls(0, 0, 0, 0, 0) },
   }));
   check('Middle finger raised, facing the camera, reads "The Bird" (also on a phone held sideways; nothing else does)',
     g.bird === "The Bird" && g.birdSideways === "The Bird" && g.birdPointingDown !== "The Bird" && g.birdSideOn !== "The Bird" && g.peace === "Peace" && g.fist !== "The Bird",
     JSON.stringify(g));
+  check("Finger counting: Two (thumb and index), Three (thumb, index, middle) and Four (thumb folded in), also sideways; an open hand stays Open Palm",
+    g.two === "Two" && g.three === "Three" && g.four === "Four" && g.fourSideways === "Four" && g.open === "Open Palm" && g.point === "Point" && g.peace === "Peace",
+    JSON.stringify({ two: g.two, three: g.three, four: g.four, fourSideways: g.fourSideways, open: g.open, point: g.point, peace: g.peace }));
   check("Fist, Point, Rock On, Call Me, Thumbs Up and Thumbs Down read as themselves (a thumb out to the side is neither)",
     g.fist === "Fist" && g.point === "Point" && g.rockOn === "Rock On" && g.callMe === "Call Me" && g.thumbsUp === "Thumbs Up" && g.thumbsDown === "Thumbs Down" &&
       !/Thumbs/.test(g.thumbSideways), JSON.stringify(g));
@@ -270,6 +280,137 @@ async function run(win) {
     ocr.onlyTimes.length === 1 && ocr.onlyTimes[0].x < 60 && ocr.onlyTimes[0].x + ocr.onlyTimes[0].w > 210 && ocr.onlyTimes[0].y + ocr.onlyTimes[0].h < 500,
     JSON.stringify(ocr.onlyTimes));
 
+  // Square crop, the pause key and the Show keys. From here on the camera's own frames are
+  // tracked again (the gesture checks above had stopped them).
+  await js("if (window.__realSend) Hands.prototype.send = window.__realSend; true");
+  await new Promise((r) => setTimeout(r, 1500));
+  const views = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const key = (k) => document.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+    const out = {};
+    const before = HandTracker.getCamera();
+    document.getElementById("squareToggle").click();
+    await sleep(600);
+    const sq = HandTracker.getCamera();
+    out.square = { cam: sq.width + "x" + sq.height, stage: stage.width + "x" + stage.height, flag: sq.square };
+    document.getElementById("squareToggle").click();
+    await sleep(600);
+    out.unsquare = HandTracker.getCamera().width === before.width;
+    let n = 0;
+    const off = HandTracker.onHandLandmarks(() => n++);
+    key(" ");
+    await sleep(300);
+    n = 0;
+    await sleep(1000);
+    out.paused = { frames: n, flag: HandTracker.isPaused(), badge: !document.getElementById("pauseBadge").hidden };
+    key(" ");
+    await sleep(1000);
+    out.resumed = { frames: n, flag: HandTracker.isPaused() };
+    const box = () => document.querySelector('[data-show="box"]').classList.contains("active");
+    const box0 = box();
+    key("1");
+    out.boxToggled = box() !== box0;
+    key("1");
+    key("f");
+    out.fpsHidden = document.getElementById("fpsBadge").hidden;
+    key("f");
+    out.fpsBack = !document.getElementById("fpsBadge").hidden;
+    return out;
+  })()`);
+  check("Square crop tracks the centre square; Space pauses and resumes; the Show keys (1-7, F) switch what's drawn",
+    views.square.cam.split("x")[0] === views.square.cam.split("x")[1] && views.square.cam === views.square.stage && views.square.flag && views.unsquare &&
+      views.paused.frames === 0 && views.paused.flag && views.paused.badge && views.resumed.frames > 5 && !views.resumed.flag &&
+      views.boxToggled && views.fpsHidden && views.fpsBack, JSON.stringify(views));
+
+  // Rotate: the picture is turned before tracking; T steps 90° right; an external source's
+  // hands are turned with its picture.
+  const rot = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const before = HandTracker.getCamera();
+    rotateSelect.value = "90";
+    rotateSelect.dispatchEvent(new Event("change"));
+    await sleep(700);
+    const r90 = HandTracker.getCamera();
+    const out = { before: before.width + "x" + before.height, r90: r90.width + "x" + r90.height, stage90: stage.width + "x" + stage.height };
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "t", bubbles: true }));
+    await sleep(500);
+    out.afterT = HandTracker.getRotation() + " " + HandTracker.getCamera().width + "x" + HandTracker.getCamera().height;
+    out.remembered = JSON.parse(localStorage.getItem("hand-tracker:prefs")).rotations[before.deviceId || "default"];
+    // An external source turned 90° right: a point near the top-left of its picture ends up
+    // near the top-right, and a distance's x/y turn with it.
+    await HandTracker.useExternalSource("Test");
+    rotateSelect.value = "90"; // this source's own rotation
+    rotateSelect.dispatchEvent(new Event("change"));
+    let got = null;
+    HandTracker.onHandLandmarks(({ hands }) => { if (hands.length) got = hands[0]; });
+    const img = Object.assign(document.createElement("canvas"), { width: 640, height: 360 });
+    const lm = Array.from({ length: 21 }, (_, i) => ({ x: 0.1 + i * 0.002, y: 0.2 + i * 0.004, z: 0 }));
+    HandTracker.pushExternalFrame(img, { multiHandLandmarks: [lm], multiHandedness: [{ label: "Left", score: 0.9 }], extras: [{ score: 0.9, xyz: [100, 50, 800] }] }, performance.now());
+    await sleep(100);
+    out.ext = { size: HandTracker.getCamera().width + "x" + HandTracker.getCamera().height, wrist: got && [+got.imageLandmarks[0].x.toFixed(3), +got.imageLandmarks[0].y.toFixed(3)], xyz: got && got.distance };
+    await HandTrackerApp.backToCamera();
+    for (let i = 0; i < 40 && HandTracker.getCamera().source !== "camera"; i++) await sleep(250);
+    rotateSelect.value = "0";
+    rotateSelect.dispatchEvent(new Event("change"));
+    await sleep(500);
+    out.back = HandTracker.getRotation() + " " + HandTracker.getCamera().width + "x" + HandTracker.getCamera().height;
+    return out;
+  })()`);
+  const [bw, bh] = rot.before.split("x");
+  check("Rotate turns the picture before tracking (remembered per camera; T turns it 90° more); an OAK camera's hands turn with its picture",
+    rot.r90 === `${bh}x${bw}` && rot.stage90 === rot.r90 && rot.afterT === `180 ${bw}x${bh}` && rot.remembered === 180 &&
+      rot.ext.size === "360x640" && rot.ext.wrist && rot.ext.wrist[0] === 0.8 && rot.ext.wrist[1] === 0.1 && JSON.stringify(rot.ext.xyz) === "[-50,100,800]" &&
+      rot.back.startsWith("0 ") && rot.back.endsWith(rot.before), JSON.stringify(rot));
+
+  await checkPcControl(js);
+
+  // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
+  // in go through the same tracking, with the camera's confidence and measured distance.
+  const ext = await js(`(async () => {
+    const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],
+      [0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]];
+    const img = Object.assign(document.createElement("canvas"), { width: 1152, height: 648 });
+    await HandTracker.useExternalSource("Test OAK");
+    let last = null;
+    const off = HandTracker.onHandLandmarks(({ hands }) => (last = hands));
+    for (let i = 0; i < 10; i++) {
+      // MediaPipe's label "Left" is the person's right hand.
+      HandTracker.pushExternalFrame(img, {
+        multiHandLandmarks: [T.map(([x, y]) => ({ x: 0.5 + x, y: 0.7 + y, z: 0 }))],
+        multiHandedness: [{ label: "Left", score: 0.95 }],
+        multiHandWorldLandmarks: [T.map(([x, y]) => ({ x: x * 0.75, y: y * 0.75, z: 0 }))],
+        extras: [{ score: 0.9, xyz: [100, -50, 850] }],
+      }, performance.now());
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    const cam = HandTracker.getCamera();
+    const h = last && last[0];
+    const out = { source: cam.source, size: cam.width + "x" + cam.height, stage: stage.width + "x" + stage.height,
+      side: h && h.handedness, score: h && h.trackingScore, distance: h && h.distance, world: h && h.worldLandmarks && h.worldLandmarks.length };
+    await HandTrackerApp.backToCamera();
+    for (let i = 0; i < 40 && HandTracker.getCamera().source !== "camera"; i++) await new Promise((r) => setTimeout(r, 250));
+    out.back = HandTracker.getCamera().source;
+    return out;
+  })()`);
+  check("External source (OAK camera path): pictures and hands pushed in are tracked, with the camera's confidence and distance",
+    ext.source === "external" && ext.size === "1152x648" && ext.stage === "1152x648" && ext.side === "Right" && ext.score === 0.9 &&
+      JSON.stringify(ext.distance) === "[100,-50,850]" && ext.world === 21 && ext.back === "camera", JSON.stringify(ext));
+
+  // Tracking carries on with the window minimized (for the hand mouse).
+  const framesIn = async (ms) => {
+    await js("window.__frames = 0; if (!window.__countFrames) { window.__countFrames = true; HandTracker.onHandLandmarks(() => window.__frames++); } true");
+    await new Promise((r) => setTimeout(r, ms));
+    return js("window.__frames");
+  };
+  const shownFrames = await framesIn(3000);
+  win.minimize();
+  await new Promise((r) => setTimeout(r, 800));
+  const minimizedFrames = await framesIn(3000);
+  win.restore();
+  await new Promise((r) => setTimeout(r, 800));
+  check("Tracking keeps going with the window minimized (at least half the usual rate)", shownFrames > 20 && minimizedFrames >= shownFrames / 2,
+    `${shownFrames} frames in 3 s shown, ${minimizedFrames} minimized`);
+
   const relevantErrors = consoleErrors.filter((m) => !/DevTools|Autofill/i.test(m));
   check("No errors in the page console", relevantErrors.length === 0, relevantErrors.slice(0, 3).join(" | "));
 
@@ -282,6 +423,132 @@ async function run(win) {
 
   if (jsonPath) await checkViewer(jsonPath, { csv: mfile(".csv"), c3d: mfile(".c3d"), trc: mfile(".trc") });
   await checkViewerVideo();
+}
+
+// Hand mouse and gesture actions (pc-control.js), with a stand-in for the real mouse and
+// keyboard: synthetic hands are fed in, and what would have been sent is recorded.
+async function checkPcControl(js) {
+  const r = await js(`(async () => {
+    const calls = [];
+    const fake = {
+      start: async () => {}, status: () => {}, setKeyboard: async () => {},
+      pointer: (x, y) => calls.push(["pointer", x, y]),
+      button: async (w, a) => calls.push(["button", w, a]),
+      wheel: async (n) => calls.push(["wheel", n]),
+      key: async (c, a) => calls.push(["key", c, a]),
+      text: async (t) => calls.push(["text", t]),
+      web: async (req) => { calls.push(["web", req.url, req.method, req.body && req.body.gesture]); return { ok: true, status: 200 }; },
+    };
+    HandTracker.setPaused(true); // only these synthetic hands reach PcControl
+    PcControl._setDesktop({ pc: fake });
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],
+      [0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]];
+    // An open right hand with its wrist at (cx, cy); curled fingers have their tip and last
+    // joint pulled back to the knuckle.
+    const hand = (cx, cy, curled = [], side = "Right") => ({ handedness: side, imageLandmarks: T.map(([x, y], i) => {
+      const f = { 7: 5, 8: 5, 11: 9, 12: 9 }[i];
+      const bent = f !== undefined && curled.includes(f === 5 ? "index" : "middle");
+      const [bx, by] = bent ? [T[f][0] + (x - T[f][0]) * 0.2, T[f][1] + (y - T[f][1]) * 0.2] : [x, y];
+      return { x: cx + bx, y: cy + by, z: 0 };
+    }) });
+    const none = () => ({ label: "—" });
+    const frames = async (n, hands, gestureOf = none, mirrored = false) => {
+      for (let i = 0; i < n; i++) { PcControl.update(typeof hands === "function" ? hands(i) : hands, gestureOf, mirrored, 16 / 9); await sleep(30); }
+    };
+    const out = {};
+
+    // Hand mouse.
+    PcControl.setMouse(true);
+    await sleep(50);
+    calls.length = 0;
+    await frames(20, (i) => [hand(0.35 + i * 0.015, 0.6)]);
+    const xs = calls.filter((c) => c[0] === "pointer").map((c) => c[1]);
+    out.follows = xs.length > 10 && xs[xs.length - 1] > xs[0] + 0.3;
+    calls.length = 0;
+    await frames(6, [hand(0.65, 0.6)]);
+    await frames(3, [hand(0.65, 0.6, ["index"])]);
+    await frames(6, [hand(0.65, 0.6)]);
+    out.leftClick = calls.filter((c) => c[0] === "button").map((c) => c.slice(1).join(" "));
+    calls.length = 0;
+    await frames(25, [hand(0.65, 0.6, ["index"])]); // held: drag
+    await frames(6, [hand(0.65, 0.6)]);
+    out.drag = calls.filter((c) => c[0] === "button").map((c) => c.slice(1).join(" "));
+    calls.length = 0;
+    await frames(3, [hand(0.65, 0.6, ["middle"])]);
+    await frames(6, [hand(0.65, 0.6)]);
+    out.rightClick = calls.filter((c) => c[0] === "button").map((c) => c.slice(1).join(" "));
+    calls.length = 0;
+    await frames(4, [hand(0.65, 0.6, ["index", "middle"])]); // both: hold still, no click
+    await frames(6, [hand(0.65, 0.6)]);
+    out.bothCurled = calls.filter((c) => c[0] === "button").length;
+    PcControl.setMouse(false);
+    await sleep(50);
+    PcControl.setMouse(true);
+    await sleep(50);
+    calls.length = 0;
+    await frames(20, (i) => [hand(0.35 + i * 0.015, 0.6)], none, true); // mirrored view: moving right in the picture is left for you
+    const mx = calls.filter((c) => c[0] === "pointer").map((c) => c[1]);
+    out.mirrored = mx.length > 10 && mx[mx.length - 1] < mx[0] - 0.3;
+    PcControl.setMouse(false);
+
+    // Gesture actions.
+    const as = (label) => () => ({ label });
+    PcControl._setRules([
+      { enabled: true, gesture: "Fist", hand: "any", action: "keys", value: "playpause", trigger: "enter", hold: 0.3, every: 1 },
+      { enabled: true, gesture: "Thumbs Up", hand: "Right", action: "keys", value: "volumeup", trigger: "periodic", hold: 0.1, every: 0.2 },
+      { enabled: true, gesture: "Peace", hand: "any", action: "hold", trigger: "enter_leave", hold: 0, every: 1 },
+      { enabled: true, gesture: "Point", hand: "any", action: "web", value: "http://127.0.0.1:9/hook", method: "POST", trigger: "enter", hold: 0, every: 1 },
+      { enabled: false, gesture: "Open Palm", hand: "any", action: "text", value: "no", trigger: "enter", hold: 0, every: 1 },
+    ], true);
+    const h = [hand(0.5, 0.6)];
+    calls.length = 0;
+    await frames(6, h, as("Fist")); // 0.18 s: not yet
+    out.fistEarly = calls.length;
+    await frames(3, [], none); // a short dropout (up to 3 frames) doesn't restart it
+    await frames(10, h, as("Fist"));
+    out.fist = calls.map((c) => c.slice(1).join(" "));
+    await frames(6, [], none);
+    calls.length = 0;
+    await frames(24, h, as("Thumbs Up")); // about 0.7 s held
+    out.thumbs = calls.filter((c) => c[0] === "key").length;
+    await frames(6, [], none);
+    calls.length = 0;
+    await frames(10, [hand(0.5, 0.6, [], "Left")], as("Thumbs Up")); // the left hand isn't this action's
+    out.wrongHand = calls.length;
+    await frames(6, [], none);
+    calls.length = 0;
+    await frames(8, h, as("Peace"));
+    await frames(6, [], none);
+    out.hold = calls.map((c) => c.slice(1).join(" "));
+    calls.length = 0;
+    await frames(5, h, as("Point"));
+    await frames(6, [], none);
+    out.web = calls.map((c) => c.slice(1).join(" "));
+    calls.length = 0;
+    await frames(5, h, as("Open Palm")); // switched off
+    out.disabled = calls.length;
+    PcControl._state().allow.keyboard = false; // the Keyboard switch off
+    await frames(6, [], none);
+    calls.length = 0;
+    await frames(15, h, as("Fist"));
+    out.keyboardOff = calls.length;
+    PcControl._state().allow.keyboard = true;
+    PcControl._setRules([], false);
+    PcControl._setDesktop(window.desktop);
+    HandTracker.setPaused(false);
+    return { out, visible: !document.getElementById("pcCard").hidden };
+  })()`);
+  const o = r.out;
+  check("Control your PC: the card is shown in the desktop app", r.visible);
+  check("Hand mouse: the pointer follows the palm (the other way in mirrored view, so it moves the way your hand does)", o.follows && o.mirrored, JSON.stringify({ follows: o.follows, mirrored: o.mirrored }));
+  check("Hand mouse: quick index curl = left click, held = drag, quick middle curl = right click, both curled = no click",
+    o.leftClick.join() === "left click" && o.drag.join() === "left down,left up" && o.rightClick.join() === "right click" && o.bothCurled === 0,
+    JSON.stringify({ leftClick: o.leftClick, drag: o.drag, rightClick: o.rightClick, bothCurled: o.bothCurled }));
+  check("Gesture actions: hold time, dropouts, repeats, start-and-end, which hand, web requests and the on/off switches work",
+    o.fistEarly === 0 && o.fist.join() === "playpause tap" && o.thumbs >= 3 && o.thumbs <= 5 && o.wrongHand === 0 &&
+      o.hold.join() === "left down,left up" && o.web.join() === "http://127.0.0.1:9/hook POST Point" && o.disabled === 0 && o.keyboardOff === 0,
+    JSON.stringify(o));
 }
 
 // Test videos made with the bundled ffmpeg: [file name, ffmpeg output options].

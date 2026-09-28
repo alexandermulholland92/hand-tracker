@@ -65,8 +65,17 @@ function checkCSV(file, data) {
   const row = rows.find((r) => r[0] === "Left" && r[1] === "3");
   const col = header.indexOf("index_tip_y");
   const same = !!row && Math.abs(Number(row[col]) - left.frames[3].joints[8].position[1]) < 1e-5;
-  const sized = header.slice(-2).join() === "image_width,image_height" && rows.every((r) => r.slice(-2).join("x") === data.image_size.join("x"));
-  return { ok: header.length === 11 + 63 + 2 && sized && rows.length === frames && numeric && same, detail: `${rows.length} rows × ${header.length} columns` };
+  const iw = header.indexOf("image_width");
+  const sized = iw === 11 + 63 && header[iw + 1] === "image_height" && rows.every((r) => `${r[iw]}x${r[iw + 1]}` === data.image_size.join("x"));
+  // The hand's real shape (metres), when recorded: 63 more columns, matching the JSON.
+  const hasReal = data.hands.some((h) => h.frames.some((f) => f.world_joints));
+  const realCol = header.indexOf("index_tip_real_y");
+  const realSame = !hasReal || (!!row && realCol > 0 && Math.abs(Number(row[realCol]) - left.frames[3].world_joints[8][1]) < 1e-5);
+  const columns = 11 + 63 + 2 + (hasReal ? 63 : 0);
+  return {
+    ok: header.length === columns && sized && rows.length === frames && numeric && same && realSame,
+    detail: `${rows.length} rows × ${header.length} columns${hasReal ? " (with real-size joints)" : ""}`,
+  };
 }
 
 // ---------- BVH: parse + forward kinematics ----------
@@ -273,6 +282,10 @@ for h in data["hands"]:
     out["hands"][k] = {"shape": list(J.shape), "max_diff": float(np.abs(J - exp).max()),
         "t_ok": bool(np.allclose(npz[k + "_t"], [f["t"] for f in h["frames"]])),
         "quat_shape": list(npz[k + "_palm_quat"].shape), "phase_len": int(npz[k + "_phase"].shape[0])}
+    if any("world_joints" in f for f in h["frames"]):
+        R = npz[k + "_real_joints"]
+        exp = np.array([f.get("world_joints", [[np.nan] * 3] * 21) for f in h["frames"]], dtype=np.float32)
+        out["hands"][k]["real_diff"] = float(np.nanmax(np.abs(R - exp)))
 print(json.dumps(out))
 `;
 
@@ -284,7 +297,8 @@ function checkNPZ(file, jsonFile, data) {
     out.joint_names.length === 21 &&
     data.hands.every((h) => {
       const r = out.hands[h.handedness.toLowerCase()];
-      return r && r.shape.join() === `${h.frames.length},21,3` && r.max_diff < 1e-6 && r.t_ok && r.quat_shape[1] === 4 && r.phase_len === h.frames.length;
+      const real = !h.frames.some((f) => f.world_joints) || (r && r.real_diff !== undefined && r.real_diff < 1e-6);
+      return r && r.shape.join() === `${h.frames.length},21,3` && r.max_diff < 1e-6 && r.t_ok && r.quat_shape[1] === 4 && r.phase_len === h.frames.length && real;
     });
   return { ok, detail: `${out.keys.length} arrays; ${Object.entries(out.hands).map(([k, r]) => `${k}_joints ${r.shape.join("×")}`).join(", ")}` };
 }
