@@ -33,6 +33,7 @@
  *   HandTracker.getFeatures("Left" | "Right"); // single hand's features
  *   HandTracker.getFrameImage();          // the picture being tracked (the video, or a flipped/cropped copy)
  *   HandTracker.setSquareCrop(true/false); // track only the centre square of the picture
+ *   HandTracker.setGloves(true/false);    // hands in black or dark gloves (see "Black gloves")
  *   HandTracker.setRotation(0 | 90 | 180 | 270); // turn the picture clockwise before tracking (a camera
  *                                         // mounted on its side or upside down); getCamera() is then turned too
  *   HandTracker.setPaused(true/false);    // freeze the live picture and tracking
@@ -143,6 +144,7 @@
   let inflight = Promise.resolve(); // the frame MediaPipe is working on right now
   let switching = false; // while swapping camera/file, late results from the old source are dropped
   let squareCrop = false; // track only the centre square of the picture
+  let gloves = false; // hands in black gloves: MediaPipe gets the picture from gloveImage()
   let rotation = 0; // degrees clockwise the picture is turned before tracking: 0, 90, 180 or 270
   let externalCanvas = null; // an external source's picture, turned
   let paused = false; // the live picture and tracking are frozen
@@ -674,7 +676,9 @@
       if (age >= 0 && age <= HOLD_MS) outHands.push({ ...s.lastOut, held: true });
     }
     // The skeleton is drawn from the smoothed landmarks, so it doesn't shake.
-    drawStage(results.fullImage || (region && fullFrame) || results.image || videoEl, outHands.map((h) => h.imageLandmarks));
+    // (MediaPipe hands back what it was given: a cut-out in far mode, the glove picture with
+    // Black gloves on. The stage shows the whole picture as it is.)
+    drawStage(results.fullImage || ((region || gloves) && fullFrame) || results.image || videoEl, outHands.map((h) => h.imageLandmarks));
 
     // Always notify — including with zero hands — so consumers can clear
     // their UI when hands leave the frame.
@@ -882,7 +886,85 @@
     if (moved) hands.reset();
     lastRegion = focusRegion;
     lastFocus.region = focusRegion;
-    await hands.send({ image: focusRegion ? regionImage(image, focusRegion) : image });
+    const input = focusRegion ? regionImage(image, focusRegion) : image;
+    await hands.send({ image: gloves ? gloveImage(input) : input });
+  }
+
+  // ---------- Black gloves ----------
+  // MediaPipe's hand detector learned hands from skin, and hardly ever finds one in a black
+  // glove. With Black gloves on, it's given a picture showing each spot by how much darker
+  // it is than its surroundings, in skin colour: a dark glove becomes a light, skin-coloured
+  // hand with its folds still shaded, in dim or bright light alike, and anything lighter
+  // than its surroundings goes dim. On photos of real hands turned into black gloves, it found
+  // 29 of 32 hands (the plain picture: 1), with the joints within about 4% of the hand's
+  // length of where they were on the bare hand, and Left and Right right; in half the light,
+  // 28. Bare hands turn dark in it, so it's only for gloves. The picture on screen is unchanged.
+  const GLOVE = { width: 640, blur: 0.06, gain: 1.2, floor: 0.2, skin: [225, 180, 150] };
+  let gloveCanvas = null, gloveCtx = null, gloveLum = null, gloveAvg = null, gloveTmp = null;
+
+  function gloveImage(image) {
+    const iw = image.videoWidth || image.width, ih = image.videoHeight || image.height;
+    if (!iw || !ih) return image;
+    const scale = Math.min(1, GLOVE.width / iw);
+    const w = Math.max(1, Math.round(iw * scale)), h = Math.max(1, Math.round(ih * scale));
+    if (!gloveCanvas) {
+      gloveCanvas = document.createElement("canvas");
+      gloveCtx = gloveCanvas.getContext("2d", { willReadFrequently: true });
+    }
+    if (gloveCanvas.width !== w || gloveCanvas.height !== h) {
+      gloveCanvas.width = w;
+      gloveCanvas.height = h;
+      [gloveLum, gloveAvg, gloveTmp] = [0, 0, 0].map(() => new Float32Array(w * h));
+    }
+    gloveCtx.drawImage(image, 0, 0, w, h);
+    const frame = gloveCtx.getImageData(0, 0, w, h), px = frame.data, lum = gloveLum, avg = gloveAvg;
+    for (let i = 0, j = 0; i < lum.length; i++, j += 4) lum[i] = (0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2]) / 255;
+    // The surroundings: two box blurs (close to a Gaussian blur 6% of the picture's width).
+    const sigma = GLOVE.blur * w;
+    const r = Math.max(1, Math.round((Math.sqrt(6 * sigma * sigma + 1) - 1) / 2));
+    boxBlur(lum, avg, gloveTmp, w, h, r);
+    boxBlur(avg, avg, gloveTmp, w, h, r);
+    const [sr, sg, sb] = GLOVE.skin;
+    for (let i = 0, j = 0; i < lum.length; i++, j += 4) {
+      const darker = Math.min(1, Math.max(0, (1 - lum[i] / (avg[i] + 0.02)) * GLOVE.gain));
+      const v = GLOVE.floor + (1 - GLOVE.floor) * darker;
+      px[j] = sr * v;
+      px[j + 1] = sg * v;
+      px[j + 2] = sb * v;
+      px[j + 3] = 255;
+    }
+    gloveCtx.putImageData(frame, 0, 0);
+    return gloveCanvas;
+  }
+
+  // The mean over a (2r+1)-square around each pixel (at the edges, of the part inside the
+  // picture): along the rows into tmp, then down the columns into dst (which may be src).
+  function boxBlur(src, dst, tmp, w, h, r) {
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      let sum = 0, n = 0;
+      for (let x = 0; x <= Math.min(r, w - 1); x++, n++) sum += src[row + x];
+      for (let x = 0; x < w; x++) {
+        tmp[row + x] = sum / n;
+        if (x + r + 1 < w) (sum += src[row + x + r + 1]), n++;
+        if (x - r >= 0) (sum -= src[row + x - r]), n--;
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      let sum = 0, n = 0;
+      for (let y = 0; y <= Math.min(r, h - 1); y++, n++) sum += tmp[y * w + x];
+      for (let y = 0; y < h; y++) {
+        dst[y * w + x] = sum / n;
+        if (y + r + 1 < h) (sum += tmp[(y + r + 1) * w + x]), n++;
+        if (y - r >= 0) (sum -= tmp[(y - r) * w + x]), n--;
+      }
+    }
+  }
+
+  function setGloves(value) {
+    if (!!value === gloves) return;
+    gloves = !!value;
+    restartTracking = true; // MediaPipe follows the hands in what it was given, which now looks different
   }
 
   // ---------- Far-away hands ----------
@@ -1441,6 +1523,8 @@
     getFrameImage: () => lastFrame || videoEl,
     setSquareCrop,
     isSquareCrop: () => squareCrop,
+    setGloves,
+    getGloves: () => gloves,
     setRotation,
     getRotation: () => rotation,
     setPaused,

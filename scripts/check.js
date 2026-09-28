@@ -451,6 +451,7 @@ async function run(win) {
   await js("Hands.prototype.send = window.__realSend; document.getElementById('discardBtn').click();");
   await checkVideoFiles(win, js);
   await checkSeveralVideos(win, js);
+  await checkBlackGloves(js);
   await checkMirrorDefaults(js);
   await checkOptiTrack(js);
 
@@ -999,6 +1000,57 @@ async function checkSeveralVideos(win, js) {
   viewerWin.destroy();
   if (wc.debugger.isAttached()) wc.debugger.detach();
   await js(`document.getElementById("multiClose").click(); document.getElementById("queueClearBtn").click(); Hands.prototype.send = window.__realSend; true`);
+  await js("HandTrackerApp.backToCamera()");
+}
+
+// Black gloves: MediaPipe gets the picture with dark things (a glove) turned light and
+// skin-coloured and their lighter surroundings dim; the picture on screen stays as it is.
+// A dark square on a light background, as MediaPipe gets it with the button off and on.
+async function checkBlackGloves(js) {
+  const file = path.join(outDir, "videos", "dark-patch.mp4");
+  spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=0xd8d8d8:size=640x360:rate=30", "-t", "1",
+    "-vf", "drawbox=x=270:y=130:w=100:h=100:color=0x181818:t=fill", "-c:v", "libx264", "-pix_fmt", "yuv420p", file]);
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const sample = (image) => {
+      const c = Object.assign(document.createElement("canvas"), { width: 64, height: 36 }), x = c.getContext("2d");
+      x.drawImage(image, 0, 0, 64, 36);
+      const d = x.getImageData(0, 0, 64, 36).data, at = (px, py) => [...d.slice((py * 64 + px) * 4, (py * 64 + px) * 4 + 3)];
+      return { patch: at(32, 18), around: at(4, 4) };
+    };
+    let last = null;
+    const real = Hands.prototype.send;
+    Hands.prototype.send = async function (input) {
+      last = sample(input.image);
+      return real.call(this, input);
+    };
+    const bytes = Uint8Array.from(atob(${JSON.stringify(fs.readFileSync(file).toString("base64"))}), (c) => c.charCodeAt(0));
+    await HandTrackerApp.openVideo("dark-patch.mp4", URL.createObjectURL(new Blob([bytes])), ${JSON.stringify(file)});
+    HandTracker.file.pause();
+    const again = async (at) => {
+      last = null;
+      HandTracker.file.seek(at);
+      for (let i = 0; i < 100 && !last; i++) await sleep(100);
+      await sleep(300);
+      return last;
+    };
+    const out = { plain: await again(0.2) };
+    document.getElementById("glovesToggle").click();
+    out.button = document.getElementById("glovesToggle").textContent;
+    out.gloved = await again(0.5);
+    out.screen = sample(document.getElementById("stage"));
+    out.saved = JSON.parse(localStorage.getItem("hand-tracker:prefs")).blackGloves;
+    document.getElementById("glovesToggle").click();
+    out.off = !HandTracker.getGloves() && JSON.parse(localStorage.getItem("hand-tracker:prefs")).blackGloves === false;
+    Hands.prototype.send = real;
+    return out;
+  })()`);
+  const dark = (c) => c && c.every((v) => v < 60), light = (c) => c && c.every((v) => v > 180);
+  const skin = (c) => c && c[0] > 150 && c[0] > c[1] && c[1] > c[2], dim = (c) => c && c.every((v) => v < 80);
+  check("Black gloves: MediaPipe gets dark things light and skin-coloured, their surroundings dim (the picture on screen unchanged); remembered",
+    r.plain && dark(r.plain.patch) && light(r.plain.around) && r.gloved && skin(r.gloved.patch) && dim(r.gloved.around) &&
+      dark(r.screen.patch) && light(r.screen.around) && r.button === "Black gloves: ON" && r.saved === true && r.off,
+    JSON.stringify(r));
   await js("HandTrackerApp.backToCamera()");
 }
 

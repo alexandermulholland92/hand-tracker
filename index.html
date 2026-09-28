@@ -355,6 +355,7 @@
       <button id="pauseToggle" title="Freeze the live picture and tracking (Space). For a video file, pauses it.">❚❚ Pause<kbd>Space</kbd></button>
       <button id="squareToggle" aria-pressed="false" title="Track only the centre square of the picture. The hand detector works on squares, so small or far-away hands in the middle of the picture get a bigger, clearer view. Hands outside the square aren't tracked.">Square crop: OFF</button>
       <button id="farToggle" aria-pressed="false" title="For hands far from the camera (about 1.5 to 5 m): a body model finds your wrists first, then the hand detector looks just around them. Slower while it's looking for a hand; as fast as usual once one is found.">Far-away hands: OFF</button>
+      <button id="glovesToggle" aria-pressed="false" title="For hands in black or dark gloves, which the hand detector otherwise hardly ever finds. It's given the picture with dark things turned light and skin-coloured (the picture on screen doesn't change). Turn it off for bare hands, which it then finds less well. Your choice is remembered. Doesn't apply to OAK cameras, which find hands on the camera.">Black gloves: OFF</button>
       <label id="farFocusLabel" hidden title="Which hands to look for">Look for
         <select id="farFocus">
           <option value="both">both hands</option>

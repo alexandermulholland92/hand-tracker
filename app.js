@@ -38,6 +38,7 @@
   const pauseBadge = $("pauseBadge");
   const squareToggle = $("squareToggle");
   const farToggle = $("farToggle");
+  const glovesToggle = $("glovesToggle");
   const farFocus = $("farFocus");
   const farRaised = $("farRaised");
   const showBar = $("showBar");
@@ -128,6 +129,7 @@
   if (prefs.model !== undefined) modelSelect.value = String(prefs.model);
   if (prefs.layout) layoutSelect.value = prefs.layout;
   let squareOn = prefs.squareCrop === true;
+  let glovesOn = prefs.blackGloves === true;
   // Far-away hands (see far-hands.js): off by default; which hands to look for.
   const farPrefs = { enabled: false, raisedOnly: true, focus: "both", ...(prefs.far && typeof prefs.far === "object" ? prefs.far : {}) };
   // What's drawn on the picture (the Show buttons and keys 1-7, F).
@@ -892,6 +894,17 @@
     squareOn = !squareOn;
     setPref("squareCrop", squareOn);
     applySquare();
+  });
+
+  // Hands in black gloves: MediaPipe is shown them light and skin-coloured (hand-tracker.js).
+  function applyGloves() {
+    HandTracker.setGloves(glovesOn);
+    setToggle(glovesToggle, glovesOn, "Black gloves");
+  }
+  glovesToggle.addEventListener("click", () => {
+    glovesOn = !glovesOn;
+    setPref("blackGloves", glovesOn);
+    applyGloves();
   });
 
   function applyFar() {
@@ -1792,6 +1805,7 @@
     setToggle(mirrorToggle, mirrorOn, "Mirror");
     setToggle(readableToggle, readableOn, "Readable text");
     setToggle(squareToggle, squareOn, "Square crop");
+    applyGloves(); // (before the camera starts, so a video opened after a camera error has it too)
     renderPanels([]);
     if (!VideoRecorder.isSupported()) {
       videoBtn.disabled = true;
