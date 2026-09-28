@@ -160,6 +160,7 @@ OptiTrack cameras belong to one program at a time: while Motive has them open, n
 
 **Receive Motive's live data.** The **OptiTrack Motive** panel connects to Motive's NatNet stream: labelled markers, rigid bodies and skeletons, shown live from the front with the stream's rate. In Motive, open View → Streaming Pane and turn on **Broadcast Frame Data**. Enter the address of Motive's PC (127.0.0.1 if it's this one) and match its **Transmission Type** (multicast is Motive's default). NatNet 3.0 to 4.1 (Motive 2 and 3) are supported.
 - While motion capture records, every Motive frame is recorded too.
+- **Record Video** can include Motive's view below the camera's (and the 3D view), as it's drawn live. These layouts are offered while Motive is connected; a chosen one comes back when Motive reconnects. If Motive disconnects mid-recording, its part of the video says so.
 - Motive's data is exported next to the hand files as `<name>-motive.c3d`, `.trc`, `.csv`, `.glb`, `.npz` or `.json`, in each chosen format that holds markers. It includes labelled markers, rigid-body pivots and skeleton bones.
 - Positions are in millimetres, Z-up: the same axes as Motive's own C3D export, so a live recording lines up with the same take opened as `.tak`.
 - Both recordings start together. Motive's keeps its own frame rate and numbering, and dropped network packets leave gaps.
@@ -195,7 +196,7 @@ Choose more than one video in **Open Video…** (the cameras of a capture rig, s
 
 ## Video export
 
-Press **Record Video**, choosing whether to include just the camera view or the camera view with the 3D view below it. When you stop, a preview appears; pick one or more of the [36 formats](#video-formats) (and, in the Windows app, a folder).
+Press **Record Video**, choosing whether to include just the camera view or the camera view with the 3D view below it. While Motive's live data is connected (Windows and Linux app), Motive's view can go below them too: **Camera + Motive view** or **Camera + 3D + Motive view**. When you stop, a preview appears; pick one or more of the [36 formats](#video-formats) (and, in the Windows app, a folder).
 
 ## Converting videos
 
@@ -350,9 +351,11 @@ This launches the app with Chromium's built-in fake camera. It simulates two han
 - **NPZ** is loaded with NumPy (so it needs Python with NumPy).
 - **Videos** are decoded with ffmpeg and checked to be the right codec, with sound where the source had it (animated WebP by its structure, since ffmpeg 6.1 can't read it back).
 
+Chromium's fake camera sometimes crashes (its capture process, inside Chromium), and every camera check after that fails. The run then says so and starts again, up to three times in all; it stops straight away if the crash comes before the first check.
+
 It opens two simulated cameras of one moment together (the second started 1.5 s later) and checks that they sync to within a frame. The saved motion capture must be on one clock, and the converted videos must start on the same moment. A video of something else must get the error, then go through both queues.
 
-It also opens the Recording Viewer with new, old and deliberately malicious files, and converts a WMV with sound to all 36 video formats in it. For OptiTrack, it connects to a stand-in Motive (NatNet 4.1, over multicast and unicast), records its stream with motion capture and checks the exported markers' names, rate, axes and scale. It also tracks a part of the screen chosen in the Screen or window picker. Windows will briefly appear on screen while it runs.
+It also opens the Recording Viewer with new, old and deliberately malicious files, and converts a WMV with sound to all 36 video formats in it. For OptiTrack, it connects to a stand-in Motive (NatNet 4.1, over multicast and unicast), records its stream with motion capture and checks the exported markers' names, rate, axes and scale, and records video with Motive's view below the camera's. It also tracks a part of the screen chosen in the Screen or window picker. Windows will briefly appear on screen while it runs.
 
 There is also a check for the Android code:
 
@@ -379,7 +382,7 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 | `motion-import.js` | Reads JSON, CSV and C3D back in (with a C3D reader built from the format's published description) |
 | `export-ui.js` | Export panels shared by the main window and the viewer |
 | `hand-3d.js` | Three.js view of both hands and grippers |
-| `video-recorder.js` | Records the camera view (and the 3D view) with MediaRecorder |
+| `video-recorder.js` | Records the camera view (and the 3D and Motive views) with MediaRecorder |
 | `video-formats.js` | The 36 video export formats and their ffmpeg settings, and the file types the pickers offer (shared by all three versions) |
 | `video-convert.js` | Website and Android: opening and converting videos with ffmpeg.wasm |
 | `multi-video.js` | Several videos at once: tracking them in turn, syncing, and the motion capture queue |
@@ -392,7 +395,7 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 | `mobile-bridge.js` | Android: saving to Documents/Hand Tracker and sharing (Capacitor plugins) |
 | `electron/` | Desktop app: secure local file serving, camera permission, save dialogs, ffmpeg export, `.tak` support through Motive (`tak.js`, `tak-convert.ps1`), Motive's live NatNet stream (`natnet.js`), mouse and keyboard input (`input.js`, `input-helper.ps1`), and OAK cameras (`oak.js`) |
 | `android/`, `capacitor.config.json` | Android app project (Capacitor): permissions, icon, keep-screen-on |
-| `scripts/` | `serve.js` (browser mode), `build-web.js` + `build-android.js` (APK build), `check.js`, `check-android.js`, `motion-validators.js`, `video-validators.js`, `natnet-sim.js` (a stand-in Motive for the checks), `fake-capacitor.js`, `simulated-hands.js`, `fixtures/` (automated checks) |
+| `scripts/` | `serve.js` (browser mode), `build-web.js` + `build-android.js` (APK build), `check.js`, `check-android.js`, `run-checks.js` (runs them, again if the fake camera crashed), `motion-validators.js`, `video-validators.js`, `natnet-sim.js` (a stand-in Motive for the checks), `fake-capacitor.js`, `simulated-hands.js`, `fixtures/` (automated checks) |
 
 ## Limitations
 
@@ -405,6 +408,7 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 - Syncing finds one offset per video. It doesn't correct for cameras whose clocks run at slightly different speeds, which over a long recording can add up to a frame or two.
 - On the website and the Android app, a video is converted in the device's memory, so very large files (roughly over 1 GB) may fail; use the Windows app for those.
 - Tracking keeps running when the window is covered or minimized (minimized, at a slightly lower frame rate), so the hand mouse keeps working.
+- If the graphics driver resets or its process crashes, MediaPipe loses its WebGL context. Hand Tracker notices and starts MediaPipe (and the far-away-hands body model) again, skipping a frame or two, instead of tracking stopping for good. A camera that stops sending frames is reopened the same way.
 - Two, Three and Four are checked on simulated hands; unlike the other gestures, they haven't been tuned on photos or a live session yet.
 
 ## License

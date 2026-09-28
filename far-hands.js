@@ -24,8 +24,10 @@
   const ZONE_SCALE = 1.5;
 
   let pose = null;
+  let poseGl = null; // its WebGL contexts (MediaPipeGuard in hand-tracker.js)
   let loading = null;
   let latest = null;
+  const SEND_TIMEOUT_MS = 15000;
 
   function loadScript(src) {
     return new Promise((resolve, reject) => {
@@ -50,9 +52,10 @@
           minTrackingConfidence: 0.5,
         });
         model.onResults((results) => {
-          latest = results;
+          if (model === pose) latest = results;
         });
-        await model.initialize();
+        const guard = global.MediaPipeGuard;
+        poseGl = guard ? await guard.watch(() => model.initialize()) : (await model.initialize(), null);
         pose = model;
       })
       .catch((err) => {
@@ -65,12 +68,21 @@
   // The body's key points in one picture, or null (no body, or the model is still loading:
   // then the whole picture is searched meanwhile).
   async function detect(image) {
+    // A model whose WebGL context was lost (graphics crash or driver reset) finds nothing
+    // and never recovers: it's replaced, like the hand model in hand-tracker.js.
+    if (pose && poseGl && poseGl.lost()) drop();
     if (!pose) {
       load().catch(() => {});
       return null;
     }
     latest = null;
-    await pose.send({ image });
+    const guard = global.MediaPipeGuard;
+    try {
+      await (guard ? guard.withTimeout(pose.send({ image }), SEND_TIMEOUT_MS, "MediaPipe Pose") : pose.send({ image }));
+    } catch (err) {
+      drop();
+      throw err;
+    }
     const P = latest && latest.poseLandmarks;
     if (!P) return null;
     const pt = (i) => (P[i] && (P[i].visibility === undefined || P[i].visibility >= MIN_VISIBILITY) ? { x: P[i].x, y: P[i].y } : null);
@@ -82,6 +94,15 @@
       wrists: { Left: pt(15), Right: pt(16) },
       hips: { Left: pt(23), Right: pt(24) },
     };
+  }
+
+  function drop() {
+    const old = pose;
+    pose = null;
+    poseGl = null;
+    loading = null;
+    latest = null;
+    if (old) Promise.resolve().then(() => old.close()).catch(() => {});
   }
 
   // The square to search, in pixels of a width x height picture.

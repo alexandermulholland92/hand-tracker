@@ -34,6 +34,21 @@ app.commandLine.appendSwitch("use-fake-device-for-media-stream");
 app.commandLine.appendSwitch("use-fake-ui-for-media-stream");
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-android-profile-")));
+// Chromium's fake test camera sometimes crashes its capture process (an access violation
+// inside Chromium, now and then at start-up or when the camera is reopened). After that it
+// can't be reopened, so the camera checks from then on fail. The run then ends with
+// CAMERA_CRASHED (at once if no check has run yet), and scripts/run-checks.js (npm run
+// check) runs it again.
+const CAMERA_CRASHED = 75;
+let cameraCrashedAt = null;
+app.on("child-process-gone", (event, details) => {
+  // (Chromium also ends that process normally when no camera is open: only a crash counts.)
+  if (details.type === "Utility" && /video.?capture/i.test(`${details.serviceName} ${details.name}`) && /crash|abnormal/.test(details.reason) && !cameraCrashedAt) {
+    cameraCrashedAt = new Date().toLocaleTimeString();
+    console.log(`NOTE  Chromium's fake test camera crashed (its capture process: ${details.reason}, exit code ${details.exitCode}, at ${cameraCrashedAt}); camera checks after this can't pass.`);
+    if (!results.length) app.exit(CAMERA_CRASHED);
+  }
+});
 protocol.registerSchemesAsPrivileged([
   { scheme: "app", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
 ]);
@@ -330,6 +345,7 @@ app.whenReady().then(() =>
     .finally(() => {
       const failed = results.filter((r) => !r.ok).length;
       console.log(`\n${results.length - failed}/${results.length} checks passed. Output: ${outDir}`);
-      app.exit(failed ? 1 : 0);
+      if (cameraCrashedAt) console.log(`(Chromium's fake test camera crashed at ${cameraCrashedAt}: camera checks after that couldn't pass.)`);
+      app.exit(failed ? (cameraCrashedAt ? CAMERA_CRASHED : 1) : 0);
     })
 );

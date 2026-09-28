@@ -103,6 +103,15 @@ contextBridge.exposeInMainWorld("desktop", {
     stream: (sessionId, path) => ipcRenderer.invoke("ops:stream", { sessionId, path }),
     forget: (url) => ipcRenderer.invoke("ops:forget", { url }),
   },
+  // Live pictures from capture rigs on a capture-fleet dashboard (hidden; see fleet.js).
+  // Each camera's latest picture is at app://hand-tracker/__fleet/<rig>/<camera>[?full=1].
+  fleet: {
+    status: () => ipcRenderer.invoke("fleet:status"),
+    configure: (site) => ipcRenderer.invoke("fleet:configure", { site }),
+    signIn: () => ipcRenderer.invoke("fleet:sign-in"),
+    signOut: () => ipcRenderer.invoke("fleet:sign-out"),
+    rigs: () => ipcRenderer.invoke("fleet:rigs"),
+  },
 
   // Luxonis OAK cameras (OAK-D, OAK-D Lite, OAK-1...): hand tracking on the camera itself.
   oak: {

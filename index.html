@@ -65,6 +65,14 @@
   .ops-row small { display: block; opacity: 0.65; margin-top: 2px; }
   .ops-row .ops-cams { grid-column: 2 / -1; font-size: 12px; opacity: 0.8; }
   .ops-streams label, #opsFormats label { margin-right: 10px; }
+  .rig-row { cursor: default; }
+  .rig-off { opacity: 0.55; }
+  .rig-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; background: #495057; }
+  .rig-dot.rig-rec { background: #fa5252; }
+  .rig-dot.rig-live { background: #40c057; }
+  .rig-cams { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .rig-cams button { padding: 3px 9px; font-size: 12px; }
+  #rigsBrowse label { margin-right: 12px; }
   .error-note { color: #ffc9c9; }
   .toolbar .spacer { flex: 1; }
   #opsProgress { white-space: pre-line; }
@@ -256,6 +264,7 @@
     <div class="toolbar">
       <button id="openVideoBtn" title="Track hands in a video file instead of the camera. Pick several videos of the same moment (a capture rig's cameras) to sync them from the hand movement.">Open Video…</button>
       <button id="opsBtn" hidden title="Track recorded capture sessions from your capture-operations dashboard (Ctrl+Alt+P shows or hides this)">Capture Sessions…</button>
+      <button id="rigsBtn" hidden title="Watch a capture rig's camera live, from your capture-fleet dashboard (Ctrl+Alt+P shows or hides this)">Live Rigs…</button>
       <input type="file" id="videoFileInput" multiple hidden
              accept="video/*,.mp4,.m4v,.mov,.qt,.mkv,.webm,.avi,.divx,.mpg,.mpeg,.mpe,.m2v,.m1v,.vob,.ts,.mts,.m2ts,.wmv,.asf,.flv,.f4v,.3gp,.3g2,.ogv,.ogg,.dv,.mxf,.rm,.rmvb,.y4m,.gif,.h264,.264,.hevc,.h265" />
       <label>Camera <select id="cameraSelect"><option value="">Default camera</option></select></label>
@@ -394,6 +403,8 @@
           <select id="layoutSelect">
             <option value="camera">Camera view</option>
             <option value="camera+3d">Camera + 3D view</option>
+            <option value="camera+motive" hidden disabled>Camera + Motive view</option>
+            <option value="camera+3d+motive" hidden disabled>Camera + 3D + Motive view</option>
           </select>
         </label>
         <span id="videoStatus" class="status"></span>
@@ -479,7 +490,7 @@
         <button id="motiveConnect">Connect</button>
       </div>
       <div id="motiveStatus">Receives Motive's live markers, rigid bodies and skeletons (Motive: View → Streaming Pane → Broadcast Frame Data). They're recorded with motion capture and exported alongside it.</div>
-      <canvas id="motiveView" width="640" height="360" hidden></canvas>
+      <canvas id="motiveView" width="1280" height="720" hidden></canvas>
       <div id="motiveInfo" class="metric-row"></div>
     </div>
   </aside>
@@ -501,6 +512,29 @@
         <button id="captureBack">Back</button>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="rigsDialog" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="rigsTitle">
+    <div class="modal-head"><b id="rigsTitle">Live rigs</b><span id="rigsWho" class="status"></span><button id="rigsSignOut" hidden>Sign out</button><button id="rigsClose" aria-label="Close">✕</button></div>
+    <div id="rigsSetup" hidden>
+      <p class="note">Watch a capture rig's camera live and track the hands in it, as your capture-fleet dashboard shows it. Enter the dashboard's address once; it's kept on this computer.</p>
+      <div class="toolbar"><input type="text" id="rigsSite" placeholder="https://…" spellcheck="false" autocomplete="off" style="flex:1" /><button id="rigsConnect" class="primary">Connect</button></div>
+    </div>
+    <div id="rigsSignIn" hidden>
+      <div class="toolbar"><button id="rigsSignInBtn" class="primary">Sign in with the website…</button><span class="status">opens the dashboard's own sign-in page</span></div>
+    </div>
+    <div id="rigsBrowse" hidden>
+      <div class="toolbar">
+        <label><input type="checkbox" id="rigsFull" /> Full resolution</label>
+        <label>Stereo cameras: <select id="rigsSide"><option value="left">Left view</option><option value="right">Right view</option><option value="both">Both views</option></select></label>
+        <span class="spacer"></span><button id="rigsRefresh">Refresh</button>
+      </div>
+      <div id="rigsList" class="ops-list"></div>
+      <p class="note">Pick a camera to watch it and track its hands; pick it again to go back to your camera. The pictures are the dashboard's previews: a new one every second or two, so hands jump between pictures. Nothing on the rig is changed. Rigs recording now are listed first.</p>
+    </div>
+    <p id="rigsError" class="note error-note" hidden></p>
   </div>
 </div>
 
@@ -588,6 +622,7 @@
 <script src="pc-control.js"></script>
 <script src="oak-source.js"></script>
 <script src="ops-sessions.js"></script>
+<script src="rig-live.js"></script>
 <script src="video-sync.js"></script>
 <script src="video-queue.js"></script>
 <script src="multi-video.js"></script>

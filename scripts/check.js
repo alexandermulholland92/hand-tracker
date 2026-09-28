@@ -40,6 +40,21 @@ app.commandLine.appendSwitch("use-fake-ui-for-media-stream");
 const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-"));
 // Fresh profile every run, so saved preferences can't change what's tested.
 app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-profile-")));
+// Chromium's fake test camera sometimes crashes its capture process (an access violation
+// inside Chromium, now and then at start-up or when the camera is reopened). After that it
+// can't be reopened, so the camera checks from then on fail. The run then ends with
+// CAMERA_CRASHED (at once if no check has run yet), and scripts/run-checks.js (npm run
+// check) runs it again.
+const CAMERA_CRASHED = 75;
+let cameraCrashedAt = null;
+app.on("child-process-gone", (event, details) => {
+  // (Chromium also ends that process normally when no camera is open: only a crash counts.)
+  if (details.type === "Utility" && /video.?capture/i.test(`${details.serviceName} ${details.name}`) && /crash|abnormal/.test(details.reason) && !cameraCrashedAt) {
+    cameraCrashedAt = new Date().toLocaleTimeString();
+    console.log(`NOTE  Chromium's fake test camera crashed (its capture process: ${details.reason}, exit code ${details.exitCode}, at ${cameraCrashedAt}); camera checks after this can't pass.`);
+    if (!results.length) app.exit(CAMERA_CRASHED);
+  }
+});
 // Answer the app's save / folder dialogs automatically.
 dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [outDir] });
 dialog.showSaveDialog = async (_win, opts) => ({ canceled: false, filePath: path.join(outDir, path.basename(opts.defaultPath)) });
@@ -367,6 +382,7 @@ async function run(win) {
 
   await checkPcControl(js);
   await checkCaptureSessions(js);
+  await checkLiveRigs(js);
 
   // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
   // in go through the same tracking, with the camera's confidence and measured distance.
@@ -442,6 +458,25 @@ async function run(win) {
   await new Promise((r) => setTimeout(r, 800));
   check("Tracking keeps going with the window minimized (at least half the usual rate)", shownFrames > 20 && minimizedFrames >= shownFrames / 2,
     `${shownFrames} frames in 3 s shown, ${minimizedFrames} minimized`);
+
+  // MediaPipe losing its graphics (WebGL) context, as in a graphics crash or driver reset:
+  // it used to find nothing from then on, and abort for good on its next reset.
+  const mediaPipe = () => js("HandTracker._mediaPipe()");
+  const mpBefore = await mediaPipe();
+  const errorsBefore = consoleErrors.length;
+  await js("HandTracker._loseMediaPipeContext(); true");
+  await new Promise((r) => setTimeout(r, 1500));
+  const lossFrames = await framesIn(3000);
+  const mpAfter = await mediaPipe();
+  await js("HandTrackerApp.backToCamera().then(() => true)"); // resets MediaPipe, which a lost one didn't survive
+  await new Promise((r) => setTimeout(r, 800));
+  const resetFrames = await framesIn(3000);
+  // A frame in flight at the moment of the loss may fail; that's the point of the check.
+  const lossErrors = consoleErrors.splice(errorsBefore).filter((m) => !/Hand tracking frame failed|WebGL|CONTEXT_LOST/i.test(m));
+  consoleErrors.push(...lossErrors);
+  check("MediaPipe whose graphics (WebGL) context is lost is started again, and tracking carries on (also after a reset)",
+    mpBefore.contexts > 0 && !mpBefore.lost && mpAfter.rebuilds === mpBefore.rebuilds + 1 && !mpAfter.lost && lossFrames > 20 && resetFrames > 20,
+    JSON.stringify({ before: mpBefore, after: mpAfter, framesAfterLoss: lossFrames, framesAfterReset: resetFrames }));
 
   const relevantErrors = consoleErrors.filter((m) => !/DevTools|Autofill/i.test(m));
   check("No errors in the page console", relevantErrors.length === 0, relevantErrors.slice(0, 3).join(" | "));
@@ -605,6 +640,106 @@ async function checkCaptureSessions(js) {
   })()`);
   check("Capture Sessions stays hidden until Ctrl+Alt+P, then asks for the dashboard's address; Ctrl+Alt+P hides it again (remembered)",
     r.hiddenAtStart && r.shown && r.asksForSite && r.remembered && r.hiddenAgain && r.batch, JSON.stringify(r));
+}
+
+// Live Rigs, against a stand-in capture-fleet dashboard on this computer: its sign-in page
+// sets a cookie, its rig list and pictures need that cookie, and one rig's camera sends
+// changing side-by-side stereo pictures (left half red, right half blue).
+function startFleetSim() {
+  const http = require("http");
+  const frames = [0, 1].map((i) => {
+    const file = path.join(outDir, `fleet-frame-${i}.jpg`);
+    spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=640x400", "-f", "lavfi", "-i", "color=c=blue:s=640x400",
+      "-filter_complex", `[0][1]hstack,drawbox=x=${100 + i * 200}:y=150:w=80:h=80:color=white:t=fill`, "-frames:v", "1", file]);
+    return fs.readFileSync(file);
+  });
+  const rigs = [
+    { hostname: "rig-a", display_name: "Rig A", online: true, reachable: true, via_relay: false, generation: "rock5c", capture_state: "recording", recording_duration_s: 42, session_name: "s1", preview_active: false, preview_cameras: ["head"] },
+    { hostname: "rig-b", display_name: "Rig B", online: true, reachable: true, via_relay: false, generation: "rpi5", capture_state: "idle", preview_active: false, preview_cameras: ["chest"] },
+    { hostname: "rig-c", display_name: "Rig C", online: false, reachable: false, via_relay: false, generation: "rpi5", capture_state: "unknown", preview_active: false, preview_cameras: [] },
+  ];
+  let served = 0;
+  const writes = [];
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, "http://x");
+    const signedIn = /(^|;\s*)fleet=ok/.test(req.headers.cookie || "");
+    if (req.method !== "GET") writes.push(`${req.method} ${url.pathname}`); // it only ever reads
+    if (url.pathname === "/login") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end('<!doctype html><title>Sign in</title><p>Signing in…</p><script>document.cookie = "fleet=ok; path=/";</script>');
+    }
+    if (!signedIn) {
+      res.writeHead(302, { location: "/login" });
+      return res.end();
+    }
+    if (url.pathname === "/api/fleet/status") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ devices: rigs, summary: {} }));
+    }
+    if (url.pathname === "/proxy/rig-a/api/preview/frame/head") {
+      res.writeHead(200, { "content-type": "image/jpeg" });
+      return res.end(frames[Math.floor(served++ / 2) % 2]); // a new picture every second request
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ site: `http://127.0.0.1:${server.address().port}`, writes, served: () => served, stop: () => server.close() })));
+}
+
+async function checkLiveRigs(js) {
+  const sim = await startFleetSim();
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const $ = (id) => document.getElementById(id);
+    const until = async (test, ms = 10000) => { for (let t = 0; t < ms && !test(); t += 100) await sleep(100); return test(); };
+    const out = {};
+    RigLive.setShown(true);
+    $("rigsBtn").click();
+    await until(() => !$("rigsSetup").hidden);
+    $("rigsSite").value = ${JSON.stringify(sim.site)};
+    $("rigsConnect").click();
+    await until(() => !$("rigsSignIn").hidden);
+    out.asksToSignIn = !$("rigsSignIn").hidden && $("rigsBrowse").hidden;
+    $("rigsSignInBtn").click(); // the stand-in's sign-in page signs in by itself
+    await until(() => document.querySelectorAll("#rigsList .rig-row").length > 0, 15000);
+    const rows = [...document.querySelectorAll("#rigsList .rig-row")];
+    out.rows = rows.map((row) => row.querySelector("b").textContent + ":" + [...row.querySelectorAll("button.rig-cam")].map((b) => b.textContent + (b.disabled ? "(off)" : "")).join(","));
+    $("rigsSide").value = "left";
+    $("rigsSide").dispatchEvent(new Event("change"));
+    document.querySelector('#rigsList button[data-host="rig-a"]').click();
+    await until(() => HandTracker.getCamera().stream && RigLive._state() && RigLive._state().frames >= 3, 10000);
+    const cam = HandTracker.getCamera();
+    out.watching = { stream: cam.stream, name: cam.name, size: cam.width + "x" + cam.height, mirrored: HandTracker.isMirrored(), state: RigLive._state(), list: $("cameraSelect").selectedOptions[0].textContent, dialogClosed: $("rigsDialog").hidden };
+    // Both views of the stereo picture.
+    $("rigsSide").value = "both";
+    $("rigsSide").dispatchEvent(new Event("change"));
+    await until(() => HandTracker.getCamera().width === 1280, 5000);
+    out.both = HandTracker.getCamera().width + "x" + HandTracker.getCamera().height;
+    $("rigsSide").value = "left";
+    $("rigsSide").dispatchEvent(new Event("change"));
+    // Picking it again goes back to the camera and stops asking for pictures.
+    $("rigsBtn").click();
+    await until(() => document.querySelector('#rigsList button[data-host="rig-a"]'));
+    document.querySelector('#rigsList button[data-host="rig-a"]').click();
+    await until(() => !HandTracker.getCamera().stream && HandTracker.getCamera().width > 0, 10000);
+    out.back = { stream: HandTracker.getCamera().stream, active: RigLive.isActive(), width: HandTracker.getCamera().width };
+    $("rigsSignOut").click();
+    await until(() => !$("rigsSignIn").hidden);
+    out.signedOut = !$("rigsSignIn").hidden;
+    $("rigsClose").click();
+    RigLive.setShown(false);
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  const servedWhileWatching = sim.served();
+  await new Promise((res) => setTimeout(res, 1500));
+  const servedAfter = sim.served() - servedWhileWatching;
+  sim.stop();
+  const w = r.watching || {};
+  check("Live Rigs: signs in on the dashboard's own page, lists rigs (recording first; ones without a preview can't be picked), and tracks a rig's camera as the source (one view of a stereo picture, not mirrored); picking it again goes back to the camera",
+    r.asksToSignIn && JSON.stringify(r.rows) === JSON.stringify(["Rig A:head", "Rig B:chest(off)", "Rig C:"]) &&
+      w.stream && w.name === "Rig A · head" && w.size === "640x400" && w.mirrored === false && w.state && w.state.stereo && w.state.frames >= 3 && /Live: Rig A/.test(w.list) && w.dialogClosed &&
+      r.both === "1280x400" && r.back && !r.back.stream && !r.back.active && r.back.width > 0 && r.signedOut && servedAfter === 0 && sim.writes.length === 0,
+    JSON.stringify({ ...r, servedAfter, writes: sim.writes }));
 }
 
 // Test videos made with the bundled ffmpeg: [file name, ffmpeg output options].
@@ -1120,6 +1255,12 @@ async function checkOptiTrack(js) {
     return waitFor((s) => s.button === "Connect");
   };
   check("The Motive panel is shown in the Windows app", await js("!document.getElementById('motiveCard').hidden"));
+  const motiveLayouts = () => js(`(() => {
+    const sel = document.getElementById("layoutSelect");
+    return { offered: [...sel.options].filter((o) => !o.hidden && !o.disabled).map((o) => o.value).join(","), value: sel.value,
+      saved: (JSON.parse(localStorage.getItem("hand-tracker:prefs")) || {}).layout || "" };
+  })()`);
+  const layoutsBefore = await motiveLayouts();
 
   // Multicast (Motive's default), then unicast.
   const results = {};
@@ -1141,6 +1282,45 @@ async function checkOptiTrack(js) {
         for (let i = 0; i < 40 && document.querySelectorAll("#motionResults li").length < 3; i++) await new Promise((r) => setTimeout(r, 250));
         return { info, saved: document.querySelectorAll("#motionResults li.ok").length, note: document.getElementById("motionNote").textContent };
       })()`);
+
+      // Record Video with Motive's view below the camera's: the clip's lower part is Motive's
+      // markers (the rigid body's orange square, labelled markers' blue dots).
+      results.layoutsConnected = await motiveLayouts();
+      results.video = await js(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const realConfirm = window.confirm;
+        window.confirm = () => true; // a previous clip may not have been exported
+        try {
+          const sel = document.getElementById("layoutSelect");
+          sel.value = "camera+motive";
+          sel.dispatchEvent(new Event("change"));
+          document.getElementById("videoBtn").click();
+          await wait(2500);
+          document.getElementById("videoBtn").click();
+          const v = document.getElementById("clipPreview");
+          for (let i = 0; i < 60 && (document.getElementById("exportCard").hidden || v.readyState < 2); i++) await wait(100);
+          const stage = document.getElementById("stage");
+          const w = v.videoWidth, h = v.videoHeight;
+          if (!w || !h) return { size: "0x0", error: document.getElementById("videoStatus").textContent || "no clip" };
+          const c = document.createElement("canvas");
+          c.width = w; c.height = h;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(v, 0, 0);
+          const split = Math.round((stage.height / stage.width) * w);
+          const count = (y0, y1, test) => {
+            const d = ctx.getImageData(0, y0, w, y1 - y0).data;
+            let n = 0;
+            for (let i = 0; i < d.length; i += 4) if (test(d[i], d[i + 1], d[i + 2])) n++;
+            return n;
+          };
+          const orange = (r, g, b) => r > 200 && g > 100 && g < 190 && b < 110;
+          const blue = (r, g, b) => b > 200 && g > 150 && r < 160;
+          return { size: w + "x" + h, stage: stage.width + "x" + stage.height, split, orange: count(split, h, orange), blue: count(split, h, blue),
+            info: document.getElementById("clipInfo").textContent };
+        } finally {
+          window.confirm = realConfirm;
+        }
+      })()`).catch((err) => ({ error: String(err && err.message || err) }));
     }
     await disconnect();
     sim.stop();
@@ -1149,6 +1329,19 @@ async function checkOptiTrack(js) {
   check("Connects to Motive's NatNet stream over multicast (Motive's default)", /3 labelled \+ 1 unlabelled markers · 1 rigid body · 1 skeleton \(2 bones\)/.test(results.multicast.info),
     `${results.multicast.status} ${results.multicast.info}`);
   check("…and over unicast", /Connected/.test(results.unicast.status) && /rigid body/.test(results.unicast.info), `${results.unicast.status} ${results.unicast.info}`);
+
+  // Motive's view in recorded video: offered only while Motive is connected; the chosen layout
+  // comes back when it reconnects (and reads as the same layout without Motive meanwhile).
+  const layoutsAfter = await motiveLayouts();
+  await js(`(() => { const sel = document.getElementById("layoutSelect"); sel.value = "camera"; sel.dispatchEvent(new Event("change")); return true; })()`);
+  const vid = results.video || {};
+  const [vw, vh] = String(vid.size || "0x0").split("x").map(Number);
+  const [sw, sh] = String(vid.stage || "1x1").split("x").map(Number);
+  check("Record Video can include Motive's view below the camera's (offered only while Motive is connected; remembered for when it reconnects)",
+    !/motive/.test(layoutsBefore.offered) && results.layoutsConnected && /camera\+motive/.test(results.layoutsConnected.offered) && /camera\+3d\+motive/.test(results.layoutsConnected.offered) &&
+      vw > 0 && Math.abs(vh / vw - (sh / sw + 9 / 16)) < 0.02 && vid.orange > 100 && vid.blue > 20 &&
+      !/motive/.test(layoutsAfter.offered) && layoutsAfter.value === "camera" && layoutsAfter.saved === "camera+motive",
+    JSON.stringify({ before: layoutsBefore.offered, connected: results.layoutsConnected && results.layoutsConnected.offered, video: vid, after: layoutsAfter }));
 
   // The exported Motive markers: names from Motive, its frame rate, and positions in mm, Z-up.
   const c3dFile = path.join(outDir, "motive-take-motive.c3d");
@@ -1434,6 +1627,7 @@ app.on("browser-window-created", (_event, win) => {
     .finally(() => {
       const failed = results.filter((r) => !r.ok).length;
       console.log(`\n${results.length - failed}/${results.length} checks passed. Output: ${outDir}`);
-      app.exit(failed ? 1 : 0);
+      if (cameraCrashedAt) console.log(`(Chromium's fake test camera crashed at ${cameraCrashedAt}: camera checks after that couldn't pass.)`);
+      app.exit(failed ? (cameraCrashedAt ? CAMERA_CRASHED : 1) : 0);
     });
 });

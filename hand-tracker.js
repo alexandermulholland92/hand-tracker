@@ -14,6 +14,8 @@
  *   HandTracker.setCamera({ deviceId, width, height });   // switch camera / resolution
  *   HandTracker.setCamera({ desktopSourceId, desktopName, crop }); // track a screen or window (Windows app),
  *                                         // optionally just crop = { x, y, w, h } (fractions of it)
+ *   HandTracker.setCamera({ stream, streamName }); // track a picture stream the page supplies (e.g. a
+ *                                         // canvas's captureStream); it's the page's to stop
  *   await HandTracker.useVideoFile(url, { name, mirrored }); // track a video file instead of the camera;
  *                                         // mirrored: it was recorded mirrored (see "Mirrored videos")
  *   await HandTracker.setFileMirrored(true/false);         // change that for the open video
@@ -114,12 +116,55 @@
   // first frame arrives, allow longer: some webcams take seconds to start.
   const STALL_MS = 4000;
   const FIRST_FRAME_MS = 15000;
+  // MediaPipe answering no frame in this long has hung (see "keeping MediaPipe working").
+  // Generous: after a model change its next frame loads the new model first.
+  const SEND_TIMEOUT_MS = 15000;
+
+  // Watches the WebGL contexts a MediaPipe model creates as it starts, so their loss can be
+  // noticed (see "keeping MediaPipe working"); also used by far-hands.js.
+  const MediaPipeGuard = {
+    // Runs init (a model's initialize()); returns { lost(), lose(), count } for the WebGL
+    // contexts made meanwhile. lose() loses them on purpose, for automated checks.
+    async watch(init) {
+      const contexts = [];
+      const undo = [global.HTMLCanvasElement, global.OffscreenCanvas].filter(Boolean).map((C) => {
+        const original = C.prototype.getContext;
+        C.prototype.getContext = function (type, ...rest) {
+          const ctx = original.call(this, type, ...rest);
+          if (ctx && /webgl/i.test(type) && !contexts.includes(ctx)) contexts.push(ctx);
+          return ctx;
+        };
+        return () => (C.prototype.getContext = original);
+      });
+      try {
+        await init();
+      } finally {
+        undo.forEach((u) => u());
+      }
+      return {
+        count: contexts.length,
+        lost: () => contexts.some((gl) => gl.isContextLost()),
+        lose: () => contexts.forEach((gl) => {
+          const ext = gl.getExtension("WEBGL_lose_context");
+          if (ext) ext.loseContext();
+        }),
+      };
+    },
+    // Settles like promise, or fails after ms.
+    withTimeout(promise, ms, what) {
+      let timer;
+      const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`${what} didn't answer in ${ms / 1000} s`)), ms)));
+      return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+    },
+  };
+  global.MediaPipeGuard = MediaPipeGuard;
 
   let hands = null;
   let videoEl = null;
   let canvasEl = null;
   let ctx = null;
   let stream = null;
+  let streamOwned = true; // false for a stream the page supplied (cameraOpts.stream): not ours to stop
   let overlay = true;
   let mirror = true;
   let callbacks = [];
@@ -130,12 +175,18 @@
   let modelComplexity = 0;
   let confidence = { detection: 0.7, tracking: 0.7 }; // MediaPipe's minDetectionConfidence / minTrackingConfidence
   // desktopSourceId: a screen or window (Electron desktopCapturer id) instead of a camera;
+  // stream: a picture stream the page supplies instead (streamName names it);
   // crop: the part of the picture to track, as fractions { x, y, w, h }.
-  let cameraOpts = { deviceId: null, width: 1280, height: 720, facing: null, desktopSourceId: null, desktopName: "", crop: null };
+  let cameraOpts = { deviceId: null, width: 1280, height: 720, facing: null, desktopSourceId: null, desktopName: "", stream: null, streamName: "", crop: null };
   let frameCanvas = null; // the cropped or flipped picture, when MediaPipe doesn't see the video as it is
   let lastFrame = null; // the picture MediaPipe was last given
   let fileMirrored = false; // the video file was recorded mirrored: flip it back (see "Mirrored videos")
   let restartTracking = false; // the picture changed abruptly: forget the hands MediaPipe was following
+  let handsGl = { lost: () => false, lose() {} }; // the running MediaPipe's WebGL contexts (see MediaPipeGuard)
+  let handsBroken = false; // the running MediaPipe can't be trusted any more: replace it before the next frame
+  let handsFailures = 0; // frames in a row it failed
+  let handsRebuilds = 0;
+  let rebuilding = null;
   let loopId = 0; // bumping this cancels the running capture loop
   let source = "camera"; // "camera" | "file"
   let frameTime = null; // ms timestamp of the video-file frame being processed (null: use the clock)
@@ -688,7 +739,11 @@
 
   async function openCamera() {
     closeCamera();
-    if (cameraOpts.desktopSourceId) {
+    streamOwned = !cameraOpts.stream;
+    if (cameraOpts.stream) {
+      // A picture stream from the page (e.g. a capture rig's live pictures drawn on a canvas).
+      stream = cameraOpts.stream;
+    } else if (cameraOpts.desktopSourceId) {
       // A screen or window (e.g. OptiTrack Motive's camera view), captured at full size.
       stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
@@ -707,7 +762,7 @@
     await videoEl.play();
     const track = stream.getVideoTracks()[0];
     const settings = track.getSettings();
-    if (cameraOpts.desktopSourceId) {
+    if (cameraOpts.desktopSourceId || cameraOpts.stream) {
       cameraOpts.facing = null;
     } else {
       cameraOpts.deviceId = settings.deviceId || cameraOpts.deviceId;
@@ -785,9 +840,16 @@
     for (const cb of sourceCallbacks) cb(camera);
   }
 
+  // Forgets a page-supplied stream that has ended while another source (a video, an OAK) is
+  // showing, so going back to the camera opens the real one.
+  function forgetStream() {
+    cameraOpts.stream = null;
+    cameraOpts.streamName = "";
+  }
+
   function closeCamera() {
     if (stream) {
-      for (const track of stream.getTracks()) track.stop();
+      if (streamOwned) for (const track of stream.getTracks()) track.stop();
       stream = null;
     }
   }
@@ -845,9 +907,9 @@
         gotFrame = true;
         setStalled(false);
         await sendFrame();
-      } else if (!reopening && !cameraOpts.desktopSourceId && performance.now() - lastNewFrame > (gotFrame ? STALL_MS : FIRST_FRAME_MS)) {
+      } else if (!reopening && !cameraOpts.desktopSourceId && !cameraOpts.stream && performance.now() - lastNewFrame > (gotFrame ? STALL_MS : FIRST_FRAME_MS)) {
         // (Screens and windows only send a frame when something in them changes, so a
-        // still one isn't a stalled camera.)
+        // still one isn't a stalled camera; a page's stream is the page's to keep going.)
         reopening = true;
         setStalled(true);
         console.warn("Camera stopped delivering frames; reopening it.");
@@ -864,30 +926,87 @@
   }
 
   function sendFrame() {
-    if (restartTracking) {
-      // MediaPipe follows each hand from where it was on the last frame. After the picture
-      // flips, that finds nothing (the hands moved, and are now the other way round).
-      restartTracking = false;
-      hands.reset();
-      resetHands();
-      lastRegion = null;
-    }
     lastFrame = frameImage();
-    inflight = processFrame(lastFrame).catch((err) => console.error("Hand tracking frame failed:", err));
+    inflight = processFrame(lastFrame).catch(handsFailed);
     return inflight;
   }
 
   async function processFrame(image) {
+    if (handsBroken || handsGl.lost()) await rebuildHands();
+    if (restartTracking) {
+      // MediaPipe follows each hand from where it was on the last frame. After the picture
+      // flips, that finds nothing (the hands moved, and are now the other way round).
+      restartTracking = false;
+      resetModel();
+      resetHands();
+      lastRegion = null;
+    }
     fullFrame = image;
     focusRegion = far.enabled ? await chooseRegion(image) : null;
     const moved = !sameRegion(focusRegion, lastRegion);
     // MediaPipe follows each hand from where it was in its last input; when the region
     // moves, that input moved under it, so it looks for the hands afresh.
-    if (moved) hands.reset();
+    if (moved) resetModel();
     lastRegion = focusRegion;
     lastFocus.region = focusRegion;
     const input = focusRegion ? regionImage(image, focusRegion) : image;
-    await hands.send({ image: gloves ? gloveImage(input) : input });
+    await MediaPipeGuard.withTimeout(hands.send({ image: gloves ? gloveImage(input) : input }), SEND_TIMEOUT_MS, "MediaPipe Hands");
+    handsFailures = 0;
+  }
+
+  // ---------- keeping MediaPipe working ----------
+  // MediaPipe runs its models on WebGL. When the graphics process crashes or the graphics
+  // driver resets (or a phone takes the GPU back), that WebGL context is lost: MediaPipe then
+  // quietly finds nothing, aborts on its next reset and never recovers. So a MediaPipe whose
+  // context was lost, that aborted, keeps failing or stops answering is replaced by a new one
+  // with the same settings, and tracking carries on (a frame or two is skipped meanwhile).
+  function resetModel() {
+    try {
+      hands.reset();
+    } catch (err) {
+      handsBroken = true;
+      throw err;
+    }
+  }
+
+  function handsFailed(err) {
+    handsFailures++;
+    if (handsFailures >= 3 || /Aborted|didn't answer/.test(String((err && err.message) || err))) handsBroken = true;
+    console.error("Hand tracking frame failed:", err);
+  }
+
+  async function createHands() {
+    const h = new global.Hands({
+      locateFile: (file) => `${HANDS_ASSET_PATH}${file}`,
+    });
+    h.setOptions({
+      maxNumHands: maxHands,
+      modelComplexity,
+      minDetectionConfidence: confidence.detection,
+      minTrackingConfidence: confidence.tracking,
+    });
+    h.onResults((results) => {
+      if (h === hands) onResults(results); // a replaced MediaPipe's late answer is dropped
+    });
+    const gl = await MediaPipeGuard.watch(() => h.initialize());
+    const old = hands;
+    hands = h;
+    handsGl = gl;
+    handsBroken = false;
+    handsFailures = 0;
+    if (old) Promise.resolve().then(() => old.close()).catch(() => {});
+  }
+
+  function rebuildHands() {
+    if (!rebuilding) {
+      console.warn(handsGl.lost() ? "MediaPipe lost its graphics (WebGL) context; starting it again." : "MediaPipe stopped working; starting it again.");
+      handsRebuilds++;
+      resetHands();
+      lastRegion = null;
+      restartTracking = false; // a new MediaPipe follows nothing yet
+      rebuilding = createHands().finally(() => (rebuilding = null));
+    }
+    return rebuilding;
   }
 
   // ---------- Black gloves ----------
@@ -1003,7 +1122,7 @@
     // body in view), otherwise where the body-pose model says the wrists are.
     farSearch++;
     if (farSearch % 4 === 0 || !global.FarHands) return null;
-    const body = await global.FarHands.detect(image);
+    const body = await global.FarHands.detect(image).catch(() => null);
     lastFocus.body = body;
     const zone = body && global.FarHands.zone(body, w, h, far);
     if (!zone || zone.s >= Math.min(w, h) * 0.95) return null;
@@ -1332,19 +1451,7 @@
       throw new Error("MediaPipe Hands failed to load. Run `npm install` so node_modules/@mediapipe is present.");
     }
 
-    hands = new global.Hands({
-      locateFile: (file) => `${HANDS_ASSET_PATH}${file}`,
-    });
-
-    hands.setOptions({
-      maxNumHands: maxHands,
-      modelComplexity,
-      minDetectionConfidence: confidence.detection,
-      minTrackingConfidence: confidence.tracking,
-    });
-
-    hands.onResults(onResults);
-    await hands.initialize();
+    await createHands();
     document.addEventListener("visibilitychange", () => loopKick && loopKick());
 
     try {
@@ -1394,10 +1501,11 @@
     const crop = cropPixels();
     return {
       source,
-      deviceId: cameraOpts.desktopSourceId ? `screen:${cameraOpts.desktopName}` : cameraOpts.deviceId,
+      deviceId: cameraOpts.stream ? `stream:${cameraOpts.streamName}` : cameraOpts.desktopSourceId ? `screen:${cameraOpts.desktopName}` : cameraOpts.deviceId,
       facing: source === "camera" ? cameraOpts.facing : null,
       screen: source === "camera" && !!cameraOpts.desktopSourceId,
-      name: cameraOpts.desktopName,
+      stream: source === "camera" && !!cameraOpts.stream,
+      name: cameraOpts.stream ? cameraOpts.streamName : cameraOpts.desktopName,
       crop: source === "camera" ? cameraOpts.crop : null,
       square: !!crop && squareCrop && !(source === "camera" && cameraOpts.crop), // the centre-square crop
       rotation,
@@ -1534,6 +1642,7 @@
     getFocus: () => (far.enabled ? { region: lastFocus.region, body: lastFocus.body } : { region: null, body: null }),
     useExternalSource,
     pushExternalFrame,
+    forgetStream,
     getFPS: () => fps,
     quaternionToEuler: quatToEuler,
     LANDMARK_INDEX: LM,
@@ -1541,5 +1650,8 @@
     _math: { subVec, crossVec, dotVec, normVec, quatFromVectors },
     // Feed MediaPipe-shaped results directly (replaying data, automated checks).
     _processResults: onResults,
+    // MediaPipe's health, and a way to lose its WebGL context on purpose (automated checks).
+    _mediaPipe: () => ({ rebuilds: handsRebuilds, lost: handsGl.lost(), contexts: handsGl.count }),
+    _loseMediaPipeContext: () => handsGl.lose(),
   };
 })(window);

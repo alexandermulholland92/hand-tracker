@@ -646,6 +646,15 @@
       cameraSelect.appendChild(opt);
       if (OakSource.isActive()) cameraSelect.value = "__oak";
     }
+    const current2 = HandTracker.getCamera();
+    if (current2.stream) {
+      // A capture rig watched live (rig-live.js).
+      const opt = document.createElement("option");
+      opt.value = "__stream_active";
+      opt.textContent = `Live: ${current2.name}`;
+      cameraSelect.appendChild(opt);
+      cameraSelect.value = opt.value;
+    }
     if (canCaptureScreens) {
       const cam = HandTracker.getCamera();
       if (cam.screen) {
@@ -765,10 +774,27 @@
   });
   async function useCaptureSource(src, crop) {
     closeCapturePicker();
-    await switchCamera({ desktopSourceId: src.id, desktopName: src.name, crop: crop || null });
+    await switchCamera({ desktopSourceId: src.id, desktopName: src.name, stream: null, streamName: "", crop: crop || null });
     populateCameras();
   }
   captureUseArea.addEventListener("click", () => useCaptureSource(capture.source, capture.rect));
+
+  // A picture stream from the page as the source: a capture rig watched live (rig-live.js).
+  async function useStreamSource({ stream, name }) {
+    OakSource.stop();
+    await switchCamera({ stream, streamName: name, desktopSourceId: null, desktopName: "", crop: null });
+    populateCameras();
+  }
+  // Back from it to the camera picked in the list.
+  async function leaveStreamSource() {
+    if (HandTracker.getCamera().stream) {
+      showSourceNote("");
+      await switchCamera({ deviceId: prefs.cameraId || null, stream: null, streamName: "", desktopSourceId: null, desktopName: "", crop: null });
+    } else {
+      HandTracker.forgetStream();
+    }
+    populateCameras();
+  }
   $("captureUseAll").addEventListener("click", () => useCaptureSource(capture.source, null));
   $("captureBack").addEventListener("click", () => {
     stopCapturePreview();
@@ -815,7 +841,7 @@
       openCapturePicker();
       return;
     }
-    if (cameraSelect.value === "__screen_active") return;
+    if (cameraSelect.value === "__screen_active" || cameraSelect.value === "__stream_active") return;
     if (cameraSelect.value === "__oak") {
       useOak();
       return;
@@ -823,7 +849,7 @@
     OakSource.stop();
     showSourceNote("");
     setPref("cameraId", cameraSelect.value || null);
-    switchCamera({ deviceId: cameraSelect.value || null, desktopSourceId: null, desktopName: "", crop: null }).then(populateCameras);
+    switchCamera({ deviceId: cameraSelect.value || null, desktopSourceId: null, desktopName: "", stream: null, streamName: "", crop: null }).then(populateCameras);
   });
   resolutionSelect.addEventListener("change", () => {
     setPref("resolution", resolutionSelect.value);
@@ -954,7 +980,7 @@
     if (camera.source === "file") return setMirror(false);
     const chosen = camera.deviceId ? mirrorByCamera[camera.deviceId] : undefined;
     // Screens and windows (e.g. Motive's camera view) are shown as they are.
-    setMirror(typeof chosen === "boolean" ? chosen : !camera.screen && camera.facing !== "environment");
+    setMirror(typeof chosen === "boolean" ? chosen : !camera.screen && !camera.stream && camera.facing !== "environment");
   }
   HandTracker.onSourceChange(applyMirrorDefault);
 
@@ -1056,12 +1082,16 @@
     return s.error ? `Not connected: ${s.error}` : "Not connected.";
   }
 
-  // Motive's markers seen from the front (x across, z up), scaled to fit.
+  // Motive's markers seen from the front (x across, z up), scaled to fit. Sizes are in
+  // 640-wide units (k), so the view looks the same in the panel and stays sharp in recordings.
   function drawMotive(f) {
     const ctx = motiveView.getContext("2d");
-    const W = motiveView.width, H = motiveView.height;
+    const W = motiveView.width, H = motiveView.height, k = W / 640;
     ctx.fillStyle = "#0e0f12";
     ctx.fillRect(0, 0, W, H);
+    ctx.font = `${12 * k}px Segoe UI, system-ui, sans-serif`;
+    ctx.fillStyle = "#868e96";
+    ctx.fillText(`OptiTrack Motive · front view${motiveRate ? ` · ${motiveRate} Hz` : ""}`, 8 * k, 18 * k);
     const pts = [...f.markers.map((m) => m.p), ...f.rigidBodies.map((r) => r.p), ...f.skeletons.flatMap((s) => s.bones.map((b) => b.p))];
     if (!pts.length) return;
     let x0 = Infinity, x1 = -Infinity, z0 = 0, z1 = -Infinity;
@@ -1074,6 +1104,7 @@
     const at = (p) => [W / 2 + (p[0] - cx) * scale, H / 2 - (p[2] - cz) * scale];
     const [, floor] = at([0, 0, 0]);
     ctx.strokeStyle = "#2a2b31";
+    ctx.lineWidth = k;
     ctx.beginPath();
     ctx.moveTo(0, floor);
     ctx.lineTo(W, floor);
@@ -1082,21 +1113,32 @@
       const [x, y] = at(m.p);
       ctx.fillStyle = m.model ? "#74c0fc" : "#868e96";
       ctx.beginPath();
-      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.arc(x, y, 3 * k, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.fillStyle = "#63e6be";
     for (const s of f.skeletons) for (const b of s.bones) {
       const [x, y] = at(b.p);
-      ctx.fillRect(x - 2, y - 2, 4, 4);
+      ctx.fillRect(x - 2 * k, y - 2 * k, 4 * k, 4 * k);
     }
-    ctx.font = "12px Segoe UI, system-ui, sans-serif";
     for (const r of f.rigidBodies) {
       const [x, y] = at(r.p);
       ctx.fillStyle = r.valid ? "#ff922b" : "#5c3a1a";
-      ctx.fillRect(x - 5, y - 5, 10, 10);
-      ctx.fillText(r.name, x + 8, y - 6);
+      ctx.fillRect(x - 5 * k, y - 5 * k, 10 * k, 10 * k);
+      ctx.fillText(r.name, x + 8 * k, y - 6 * k);
     }
+  }
+
+  function drawMotiveMessage(text) {
+    const ctx = motiveView.getContext("2d");
+    const k = motiveView.width / 640;
+    ctx.fillStyle = "#0e0f12";
+    ctx.fillRect(0, 0, motiveView.width, motiveView.height);
+    ctx.fillStyle = "#868e96";
+    ctx.font = `${14 * k}px Segoe UI, system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillText(text, motiveView.width / 2, motiveView.height / 2);
+    ctx.textAlign = "start";
   }
 
   if (natnetApi) {
@@ -1118,7 +1160,11 @@
       motiveConnect.textContent = s.state === "stopped" ? "Connect" : "Disconnect";
       motiveServer.disabled = motiveMulticast.disabled = s.state !== "stopped";
       motiveView.hidden = s.state !== "connected";
-      if (s.state !== "connected") motiveInfo.textContent = "";
+      if (s.state !== "connected") {
+        motiveInfo.textContent = "";
+        drawMotiveMessage(s.state === "waiting" ? "Waiting for Motive…" : "Motive isn't connected");
+      }
+      updateLayoutChoices();
     });
     natnetApi.onFrame((f) => {
       const now = performance.now();
@@ -1296,11 +1342,30 @@
   let recordTimer = null;
   let exporting = false;
 
+  // Layouts stack their views top to bottom: camera, then the 3D view, then Motive's view.
   function recordingSources() {
+    const parts = layoutSelect.value.split("+");
     const sources = [stage];
-    if (layoutSelect.value === "camera+3d") sources.push(Hand3D.getCanvas());
+    if (parts.includes("3d")) sources.push(Hand3D.getCanvas());
+    if (parts.includes("motive") && motiveState === "connected") sources.push(motiveView);
     return sources;
   }
+
+  // The Motive layouts are offered only while Motive is connected. Without it, a saved Motive
+  // layout shows as the same layout without Motive, and comes back when Motive reconnects.
+  function updateLayoutChoices() {
+    const connected = motiveState === "connected";
+    for (const o of layoutSelect.options) {
+      if (!o.value.includes("motive")) continue;
+      o.hidden = !connected;
+      o.disabled = !connected;
+    }
+    if (VideoRecorder.isRecording()) return; // the recording keeps the views it started with
+    const wanted = prefs.layout || "camera";
+    const usable = connected ? wanted : wanted.replace("+motive", "");
+    if ([...layoutSelect.options].some((o) => o.value === usable)) layoutSelect.value = usable;
+  }
+  updateLayoutChoices();
 
   async function toggleVideo() {
     if (exporting) return;
@@ -1826,12 +1891,15 @@
     // Several videos at once: tracked in turn, synced from the hand movement, or queued.
     MultiVideo.init({ desktop, prefs, setPref });
     // Capture sessions from a capture-operations dashboard: hidden until Ctrl+Alt+P.
+    // So is watching a capture rig live, from a capture-fleet dashboard.
     if (desktop && desktop.ops) {
       OpsSessions.init({ desktop, prefs, setPref });
+      RigLive.init({ desktop, prefs, setPref, app: window.HandTrackerApp });
       document.addEventListener("keydown", (e) => {
         if (e.ctrlKey && e.altKey && !e.shiftKey && e.key.toLowerCase() === "p") {
           e.preventDefault();
           OpsSessions.toggleShown();
+          RigLive.setShown(prefs.captureSessions === true);
         }
       });
     }
@@ -1917,7 +1985,10 @@
   }
 
   // Entry points for the automated checks (same code paths as the buttons).
-  window.HandTrackerApp = { openVideo, backToCamera, openCapturePicker, useCaptureSource, trackWholeVideo, stopTracking };
+  window.HandTrackerApp = {
+    openVideo, backToCamera, openCapturePicker, useCaptureSource, trackWholeVideo, stopTracking,
+    useStreamSource, leaveStreamSource, setSourceNote: (text) => showSourceNote(text),
+  };
 
   main().catch((err) => {
     console.error(err);

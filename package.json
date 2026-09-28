@@ -16,14 +16,14 @@
   "scripts": {
     "start": "electron .",
     "web": "node scripts/serve.js",
-    "check": "electron scripts/check.js",
+    "check": "node scripts/run-checks.js scripts/check.js",
     "dist": "node scripts/dist.js portable",
     "dist:installer": "node scripts/dist.js nsis",
     "dist:deb": "node scripts/dist.js deb",
     "build:web": "node scripts/build-web.js",
     "android:sync": "node scripts/build-web.js && cap sync android",
     "android:apk": "node scripts/build-android.js",
-    "check:android": "electron scripts/check-android.js",
+    "check:android": "node scripts/run-checks.js scripts/check-android.js",
     "deploy:web": "node scripts/build-web.js && npx --yes wrangler@4 pages deploy www --project-name hand-tracker --commit-dirty=true --branch \"hand tracker\" && npx --yes wrangler@4 pages deploy www --project-name hand-tracker --commit-dirty=true --branch main"
   },
   "dependencies": {

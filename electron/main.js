@@ -18,6 +18,7 @@ const tak = require("./tak");
 const { InputDriver } = require("./input");
 const { OakCamera } = require("./oak");
 const { OpsClient } = require("./ops");
+const { FleetClient } = require("./fleet");
 
 const APP_ROOT = path.join(__dirname, "..");
 const SCHEME = "app";
@@ -59,6 +60,7 @@ const input = new InputDriver(); // mouse and keyboard input to this computer (s
 let oak = null; // Luxonis OAK cameras (see oak.js), created once the app is ready
 let oakViewer = null; // the window receiving the OAK camera's frames
 let ops = null; // capture-session dashboard (see ops.js), created once the app is ready
+let fleet = null; // capture-fleet dashboard's live rig pictures (see fleet.js)
 const outputFolders = new Map(); // token -> folder the user picked for batch saving
 const exportedPaths = new Set(); // files this session wrote; the only ones "show in folder" will reveal
 // Imported videos converted to MP4 for playback: id -> { file, owner: webContents id }. Only these are served under /__media/.
@@ -116,6 +118,11 @@ function serveAppFiles() {
     if (url.host !== HOST) return new Response("Not found", { status: 404 });
     if (url.pathname.startsWith("/__media/")) return serveMedia(request, url.pathname.slice("/__media/".length));
     if (url.pathname.startsWith("/__ops/") && ops) return ops.serve(request, url.pathname.slice("/__ops/".length));
+    if (url.pathname.startsWith("/__fleet/") && fleet) {
+      // /__fleet/<rig>/<camera>[?full=1]: that camera's latest picture.
+      const [host, camera] = url.pathname.slice("/__fleet/".length).split("/");
+      return fleet.serveFrame(decodeURIComponent(host || ""), decodeURIComponent(camera || ""), { full: url.searchParams.get("full") === "1" });
+    }
     let rel = decodeURIComponent(url.pathname);
     if (rel === "/" || rel === "") rel = "/index.html";
     const filePath = path.normalize(path.join(APP_ROOT, rel));
@@ -451,6 +458,15 @@ function registerOpsIpc() {
   });
 }
 
+function registerFleetIpc() {
+  fleet = new FleetClient(app.getPath("userData"), session.fromPartition("persist:capture-fleet"));
+  handle("fleet:status", () => fleet.check());
+  handle("fleet:configure", (event, { site }) => fleet.configure(site));
+  handle("fleet:sign-in", (event) => fleet.signIn(BrowserWindow, BrowserWindow.fromWebContents(event.sender)));
+  handle("fleet:sign-out", () => fleet.signOut());
+  handle("fleet:rigs", () => fleet.rigs());
+}
+
 function signInWithSite(parent) {
   const site = ops.status().site;
   if (!site) throw new Error("Connect to the dashboard first.");
@@ -756,6 +772,7 @@ app.whenReady().then(() => {
   registerPcIpc();
   registerOakIpc();
   registerOpsIpc();
+  registerFleetIpc();
   buildMenu();
   mainWindow = createWindow();
   mainWindow.on("closed", () => {
