@@ -10,7 +10,8 @@
  *   await VideoConvert.probe(file)  { duration, fps, width, height, videoCodec, hasAudio }
  *   await VideoConvert.toPlayable(file, onProgress)  -> Blob: H.264 MP4 any page can play
  *   await VideoConvert.convert(file, ids, options)   -> { results, canceled }
- *     options = { retimeFps, constantRate, copyFromWebm, fps, duration, onProgress, onResult }
+ *     options = { retimeFps, constantRate, copyFromWebm, fps, duration, trim, onProgress, onResult }
+ *       trim: { start, length } in seconds, to convert just that stretch (synced videos)
  *       onProgress({ format, index, total, progress 0..1, loading })  loading: engine downloading
  *       onResult({ format, ok, ext, suffix, data: Uint8Array } | { format, ok: false, error })
  *         called as each format finishes, so callers can save it straight away;
@@ -192,8 +193,14 @@
     }
   }
 
+  // The input, or just a stretch of it: seeking before the input keeps it quick, and as
+  // every format is re-encoded the cut is still exact to the frame.
+  function trimArgs(trim, inputPath) {
+    return trim ? ["-ss", trim.start.toFixed(3), "-i", inputPath, "-t", trim.length.toFixed(3)] : ["-i", inputPath];
+  }
+
   async function convert(file, ids, options = {}) {
-    const { retimeFps = 0, constantRate = false, copyFromWebm = false, fps = 0, duration = 0, name } = options;
+    const { retimeFps = 0, constantRate = false, copyFromWebm = false, fps = 0, duration = 0, name, trim = null } = options;
     const onProgress = options.onProgress || (() => {});
     const byId = new Map(formats().map((f) => [f.id, f]));
     const list = ids.filter((id) => byId.has(id));
@@ -210,7 +217,7 @@
       await input.detach();
       throw err;
     }
-    const total = duration || (retimeFps && fps ? (info.duration * fps) / retimeFps : info.duration);
+    const total = trim ? trim.length : duration || (retimeFps && fps ? (info.duration * fps) / retimeFps : info.duration);
 
     for (let i = 0; i < list.length; i++) {
       const f = byId.get(list[i]);
@@ -223,7 +230,7 @@
         report(0);
         try {
           const args = [
-            "-y", "-i", input.path,
+            "-y", ...trimArgs(trim, input.path),
             ...global.VideoFormats.outputArgs(f.id, { fps: fps || info.fps, retimeFps, constantRate, copyFromWebm, wasm: true }),
             out,
           ];

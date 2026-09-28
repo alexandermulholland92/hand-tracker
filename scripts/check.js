@@ -15,7 +15,10 @@
  *     re-times a recording made from a video file, and captures a whole video; checks
  *     Mirror is on for selfie cameras and off for rear cameras and video files, and that
  *     Mirrored video flips a mirrored recording back before tracking (by default for
- *     Android front-camera videos, recognised from their metadata),
+ *     Android front-camera videos, recognised from their metadata); opens several videos
+ *     at once: two cameras of one moment are synced from the hand movement (motion capture
+ *     on one clock, videos trimmed to start together), a video of something else gets the
+ *     error and goes through the motion capture queue and the Recording Viewer's queue,
  *  7. opens the Recording Viewer with JSON, CSV (incl. spreadsheet-saved), C3D, TRC,
  *     Motive CSV and — when OptiTrack Motive is installed — a sample .tak take,
  *  8. opens a WMV with sound in the Recording Viewer and converts it to every format,
@@ -46,7 +49,7 @@ const exporter = require("../electron/exporter.js");
 const validators = require("./motion-validators.js");
 const { verifyExports } = require("./video-validators.js");
 const { startNatNetSim } = require("./natnet-sim.js");
-const { PAGE_SIMULATION, gesturePoses } = require("./simulated-hands.js");
+const { PAGE_SIMULATION, gesturePoses, rigSimulation } = require("./simulated-hands.js");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -447,6 +450,7 @@ async function run(win) {
   //    ffmpeg converts; every frame tracked on the video's own clock.
   await js("Hands.prototype.send = window.__realSend; document.getElementById('discardBtn').click();");
   await checkVideoFiles(win, js);
+  await checkSeveralVideos(win, js);
   await checkMirrorDefaults(js);
   await checkOptiTrack(js);
 
@@ -816,6 +820,186 @@ async function checkVideoFiles(win, js) {
     camera = await js("HandTracker.getSource() + ' ' + HandTracker.getCamera().width");
   }
   check("Use Camera returns to the live camera", /^camera [1-9]/.test(camera), camera);
+}
+
+// Picks files in a page's file input as if chosen in its file picker (real files, with
+// their paths on disk), which fires its change event.
+async function pickFiles(wc, selector, files) {
+  if (!wc.debugger.isAttached()) wc.debugger.attach("1.3");
+  const { root } = await wc.debugger.sendCommand("DOM.getDocument", { depth: 0 });
+  const { nodeId } = await wc.debugger.sendCommand("DOM.querySelector", { nodeId: root.nodeId, selector });
+  await wc.debugger.sendCommand("DOM.setFileInputFiles", { nodeId, files });
+}
+
+// First frame of a video (or the frame at `at` seconds), 64x36 grey.
+function frameAt(file, at = 0) {
+  const r = spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-ss", String(at), "-i", file, "-frames:v", "1", "-vf", "scale=64:36", "-f", "rawvideo", "-pix_fmt", "gray", "-"], { maxBuffer: 1 << 20 });
+  return r.stdout || Buffer.alloc(0);
+}
+const frameDiff = (a, b) => (a.length && a.length === b.length ? a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length : Infinity);
+function videoSeconds(file) {
+  const m = /Duration: (\d+):(\d+):(\d+\.\d+)/.exec(spawnSync(exporter.ffmpegPath, ["-hide_banner", "-i", file], { encoding: "utf8" }).stderr);
+  return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : 0;
+}
+
+// Several videos opened at once: tracked in turn, then synced from the hand movement.
+// Two cameras of one rig (the second started 1.5 s later, further away) line up; a video
+// of something else doesn't, and goes to the motion capture queue and the Recording
+// Viewer's export queue instead. Hands are simulated (rigSimulation), keyed to each
+// video's own clock.
+async function checkSeveralVideos(win, js) {
+  const wc = win.webContents;
+  const dir = path.join(outDir, "rig");
+  fs.mkdirSync(dir, { recursive: true });
+  const video = (name) => path.join(dir, name);
+  for (const name of ["cam-a.mp4", "cam-b.mp4", "other.mp4"]) {
+    spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "8", "-c:v", "libx264", "-pix_fmt", "yuv420p", video(name)]);
+  }
+  await js(rigSimulation({ "cam-a.mp4": { seed: 11, start: 0, view: 0 }, "cam-b.mp4": { seed: 11, start: 1.5, view: 1 }, "other.mp4": { seed: 97, start: 0, view: 0 } }));
+  const state = `({
+    message: document.getElementById("multiMessage").hidden ? "" : document.getElementById("multiMessage").textContent,
+    ok: document.getElementById("multiMessage").classList.contains("ok"),
+    synced: !document.getElementById("multiSynced").hidden,
+    failed: !document.getElementById("multiFailed").hidden,
+    rows: [...document.querySelectorAll("#multiRows tr")].map((tr) => [...tr.cells].map((c) => c.textContent)),
+    note: document.getElementById("multiNote").textContent,
+    running: MultiVideo.isRunning(),
+  })`;
+  const syncVideos = async (names) => {
+    await pickFiles(wc, "#videoFileInput", names.map(video));
+    for (let i = 0; i < 240; i++) {
+      await sleep(500);
+      const s = await js(state);
+      if (s.message && !s.running) return s;
+    }
+    return js(state);
+  };
+  const viewerWin = new BrowserWindow({
+    show: false, width: 920, height: 1600,
+    webPreferences: { preload: path.join(__dirname, "..", "electron", "preload.js"), sandbox: true, contextIsolation: true },
+  });
+  await viewerWin.loadURL("app://hand-tracker/viewer.html");
+  const viewer = (code) => viewerWin.webContents.executeJavaScript(code, true);
+  const viewerQueue = `({
+    shown: !document.getElementById("queueCard").hidden,
+    items: [...document.querySelectorAll("#queueList li")].map((li) => li.textContent),
+    note: document.getElementById("queueNote").textContent,
+  })`;
+  const viewerHas = async (n) => {
+    for (let i = 0; i < 40; i++) {
+      const q = await viewer(viewerQueue);
+      if (q.items.filter((t) => /Remove$/.test(t)).length === n) return q;
+      await sleep(250);
+    }
+    return viewer(viewerQueue);
+  };
+
+  // Two cameras of the same moment.
+  const rig = await syncVideos(["cam-a.mp4", "cam-b.mp4"]);
+  const offsetOf = (s, name) => {
+    const row = s.rows.find((r) => r[0] === name);
+    if (!row) return NaN;
+    if (row[3] === "reference") return 0;
+    const m = /([+−])(\d+\.\d+) s/.exec(row[3]);
+    return m ? (m[1] === "−" ? -1 : 1) * Number(m[2]) : NaN;
+  };
+  const lag = offsetOf(rig, "cam-b.mp4") - offsetOf(rig, "cam-a.mp4");
+  check("Two videos of one moment are tracked and synced from the hand movement (the second camera started 1.5 s later)",
+    rig.ok && rig.synced && !rig.failed && /^Synced/.test(rig.message) && Math.abs(lag - 1.5) <= 0.05 && rig.rows.every((r) => /Right/.test(r[2])),
+    `${rig.message} | ${rig.rows.map((r) => r.join(" / ")).join(" | ")}`);
+
+  await js(`document.getElementById("multiName").value = "rig"; document.getElementById("multiSaveBtn").click(); true`);
+  for (let i = 0; i < 40 && (await js(`document.querySelectorAll("#multiResults li").length`)) < 3; i++) await sleep(250);
+  const load = (name) => (fs.existsSync(path.join(outDir, name)) ? JSON.parse(fs.readFileSync(path.join(outDir, name), "utf8")) : null);
+  const a = load("rig-cam-a.json"), b = load("rig-cam-b.json"), report = load("rig-sync.json");
+  // On the shared clock, both cameras' wrists are in the same place at the same time (the
+  // second camera's view mapped back: x = 0.2 + 0.7 x, y = 0.2 + 0.7 y); half a second
+  // apart, they aren't.
+  const apart = (shift) => {
+    const wa = a.hands[0].trajectories.end_effector, wb = b.hands[0].trajectories.end_effector, d = [];
+    for (const [t, x, y] of wa) {
+      const k = wb.findIndex((p) => p[0] >= t + shift);
+      if (k <= 0) continue;
+      const [t0, x0, y0] = wb[k - 1], [t1, x1, y1] = wb[k], u = (t + shift - t0) / (t1 - t0 || 1);
+      d.push(Math.hypot((x0 + (x1 - x0) * u - 0.2) / 0.7 - x, (y0 + (y1 - y0) * u - 0.2) / 0.7 - y));
+    }
+    return { n: d.length, mean: d.reduce((sum, v) => sum + v, 0) / (d.length || 1) };
+  };
+  const same = a && b ? apart(0) : { n: 0, mean: Infinity }, shifted = a && b ? apart(0.5) : { n: 0, mean: 0 };
+  const length = report && report.length_s;
+  check("Synced motion capture: each video's on one shared clock, trimmed to the stretch both cover, with a -sync.json report",
+    a && b && report && Math.abs(length - 6.5) < 0.1 && Math.abs(a.duration - b.duration) < 0.05 && a.hands[0].frames[0].t < 0.25 && b.hands[0].frames[0].t < 0.25 &&
+      same.n > 100 && same.mean < 0.01 && shifted.mean > same.mean * 5 && report.videos.length === 2,
+    a && b && report ? `${length} s shared; wrists ${same.mean.toFixed(4)} of the picture apart on average (${shifted.mean.toFixed(4)} half a second off), ${same.n} compared; trim starts ${report.videos.map((v) => `${v.name} ${v.trim_start_s}`).join(", ")}` : fs.readdirSync(outDir).filter((f) => f.startsWith("rig")).join(" "));
+
+  const viewerBefore = await viewer(viewerQueue);
+  await js(`document.getElementById("multiViewerBtn").click(); true`);
+  const syncedQueued = await viewerHas(2);
+  check("Synced videos go to the Recording Viewer's queue, trimmed to the shared stretch (an open viewer shows them at once)",
+    !viewerBefore.shown && syncedQueued.shown && syncedQueued.items.length === 2 && syncedQueued.items.every((t) => /synced: 0:0\d\.\d\d for 0:06\.[45]\d/.test(t)),
+    JSON.stringify({ viewerBefore, syncedQueued }));
+
+  // A video of something else doesn't line up.
+  const other = await syncVideos(["cam-a.mp4", "other.mp4"]);
+  check("Videos whose hand movement doesn't match aren't synced: an error says the motion capture doesn't line up, and why",
+    !other.ok && other.failed && !other.synced && /^The motion capture data doesn't line up/.test(other.message) && /other\.mp4|cam-a\.mp4/.test(other.message),
+    other.message);
+
+  // ...so each goes to the motion capture queue (tracked already), plus one more video
+  // added to the queue on its own (tracked when the queue runs).
+  await js(`document.getElementById("multiQueueBtn").click(); true`);
+  await pickFiles(wc, "#queueFileInput", [video("cam-b.mp4")]);
+  const queued = await js(`[...document.querySelectorAll("#queueRows li")].map((li) => li.textContent)`);
+  await js(`document.getElementById("queueRunBtn").click(); true`);
+  let ran = null;
+  for (let i = 0; i < 120; i++) {
+    await sleep(500);
+    ran = await js(`({ running: MultiVideo.isRunning(), note: document.getElementById("queueNote").textContent, rows: [...document.querySelectorAll("#queueRows li")].map((li) => li.className + " " + li.textContent) })`);
+    if (!ran.running && ran.note) break;
+  }
+  const motions = ["cam-a", "other", "cam-b"].map((n) => load(`${n}-motion.json`));
+  check("The motion capture queue saves each video's motion capture on its own (tracking the ones not tracked yet)",
+    queued.length === 3 && /waiting to be tracked/.test(queued[2]) && ran.rows.every((r) => /^ok /.test(r)) && /Saved 3 files/.test(ran.note) &&
+      motions.every((m) => m && m.hands.length === 1 && m.hands[0].frames.length > 200),
+    JSON.stringify({ queued, ran, frames: motions.map((m) => m && m.hands[0] && m.hands[0].frames.length) }));
+
+  // ...and to the Recording Viewer's queue, each converted on its own.
+  await js(`document.getElementById("multiViewerQueueBtn").click(); true`);
+  const allQueued = await viewerHas(4);
+  const converted = await viewer(`(async () => {
+    document.querySelectorAll("#queueGrid input").forEach((i) => { i.checked = i.value === "mp4"; });
+    document.getElementById("queueConvertBtn").click();
+    for (let i = 0; i < 600 && !/^Converted/.test(document.getElementById("queueNote").textContent); i++) await new Promise((r) => setTimeout(r, 250));
+    return ${viewerQueue};
+  })()`);
+  const out = (name) => path.join(outDir, name);
+  const seconds = Object.fromEntries(["cam-a-synced.mp4", "cam-b-synced.mp4", "cam-a.mp4", "other.mp4"].map((n) => [n, fs.existsSync(out(n)) ? videoSeconds(out(n)) : 0]));
+  // Each synced video starts where the shared stretch starts in it.
+  const starts = report ? Object.fromEntries(report.videos.map((v) => [v.name, v.trim_start_s])) : {};
+  const firstA = frameAt(out("cam-a-synced.mp4")), firstB = frameAt(out("cam-b-synced.mp4"));
+  const startsRight = [[firstA, "cam-a.mp4"], [firstB, "cam-b.mp4"]].every(([first, name]) => {
+    const at = starts[name];
+    const here = frameDiff(first, frameAt(video(name), at)), before = frameDiff(first, frameAt(video(name), Math.max(0, at - 0.5))), after = frameDiff(first, frameAt(video(name), at + 0.5));
+    return here < 2 && (at < 0.5 || here < before) && here < after;
+  });
+  check("The Recording Viewer converts its queue one video after another: synced ones trimmed to the shared stretch, the others whole; done ones leave the queue",
+    allQueued.items.length === 4 && /^Converted 4 of 4 videos; saved 4 files/.test(converted.note) && !converted.items.some((t) => /Remove$/.test(t)) &&
+      Math.abs(seconds["cam-a-synced.mp4"] - length) < 0.1 && Math.abs(seconds["cam-b-synced.mp4"] - length) < 0.1 && Math.abs(seconds["cam-a.mp4"] - 8) < 0.1 && Math.abs(seconds["other.mp4"] - 8) < 0.1 && startsRight,
+    JSON.stringify({ note: converted.note, seconds, starts, startsRight }));
+
+  // Several videos chosen in the viewer itself go into its queue.
+  await pickFiles(viewerWin.webContents, "#videoInput", [video("cam-a.mp4"), video("other.mp4")]);
+  const picked = await viewerHas(2);
+  await viewer(`document.getElementById("queueClearBtn").click(); true`);
+  const cleared = await viewerHas(0);
+  check("Several videos chosen in the Recording Viewer go into its export queue; Clear empties it",
+    picked.items.length === 2 && picked.items.every((t) => /Remove$/.test(t) && !/synced/.test(t)) && cleared.items.length === 1 && /empty/.test(cleared.items[0]),
+    JSON.stringify({ picked, cleared }));
+
+  viewerWin.destroy();
+  if (wc.debugger.isAttached()) wc.debugger.detach();
+  await js(`document.getElementById("multiClose").click(); document.getElementById("queueClearBtn").click(); Hands.prototype.send = window.__realSend; true`);
+  await js("HandTrackerApp.backToCamera()");
 }
 
 // Mirror follows the camera: on for selfie cameras (and webcams that don't say which way

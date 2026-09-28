@@ -51,6 +51,7 @@
     font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.45;
     margin: 0 0 8px;
   }
+  .section-label.queue-formats { margin-top: 16px; }
   .summary-grid { display: flex; flex-wrap: wrap; gap: 24px; }
   .summary-item .value { font-size: 20px; font-weight: 600; }
   .summary-item .label { font-size: 11.5px; opacity: 0.5; margin-top: 2px; }
@@ -154,8 +155,24 @@
       <button type="button" id="videoBtn">Open Video…</button>
     </div>
     <input type="file" id="fileInput" accept=".json,.csv,.c3d,.trc,.tak,application/json,text/csv" />
-    <input type="file" id="videoInput" />
+    <input type="file" id="videoInput" multiple />
     <div id="fileName"></div>
+  </div>
+
+  <div id="queueCard" class="card" hidden>
+    <div class="section-label">Export queue</div>
+    <div class="note">Each video is converted on its own and named after it. Videos synced in the tracker are trimmed to the stretch they all cover (their names end in -synced). Choose or drop several videos to add them here.</div>
+    <ul id="queueList" class="results"></ul>
+    <div class="section-label queue-formats">Convert to</div>
+    <div class="format-grid" id="queueGrid"></div>
+    <div class="export-actions">
+      <button id="queueConvertBtn" class="primary">Convert all</button>
+      <button id="queueCancelBtn" hidden>Cancel</button>
+      <button id="queueClearBtn">Clear queue</button>
+    </div>
+    <div id="queueProgress" class="progress" hidden><div class="progress-bar"><div id="queueFill" class="progress-fill"></div></div><span id="queueLabel"></span></div>
+    <ul id="queueResults" class="results"></ul>
+    <div id="queueNote" class="note"></div>
   </div>
 
   <div id="results"></div>
@@ -165,6 +182,7 @@
 <script src="export-ui.js"></script>
 <script src="video-formats.js"></script>
 <script src="video-convert.js"></script>
+<script src="video-queue.js"></script>
 <script src="motion-export.js"></script>
 <script src="motion-import.js"></script>
 <script src="viewer.js"></script>

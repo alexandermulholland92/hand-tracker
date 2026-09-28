@@ -2,7 +2,8 @@
  * simulated-hands.js — page scripts used by the automated checks. They stop real
  * camera results and drive synthetic hands through HandTracker's real processing
  * pipeline: PAGE_SIMULATION moves two hands (one opening, one closing into a fist)
- * for about two seconds; gesturePoses() holds one hand in each given pose.
+ * for about two seconds; gesturePoses() holds one hand in each given pose;
+ * rigSimulation() puts a moving hand in video files, as a capture rig's cameras saw it.
  */
 
 // Open right hand in image space (y down), wrist-relative.
@@ -94,4 +95,54 @@ function gesturePoses(poses) {
 })()`;
 }
 
-module.exports = { PAGE_SIMULATION, gesturePoses };
+// Several videos of one moment, as a capture rig's cameras would film it. videos:
+// { fileName: { seed, start, view } }: frame t of the video shows the moment start + t of
+// the movement numbered seed (the same seed: the same moment); view 1 is another camera,
+// further away and off to one side. Each frame of an open video file gets that hand, with
+// a little tracking jitter, instead of MediaPipe's (until window.__realSend is restored).
+function rigSimulation(videos) {
+  return `(() => {
+  if (!window.__realSend) window.__realSend = Hands.prototype.send;
+  const T = ${TEMPLATE};
+  const TIPS = new Set([4, 8, 12, 16, 20]), DIPS = new Set([3, 7, 11, 15, 19]);
+  const videos = ${JSON.stringify(videos)};
+  const paths = {};
+  // The hand moves somewhere new (or stays put) every 0.3-1.5 s, opening or closing.
+  function movement(seed) {
+    let s = seed >>> 0;
+    const rnd = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296;
+    const keys = [];
+    let key = { t: -2, x: 0.5, y: 0.6, curl: 0 };
+    for (let t = -2; t < 120; t += 0.3 + 1.2 * rnd()) {
+      key = rnd() < 0.25 ? { ...key, t } : { t, x: 0.3 + 0.4 * rnd(), y: 0.45 + 0.3 * rnd(), curl: rnd() < 0.5 ? 0 : rnd() };
+      keys.push(key);
+    }
+    return (time) => {
+      let k = 0;
+      while (k < keys.length - 2 && keys[k + 1].t <= time) k++;
+      const a = keys[k], b = keys[k + 1];
+      const u = Math.min(1, Math.max(0, (time - a.t) / (b.t - a.t))), e = u * u * (3 - 2 * u);
+      return { x: a.x + (b.x - a.x) * e, y: a.y + (b.y - a.y) * e, curl: a.curl + (b.curl - a.curl) * e };
+    };
+  }
+  function hand({ x: cx, y: cy, curl }, view) {
+    return T.map(([x, y], i) => {
+      const k = TIPS.has(i) ? curl * 1.25 : DIPS.has(i) ? curl * 0.7 : 0;
+      let px = cx + x * (1 - k * 0.3), py = cy + y + Math.abs(y) * k * 0.85;
+      if (view === 1) [px, py] = [0.2 + px * 0.7, 0.2 + py * 0.7];
+      return { x: px + (Math.random() - 0.5) * 0.004, y: py + (Math.random() - 0.5) * 0.004, z: -0.02 * k };
+    });
+  }
+  Hands.prototype.send = async function () {
+    const spec = videos[HandTracker.file.name()];
+    if (!spec || HandTracker.getSource() !== "file") return;
+    if (!paths[spec.seed]) paths[spec.seed] = movement(spec.seed);
+    const v = document.getElementById("video");
+    // Raw MediaPipe label "Left" is the person's right hand.
+    HandTracker._processResults({ image: v, multiHandLandmarks: [hand(paths[spec.seed](spec.start + v.currentTime), spec.view)], multiHandedness: [{ label: "Left", score: 0.96 }] });
+  };
+  return true;
+})()`;
+}
+
+module.exports = { PAGE_SIMULATION, gesturePoses, rigSimulation };

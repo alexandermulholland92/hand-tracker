@@ -1669,9 +1669,12 @@
 
   openVideoBtn.addEventListener("click", () => videoFileInput.click());
   videoFileInput.addEventListener("change", async () => {
-    const f = videoFileInput.files[0];
+    const files = [...videoFileInput.files];
     videoFileInput.value = "";
-    if (!f) return;
+    // Several videos of the same moment: tracked in turn and synced (multi-video.js).
+    if (files.length > 1) return MultiVideo.open(files);
+    const f = files[0];
+    if (!f || MultiVideo.isRunning()) return; // (it's tracking its videos one by one)
     const url = URL.createObjectURL(f);
     const filePath = desktop && desktop.pathForFile ? desktop.pathForFile(f) : "";
     if (await openVideo(f.name, url, filePath, f)) {
@@ -1715,12 +1718,14 @@
     HandTracker.file.play();
   });
   // Tracks every frame of a video (by address) and resolves with its motion capture, the
-  // same way as Capture Whole Video; for batch tracking of capture sessions (ops-sessions.js).
-  // onProgress(seconds done, seconds total); stop() ends it early (resolving with what's done).
-  async function trackWholeVideo(name, url, { onProgress, rate = 2 } = {}) {
-    if (!(await openVideo(name, url))) throw new Error(sourceNote.textContent || `Couldn't open ${name}`);
+  // same way as Capture Whole Video; for batch tracking of capture sessions (ops-sessions.js)
+  // and of several videos (multi-video.js). filePath / file: as for openVideo, so formats the
+  // page can't play are converted first. onProgress(seconds done, seconds total); stop() ends
+  // it early (resolving with what's done).
+  async function trackWholeVideo(name, url, { onProgress, rate = 2, filePath, file } = {}) {
+    if (!(await openVideo(name, url, filePath, file))) throw new Error(sourceNote.textContent || `Couldn't open ${name}`);
     HandTracker.file.setRate(rate); // every frame is still tracked; this only shortens the waits
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const timer = setInterval(() => onProgress && onProgress(HandTracker.file.time(), HandTracker.file.duration()), 500);
       captureWaiter = (data) => {
         clearInterval(timer);
@@ -1729,6 +1734,13 @@
       HandTracker.file.pause();
       HandTracker.file.seek(0);
       toggleMotion();
+      if (!RobotMotion.isRecording()) {
+        // Asked whether to discard a motion capture that hasn't been exported, the user kept it.
+        clearInterval(timer);
+        captureWaiter = null;
+        reject(new Error("The last motion capture hasn't been exported yet: export or discard it, then try again."));
+        return;
+      }
       HandTracker.file.play();
     });
   }
@@ -1797,6 +1809,8 @@
     }
     // Hand mouse, floating keyboard and gesture actions (Windows and Linux app only).
     PcControl.init({ desktop, prefs, setPref, gestureLabels: GESTURE_LABELS });
+    // Several videos at once: tracked in turn, synced from the hand movement, or queued.
+    MultiVideo.init({ desktop, prefs, setPref });
     // Capture sessions from a capture-operations dashboard: hidden until Ctrl+Alt+P.
     if (desktop && desktop.ops) {
       OpsSessions.init({ desktop, prefs, setPref });

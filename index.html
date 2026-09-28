@@ -212,6 +212,14 @@
   .results li .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .results li.ok .mark { color: #51cf66; }
   .results li.fail .mark { color: #ff8787; }
+  .multi-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 4px; }
+  .multi-table th { text-align: left; font-weight: 600; opacity: 0.7; padding: 4px 6px; border-bottom: 1px solid #2a2c33; }
+  .multi-table td { padding: 5px 6px; border-bottom: 1px solid #202227; }
+  .multi-table td:first-child { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sync-message { margin-top: 10px; padding: 9px 12px; border-radius: 8px; font-size: 13px; line-height: 1.45; }
+  .sync-message.ok { background: #16301f; border: 1px solid #2f7d47; color: #d3f9d8; }
+  .sync-message.fail { background: #3a1a1d; border: 1px solid #8f2d36; color: #ffc9c9; }
+  .note a { color: #74c0fc; }
   .results li button { padding: 3px 9px; font-size: 11.5px; }
   .note { font-size: 12px; opacity: 0.6; margin-top: 10px; line-height: 1.5; }
 
@@ -246,9 +254,9 @@
     </div>
 
     <div class="toolbar">
-      <button id="openVideoBtn" title="Track hands in a video file instead of the camera">Open Video…</button>
+      <button id="openVideoBtn" title="Track hands in a video file instead of the camera. Pick several videos of the same moment (a capture rig's cameras) to sync them from the hand movement.">Open Video…</button>
       <button id="opsBtn" hidden title="Track recorded capture sessions from your capture-operations dashboard (Ctrl+Alt+P shows or hides this)">Capture Sessions…</button>
-      <input type="file" id="videoFileInput" hidden
+      <input type="file" id="videoFileInput" multiple hidden
              accept="video/*,.mp4,.m4v,.mov,.qt,.mkv,.webm,.avi,.divx,.mpg,.mpeg,.mpe,.m2v,.m1v,.vob,.ts,.mts,.m2ts,.wmv,.asf,.flv,.f4v,.3gp,.3g2,.ogv,.ogg,.dv,.mxf,.rm,.rmvb,.y4m,.gif,.h264,.264,.hevc,.h265" />
       <label>Camera <select id="cameraSelect"><option value="">Default camera</option></select></label>
       <label>Resolution
@@ -292,6 +300,46 @@
     </div>
     <div id="sourceNote" class="note" hidden></div>
     <div id="opsRunBar" class="toolbar video-bar" hidden><span id="opsRunText" class="status"></span><span class="spacer"></span><button id="opsRunStop" hidden>Stop</button></div>
+
+    <div id="multiCard" class="card" hidden>
+      <div class="section-label">Several videos</div>
+      <table class="multi-table"><thead><tr><th>Video</th><th>Length</th><th>Tracked</th><th>Lines up</th></tr></thead><tbody id="multiRows"></tbody></table>
+      <div id="multiStatus" class="note"></div>
+      <div id="multiMessage" class="sync-message" hidden></div>
+      <div id="multiSynced" hidden>
+        <label class="field">File names start with <input id="multiName" type="text" spellcheck="false" autocomplete="off" /></label>
+        <div class="section-label">Formats</div>
+        <div class="format-grid" id="multiFormatGrid"></div>
+        <div class="toolbar">
+          <button id="multiSaveBtn" class="primary">Save synced motion capture…</button>
+          <button id="multiViewerBtn" title="Adds the videos to the Recording Viewer's queue, each trimmed to the stretch all of them cover">Export synced videos in the Recording Viewer</button>
+        </div>
+      </div>
+      <div id="multiFailed" class="toolbar" hidden>
+        <button id="multiQueueBtn" class="primary" title="Save each video's motion capture on its own">Add to motion capture queue</button>
+        <button id="multiViewerQueueBtn" title="Convert each video on its own in the Recording Viewer">Add to Recording Viewer queue</button>
+      </div>
+      <ul id="multiResults" class="results"></ul>
+      <div id="multiNote" class="note"></div>
+      <div class="toolbar"><button id="multiStop" hidden>Stop</button><button id="multiClose">Close</button></div>
+    </div>
+
+    <div id="queueCard" class="card" hidden>
+      <div class="section-label">Motion capture queue</div>
+      <div class="note">Each video is tracked (unless it already has been) and its motion capture saved on its own, named after the video.</div>
+      <ul id="queueRows" class="results"></ul>
+      <div class="section-label">Formats</div>
+      <div class="format-grid" id="queueFormatGrid"></div>
+      <div class="toolbar">
+        <button id="queueRunBtn" class="primary">Capture and save all…</button>
+        <button id="queueAddBtn">Add videos…</button>
+        <button id="queueClearBtn">Clear</button>
+        <button id="queueStopBtn" hidden>Stop</button>
+      </div>
+      <input type="file" id="queueFileInput" multiple hidden />
+      <ul id="queueResults" class="results"></ul>
+      <div id="queueNote" class="note"></div>
+    </div>
 
     <div class="toolbar">
       <button id="overlayToggle" class="active" aria-pressed="true" title="Show the skeleton and labels (O)">Overlay: ON<kbd>O</kbd></button>
@@ -539,6 +587,9 @@
 <script src="pc-control.js"></script>
 <script src="oak-source.js"></script>
 <script src="ops-sessions.js"></script>
+<script src="video-sync.js"></script>
+<script src="video-queue.js"></script>
+<script src="multi-video.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

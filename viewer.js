@@ -10,9 +10,13 @@
  * formats in video-formats.js (Windows app: its ffmpeg; website and Android
  * app: ffmpeg.wasm, see video-convert.js).
  *
+ * Several videos at once (chosen or dropped together, or sent from the tracker's
+ * several-videos panel) go into an export queue (video-queue.js) and are converted one
+ * after another, each on its own; synced ones trimmed to the stretch they share.
+ *
  * window.RecordingViewer.openBytes(name, arrayBuffer) / openTake(path, name) /
- * openVideo(file) are the same entry points the file pickers use; the automated
- * checks call them.
+ * openVideo(file) / queueVideos(files) are the same entry points the file pickers use;
+ * the automated checks call them.
  */
 
 (function () {
@@ -80,8 +84,9 @@
   dropZone.addEventListener("click", () => fileInput.click());
   for (const input of [fileInput, videoInput]) {
     input.addEventListener("change", (e) => {
-      if (e.target.files[0]) openAny(e.target.files[0]);
+      const files = [...e.target.files];
       input.value = "";
+      openMany(files);
     });
   }
   ["dragover", "dragenter"].forEach((evt) =>
@@ -90,9 +95,14 @@
   ["dragleave", "drop"].forEach((evt) =>
     dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.remove("drag"); })
   );
-  dropZone.addEventListener("drop", (e) => {
-    if (e.dataTransfer.files[0]) openAny(e.dataTransfer.files[0]);
-  });
+  dropZone.addEventListener("drop", (e) => openMany([...e.dataTransfer.files]));
+
+  // One file opens; several videos go into the export queue.
+  function openMany(files) {
+    const videos = files.filter((f) => !isRecording(f));
+    if (videos.length > 1) return queueVideos(videos);
+    if (files[0]) openAny(files[0]);
+  }
 
   // Recordings are known by their extension; everything else is opened as a video (the
   // converter says so if there's no video in it), never parsed as motion data.
@@ -939,6 +949,20 @@
     }
   }
 
+  // A format converted in the page: saved on the phone, or downloaded in a browser.
+  function keepResult(r, baseName) {
+    if (!r.ok) return Promise.resolve(r);
+    if (window.mobile) {
+      return window.mobile
+        .saveFiles({ baseName, files: [{ format: r.format, suffix: r.suffix, ext: r.ext, data: r.data }] })
+        .then((s) => ({ ...s.results[0], dir: s.dir }))
+        .catch((err) => ({ format: r.format, ok: false, error: cleanError(err) }));
+    }
+    const fileName = `${baseName}${r.suffix}.${r.ext}`;
+    ExportUI.downloadBlob(new Blob([r.data]), fileName);
+    return Promise.resolve({ format: r.format, ok: true, path: fileName, size: r.data.length });
+  }
+
   function renderConversionProgress({ format, index, total, progress, loading }) {
     $("progressFill").style.width = `${Math.round(((index + (progress || 0)) / total) * 100)}%`;
     $("progressLabel").textContent = loading
@@ -992,21 +1016,7 @@
         const saves = [];
         const out = await VideoConvert.convert(mine.file, ids, {
           onProgress: renderConversionProgress,
-          onResult: (r) => {
-            if (!r.ok) return saves.push(Promise.resolve(r));
-            const fileName = `${baseName}${r.suffix}.${r.ext}`;
-            if (window.mobile) {
-              saves.push(
-                window.mobile
-                  .saveFiles({ baseName, files: [{ format: r.format, suffix: r.suffix, ext: r.ext, data: r.data }] })
-                  .then((s) => ({ ...s.results[0], dir: s.dir }))
-                  .catch((err) => ({ format: r.format, ok: false, error: cleanError(err) }))
-              );
-            } else {
-              ExportUI.downloadBlob(new Blob([r.data]), fileName);
-              saves.push(Promise.resolve({ format: r.format, ok: true, path: fileName, size: r.data.length }));
-            }
-          },
+          onResult: (r) => saves.push(keepResult(r, baseName)),
         });
         const results = await Promise.all(saves);
         const dir = (results.find((r) => r.dir) || {}).dir;
@@ -1026,11 +1036,163 @@
     }
   }
 
+  // ---------- export queue: videos converted one after another (video-queue.js) ----------
+  const queueEls = {
+    card: $("queueCard"), list: $("queueList"), grid: $("queueGrid"), convert: $("queueConvertBtn"), cancel: $("queueCancelBtn"),
+    clear: $("queueClearBtn"), progress: $("queueProgress"), fill: $("queueFill"), label: $("queueLabel"), results: $("queueResults"), note: $("queueNote"),
+  };
+  const QUEUE_FORMATS_KEY = "hand-tracker:viewer-queue-formats";
+  let queueRunning = false, queueCanceled = false;
+  const clockText = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, "0")}`;
+
+  async function queueVideos(files) {
+    const desktop = window.desktop;
+    try {
+      await VideoQueue.add(files.map((f) => ({ name: f.name, path: desktop && desktop.pathForFile ? desktop.pathForFile(f) : "", file: f })));
+      queueEls.note.textContent = `Added ${files.length} video${files.length === 1 ? "" : "s"} to the export queue.`;
+    } catch (err) {
+      queueEls.note.textContent = `Couldn't add them to the queue: ${cleanError(err)}`;
+    }
+    await renderQueue();
+    queueEls.card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  let queueFormatsShown = false;
+  async function renderQueue() {
+    let items = [];
+    try {
+      items = await VideoQueue.list();
+    } catch {
+      // no database here (a private window, say): nothing is queued
+    }
+    queueEls.card.hidden = !items.length && !queueRunning && !queueEls.results.children.length;
+    queueEls.list.innerHTML = items
+      .map((q) => {
+        const trim = q.trim ? ` · synced: ${clockText(q.trim.start)} for ${clockText(q.trim.length)}` : "";
+        return `<li><span class="name" title="${esc(q.name)}">${esc(q.name)}</span><span class="status">${q.size ? ExportUI.formatBytes(q.size) : ""}${esc(trim)}</span>${queueRunning ? "" : `<button data-id="${esc(q.id)}">Remove</button>`}</li>`;
+      })
+      .join("") || '<li><span class="name">The queue is empty.</span></li>';
+    queueEls.convert.disabled = queueRunning || !items.length;
+    queueEls.clear.disabled = queueRunning || !items.length;
+    if (!queueFormatsShown && items.length) {
+      queueFormatsShown = true;
+      const appInfo = window.desktop ? await window.desktop.getInfo().catch(() => null) : null;
+      let saved = ["mp4"];
+      try {
+        saved = JSON.parse(localStorage.getItem(QUEUE_FORMATS_KEY)) || saved;
+      } catch {
+        // storage unavailable: MP4
+      }
+      ExportUI.renderFormatGrid(queueEls.grid, videoFormats(appInfo), saved, (ids) => {
+        try {
+          localStorage.setItem(QUEUE_FORMATS_KEY, JSON.stringify(ids));
+        } catch {
+          // not remembered
+        }
+      });
+    }
+  }
+
+  async function convertQueue() {
+    if (queueRunning) return;
+    const ids = ExportUI.checkedIds(queueEls.grid);
+    if (!ids.length) return (queueEls.note.textContent = "Pick at least one format.");
+    const items = await VideoQueue.list();
+    if (!items.length) return;
+    const desktop = window.desktop;
+    let folder = null;
+    if (desktop) {
+      folder = await desktop.chooseFolder("Choose a folder for the converted videos");
+      if (!folder || folder.canceled) return;
+    }
+    queueRunning = true;
+    queueCanceled = false;
+    queueEls.cancel.hidden = false;
+    queueEls.progress.hidden = false;
+    queueEls.results.innerHTML = "";
+    queueEls.note.textContent = "";
+    await renderQueue();
+    const all = [];
+    let dir = folder ? folder.dir : "", done = 0;
+    for (const [n, q] of items.entries()) {
+      if (queueCanceled) break;
+      const baseName = baseNameOf(q.name) + (q.trim ? "-synced" : "");
+      const show = ({ format, index, total, progress, loading }) => {
+        queueEls.fill.style.width = `${Math.round(((n + (index + (progress || 0)) / total) / items.length) * 100)}%`;
+        queueEls.label.textContent = loading
+          ? "Loading the video converter (about 32 MB, only the first time)…"
+          : `${q.name} (${n + 1} of ${items.length}): ${String(format).toUpperCase()}… ${Math.round((progress || 0) * 100)}%`;
+      };
+      let res;
+      try {
+        if (desktop) {
+          if (!q.path) throw new Error("this app can't find the file on disk; open it here to convert it");
+          const off = desktop.onExportProgress(show);
+          try {
+            res = await desktop.convertVideoFile({ path: q.path, formats: ids, baseName, token: folder.token, trim: q.trim });
+          } finally {
+            off();
+          }
+        } else {
+          const saves = [];
+          const out = await VideoConvert.convert(q.file, ids, { name: q.name, trim: q.trim, onProgress: show, onResult: (r) => saves.push(keepResult(r, baseName)) });
+          const results = await Promise.all(saves);
+          dir = (results.find((r) => r.dir) || {}).dir || dir;
+          res = { results, canceled: out.canceled };
+        }
+      } catch (err) {
+        res = { results: [{ format: q.name, ok: false, error: cleanError(err) }] };
+      }
+      all.push(...res.results.map((r) => ({ ...r, format: `${q.name}: ${String(r.format).toUpperCase()}` })));
+      ExportUI.renderResults(queueEls.results, all);
+      if (res.canceled) queueCanceled = true;
+      // Done with it: out of the queue. Anything that failed stays for another go.
+      if (res.results.length && res.results.every((r) => r.ok)) {
+        done++;
+        await VideoQueue.remove(q.id).catch(() => {});
+      }
+    }
+    queueRunning = false;
+    queueEls.cancel.hidden = true;
+    queueEls.progress.hidden = true;
+    const saved = all.filter((r) => r.ok).length;
+    queueEls.note.textContent =
+      `${queueCanceled ? "Canceled. " : ""}Converted ${done} of ${items.length} video${items.length === 1 ? "" : "s"}; ` +
+      (saved ? (desktop || window.mobile ? `saved ${saved} file${saved === 1 ? "" : "s"} to ${dir}` : `downloaded ${saved} file${saved === 1 ? "" : "s"}`) : "nothing was saved") + ".";
+    await renderQueue();
+  }
+
+  queueEls.convert.addEventListener("click", () => convertQueue().catch((err) => {
+    queueRunning = false;
+    queueEls.note.textContent = `Conversion failed: ${cleanError(err)}`;
+    renderQueue();
+  }));
+  queueEls.cancel.addEventListener("click", () => {
+    queueCanceled = true;
+    cancelConversion();
+  });
+  queueEls.clear.addEventListener("click", async () => {
+    if (queueRunning) return;
+    await VideoQueue.clear().catch(() => {});
+    queueEls.results.innerHTML = "";
+    queueEls.note.textContent = "";
+    renderQueue();
+  });
+  queueEls.list.addEventListener("click", async (e) => {
+    const id = e.target.dataset && e.target.dataset.id;
+    if (!id || queueRunning) return;
+    await VideoQueue.remove(Number(id)).catch(() => {});
+    renderQueue();
+  });
+  VideoQueue.onChange(renderQueue);
+  renderQueue();
+
   window.RecordingViewer = {
     openBytes,
     openTake,
     openVideo,
     openAny,
+    queueVideos,
     current: () => current,
   };
 })();

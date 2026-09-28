@@ -683,21 +683,30 @@ function registerIpc() {
     return input;
   }
   handle("video:probe", (_event, { path: inputPath }) => exporter.probe(videoFileArg(inputPath)));
+  // job.token: a folder already chosen (files:choose-folder), for converting a queue of videos
+  // into one; job.trim: { start, length } seconds, for synced videos.
   handle("video:convert-file", async (event, job) => {
     const inputPath = videoFileArg(job.path);
-    const settings = readSettings();
-    const win = BrowserWindow.fromWebContents(event.sender);
-    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: "Choose a folder for the converted video",
-      buttonLabel: "Export Here",
-      defaultPath: settings.lastExportDir || app.getPath("videos"),
-      properties: ["openDirectory", "createDirectory"],
-    });
-    if (canceled || !filePaths || !filePaths[0]) return { canceled: true, results: [] };
-    const dir = filePaths[0];
-    writeSettings({ lastExportDir: dir });
+    const trim = job.trim && Number.isFinite(Number(job.trim.start)) && Number(job.trim.length) > 0
+      ? { start: Math.max(0, Number(job.trim.start)), length: Number(job.trim.length) }
+      : null;
+    let dir = job.token ? outputFolders.get(String(job.token)) : null;
+    if (job.token && !dir) throw new Error("Choose the folder again.");
+    if (!dir) {
+      const settings = readSettings();
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+        title: "Choose a folder for the converted video",
+        buttonLabel: "Export Here",
+        defaultPath: settings.lastExportDir || app.getPath("videos"),
+        properties: ["openDirectory", "createDirectory"],
+      });
+      if (canceled || !filePaths || !filePaths[0]) return { canceled: true, results: [] };
+      dir = filePaths[0];
+      writeSettings({ lastExportDir: dir });
+    }
     const result = await exporter.convertFile(
-      { inputPath, formats: Array.isArray(job.formats) ? job.formats.map(String) : [], dir, baseName: job.baseName },
+      { inputPath, formats: Array.isArray(job.formats) ? job.formats.map(String) : [], dir, baseName: job.baseName, trim },
       (progress) => {
         if (!event.sender.isDestroyed()) event.sender.send("video:export-progress", progress);
       }

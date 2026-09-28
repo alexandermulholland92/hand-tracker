@@ -20,7 +20,7 @@ const APP_FILES = [
   "app.js", "viewer.js", "mobile-bridge.js", "export-ui.js", "motion-import.js",
   "hand-tracker.js", "far-hands.js", "robot-motion.js", "hand-3d.js",
   "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js", "ops-sessions.js",
-  "video-formats.js", "video-convert.js", "video-origin.js",
+  "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
 ];
 
 const LIBRARY_FILES = [

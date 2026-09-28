@@ -22,8 +22,9 @@ contextBridge.exposeInMainWorld("desktop", {
 
   // Any video file on disk (Recording Viewer): what's in it, and converting it.
   // probeVideo resolves { duration, fps, width, height, videoCodec, hasAudio }.
-  // convertVideoFile(job = { path, formats, baseName }) asks for a folder, then works like
-  // exportVideo (same progress events, same result).
+  // convertVideoFile(job = { path, formats, baseName, token?, trim? }) asks for a folder (or
+  // uses the one chooseFolder gave token for), then works like exportVideo (same progress
+  // events, same result). trim: { start, length } seconds converts just that stretch.
   probeVideo: (videoPath) => ipcRenderer.invoke("video:probe", { path: videoPath }),
   convertVideoFile: (job) => ipcRenderer.invoke("video:convert-file", job),
 

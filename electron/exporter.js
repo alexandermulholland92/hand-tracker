@@ -185,7 +185,8 @@ function probe(inputPath) {
 /**
  * Converts a video file on disk to each format, straight from the original (so
  * nothing is lost to an intermediate copy, and its sound is kept).
- * @param {object} job  { inputPath, formats: string[], dir, baseName }
+ * @param {object} job  { inputPath, formats: string[], dir, baseName, trim? }
+ *   trim: { start, length } in seconds, to convert just that stretch (synced videos)
  * @param {(p: {format, index, total, progress}) => void} onProgress
  */
 async function convertFile(job, onProgress) {
@@ -193,6 +194,7 @@ async function convertFile(job, onProgress) {
   const formats = job.formats.filter((id) => FORMAT_IDS.has(id));
   const base = sanitizeBaseName(job.baseName);
   const info = await probe(job.inputPath);
+  const trim = job.trim;
   const results = [];
   cancelRequested = false;
   for (let i = 0; i < formats.length; i++) {
@@ -206,12 +208,14 @@ async function convertFile(job, onProgress) {
     const out = uniquePath(job.dir, base + suffix, ext);
     report(0);
     try {
+      // Seeking before the input keeps a trim quick; every format is re-encoded, so it's still frame-exact.
+      const input = trim ? ["-ss", trim.start.toFixed(3), "-i", job.inputPath, "-t", trim.length.toFixed(3)] : ["-i", job.inputPath];
       const args = [
-        "-hide_banner", "-nostdin", "-y", "-i", job.inputPath,
+        "-hide_banner", "-nostdin", "-y", ...input,
         ...VideoFormats.outputArgs(id, { fps: info.fps }),
         "-progress", "pipe:1", "-nostats", out,
       ];
-      await runFfmpeg(args, info.duration, report);
+      await runFfmpeg(args, trim ? trim.length : info.duration, report);
       report(1);
       const { size } = await fs.promises.stat(out);
       results.push({ format: id, ok: true, path: out, size });

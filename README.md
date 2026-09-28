@@ -39,7 +39,8 @@ Video import and export work in all three: the Windows app converts with its bun
 - **What's drawn** (the *Show* buttons, keys 1–7 and F): a box around each hand turned with it, the skeleton, left/right, confidence (how sure the tracker is of left or right, on average since the hand was found; with an OAK camera, also of the hand itself), the gesture, the distance to each hand (OAK-D depth cameras), the body and search area in far-away mode, and the FPS counter. Recorded video shows the same.
 - **Camera controls**: choose the camera, resolution (640×480 to 1920×1080) and model (Lite for speed, Full for accuracy). Settings are remembered.
 - **Track a video file** instead of the camera: *Open Video…* accepts MP4, MOV, MKV, WebM, AVI, MPEG, WMV, FLV, 3GP, Ogg, MPEG-TS, MXF, DV, ProRes, GIF and more; see [Tracking a video file](#tracking-a-video-file). Android phone selfie videos, which are saved mirrored, are flipped back automatically; for any other video where Left and Right come out swapped, turn on *Mirrored video*.
-- **Convert any video**: the Recording Viewer's *Open Video…* opens nearly any video and converts it to any of 36 formats; see [Converting videos](#converting-videos).
+- **Several videos at once**: choose more than one video in *Open Video…* (a capture rig's cameras, say) and they're tracked in turn and synced from the hand movement in them, their motion capture saved on one shared clock. Videos that don't line up can go to a motion capture queue and to the Recording Viewer's export queue instead; see [Several videos at once](#several-videos-at-once).
+- **Convert any video**: the Recording Viewer's *Open Video…* opens nearly any video and converts it to any of 36 formats, one at a time or several in a queue; see [Converting videos](#converting-videos).
 - **Mirror view with readable text**: front (selfie) cameras and webcams are shown mirrored so movements feel natural; rear cameras and video files are shown as they are. The Mirror button switches it, and the app remembers your choice for each camera. Times in the picture, like a clock or a timestamp, are always shown the right way round: the app finds them with on-device OCR (tesseract.js, bundled) and flips them back. Other text (signs, screens, printing) reads backwards unless you turn on the optional **Readable text** button (off by default; your choice is remembered), which flips all text back. The app's own labels are always drawn the right way round. To avoid flipping things that only look like text (cloth, shadows, stripes), an area is only shown the right way round once it has been read as text in three scans running, so real text straightens about a second after it appears. Anything read on or right next to a hand is ignored too (OCR takes an OK sign's ring for an "O"), so no flipped patch is left behind when the hand moves away.
 - **Gestures**: pinch, OK sign (thumb and index in a ring, the other fingers out), thumbs up, fist, open palm, finger counting (*Two*: thumb and index out, like an L; *Three*: thumb, index and middle; *Four*: four fingers up with the thumb folded in; one is *Point* and five is *Open Palm*), peace (at any angle, upright, leaning or on its side), rock on, call me, shaka, point, thumbs down, *live long and prosper* (the Vulcan salute: fingers in two pairs with a V between the middle and ring fingers) and *the bird* (only the middle finger raised, pointing up or sideways but not down, with the hand facing the camera rather than side-on; sideways counts so it still works on a phone held on its side), plus palm yaw/pitch/roll and per-finger curl. Call Me and Shaka are the same hand shape: rocking the wrist back and forth makes it Shaka, holding it still is Call Me. A label must hold for a few frames before it changes, so it doesn't flicker. Gestures are judged mostly by how far each fingertip reaches from the wrist (in palm lengths), which holds up on real hands better than finger-bend angles do; the rules are checked against 202 hands measured from real photos (`scripts/fixtures/gesture-hands.json`) and were tuned on a live webcam session.
 - **Recording Viewer** (header link or *File → Open Recording Viewer*): opens hand recordings (JSON, CSV), **C3D** files and **OptiTrack `.tak`** takes. You can play them back, browse the frames, and convert them to other formats; see [Viewing and converting recordings](#viewing-and-converting-recordings).
@@ -178,6 +179,19 @@ Click **Open Video…** next to the camera picker to track hands in a recorded v
   - Anything else is converted automatically first, with progress shown over the camera view: AVI, MPEG-1/2 (`.mpg`, `.mpeg`, `.vob`), WMV/ASF, FLV, 3GP, Ogg Theora, MPEG-TS (`.ts`, `.m2ts`), MXF, DV, ProRes, Y4M, GIF and others ffmpeg can read. The Windows app uses its bundled ffmpeg; the website and Android app use ffmpeg.wasm on the device.
   - The file picker also offers camcorder files (`.mod`, `.tod`, `.m2t`), GoPro and Insta360 files (`.lrv`, `.360`, `.insv`), Phantom high-speed camera files (`.cine`), Windows Media Center and TiVo recordings (`.wtv`, `.dvr-ms`, `.ty`), Dahua CCTV recordings (`.dav`), RealVideo (`.rm`, `.rmvb`, `.ivr`), broadcast GXF and LXF, raw AV1 (`.obu`), and game video (Bink, Smacker, FLIC, RoQ, THP, PlayStation STR, Xbox XMV). A file is recognised by what's inside it, not its name, so a video with an unusual extension still opens (choose *All files* in the picker).
 
+## Several videos at once
+
+Choose more than one video in **Open Video…** (the cameras of a capture rig, say). A *Several videos* panel lists them and tracks each in turn, every frame at the video's own speed (as **Capture Whole Video** does), then lines them up from the hand movement in them.
+
+- **When they line up**, a green message says how much later each video started and how well it matched.
+  - **Save synced motion capture…** saves each video's motion capture on one shared clock: `t = 0` is the moment every video was running, and each file is trimmed to the stretch all of them cover. Files are named `<name>-<video>` in the formats you pick, with `<name>-sync.json` next to them: each video's offset, where the shared stretch starts in it (`trim_start_s`), its length and how well each matched. In every file, `time_origin_s + t` is still the time in that video.
+  - **Export synced videos in the Recording Viewer** puts the videos in the viewer's [export queue](#the-export-queue), each trimmed to the same stretch, so the converted videos (`<video>-synced`) start and end together.
+- **When they don't**, a red message says *The motion capture data doesn't line up*, and why for each video: no hands were seen, the hands hardly move, the movement doesn't match, it only matches for part of the time, or it repeats so that several lineups fit.
+  - **Add to motion capture queue**: each video's motion capture is saved on its own (`<video>-motion`). Videos already tracked aren't tracked again. **Add videos…** puts more in the queue (they're tracked when it runs), and **Capture and save all…** works through it; the Windows and Linux app asks for a folder once.
+  - **Add to Recording Viewer queue**: each video is converted on its own, whole.
+- **How it works:** 30 times a second, the app measures how fast the hands move in each video (the wrists and fingertips, in hand lengths per second, so a near and a far camera measure alike). It slides each video along the longest one to find where the movement matches best. Slow changes are ignored (every session starts with hands resting, then moving), because the detail of the movement is what tells two sessions apart. A lineup is trusted only when it matches well overall and in each half of the shared stretch, and no other lineup fits nearly as well. Offsets come out to within about a frame.
+- **For a good sync**, each camera should see at least one hand moving for most of the time, and the videos should overlap for at least half of the shortest one (and 2 seconds). A few claps or a quick wave at the start helps.
+
 ## Video export
 
 Press **Record Video**, choosing whether to include just the camera view or the camera view with the 3D view below it. When you stop, a preview appears; pick one or more of the [36 formats](#video-formats) (and, in the Windows app, a folder).
@@ -191,6 +205,12 @@ In the **Recording Viewer**, click **Open Video…** (or drop a video on it) to 
 - **Website:** each file downloads as soon as it's ready. Nothing is uploaded.
 - **Android app:** files are saved to Documents/Hand Tracker, each with a **Share** button.
 - ffmpeg.wasm runs on one processor core, so long or high-resolution videos take a while on the website and phone; the Windows app is several times faster.
+
+### The export queue
+
+Choose or drop several videos at once in the Recording Viewer and they go into its **Export queue**. So do videos sent from the tracker's [several-videos panel](#several-videos-at-once), including synced ones, which are trimmed to the stretch they share. The queue is shared by the tracker and the viewer (an open viewer shows new videos straight away) and is still there after a restart.
+
+Pick formats and click **Convert all**. The videos are converted one after another, each on its own, into one folder (Windows and Linux app), as downloads (website) or into Documents/Hand Tracker (Android). A video leaves the queue once it has converted; if anything failed, it stays for another go. On the website and Android, the browser keeps a copy of each queued video until it leaves the queue; the desktop app only remembers where the file is.
 
 ### Video formats
 
@@ -329,6 +349,8 @@ This launches the app with Chromium's built-in fake camera. It simulates two han
 - **NPZ** is loaded with NumPy (so it needs Python with NumPy).
 - **Videos** are decoded with ffmpeg and checked to be the right codec, with sound where the source had it (animated WebP by its structure, since ffmpeg 6.1 can't read it back).
 
+It opens two simulated cameras of one moment together (the second started 1.5 s later) and checks that they sync to within a frame. The saved motion capture must be on one clock, and the converted videos must start on the same moment. A video of something else must get the error, then go through both queues.
+
 It also opens the Recording Viewer with new, old and deliberately malicious files, and converts a WMV with sound to all 36 video formats in it. For OptiTrack, it connects to a stand-in Motive (NatNet 4.1, over multicast and unicast), records its stream with motion capture and checks the exported markers' names, rate, axes and scale. It also tracks a part of the screen chosen in the Screen or window picker. Windows will briefly appear on screen while it runs.
 
 There is also a check for the Android code:
@@ -359,6 +381,9 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 | `video-recorder.js` | Records the camera view (and the 3D view) with MediaRecorder |
 | `video-formats.js` | The 36 video export formats and their ffmpeg settings, and the file types the pickers offer (shared by all three versions) |
 | `video-convert.js` | Website and Android: opening and converting videos with ffmpeg.wasm |
+| `multi-video.js` | Several videos at once: tracking them in turn, syncing, and the motion capture queue |
+| `video-sync.js` | Lines videos up from the hand movement in them, and puts their motion capture on the shared clock |
+| `video-queue.js` | The Recording Viewer's export queue (kept in the page's database, shared by the tracker and the viewer) |
 | `video-origin.js` | Reads a video's metadata to tell a phone's front-camera video (saved mirrored) from its back-camera one |
 | `readable-text.js` | Keeps text in the camera picture readable when mirrored |
 | `app.js`, `index.html` | Main window |
@@ -375,6 +400,7 @@ If a camera check fails with "fake test camera crashed", rerun it. Chromium's bu
 - Task phases (reach / grasp / manipulate / release) come from simple thresholds on finger curl and wrist speed, not a trained classifier.
 - BVH joint rotations are reconstructed from joint positions. Twist along a finger bone can't be recovered from landmarks, so fingers bend but never twist.
 - Readable-text detection scans about twice a second and waits for three matching scans, so text straightens about a second after it appears, and text that moves quickly can stay mirrored.
+- Syncing finds one offset per video. It doesn't correct for cameras whose clocks run at slightly different speeds, which over a long recording can add up to a frame or two.
 - On the website and the Android app, a video is converted in the device's memory, so very large files (roughly over 1 GB) may fail; use the Windows app for those.
 - Tracking keeps running when the window is covered or minimized (minimized, at a slightly lower frame rate), so the hand mouse keeps working.
 - Two, Three and Four are checked on simulated hands; unlike the other gestures, they haven't been tuned on photos or a live session yet.
