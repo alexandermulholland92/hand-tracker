@@ -170,6 +170,7 @@
   .multi-cam-tile iframe { width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 8px; background: #0e0f12; display: block; }
   .multi-cam-caption { font-size: 12px; opacity: 0.85; margin-top: 4px; }
   .multi-cam-caption .lbl { opacity: 0.6; }
+  .multi-cam-caption select.role, .multi-table select.role { font-size: 12px; padding: 2px 4px; }
   .multi-cam-pick { display: block; margin: 6px 0; font-size: 13px; }
   #motiveView { width: 100%; height: 380px; display: block; background: #0e0f12; border-radius: 8px; }
 
@@ -326,7 +327,7 @@
 
     <div id="multiCard" class="card" hidden>
       <div class="section-label">Several videos</div>
-      <table class="multi-table"><thead><tr><th>Video</th><th>Length</th><th>Tracked</th><th>Lines up</th></tr></thead><tbody id="multiRows"></tbody></table>
+      <table class="multi-table"><thead><tr><th>Video</th><th title="Where the video's camera was worn">Role</th><th>Length</th><th>Tracked</th><th>Lines up</th></tr></thead><tbody id="multiRows"></tbody></table>
       <div id="multiStatus" class="note"></div>
       <div id="multiMessage" class="sync-message" hidden></div>
       <div id="multiSynced" hidden>
@@ -704,6 +705,7 @@
 <script src="oak-source.js"></script>
 <script src="ops-sessions.js"></script>
 <script src="rig-live.js"></script>
+<script src="camera-roles.js"></script>
 <script src="multi-camera.js"></script>
 <script src="video-sync.js"></script>
 <script src="video-queue.js"></script>

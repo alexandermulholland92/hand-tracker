@@ -8,6 +8,9 @@
  *  - They don't: the reason is shown, and they can go to the motion capture queue (each
  *    video's motion capture saved on its own) and to the Recording Viewer's queue (each
  *    video converted on its own).
+ * Each video has a role, where its camera was worn (head, chest, left or right wrist:
+ * camera-roles.js), guessed from its name or given in order, and changeable: its saved
+ * files are named after it and say it (camera_role).
  * The motion capture queue also takes videos of its own (Add videos…); they're tracked
  * when it runs.
  *
@@ -19,7 +22,7 @@
   const DEFAULT_FORMATS = ["json"];
   let desktop = null, prefs = {}, setPref = () => {};
   let els = {};
-  let items = []; // { name, file, url, path, duration, data, status, error }
+  let items = []; // { name, file, url, path, role, duration, data, status, error }
   let result = null; // the last VideoSync.sync result
   let queue = []; // { name, file, url, path, data, status, ok }
   let running = false, stopRequested = false;
@@ -42,7 +45,13 @@
     let name = file.name;
     for (let n = 2; taken.has(name); n++) name = `${baseOf(file.name)} (${n})${file.name.slice(baseOf(file.name).length)}`;
     taken.add(name);
-    return { name, file, url: URL.createObjectURL(file), path: desktop && desktop.pathForFile ? desktop.pathForFile(file) : "", duration: 0, data: null, status: "waiting", error: "" };
+    return { name, file, url: URL.createObjectURL(file), path: desktop && desktop.pathForFile ? desktop.pathForFile(file) : "", role: CameraRoles.guess(file.name), duration: 0, data: null, status: "waiting", error: "" };
+  }
+
+  // A video's motion capture, saying where its camera was worn.
+  function withRole(data, role) {
+    if (!role) return data;
+    return { ...data, camera_role: role, notes: [...(data.notes || []), `The camera was worn on the ${CameraRoles.label(role).toLowerCase()} (camera_role).`] };
   }
 
   // Tracks one video's every frame; fills in its motion capture and length.
@@ -101,14 +110,32 @@
   }
 
   // ---------- several videos: track, then sync ----------
+  // The rows are made once per set of videos and then only updated (this runs many times a
+  // second while tracking), so a role menu stays open while it's used.
+  let rendered = null;
   function renderItems() {
-    els.rows.innerHTML = items
-      .map((it) => {
-        const v = result && result.videos.find((x) => x.name === it.name);
-        const lines = !v ? "" : v.reason ? "no" : v.name === result.reference ? "reference" : `${v.offset >= 0 ? "+" : "−"}${Math.abs(v.offset).toFixed(2)} s · match ${v.score.toFixed(2)}`;
-        return `<tr><td title="${esc(it.name)}">${esc(it.name)}</td><td>${it.duration ? clock(it.duration) : ""}</td><td>${esc(it.status)}</td><td>${esc(lines)}</td></tr>`;
-      })
-      .join("");
+    if (rendered !== items || els.rows.children.length !== items.length) {
+      rendered = items;
+      els.rows.innerHTML = items
+        .map((it, i) => `<tr><td title="${esc(it.name)}">${esc(it.name)}</td><td><select class="role" data-i="${i}" title="Where this video's camera was worn: its files are named after it">${CameraRoles.options(it.role)}</select></td><td></td><td></td><td></td></tr>`)
+        .join("");
+    }
+    items.forEach((it, i) => {
+      const cells = els.rows.children[i].children;
+      const v = result && result.videos.find((x) => x.name === it.name);
+      const lines = !v ? "" : v.reason ? "no" : v.name === result.reference ? "reference" : `${v.offset >= 0 ? "+" : "−"}${Math.abs(v.offset).toFixed(2)} s · match ${v.score.toFixed(2)}`;
+      cells[1].firstChild.value = it.role || "";
+      cells[2].textContent = it.duration ? clock(it.duration) : "";
+      cells[3].textContent = it.status;
+      cells[4].textContent = lines;
+    });
+  }
+
+  // A role picked for one video: a video that had it takes this one's old role.
+  function setRole(i, role) {
+    const roles = CameraRoles.pick(items.map((it) => it.role), i, role);
+    items.forEach((it, j) => (it.role = roles[j]));
+    renderItems();
   }
 
   // which: "videos" (several videos being tracked) or "queue" (the queue running).
@@ -126,6 +153,8 @@
     const old = items;
     const taken = new Set();
     items = files.map((f) => entry(f, taken));
+    const roles = CameraRoles.assign(items.map((it) => ({ name: it.name })));
+    items.forEach((it, i) => (it.role = roles[i]));
     release(old);
     result = null;
     els.card.hidden = false;
@@ -134,6 +163,7 @@
     els.failed.hidden = true;
     els.results.innerHTML = "";
     els.note.textContent = "";
+    renderItems();
     els.card.scrollIntoView({ behavior: "smooth", block: "nearest" });
     stopRequested = false;
     setRunning(true, "videos");
@@ -182,7 +212,11 @@
       for (const it of items) {
         const v = it.data && result.videos.find((x) => x.name === it.name);
         if (!v) continue;
-        jobs.push({ baseName: `${base}-${baseOf(it.name)}`, files: MotionExport.build(VideoSync.align(it.data, v, result), formats, `${base}-${baseOf(it.name)}`) });
+        // Named after its role (…-head, …-wrist_left), or the video without one (both, if
+        // that name is taken: a video called head.mp4 with no role, say).
+        const short = (x) => `${base}-${x.role || baseOf(x.name)}`;
+        const name = items.filter((x) => short(x) === short(it)).length > 1 ? `${base}-${[it.role, baseOf(it.name)].filter(Boolean).join("-")}` : short(it);
+        jobs.push({ baseName: name, files: MotionExport.build(withRole(VideoSync.align(it.data, v, result), it.role), formats, name) });
       }
     } catch (err) {
       return (els.note.textContent = `Couldn't convert: ${errText(err)}`);
@@ -191,7 +225,7 @@
       reference: result.reference,
       shared_clock: "seconds from the moment every video was running; each video's trim_start_s is where that moment is in it",
       length_s: Math.round(result.window.length * 1e6) / 1e6,
-      videos: result.videos.map((v) => ({ name: v.name, offset_s: Math.round(v.offset * 1e6) / 1e6, trim_start_s: Math.round(v.trimStart * 1e6) / 1e6, match: Math.round(v.score * 1000) / 1000 })),
+      videos: result.videos.map((v) => ({ name: v.name, role: (items.find((it) => it.name === v.name) || {}).role || null, offset_s: Math.round(v.offset * 1e6) / 1e6, trim_start_s: Math.round(v.trimStart * 1e6) / 1e6, match: Math.round(v.score * 1000) / 1000 })),
     };
     jobs.push({ baseName: `${base}-sync`, files: [{ format: "json", ext: "json", suffix: "", data: JSON.stringify(report, null, 2) }] });
     await busy(els.saveBtn, async () => {
@@ -303,7 +337,7 @@
         }
         const baseName = `${baseOf(q.name)}-motion`;
         try {
-          const job = { baseName, files: MotionExport.build(q.data, formats, baseName) };
+          const job = { baseName, files: MotionExport.build(withRole(q.data, q.role), formats, baseName) };
           const res = folder ? await desktop.saveFilesTo(folder.token, job) : await ExportUI.saveFiles({ title: "Choose a folder for the motion capture files", ...job });
           if (res.downloaded) downloaded += res.count;
           else {
@@ -351,6 +385,9 @@
     grid(els.formats, "syncFormats");
     grid(els.queueFormats, "queueFormats");
     els.queueInput.accept = VideoFormats.IMPORT_ACCEPT;
+    els.rows.addEventListener("change", (e) => {
+      if (e.target.matches && e.target.matches("select.role")) setRole(Number(e.target.dataset.i), e.target.value);
+    });
     els.saveBtn.addEventListener("click", saveSynced);
     els.viewerBtn.addEventListener("click", () => toViewer(true));
     els.viewerQueueBtn.addEventListener("click", () => toViewer(false));

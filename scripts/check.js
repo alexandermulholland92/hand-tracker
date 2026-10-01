@@ -822,6 +822,14 @@ async function checkSeveralCameras(js) {
     }
     const out = { tiles: tiles.map((t) => t.name + ":" + (t.status ? t.status.fps + "fps " + t.status.width + "x" + t.status.height : "none")), mainPaused: HandTracker.isPaused(),
       card: !document.getElementById("multiCamCard").hidden };
+    // Roles: each camera has one; picking one another camera has swaps them.
+    const selects = [...document.querySelectorAll("#multiCamGrid select.role")];
+    const roles0 = MultiCamera._tiles().map((t) => t.role);
+    const choose = (sel, role) => { sel.value = role; sel.dispatchEvent(new Event("change", { bubbles: true })); };
+    choose(selects[0], "wrist_left");
+    choose(selects[1], "wrist_left");
+    out.roles = { before: roles0, after: MultiCamera._tiles().map((t) => t.role), shown: selects.map((s) => s.value) };
+    out.expect = [CameraRoles.label(out.roles.after[0]) + " Left", CameraRoles.label(out.roles.after[1]) + " Right"];
     // Hands in each tile (the test camera has none): a left hand in Cam 1, a right one in Cam 2.
     const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],
       [0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]];
@@ -848,8 +856,23 @@ async function checkSeveralCameras(js) {
   // (MediaPipe's labels are the camera's view; mirrored webcams show them the other way round.)
   check("Several cameras at once: a tile per camera, each tracking on its own; motion capture records them all and merges them on one clock, hands named by camera; closing goes back to one camera",
     r.tiles && r.tiles.length === 2 && r.tiles.every((t) => /:[1-9]\d*fps/.test(t)) && r.mainPaused && r.card && r.export &&
-      /Cam 1 Left/.test(r.info) && /Cam 2 Right/.test(r.info) && /2 cameras/.test(r.note) && r.closed,
+      r.expect && r.info.includes(r.expect[0]) && r.info.includes(r.expect[1]) && /2 cameras/.test(r.note) && r.closed,
     JSON.stringify(r));
+  const roles = r.roles || {};
+  check("Several cameras: each camera has a role (head, chest, left or right wrist), given in order; picking one another camera has swaps them; hands are named after it (\"Chest Left\")",
+    roles.before && roles.before.join() === "head,chest" && roles.after.join() === "chest,wrist_left" && roles.shown.join() === "chest,wrist_left" &&
+      r.expect.join() === "Chest Left,Left wrist Right",
+    JSON.stringify({ roles, expect: r.expect, info: r.info }));
+  const guessed = await js(`({
+    guesses: ["rig_head_rgb.mp4", "Chest cam.mov", "wrist_left.mp4", "R-wrist.mp4", "leftWrist.mkv", "WristRight.mp4", "handheld.mp4", "OAK-D Lite"].map(CameraRoles.guess),
+    assigned: CameraRoles.assign([{ name: "b_chest.mp4" }, { name: "x.mp4" }, { name: "head.mp4" }]),
+    savedNone: CameraRoles.assign([{ name: "head.mp4", saved: "" }, { name: "y.mp4" }]),
+    savedTwice: CameraRoles.assign([{ name: "a", saved: "chest" }, { name: "b", saved: "chest" }]),
+  })`);
+  check("Camera roles are guessed from names (head, chest, left/right wrist), the rest given in order, no role twice, and \"No role\" is kept",
+    guessed.guesses.join() === "head,chest,wrist_left,wrist_right,wrist_left,wrist_right,," && guessed.assigned.join() === "chest,wrist_left,head" &&
+      guessed.savedNone.join() === ",head" && guessed.savedTwice.join() === "chest,head",
+    JSON.stringify(guessed));
 }
 
 // Live Rigs, against the stand-in capture-fleet dashboard (fleet-sim.js, which says what each rig does).
@@ -1239,22 +1262,35 @@ async function checkSeveralVideos(win, js) {
 
   // Two cameras of the same moment.
   const rig = await syncVideos(["cam-a.mp4", "cam-b.mp4"]);
+  // Columns: video, role, length, tracked, lines up.
   const offsetOf = (s, name) => {
     const row = s.rows.find((r) => r[0] === name);
     if (!row) return NaN;
-    if (row[3] === "reference") return 0;
-    const m = /([+−])(\d+\.\d+) s/.exec(row[3]);
+    if (row[4] === "reference") return 0;
+    const m = /([+−])(\d+\.\d+) s/.exec(row[4]);
     return m ? (m[1] === "−" ? -1 : 1) * Number(m[2]) : NaN;
   };
   const lag = offsetOf(rig, "cam-b.mp4") - offsetOf(rig, "cam-a.mp4");
   check("Two videos of one moment are tracked and synced from the hand movement (the second camera started 1.5 s later)",
-    rig.ok && rig.synced && !rig.failed && /^Synced/.test(rig.message) && Math.abs(lag - 1.5) <= 0.05 && rig.rows.every((r) => /Right/.test(r[2])),
+    rig.ok && rig.synced && !rig.failed && /^Synced/.test(rig.message) && Math.abs(lag - 1.5) <= 0.05 && rig.rows.every((r) => /Right/.test(r[3])),
     `${rig.message} | ${rig.rows.map((r) => r.join(" / ")).join(" | ")}`);
 
+  // Roles: given in order (the names don't say), and the second camera's changed to the right wrist.
+  const rolesGiven = await js(`(() => {
+    const sel = document.querySelectorAll("#multiRows select.role");
+    const before = [...sel].map((s) => s.value);
+    sel[1].value = "wrist_right";
+    sel[1].dispatchEvent(new Event("change", { bubbles: true }));
+    return { before, after: [...document.querySelectorAll("#multiRows select.role")].map((s) => s.value) };
+  })()`);
   await js(`document.getElementById("multiName").value = "rig"; document.getElementById("multiSaveBtn").click(); true`);
   for (let i = 0; i < 40 && (await js(`document.querySelectorAll("#multiResults li").length`)) < 3; i++) await sleep(250);
   const load = (name) => (fs.existsSync(path.join(outDir, name)) ? JSON.parse(fs.readFileSync(path.join(outDir, name), "utf8")) : null);
-  const a = load("rig-cam-a.json"), b = load("rig-cam-b.json"), report = load("rig-sync.json");
+  const a = load("rig-head.json"), b = load("rig-wrist_right.json"), report = load("rig-sync.json");
+  check("Several videos: each has a role (given in order, or picked); the synced files are named after it and say it, as does the report",
+    rolesGiven.before.join() === "head,chest" && rolesGiven.after.join() === "head,wrist_right" && a && b && a.camera_role === "head" && b.camera_role === "wrist_right" &&
+      report && report.videos.map((v) => v.role).join() === "head,wrist_right",
+    JSON.stringify({ rolesGiven, files: fs.readdirSync(outDir).filter((f) => f.startsWith("rig")), roles: [a && a.camera_role, b && b.camera_role], report: report && report.videos }));
   // On the shared clock, both cameras' wrists are in the same place at the same time (the
   // second camera's view mapped back: x = 0.2 + 0.7 x, y = 0.2 + 0.7 y); half a second
   // apart, they aren't.

@@ -1,9 +1,11 @@
 /**
  * multi-camera.js — several live cameras at once. Each camera runs in a tile of its own
  * (camera-tile.html: its own hand tracker, so each has its own left and right hand), side
- * by side in the "Several cameras" card. Motion capture records every camera together;
- * stopping merges them into one recording on a shared clock, with each hand named after
- * its camera ("Cam 1 Left", "Cam 2 Right"…), which then exports like any recording.
+ * by side in the "Several cameras" card. Each camera has a role, where it's worn (head,
+ * chest, left or right wrist: camera-roles.js), remembered for that camera. Motion capture
+ * records every camera together; stopping merges them into one recording on a shared clock,
+ * with each hand named after its camera's role ("Head Left", "Chest Right"…, or "Cam 1 Left"
+ * for a camera with no role), which then exports like any recording.
  *
  *   MultiCamera.init({ prefs, setPref, app: HandTrackerApp, modelOf: () => 0 | 1 });
  *   await MultiCamera.openPicker();          // choose cameras, then start
@@ -17,7 +19,7 @@
 
   let prefs = {}, setPref = () => {}, app = null, modelOf = () => 1;
   let els = {};
-  let tiles = []; // { name, label, frame, el }
+  let tiles = []; // { name, deviceId, role, label, frame, el }
   let statusTimer = null;
   let recording = false;
 
@@ -56,22 +58,40 @@
     els.card.hidden = false;
     els.grid.className = `multi-cam-grid n${Math.min(deviceIds.length, MAX_CAMERAS)}`;
     const model = modelOf();
-    tiles = deviceIds.slice(0, MAX_CAMERAS).map((id, i) => {
+    const ids = deviceIds.slice(0, MAX_CAMERAS);
+    const saved = prefs.multiCameraRoles || {};
+    const roles = CameraRoles.assign(ids.map((id) => ({ name: labelOf(id), saved: saved[id] })));
+    tiles = ids.map((id, i) => {
       const name = `Cam ${i + 1}`;
       const el = document.createElement("div");
       el.className = "multi-cam-tile";
-      el.innerHTML = `<iframe title="${esc(name)}" allow="camera"></iframe><div class="multi-cam-caption"><b>${esc(name)}</b> <span class="lbl">${esc(labelOf(id))}</span> <span class="st"></span></div>`;
+      el.innerHTML = `<iframe title="${esc(name)}" allow="camera"></iframe><div class="multi-cam-caption"><b>${esc(name)}</b> <select class="role" data-i="${i}" title="Where this camera is worn: its hands are named after it">${CameraRoles.options(roles[i])}</select> <span class="lbl">${esc(labelOf(id))}</span> <span class="st"></span></div>`;
       const frame = el.querySelector("iframe");
       // Webcams are mirrored like a selfie, as in the main window.
       frame.src = `camera-tile.html?device=${encodeURIComponent(id)}&mirror=1&model=${model}&name=${encodeURIComponent(name)}`;
       els.grid.appendChild(el);
-      return { name, label: labelOf(id), frame, el };
+      return { name, deviceId: id, role: roles[i], label: labelOf(id), frame, el };
     });
     els.record.disabled = false;
     els.note.textContent = "Each camera has its own hand tracker. With several cameras each one runs slower than a single camera would.";
     clearInterval(statusTimer);
     statusTimer = setInterval(showStatus, STATUS_MS);
     els.card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  // A camera's name in its hands' names and the recording: its role, or "Cam 1".
+  const nameOf = (t) => CameraRoles.label(t.role) || t.name;
+
+  // A role picked for one camera: a camera that had it takes this one's old role.
+  function setRole(i, role) {
+    const roles = CameraRoles.pick(tiles.map((t) => t.role), i, role);
+    const saved = { ...(prefs.multiCameraRoles || {}) };
+    tiles.forEach((t, j) => {
+      t.role = roles[j];
+      t.el.querySelector("select.role").value = t.role;
+      saved[t.deviceId] = t.role;
+    });
+    setPref("multiCameraRoles", saved);
   }
 
   const tileApi = (t) => {
@@ -148,7 +168,7 @@
         const at = (t) => Math.round((t + shift) * 1e6) / 1e6;
         hands.push({
           ...h,
-          handedness: `${p.tile.name} ${h.handedness}`,
+          handedness: `${nameOf(p.tile)} ${h.handedness}`,
           frames: h.frames.map((f) => ({ ...f, t: at(f.t) })),
           trajectories: Object.fromEntries(Object.entries(h.trajectories || {}).map(([k, rows]) => [k, rows.map((r) => [at(r[0]), ...r.slice(1)])])),
         });
@@ -162,10 +182,10 @@
       hands,
       recorded_at: new Date(origin).toISOString(),
       time_origin_s: null,
-      cameras: withHands.map((p) => ({ name: p.tile.name, camera: p.tile.label, offset_s: Math.round(((p.data.clock_origin_ms - origin) / 1000) * 1e6) / 1e6, image_size: p.data.image_size })),
+      cameras: withHands.map((p) => ({ name: nameOf(p.tile), role: p.tile.role || null, camera: p.tile.label, offset_s: Math.round(((p.data.clock_origin_ms - origin) / 1000) * 1e6) / 1e6, image_size: p.data.image_size })),
       notes: [
         ...(first.notes || []),
-        `Recorded from ${withHands.length} cameras at once (${withHands.map((p) => `${p.tile.name}: ${p.tile.label}`).join("; ")}); every hand's t is on one shared clock, and each hand is named after its camera.`,
+        `Recorded from ${withHands.length} cameras at once (${withHands.map((p) => `${nameOf(p.tile)}: ${p.tile.label}`).join("; ")}); every hand's t is on one shared clock, and each hand is named after its camera${withHands.some((p) => p.tile.role) ? "'s role (where it's worn)" : ""}.`,
         ...(sizes.size > 1 ? ["The cameras' pictures were different sizes: 3D exports use the first camera's proportions."] : []),
       ],
     };
@@ -189,8 +209,11 @@
       start(ids);
     });
     els.record.addEventListener("click", () => toggleRecording());
+    els.grid.addEventListener("change", (e) => {
+      if (e.target.matches && e.target.matches("select.role")) setRole(Number(e.target.dataset.i), e.target.value);
+    });
     els.closeBtn.addEventListener("click", close);
   }
 
-  global.MultiCamera = { init, openPicker, start, close, isActive: () => tiles.length > 0, _tiles: () => tiles.map((t) => ({ name: t.name, status: tileApi(t) ? tileApi(t).status() : null })) };
+  global.MultiCamera = { init, openPicker, start, close, isActive: () => tiles.length > 0, _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null })) };
 })(window);
