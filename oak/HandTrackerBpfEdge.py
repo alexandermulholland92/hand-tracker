@@ -111,7 +111,8 @@ class HandTrackerBpf:
                 lm_nb_threads=2,
                 stats=False,
                 trace=0,
-                device=None
+                device=None,
+                mjpeg=False
                 ):
 
         self.use_lm = use_lm
@@ -164,6 +165,11 @@ class HandTrackerBpf:
         self.use_gesture = use_gesture
         self.single_hand_tolerance_thresh = single_hand_tolerance_thresh
         self.use_same_image = use_same_image
+        # Hand Tracker: the camera sends its pictures as JPEG, from its own encoder (about a
+        # tenth of the data, for several cameras on one USB 2 link): next_frame() then keeps
+        # them in self.jpeg, as sent, and returns an empty picture of the right size.
+        self.mjpeg = mjpeg
+        self.jpeg = None
 
         # Hand Tracker: an OAK device already opened by oak_bridge.py (which camera, and USB 2
         # when it can't keep a USB 3 link), or any camera as the original does.
@@ -296,7 +302,14 @@ class HandTrackerBpf:
             cam_out.setStreamName("cam_out")
             cam_out.input.setQueueSize(1)
             cam_out.input.setBlocking(False)
-            cam.video.link(cam_out.input)
+            if self.mjpeg:
+                encoder = pipeline.create(dai.node.VideoEncoder)
+                encoder.setDefaultProfilePreset(self.internal_fps, dai.VideoEncoderProperties.Profile.MJPEG)
+                encoder.setQuality(80)
+                cam.video.link(encoder.input)
+                encoder.bitstream.link(cam_out.input)
+            else:
+                cam.video.link(cam_out.input)
 
         # Define manager script node
         manager_script = pipeline.create(dai.node.Script)
@@ -516,7 +529,11 @@ class HandTrackerBpf:
             video_frame = np.zeros((self.img_h, self.img_w, 3), dtype=np.uint8)
         else:
             in_video = self.q_video.get()
-            video_frame = in_video.getCvFrame()       
+            if self.mjpeg:
+                self.jpeg = bytes(in_video.getData())
+                video_frame = np.empty((self.img_h, self.img_w, 0), dtype=np.uint8)
+            else:
+                video_frame = in_video.getCvFrame()       
 
         # For debugging
         if self.trace & 4:

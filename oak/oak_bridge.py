@@ -10,7 +10,11 @@ far from the camera, and, on depth cameras, each hand's distance.
 Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
     python oak_bridge.py --models DIR [--lm lite|full] [--two-hands] [--xyz]
                          [--far both|higher|left|right] [--all-hands] [--fps N] [--device ID]
-    (--device: which OAK camera, by its id from --list; the first one found otherwise)
+                         [--mjpeg auto|on|off]
+    (--device: which OAK camera, by its id from --list; the first one found otherwise.
+     --mjpeg: the camera sends its pictures as JPEG from its own encoder, about a tenth of the
+     data; auto: over USB 2, where the raw pictures of one camera nearly fill the link, and on
+     ARM boards such as a Raspberry Pi, where it also saves the processor encoding them.)
     python oak_bridge.py --check        prints the versions it would use
     python oak_bridge.py --list         prints the OAK cameras found
     python oak_bridge.py --simulate     no camera: a moving synthetic hand, for testing
@@ -30,6 +34,7 @@ import argparse
 import json
 import math
 import os
+import platform
 import struct
 import sys
 import time
@@ -117,7 +122,13 @@ def open_device(dai, wanted):
     ("Failed to find device after booting"); Luxonis's advice is USB 2, so it's started again
     that way. (Seen with an OAK-1 Lite W on a Raspberry Pi 5: USB 3 failed every time, USB 2
     started it in 2 s.)"""
-    devices = [d for d in dai.Device.getAllAvailableDevices() if not wanted or d.getMxId() == wanted]
+    # A camera that was just in use resets first (a few seconds): wait for it.
+    deadline = time.time() + 10
+    while True:
+        devices = [d for d in dai.Device.getAllAvailableDevices() if not wanted or d.getMxId() == wanted]
+        if devices or time.time() > deadline:
+            break
+        time.sleep(0.5)
     if not devices:
         return None
     info = devices[0]
@@ -193,7 +204,9 @@ def run(args):
             status("error", message="That OAK camera wasn't found: it may have been unplugged." if args.device else
                    "No OAK camera found. Check it's plugged in (a USB 3 port is best) and not in use by another program.")
             return 3
-        tracker = Tracker(**common, **extra, device=device)
+        usb = str(device.getUsbSpeed()).split(".")[-1]
+        mjpeg = args.mjpeg == "on" or (args.mjpeg == "auto" and (usb in ("LOW", "FULL", "HIGH") or platform.machine().lower() in ("aarch64", "arm64")))
+        tracker = Tracker(**common, **extra, device=device, mjpeg=mjpeg)
     except SystemExit:
         if device is not None:
             device.close()
@@ -220,7 +233,7 @@ def run(args):
 
     depth = bool(getattr(tracker, "xyz", False))
     status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h, depth=depth,
-           id=device.getMxId(), usb=str(device.getUsbSpeed()).split(".")[-1])
+           id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer")
     t0 = time.time()
     last = time.time()
     frames = 0
@@ -262,7 +275,7 @@ def run(args):
                 fps = frames / (now - last)
                 frames = 0
                 last = now
-            send({"t": round((now - t0) * 1000, 1), "w": w, "h": h, "fps": round(fps, 1), "hands": out}, encode(frame))
+            send({"t": round((now - t0) * 1000, 1), "w": w, "h": h, "fps": round(fps, 1), "hands": out}, tracker.jpeg if mjpeg else encode(frame))
     except (BrokenPipeError, KeyboardInterrupt):
         pass
     finally:
@@ -283,6 +296,7 @@ def main():
     ap.add_argument("--all-hands", action="store_true", help="far mode: not only raised hands")
     ap.add_argument("--fps", type=int, default=None)
     ap.add_argument("--device", default=None, help="which OAK camera, by its id (from --list)")
+    ap.add_argument("--mjpeg", choices=["auto", "on", "off"], default="auto", help="pictures as JPEG from the camera's encoder")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--simulate", action="store_true")
