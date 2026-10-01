@@ -133,8 +133,13 @@
         error = s.message || `The OAK camera stopped${s.detail ? `: ${s.detail}` : "."}`;
         message.hidden = false;
         message.textContent = error;
-      } else if (s.status === "starting" && s.message) {
-        message.textContent = s.message;
+      } else if (s.status === "starting") {
+        // Started (again): the last error is gone until the camera says otherwise.
+        error = "";
+        message.hidden = false;
+        message.textContent = s.message || "Starting the OAK camera…";
+      } else if (s.status === "running") {
+        error = "";
       }
     },
     startRecording: () => RobotMotion.start(),

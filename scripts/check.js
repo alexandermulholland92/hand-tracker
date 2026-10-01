@@ -413,6 +413,7 @@ async function run(win) {
   await checkLiveRigs(js);
   await checkSeveralCameras(js);
   await checkSeveralOakCameras(js);
+  await checkOakTileRetry(js);
 
   // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
   // in go through the same tracking, with the camera's confidence and measured distance.
@@ -922,6 +923,33 @@ async function checkSeveralOakCameras(js) {
       r.messages.every((d) => d === "none") &&
       r.labels.every((l) => /Luxonis Simulated OAK SIMULATED-OAK-[AB] · depth/.test(l)) && r.names["SIMULATED-OAK-A"] === "Simulated OAK SIMULATED-OAK-A" &&
       /Head \w+/.test(r.info) && /Chest \w+/.test(r.info) && r.closed,
+    JSON.stringify(r));
+}
+
+// An OAK camera that didn't start: its tile says why and has Try again, which starts it.
+async function checkOakTileRetry(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const st = () => (MultiCamera._tiles()[0] || {}).status;
+    const retry = () => document.querySelector("#multiCamGrid button.retry");
+    await MultiCamera.start(["oak:SIMULATED-OAK-FAILS-ONCE"]);
+    for (let i = 0; i < 100 && !(st() && st().error && retry() && !retry().hidden); i++) await sleep(100);
+    const out = { error: st() && st().error, retryShown: !!retry() && !retry().hidden };
+    if (retry()) retry().click();
+    for (let i = 0; i < 100 && !(st() && st().fps > 0 && st().hands.length); i++) await sleep(100);
+    await sleep(700); // the captions update every 0.5 s
+    const s = st();
+    out.after = s && { fps: s.fps, hands: s.hands, error: s.error };
+    out.caption = document.querySelector("#multiCamGrid .st").textContent;
+    out.retryHidden = !!retry() && retry().hidden;
+    out.message = getComputedStyle(document.querySelector("#multiCamGrid iframe").contentDocument.getElementById("message")).display;
+    MultiCamera.close();
+    await sleep(300);
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  check("Several cameras: an OAK camera that didn't start says why and has Try again, which starts it (the others carry on)",
+    /didn't start this time/.test(r.error || "") && r.retryShown &&
+      r.after && r.after.fps > 0 && r.after.hands.length === 1 && !r.after.error && /fps/.test(r.caption) && r.retryHidden && r.message === "none",
     JSON.stringify(r));
 }
 

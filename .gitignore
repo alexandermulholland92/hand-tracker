@@ -154,3 +154,5 @@ www/
 *.jks
 *.keystore
 __pycache__/
+# OAK cameras that run in USB 2 mode (oak_bridge.py, when its models are in oak/models)
+oak/usb2-cameras.json

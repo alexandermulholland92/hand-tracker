@@ -484,7 +484,15 @@ function stopOakStream(id) {
 // For the automated checks (HAND_TRACKER_OAK_SIMULATE): an OAK camera without a camera or
 // Python, streaming like the helper does: a hand moving across a plain picture.
 class SimulatedOak {
+  static failedOnce = new Set();
+
   start(options, onMessage) {
+    // A camera whose id has FAILS-ONCE doesn't start the first time (for the checks' Try again).
+    if (/FAILS-ONCE/.test(options.device || "") && !SimulatedOak.failedOnce.has(options.device)) {
+      SimulatedOak.failedOnce.add(options.device);
+      onMessage({ status: "error", message: "The simulated OAK camera didn't start this time." });
+      return;
+    }
     const w = 640, h = 360;
     const pixels = Buffer.alloc(w * h * 4, 60);
     const jpeg = nativeImage.createFromBitmap(pixels, { width: w, height: h }).toJPEG(70);

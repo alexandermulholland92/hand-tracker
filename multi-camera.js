@@ -118,7 +118,7 @@
       const name = `Cam ${i + 1}`;
       const el = document.createElement("div");
       el.className = "multi-cam-tile";
-      el.innerHTML = `<iframe title="${esc(name)}" allow="camera"></iframe><div class="multi-cam-caption"><b>${esc(name)}</b> <select class="role" data-i="${i}" title="Where this camera is worn: its hands are named after it">${CameraRoles.options(roles[i])}</select> <span class="lbl">${esc(labelOf(id))}</span> <span class="st"></span></div>`;
+      el.innerHTML = `<iframe title="${esc(name)}" allow="camera"></iframe><div class="multi-cam-caption"><b>${esc(name)}</b> <select class="role" data-i="${i}" title="Where this camera is worn: its hands are named after it">${CameraRoles.options(roles[i])}</select> <span class="lbl">${esc(labelOf(id))}</span> <span class="st"></span> <button type="button" class="retry" data-i="${i}" hidden>Try again</button></div>`;
       const frame = el.querySelector("iframe");
       // Webcams are mirrored like a selfie, as in the main window (an OAK camera too).
       frame.src = isOak(id)
@@ -163,7 +163,17 @@
       const api = tileApi(t);
       const st = api ? api.status() : null;
       t.el.querySelector(".st").textContent = !st ? "starting…" : st.error ? st.error : `${st.fps} fps · ${st.hands.length ? st.hands.join(" + ") : "no hands"}${st.recording ? " · recording" : ""}`;
+      t.el.querySelector(".retry").hidden = !(t.oak && st && st.error && t.oakState !== "starting");
     }
+  }
+
+  // An OAK camera that didn't start (or stopped) is started again, the others carry on.
+  function retryOak(t) {
+    if (!t || !t.oak || t.oakState === "starting") return;
+    t.el.querySelector(".retry").hidden = true;
+    const api = tileApi(t);
+    if (api && api.oakStatus) api.oakStatus({ status: "starting" });
+    startOakTiles([t]);
   }
 
   // ---------- OAK cameras in tiles ----------
@@ -329,6 +339,9 @@
     els.record.addEventListener("click", () => toggleRecording());
     els.grid.addEventListener("change", (e) => {
       if (e.target.matches && e.target.matches("select.role")) setRole(Number(e.target.dataset.i), e.target.value);
+    });
+    els.grid.addEventListener("click", (e) => {
+      if (e.target.matches && e.target.matches("button.retry")) retryOak(tiles[Number(e.target.dataset.i)]);
     });
     els.closeBtn.addEventListener("click", () => close());
   }
