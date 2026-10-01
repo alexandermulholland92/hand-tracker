@@ -521,12 +521,12 @@ async function run(win) {
 }
 
 // The Left/Right tag: its normal size with a hand at arm's length or closer, bigger as the
-// hand goes further away (up to 3x). On a phone it starts a little bigger (check-android.js).
+// hand goes further away (up to 2x). On a phone it starts a little bigger (check-android.js).
 async function checkTagSize(js) {
   const r = await js(TAG_HEIGHTS);
   const near = (v, want) => Math.abs(v - want) <= Math.max(4, want * 0.12);
-  check("Left/Right tag: normal size with a hand at arm's length or closer, bigger as it goes further away (up to 3x)",
-    near(r.veryClose, 32) && near(r.armsLength, 32) && near(r.further, 32 * 1.6) && near(r.far, 32 * 2.9) && near(r.veryFar, 32 * 2.9) && r.veryFar <= r.far + 4,
+  check("Left/Right tag: normal size with a hand at arm's length or closer, bigger as it goes further away (up to 2x)",
+    near(r.veryClose, 32) && near(r.armsLength, 32) && near(r.further, 32 * 1.6) && near(r.far, 32 * 2) && near(r.veryFar, 32 * 2) && r.veryFar <= r.far + 4,
     JSON.stringify(r));
 }
 

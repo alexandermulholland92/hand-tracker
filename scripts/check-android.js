@@ -174,8 +174,8 @@ async function run() {
   // as on a PC, up to the same 3x.
   const tags = await js(TAG_HEIGHTS);
   const near = (v, want) => Math.abs(v - want) <= Math.max(4, want * 0.12);
-  check("Left/Right tag: a little bigger on a phone up close, bigger as the hand goes further away (up to 3x)",
-    near(tags.veryClose, 32 * 1.3) && near(tags.armsLength, 32 * 1.3) && near(tags.further, 32 * 2.08) && near(tags.far, 32 * 2.9) && near(tags.veryFar, 32 * 2.9),
+  check("Left/Right tag: a little bigger on a phone up close, bigger as the hand goes further away (up to 2x)",
+    near(tags.veryClose, 32 * 1.3) && near(tags.armsLength, 32 * 1.3) && near(tags.further, 32 * 2) && near(tags.far, 32 * 2) && near(tags.veryFar, 32 * 2),
     JSON.stringify(tags));
 
   // 2. Record while two hands are simulated

@@ -379,8 +379,8 @@
       const wrist = HandTracker.toCanvasPoint(hand.imageLandmarks[0]);
       const color = SIDE_COLORS[hand.handedness] || "#adb5bd";
       // Normal size up close (a little bigger on a phone's small screen), bigger as the hand
-      // goes further away so it can still be read, never more than 3x.
-      const k = unit * Math.min(3, (onPhone ? 1.3 : 1) * labelScale(hand));
+      // goes further away so it can still be read, never more than TAG_MAX_SCALE.
+      const k = unit * Math.min(TAG_MAX_SCALE, (onPhone ? 1.3 : 1) * labelScale(hand));
       const h = 30 * k;
       const padX = 12 * k;
       ctx.font = `600 ${Math.round(17 * k)}px "Segoe UI", system-ui, sans-serif`;
@@ -405,13 +405,14 @@
   // How big a hand's tag is drawn, from how big the hand looks, i.e. how far away it is. Its
   // palm (wrist to middle knuckle) is about a fifth of the picture's height at arm's length
   // from a webcam: there and closer, the tag is its normal size (scale 1). Further away it
-  // grows as the hand shrinks (twice as far, twice as big, up to 3x), so it stays readable
-  // from across the room. Smoothed per side so it doesn't flicker with small movements.
+  // grows as the hand shrinks (twice as far, twice as big, up to TAG_MAX_SCALE), so it stays
+  // readable from across the room. Smoothed per side so it doesn't flicker with small movements.
+  const TAG_MAX_SCALE = 2;
   const labelScales = {};
   function labelScale(hand) {
     const a = HandTracker.toCanvasPoint(hand.imageLandmarks[0]), b = HandTracker.toCanvasPoint(hand.imageLandmarks[9]);
     const palm = Math.hypot(b.x - a.x, b.y - a.y) / stage.height;
-    const target = Math.min(3, Math.max(1, 0.2 / Math.max(palm, 1e-3)));
+    const target = Math.min(TAG_MAX_SCALE, Math.max(1, 0.2 / Math.max(palm, 1e-3)));
     const prev = labelScales[hand.handedness];
     const k = prev === undefined ? target : prev + (target - prev) * 0.25;
     labelScales[hand.handedness] = k;
