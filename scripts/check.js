@@ -550,11 +550,11 @@ async function checkPcControl(js) {
     const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],
       [0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]];
     // An open right hand with its wrist at (cx, cy); curled fingers have their tip and last
-    // joint pulled back to the knuckle.
-    const hand = (cx, cy, curled = [], side = "Right") => ({ handedness: side, imageLandmarks: T.map(([x, y], i) => {
+    // joint pulled back towards the knuckle, keeping "keep" of their length (0.55: a light click).
+    const hand = (cx, cy, curled = [], side = "Right", keep = 0.2) => ({ handedness: side, imageLandmarks: T.map(([x, y], i) => {
       const f = { 7: 5, 8: 5, 11: 9, 12: 9 }[i];
       const bent = f !== undefined && curled.includes(f === 5 ? "index" : "middle");
-      const [bx, by] = bent ? [T[f][0] + (x - T[f][0]) * 0.2, T[f][1] + (y - T[f][1]) * 0.2] : [x, y];
+      const [bx, by] = bent ? [T[f][0] + (x - T[f][0]) * keep, T[f][1] + (y - T[f][1]) * keep] : [x, y];
       return { x: cx + bx, y: cy + by, z: 0 };
     }) });
     const none = () => ({ label: "—" });
@@ -587,6 +587,14 @@ async function checkPcControl(js) {
     await frames(4, [hand(0.65, 0.6, ["index", "middle"])]); // both: hold still, no click
     await frames(6, [hand(0.65, 0.6)]);
     out.bothCurled = calls.filter((c) => c[0] === "button").length;
+    // Light clicks, as people make them: the finger only bends a little.
+    calls.length = 0;
+    await frames(6, [hand(0.65, 0.6)]);
+    await frames(5, [hand(0.65, 0.6, ["index"], "Right", 0.55)]);
+    await frames(6, [hand(0.65, 0.6)]);
+    await frames(5, [hand(0.65, 0.6, ["middle"], "Right", 0.55)]);
+    await frames(6, [hand(0.65, 0.6)]);
+    out.lightClicks = calls.filter((c) => c[0] === "button").map((c) => c.slice(1).join(" "));
     PcControl.setMouse(false);
     await sleep(50);
     PcControl.setMouse(true);
@@ -647,9 +655,10 @@ async function checkPcControl(js) {
   const o = r.out;
   check("Control your PC: the card is shown in the desktop app", r.visible);
   check("Hand mouse: the pointer follows the palm (the other way in mirrored view, so it moves the way your hand does)", o.follows && o.mirrored, JSON.stringify({ follows: o.follows, mirrored: o.mirrored }));
-  check("Hand mouse: quick index curl = left click, held = drag, quick middle curl = right click, both curled = no click",
-    o.leftClick.join() === "left click" && o.drag.join() === "left down,left up" && o.rightClick.join() === "right click" && o.bothCurled === 0,
-    JSON.stringify({ leftClick: o.leftClick, drag: o.drag, rightClick: o.rightClick, bothCurled: o.bothCurled }));
+  check("Hand mouse: quick index curl = left click, held = drag, quick middle curl = right click, both curled = no click; light clicks count too",
+    o.leftClick.join() === "left click" && o.drag.join() === "left down,left up" && o.rightClick.join() === "right click" && o.bothCurled === 0 &&
+      o.lightClicks.join() === "left click,right click",
+    JSON.stringify({ leftClick: o.leftClick, drag: o.drag, rightClick: o.rightClick, bothCurled: o.bothCurled, lightClicks: o.lightClicks }));
   check("Gesture actions: hold time, dropouts, repeats, start-and-end, which hand, web requests and the on/off switches work",
     o.fistEarly === 0 && o.fist.join() === "playpause tap" && o.thumbs >= 3 && o.thumbs <= 5 && o.wrongHand === 0 &&
       o.hold.join() === "left down,left up" && o.web.join() === "http://127.0.0.1:9/hook POST Point" && o.disabled === 0 && o.keyboardOff === 0,

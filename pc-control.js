@@ -12,7 +12,7 @@
  *    while held, or on every frame, after it's been held a moment. Adapted from the
  *    HandController in geaxgx/depthai_hand_tracker (MIT licence, see THIRD_PARTY_NOTICES.md).
  *
- *   PcControl.init({ desktop, prefs, setPref, gestureLabels });
+ *   PcControl.init({ desktop, prefs, setPref, gestureLabels, touch });   // touch: working a touchscreen
  *   PcControl.update(hands, gestureOf, mirrored);   // every frame
  */
 
@@ -44,6 +44,7 @@
   const MAX_MISSING_FRAMES = 3; // brief misreadings don't end a held gesture
 
   let desktop = null, prefs = {}, setPref = () => {}, gestureLabels = [];
+  let touch = false; // the pointer works a touchscreen (the phone itself, phone-control.js)
   let els = {};
   let started = null; // pc.start() promise
   const log = [];
@@ -121,6 +122,7 @@
   }
 
   const TAP_MS = 450; // a curl shorter than this is a click; an index curl held longer drags
+  const TOUCH_DRAG = 0.04; // on a touchscreen, moving this far (of the screen) with the index curled drags
   const mouse = {
     on: false,
     side: null, // the hand being followed
@@ -133,17 +135,21 @@
   };
 
   // A finger's curl, from how far its tip reaches compared with its usual straight reach
-  // (learned while it's straight), so it adapts to each hand and camera angle.
+  // (learned while it's straight), so it adapts to each hand and camera angle. A quick
+  // "click" only bends the finger a little: in recorded clicks the tip came back to 74-84%
+  // of its straight reach, so that's what counts as curled.
   function fingerState(f, reach, now) {
     const st = mouse.fingers[f] || (mouse.fingers[f] = { base: reach, curled: false, since: 0, cancelled: false });
-    if (!st.curled) st.base = st.base * 0.9 + reach * 0.1; // follows the straight finger
+    // Follows the straight finger: quickly when it reaches further, slowly when less, so the
+    // start of a bend doesn't pull it down with it.
+    if (!st.curled) st.base += (reach - st.base) * (reach > st.base ? 0.1 : 0.03);
     st.base = Math.max(st.base, 1.0);
     const wasCurled = st.curled;
-    if (!st.curled && reach < 0.72 * st.base) {
+    if (!st.curled && reach < 0.84 * st.base) {
       st.curled = true;
       st.since = now;
       st.cancelled = false;
-    } else if (st.curled && reach > 0.86 * st.base) {
+    } else if (st.curled && reach > 0.92 * st.base) {
       st.curled = false;
     }
     return { st, started: !wasCurled && st.curled, ended: wasCurled && !st.curled };
@@ -194,16 +200,43 @@
       index.st.cancelled = true;
       middle.st.cancelled = true;
     }
+
+    // The pointer follows the palm's centre (it hardly moves when a finger curls), within a
+    // box in the middle of the picture, mapped to the whole screen. On a touchscreen the box
+    // goes with your hand: pushed past an edge it slides along, and with a fist it moves
+    // with the hand (the pointer stays), so every part of the screen is in reach from
+    // wherever your hand is in the picture.
+    const lm = hand.imageLandmarks;
+    const cx = [0, 5, 9, 13, 17].reduce((s, i) => s + lm[i].x, 0) / 5;
+    const cy = [0, 5, 9, 13, 17].reduce((s, i) => s + lm[i].y, 0) / 5;
+    const x = mirrored ? 1 - cx : cx; // move your hand right, the pointer goes right
+    const span = Number(els.mouseReach.value) || 0.55;
+    const clamp = (v) => Math.min(1, Math.max(0, v));
+    if (!mouse.box || mouse.box.span !== span) mouse.box = { x: 0.5 - span / 2, y: 0.45 - span / 2, span };
+    if (touch && clutch && mouse.last) {
+      mouse.box.x = x - mouse.last[0] * span;
+      mouse.box.y = cy - mouse.last[1] * span;
+    } else if (touch) {
+      mouse.box.x = Math.min(Math.max(mouse.box.x, x - span), x);
+      mouse.box.y = Math.min(Math.max(mouse.box.y, cy - span), cy);
+    }
+    const nx = clamp((x - mouse.box.x) / span);
+    const ny = clamp((cy - mouse.box.y) / span);
+
     if (index.started || middle.started) mouse.freezeUntil = Infinity; // clicks land where the pointer was
+    if (index.started) index.st.at = [x, cy];
     // Left: a quick curl clicks; held, it drags (button down until the finger straightens).
-    if (index.st.curled && !index.st.cancelled && !mouse.dragging && now - index.st.since > TAP_MS) {
+    // On a touchscreen a press held still is a long press, so there a curl is a tap however
+    // long it's held, and drags once the hand moves with the finger curled.
+    const drag = touch ? !!index.st.at && Math.hypot(x - index.st.at[0], cy - index.st.at[1]) / span > TOUCH_DRAG : now - index.st.since > TAP_MS;
+    if (index.st.curled && !index.st.cancelled && !mouse.dragging && drag) {
       mouse.dragging = true;
       mouse.freezeUntil = 0;
       desktop.pc.button("left", "down").catch((err) => note(errText(err)));
     }
     if (index.ended) {
       if (mouse.dragging) release();
-      else if (!index.st.cancelled && now - index.st.since <= TAP_MS) desktop.pc.button("left", "click").catch((err) => note(errText(err)));
+      else if (!index.st.cancelled && (touch || now - index.st.since <= TAP_MS)) desktop.pc.button("left", "click").catch((err) => note(errText(err)));
       mouse.freezeUntil = now + 150;
     }
     if (middle.ended) {
@@ -212,16 +245,6 @@
     }
     if (!index.st.curled && !middle.st.curled && mouse.freezeUntil === Infinity) mouse.freezeUntil = now + 150;
 
-    // The pointer follows the palm's centre (it hardly moves when a finger curls), within a
-    // box in the middle of the picture, mapped to the whole screen.
-    const lm = hand.imageLandmarks;
-    const cx = [0, 5, 9, 13, 17].reduce((s, i) => s + lm[i].x, 0) / 5;
-    const cy = [0, 5, 9, 13, 17].reduce((s, i) => s + lm[i].y, 0) / 5;
-    const x = mirrored ? 1 - cx : cx; // move your hand right, the pointer goes right
-    const span = Number(els.mouseReach.value) || 0.55;
-    const clamp = (v) => Math.min(1, Math.max(0, v));
-    const nx = clamp((x - (0.5 - span / 2)) / span);
-    const ny = clamp((cy - (0.45 - span / 2)) / span);
     if (clutch || now < mouse.freezeUntil) {
       mouse.filter.reset(); // pick up from wherever the hand is when it moves again
     } else {
@@ -411,6 +434,7 @@
     prefs = opts.prefs;
     setPref = opts.setPref;
     gestureLabels = opts.gestureLabels;
+    touch = opts.touch === true;
     const card = $("pcCard");
     if (!desktop || !desktop.pc || !card) return false;
     card.hidden = false;

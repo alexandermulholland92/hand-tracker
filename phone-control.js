@@ -60,15 +60,21 @@
       handMouse: { hand: settings.hand || "Right", reach: String(settings.reach || "0.55"), screen: "primary" },
       gestureActions: { rules: Array.isArray(settings.rules) ? settings.rules : [], on: settings.actionsOn === true, allow: settings.allow || {} },
     };
-    global.PcControl.init({ desktop: { pc }, prefs, setPref: () => {}, gestureLabels: global.HandGestures.LABELS });
+    global.PcControl.init({ desktop: { pc }, prefs, setPref: () => {}, gestureLabels: global.HandGestures.LABELS, touch: true });
     const gestures = global.HandGestures.create();
+    // One hand, unless a gesture action is for the hand the mouse doesn't follow: while
+    // fewer hands are found than it looks for, the tracker searches the whole picture again
+    // on every frame, which halves how often it follows the hand.
+    const mouseHand = prefs.handMouse.hand;
+    const otherHand = prefs.gestureActions.on && mouseHand !== "either" &&
+      prefs.gestureActions.rules.some((r) => r.enabled && (r.hand === "Left" || r.hand === "Right") && r.hand !== mouseHand);
     try {
       await global.HandTracker.init({
         videoEl: document.getElementById("video"),
         canvasEl: document.getElementById("stage"),
         overlay: true,
         mirror: true,
-        maxNumHands: 2,
+        maxNumHands: otherHand ? 2 : 1,
         modelComplexity: 0, // the Lite model: this runs alongside whatever app is in front
         deviceId: settings.deviceId || null,
         width: 640,

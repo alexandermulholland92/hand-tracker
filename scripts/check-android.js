@@ -496,12 +496,36 @@ async function run() {
     out.taps = calls.filter((c) => c[0] === "hand.button").map((c) => c.slice(1).join(" "));
     await frames(15, [hand(0.6, 0.6)], () => ({ label: "Thumbs Up" }));
     out.keys = calls.filter((c) => c[0] === "hand.key").map((c) => c.slice(1).join(" "));
+    out.maxHands = HandTracker.getMaxHands(); // its one rule is for either hand
+
+    // A touchscreen: a press held still is a long press, so a curl held still is a tap…
+    const buttonsSince = (m) => calls.slice(m).filter((c) => c[0] === "hand.button").map((c) => c.slice(1).join(" "));
+    let m = calls.length;
+    await frames(20, [hand(0.6, 0.6, ["index"])]);
+    await frames(10, [hand(0.6, 0.6)]);
+    out.heldStill = buttonsSince(m);
+    // …and it swipes once the hand moves with the finger curled.
+    m = calls.length;
+    await frames(4, [hand(0.6, 0.6, ["index"])]);
+    await frames(10, (i) => [hand(0.6, 0.6 - i * 0.02, ["index"])]);
+    await frames(10, [hand(0.6, 0.42)]);
+    out.swipe = buttonsSince(m);
+    // A hand kept low in the picture still reaches the top of the screen: pushed past the
+    // bottom of the area it moves in, the area slides down with it.
+    m = calls.length;
+    await frames(10, (i) => [hand(0.6, 0.9 + i * 0.01)]);
+    await frames(25, (i) => [hand(0.6, 1.0 - i * 0.022)]);
+    await frames(8, [hand(0.6, 0.472)]);
+    out.top = Math.min(...calls.slice(m).filter((c) => c[0] === "hand.pointer").map((c) => c[2]));
     return out;
   })()`).catch((err) => ({ error: String((err && err.message) || err) }));
   controlWin.destroy();
   check("The control window tracks with the camera and turns the hand mouse and gesture actions into taps and keys on the phone (a curl taps; Thumbs Up turns the volume up)",
     controlled.camera > 0 && controlled.mouse && controlled.pointers > 10 && (controlled.taps || []).includes("left click") && (controlled.keys || []).some((k) => /^volumeup/.test(k)),
     JSON.stringify(controlled));
+  check("Control window on a touchscreen: one hand tracked (quicker); a curl held still taps rather than long-pressing; curled and moving swipes; a hand low in the picture reaches the top",
+    controlled.maxHands === 1 && (controlled.heldStill || []).join() === "left click" && (controlled.swipe || []).join() === "left down,left up" && controlled.top < 0.1,
+    JSON.stringify({ maxHands: controlled.maxHands, heldStill: controlled.heldStill, swipe: controlled.swipe, top: controlled.top }));
 
   await js("document.querySelector('a[href=\"viewer.html\"]').click()");
   await sleep(1500);
