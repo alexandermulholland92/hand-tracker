@@ -210,4 +210,39 @@ contextBridge.exposeInMainWorld("desktop", {
       return () => ipcRenderer.removeListener("pc:keyboard-state", listener);
     },
   },
+
+  // Remote recording (remote-record.js): a phone's browser starts and stops motion capture
+  // here. status: { on, port, addresses, urls: [{ kind, url, keyed }], viewer }.
+  remote: {
+    status: () => ipcRenderer.invoke("remote:status"),
+    start: () => ipcRenderer.invoke("remote:start"),
+    stop: () => ipcRenderer.invoke("remote:stop"),
+    newKey: () => ipcRenderer.invoke("remote:new-key"),
+    // { standby (opened at login, waiting for the phone), folder, autostart: { available, on } }
+    settings: () => ipcRenderer.invoke("remote:settings"),
+    setAutostart: (on) => ipcRenderer.invoke("remote:set-autostart", on),
+    chooseFolder: () => ipcRenderer.invoke("remote:choose-folder"),
+    // A take saved without asking where: { baseName, files } -> { dir, results }
+    saveTake: ({ baseName, files }) => ipcRenderer.invoke("files:save-remote", { baseName, files }),
+    onStatus: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("remote:status", listener);
+      return () => ipcRenderer.removeListener("remote:status", listener);
+    },
+    // What the phone's page shows (about twice a second) and the cameras' previews.
+    setState: (state) => ipcRenderer.send("remote:state", state),
+    sendPreviews: (list) => ipcRenderer.send("remote:previews", list),
+    onWantPreviews: (cb) => {
+      const listener = (_event, on) => cb(on);
+      ipcRenderer.on("remote:want-previews", listener);
+      return () => ipcRenderer.removeListener("remote:want-previews", listener);
+    },
+    // cb({ id, action }) for each request from the phone; answer with result(id, { ok, message }).
+    onCommand: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("remote:command", listener);
+      return () => ipcRenderer.removeListener("remote:command", listener);
+    },
+    result: (id, result) => ipcRenderer.send("remote:result", { id, result }),
+  },
 });

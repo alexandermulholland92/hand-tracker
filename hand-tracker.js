@@ -6,7 +6,8 @@
  *   await HandTracker.init({ videoEl, canvasEl, overlay: true, mirror: true, maxNumHands: 2,
  *                            deviceId, width: 1280, height: 720 });
  *                            (external: "<name>" instead of a camera: frames come from pushExternalFrame;
- *                             exactCamera: true: that camera or an error, never the default one instead)
+ *                             exactCamera: true: that camera or an error, never the default one instead;
+ *                             noCamera: true: no camera until setCamera picks one)
  *   HandTracker.onHandLandmarks((data) => { ... });   // fires every processed frame, even with 0 hands
  *     data = { hands: [{ landmarks, imageLandmarks, rawImageLandmarks, handedness, handednessScore, features, orientation }, ...], timestamp }
  *     imageLandmarks are smoothed (see "Smoothing" below); rawImageLandmarks are MediaPipe's, unfiltered
@@ -1480,6 +1481,8 @@
 
     await createHands();
     document.addEventListener("visibilitychange", () => loopKick && loopKick());
+    // options.noCamera: ready to track, but no camera opens until one is picked (setCamera).
+    if (options.noCamera) return true;
 
     try {
       await openCamera();

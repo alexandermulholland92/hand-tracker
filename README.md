@@ -126,6 +126,22 @@ The phone and PC must be on the same network. Only a phone that has read the cod
 
 It needs two permissions, each one tap away in the card: **Display over other apps** (for the pointer and a small camera window) and Hand Tracker's **hand control** in Android's Accessibility settings (to tap, swipe and type). Then tap **Start controlling this phone** and switch to any app. A small window in a corner shows the camera while it runs, and a notification says it's on; tap the window's × or the notification's **Stop** to end it. Hand control does nothing unless this is running, and reads nothing on screen except the text box being typed into.
 
+## Remote recording
+
+In the Windows and Linux app, a phone's browser can start and stop motion capture with *Several cameras at once*, and show a live preview of each camera with its hands drawn. It's made for a camera rig on a computer nobody's sitting at, a Raspberry Pi with no screen say.
+
+1. Pick the cameras once in *Several cameras at once…* (and their roles), then close it.
+2. In the **Record** card, turn on **Remote recording**.
+3. On your phone, open the page:
+   - **Over Tailscale** (from anywhere, no code needed): `http://<the computer's Tailscale name>:47821`, for example `http://pi:47821`. The card shows the full address. Only your own devices can reach the computer over Tailscale, and it encrypts everything.
+   - **On the same Wi-Fi**: scan the QR code in the card with the phone's camera. The page keeps the code, so next time just open it again. **New code** stops phones that have the old one. This page isn't encrypted on the way, like most devices' own pages on a home network, so use it on a network you trust.
+
+The page has **Start cameras**, **Start recording** (which starts the cameras first if need be), **Stop recording** and **Stop cameras**, each camera's frame rate and hands, and a few preview pictures a second while it's open. Nothing starts by itself: the cameras run only once the phone (or someone at the computer) asks.
+
+Each take is saved by itself when you stop, in the export card's formats (JSON unless you've picked others), into `Documents/Hand Tracker recordings` (**Change…** picks another folder). The page shows the file's name. A take still waiting to be exported on the computer is saved the same way before a new one starts, rather than asking there.
+
+**With no screen**: tick **Open Hand Tracker when this computer starts** (installed app only). It then opens at login with Remote recording on and no camera running, waiting for the phone. On a Raspberry Pi this needs the desktop to log in by itself, which Raspberry Pi OS does unless you've changed it. The page uses port 47821 (the next free one if that's taken), so it doesn't get in the way of other servers on the computer, such as Jellyfin's 8096.
+
 ## Luxonis OAK cameras
 
 With a Luxonis OAK camera (OAK-D, OAK-D Lite, OAK-1…), pick **Luxonis OAK camera** in the camera list. The hands are found on the camera itself, using depthai_hand_tracker's Edge mode, and an OAK-D also measures each hand's distance (Show → Distance). Everything else works as with any camera: gestures, recording, motion capture, the hand mouse. Tested with an OAK-D Pro W over USB 3: about 20 frames a second with both hands, distances from 0.4 to 3 m, and far-away mode on the camera. *Model*, *Track* and *Far-away hands* apply too (far-away hands on the camera uses its own body model, MoveNet).
@@ -416,6 +432,7 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `phone-link-protocol.js`, `phone-link-ui.js`, `qr-code.js` | A phone controlling a PC over Wi-Fi: the signed messages, the pairing (with the QR code) on both sides |
 | `phone-control.html`, `phone-control.js` | Android: the small window that tracks your hand while controlling the phone itself |
 | `multi-camera.js`, `camera-tile.html`, `camera-tile.js` | Several cameras at once, each tracked in its own tile |
+| `remote-record-ui.js`, `electron/remote-record.js`, `electron/remote-page.html` | Remote recording: the Record card's part, the small web server, and the phone's page |
 | `motion-video.js` | Draws a recording's playback into a video (WebCodecs and a small WebM writer) |
 | `natnet-parse.js` | OptiTrack Motive's NatNet protocol (shared by the desktop and Android apps) |
 | `keyboard.html`, `keyboard.js` | The floating keyboard |

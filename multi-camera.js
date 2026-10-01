@@ -16,6 +16,8 @@
  *   await MultiCamera.openPicker();          // choose cameras, then start
  *   await MultiCamera.start(deviceIds);      // (the picker's Start; deviceIds may repeat, for checks)
  *   MultiCamera.close();
+ *   await MultiCamera.startRecording() / MultiCamera.stopRecording()   // -> { ok, message } / the take (or null)
+ *   MultiCamera.remoteState(); MultiCamera.previewSources();           // for remote recording (remote-record-ui.js)
  */
 
 (function (global) {
@@ -27,6 +29,7 @@
   let tiles = []; // { name, deviceId, role, label, frame, el, oak (its id, for an OAK camera), oakState }
   let statusTimer = null;
   let recording = false;
+  let recordingSince = 0;
   let oakOff = []; // the OAK stream listeners, while OAK tiles run
   let restoreOak = false; // the main window's OAK camera was in use: back to it when the tiles close
   let oakPorts = {}; // OAK camera id -> its USB port, from the last listing
@@ -247,22 +250,35 @@
 
   // ---------- motion capture from every camera ----------
   async function toggleRecording() {
-    if (!recording) {
-      const apis = tiles.map(tileApi);
-      if (apis.some((a) => !a)) return (els.note.textContent = "Wait for every camera to start.");
-      if (app.readyForNewMotion && !app.readyForNewMotion()) return; // an unexported capture is kept unless you say otherwise
-      await Promise.all(apis.map((a) => a.ready.catch(() => {})));
-      for (const a of apis) if (!a.status().error) a.startRecording();
-      recording = true;
-      els.record.textContent = "Stop Motion Capture";
-      els.record.classList.add("recording");
-      els.note.textContent = "Recording every camera's hands…";
-      return;
-    }
+    if (!recording) return startRecording();
     stopRecording(true);
   }
 
-  function stopRecording(show) {
+  async function startRecording() {
+    if (recording) return { ok: true, message: "Already recording." };
+    const fail = (message) => {
+      els.note.textContent = message;
+      return { ok: false, message };
+    };
+    if (!tiles.length) return fail("No cameras are running.");
+    const apis = tiles.map(tileApi);
+    if (apis.some((a) => !a)) return fail("Wait for every camera to start.");
+    if (app.readyForNewMotion && !app.readyForNewMotion()) return { ok: false, message: "The last capture hasn't been exported." }; // kept unless you say otherwise
+    await Promise.all(apis.map((a) => a.ready.catch(() => {})));
+    const live = apis.filter((a) => !a.status().error);
+    if (!live.length) return fail("No camera is running.");
+    for (const a of live) a.startRecording();
+    recording = true;
+    recordingSince = Date.now();
+    els.record.textContent = "Stop Motion Capture";
+    els.record.classList.add("recording");
+    els.note.textContent = "Recording every camera's hands…";
+    return { ok: true, message: `Recording ${live.length} camera${live.length === 1 ? "" : "s"}.` };
+  }
+
+  // Returns the take (null if no hands were recorded); show: hand it to the export card.
+  function stopRecording(show = true) {
+    if (!recording) return null;
     recording = false;
     els.record.textContent = "Start Motion Capture";
     els.record.classList.remove("recording");
@@ -272,11 +288,41 @@
         return api && api.status().recording ? { tile: t, data: api.stopRecording() } : null;
       })
       .filter(Boolean);
-    if (!show) return;
+    if (!show) return null;
     const merged = merge(parts);
-    if (!merged) return (els.note.textContent = "No hands were recorded.");
+    if (!merged) {
+      els.note.textContent = "No hands were recorded.";
+      return null;
+    }
     els.note.textContent = `Recorded ${merged.hands.length} hand${merged.hands.length === 1 ? "" : "s"} from ${parts.length} camera${parts.length === 1 ? "" : "s"}: export below.`;
     app.showMotionExport(merged);
+    return merged;
+  }
+
+  // ---------- for remote recording (remote-record-ui.js) ----------
+  function remoteState() {
+    return {
+      running: tiles.length > 0,
+      recording,
+      elapsed_s: recording ? (Date.now() - recordingSince) / 1000 : 0,
+      cameras: tiles.map((t) => {
+        const api = tileApi(t);
+        const st = api ? api.status() : null;
+        return { name: t.name, role: CameraRoles.label(t.role) || "", label: t.label, fps: st ? st.fps : 0, hands: st ? st.hands : [], error: st ? st.error || "" : "" };
+      }),
+      note: els.note ? els.note.textContent : "",
+    };
+  }
+
+  // Each tile's picture, with its hands drawn (its tracker's canvas).
+  function previewSources() {
+    return tiles.map((t, i) => {
+      try {
+        return { i, canvas: t.frame.contentDocument && t.frame.contentDocument.getElementById("stage") };
+      } catch {
+        return { i, canvas: null };
+      }
+    });
   }
 
   // The cameras' recordings as one: each camera's clock shifted onto the earliest one's,
@@ -346,5 +392,5 @@
     els.closeBtn.addEventListener("click", () => close());
   }
 
-  global.MultiCamera = { init, openPicker, start, close, isActive: () => tiles.length > 0, _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null })) };
+  global.MultiCamera = { init, openPicker, start, close, startRecording, stopRecording, remoteState, previewSources, isActive: () => tiles.length > 0, isRecording: () => recording, _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null })) };
 })(window);

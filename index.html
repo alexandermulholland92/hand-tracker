@@ -215,6 +215,8 @@
   .link-pair { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px; }
   .link-pair canvas { width: 180px; height: 180px; image-rendering: pixelated; border-radius: 6px; }
   .link-pair code { word-break: break-all; font-size: 12px; user-select: all; }
+  .link-pair .remote-row { margin-bottom: 6px; }
+  .link-pair .remote-row button { font-size: 12px; padding: 2px 8px; }
   #linkCodeInput { flex: 1; min-width: 0; }
   .format-option {
     display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 7px;
@@ -429,6 +431,22 @@
       <div class="toolbar">
         <button id="motionBtn" title="Start / stop motion capture of both hands (M)">Start Motion Capture<kbd>M</kbd></button>
         <span id="motionStatus" class="status"></span>
+      </div>
+      <!-- Windows and Linux app: a phone's browser starts and stops recording here (remote-record-ui.js). -->
+      <div id="remoteRec" hidden>
+        <div class="toolbar">
+          <button id="remoteToggle" aria-pressed="false" title="A page for your phone's browser that starts and stops motion capture with Several cameras, with a live preview of each camera. The cameras only start when the phone asks.">Remote recording: OFF</button>
+          <button id="remoteNewKey" hidden title="A new QR code: phones that read the old one can't connect any more (over Tailscale no code is needed)">New code</button>
+          <span id="remoteStatus" class="note"></span>
+        </div>
+        <div id="remotePair" class="link-pair" hidden>
+          <canvas id="remoteQr" width="200" height="200"></canvas>
+          <div class="note">
+            <div id="remoteUrls"></div>
+            <div class="remote-row">Takes are saved by themselves, in the export card's formats, in <code id="remoteFolder"></code> <button id="remoteFolderBtn">Change…</button></div>
+            <label class="remote-row" id="remoteAutostartRow" hidden><input type="checkbox" id="remoteAutostart" /> Open Hand Tracker when this computer starts, waiting for the phone (for a computer with no screen)</label>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -704,6 +722,7 @@
 <script src="pc-control.js"></script>
 <script src="qr-code.js"></script>
 <script src="phone-link-ui.js"></script>
+<script src="remote-record-ui.js"></script>
 <script src="oak-source.js"></script>
 <script src="ops-sessions.js"></script>
 <script src="rig-live.js"></script>

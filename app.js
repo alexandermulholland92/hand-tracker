@@ -1140,23 +1140,31 @@
   }
   motionDiscardBtn.addEventListener("click", discardMotion);
 
+  // The capture's files in the export card's formats, named as it says (throws if none fit).
+  function motionFiles() {
+    const formats = checkedIds(motionFormatGrid);
+    if (!formats.length) throw new Error("pick at least one format");
+    const baseName = motionName.value.trim() || `robot-motion-${timestampName()}`;
+    let files = [];
+    if (motion.data.hands.length) files = MotionExport.build(motion.data, formats, baseName);
+    if (motion.motive) {
+      const markerIds = formats.filter((id) => MotionExport.MARKER_FORMATS.some((f) => f.id === id));
+      const motiveFiles = MotionExport.buildMarkers(motion.motive, markerIds, `${baseName}-motive`);
+      files.push(...motiveFiles.map((f) => ({ ...f, suffix: `-motive${f.suffix}` })));
+    }
+    if (!files.length) throw new Error("none of the chosen formats can hold this data (pick C3D, TRC, CSV, GLB, NPZ or JSON)");
+    return { baseName, files };
+  }
+
   async function exportMotion() {
     if (!motion) return;
-    const formats = checkedIds(motionFormatGrid);
-    if (!formats.length) {
+    if (!checkedIds(motionFormatGrid).length) {
       motionNote.textContent = "Pick at least one format.";
       return;
     }
-    const baseName = motionName.value.trim() || `robot-motion-${timestampName()}`;
-    let files = [];
+    let baseName, files;
     try {
-      if (motion.data.hands.length) files = MotionExport.build(motion.data, formats, baseName);
-      if (motion.motive) {
-        const markerIds = formats.filter((id) => MotionExport.MARKER_FORMATS.some((f) => f.id === id));
-        const motiveFiles = MotionExport.buildMarkers(motion.motive, markerIds, `${baseName}-motive`);
-        files.push(...motiveFiles.map((f) => ({ ...f, suffix: `-motive${f.suffix}` })));
-      }
-      if (!files.length) throw new Error("none of the chosen formats can hold this data (pick C3D, TRC, CSV, GLB, NPZ or JSON)");
+      ({ baseName, files } = motionFiles());
     } catch (err) {
       motionNote.textContent = `Couldn't convert: ${err.message}`;
       return;
@@ -1187,6 +1195,26 @@
     }
   }
   motionExportBtn.addEventListener("click", exportMotion);
+
+  // A capture saved without asking where (remote recording: nobody may be at this screen):
+  // the export card's formats, into the remote recording folder. -> { ok, dir, files, message }
+  async function saveMotionNow() {
+    if (!motion || motion.exported) return null;
+    try {
+      const { baseName, files } = motionFiles();
+      const res = await desktop.remote.saveTake({ baseName, files });
+      renderResults(motionResults, res.results);
+      const saved = res.results.filter((r) => r.ok);
+      if (saved.length) motion.exported = true;
+      motionNote.textContent = saved.length ? `Saved ${saved.length} file${saved.length === 1 ? "" : "s"} to ${res.dir}` : "Nothing was saved.";
+      const failed = res.results.find((r) => !r.ok);
+      return { ok: saved.length > 0, dir: res.dir, files: saved.map((r) => r.path.split(/[\\/]/).pop()), message: failed ? failed.error : "" };
+    } catch (err) {
+      const message = (err && err.message) || String(err);
+      motionNote.textContent = `Couldn't save: ${message}`;
+      return { ok: false, message };
+    }
+  }
 
   // ---------- Video recording ----------
   let clip = null; // { blob, url, container, duration, width, height, fps, exported }
@@ -1748,6 +1776,8 @@
     MultiVideo.init({ desktop, prefs, setPref });
     // Several live cameras at once, each with its own tracker.
     MultiCamera.init({ prefs, setPref, app: window.HandTrackerApp, modelOf: () => Number(modelSelect.value) });
+    // A phone's browser starting and stopping recording with those cameras (Windows and Linux app).
+    RemoteRecordUI.init({ desktop, prefs, setPref, app: window.HandTrackerApp });
     // Capture sessions from a capture-operations dashboard: hidden until Ctrl+Alt+P (on a
     // phone: tapping the version under the title 7 times). So is watching a capture rig live,
     // from a capture-fleet dashboard. (The phone's bridge has the same ops/fleet/saving calls.)
@@ -1798,6 +1828,9 @@
     shape3d.addEventListener("change", () => { setPref("shape3d", shape3d.value); apply3d(); });
     spin3d.addEventListener("change", () => { setPref("spin3d", spin3d.value); apply3d(); });
 
+    // Opened at login for remote recording (--remote-standby): no camera until the phone
+    // asks for them (or one is picked here).
+    const standby = !!(desktop && desktop.remote && (await desktop.remote.settings().catch(() => ({}))).standby);
     // Without a webcam (a computer with only OAK cameras, say) everything else still starts:
     // the camera list offers the OAK camera and Several cameras at once, and the message says so.
     let cameraError = null;
@@ -1810,9 +1843,14 @@
         maxNumHands: Number(handsSelect.value),
         modelComplexity: Number(modelSelect.value),
         deviceId: prefs.cameraId || null,
+        noCamera: standby,
         ...parseResolution(resolutionSelect.value),
       });
-      stageMessage.hidden = true;
+      stageMessage.hidden = !standby;
+      if (standby) {
+        stageMessage.className = "";
+        stageMessage.textContent = "Waiting for the phone: Remote recording starts the cameras. (Or pick a camera above.)";
+      }
     } catch (err) {
       cameraError = err;
     }
@@ -1870,6 +1908,8 @@
     useStreamSource, leaveStreamSource, setSourceNote: (text) => showSourceNote(text),
     showMotionExport: (data) => showMotionExport(data),
     readyForNewMotion: () => readyForNewMotion(),
+    hasUnsavedMotion: () => !!(motion && !motion.exported),
+    saveMotionNow: () => saveMotionNow(),
     useOak: () => useOak(),
   };
 

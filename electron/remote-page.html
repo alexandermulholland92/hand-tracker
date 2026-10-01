@@ -1,0 +1,215 @@
+<!doctype html>
+<!-- The phone's page for remote recording (served by electron/remote-record.js while Remote
+     recording is on): start and stop motion capture, each camera's status and a live preview
+     of each camera. Over Tailscale it needs nothing more; on the local network, the key from
+     the QR code (kept in this browser once read). -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark light" />
+<title>Hand Tracker remote</title>
+<style>
+  :root { --bg: #111216; --card: #1b1c22; --line: #2c2e36; --text: #e9ecef; --muted: #a3a9b1; --red: #e03131; --green: #2b8a3e; --err: #ff8787; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f5f7; --card: #ffffff; --line: #dde0e4; --text: #1d1f23; --muted: #5f6670; --err: #c92a2a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 14px 16px 40px; }
+  h1 { font-size: 18px; margin: 2px 0 4px; }
+  #status { color: var(--muted); min-height: 1.45em; }
+  #status.rec { color: var(--text); font-weight: 600; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--red); margin-right: 7px; vertical-align: 1px; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: 0.25; } }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
+  button { flex: 1 1 150px; font: inherit; font-size: 17px; font-weight: 600; padding: 15px 16px; border: 0; border-radius: 12px; color: #fff; background: var(--green); cursor: pointer; }
+  button.record { background: var(--red); }
+  button.stop { background: #495057; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  #message { color: var(--muted); font-size: 14px; min-height: 1.4em; margin-bottom: 8px; }
+  #message.err { color: var(--err); }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  @media (max-width: 340px) { .grid { grid-template-columns: 1fr; } }
+  .cam { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .pic { position: relative; aspect-ratio: 16 / 9; background: #000; }
+  .pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .pic span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #adb5bd; font-size: 13px; padding: 8px; text-align: center; }
+  .cap { padding: 7px 10px 9px; font-size: 13px; }
+  .cap b { font-size: 14px; }
+  .muted { color: var(--muted); }
+  .err { color: var(--err); }
+  #take { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 14px; font-size: 14px; word-break: break-word; }
+  #take[hidden], [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Hand Tracker</h1>
+  <div id="status">Connecting…</div>
+  <div class="controls">
+    <button id="camsBtn" hidden>Start cameras</button>
+    <button id="recBtn" class="record" disabled>Start recording</button>
+    <button id="offBtn" class="stop" hidden>Stop cameras</button>
+  </div>
+  <div id="message"></div>
+  <div id="grid" class="grid"></div>
+  <div id="take" hidden></div>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const KEY_NAME = "hand-tracker-remote-key";
+  // The key from the QR code's address (#k=…), kept for next time and taken out of the address bar.
+  let key = "";
+  const fromHash = /[#&]k=([A-Za-z0-9_-]{8,64})/.exec(location.hash);
+  try {
+    if (fromHash) localStorage.setItem(KEY_NAME, fromHash[1]);
+    key = fromHash ? fromHash[1] : localStorage.getItem(KEY_NAME) || "";
+  } catch {
+    key = fromHash ? fromHash[1] : "";
+  }
+  if (fromHash) history.replaceState(null, "", location.pathname);
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const api = async (path, opts = {}) => {
+    const res = await fetch(path, { ...opts, cache: "no-store", headers: { ...(opts.headers || {}), "X-Key": key } });
+    if (res.status === 401) throw Object.assign(new Error("key"), { auth: true });
+    return res;
+  };
+  const clock = (s) => {
+    s = Math.max(0, Math.floor(s || 0));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = String(s % 60).padStart(2, "0");
+    return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+  };
+  // What a button did; it goes after a few seconds (the status line says how things are).
+  let sayTimer = null;
+  const say = (text, err = false) => {
+    clearTimeout(sayTimer);
+    $("message").textContent = text || "";
+    $("message").className = err ? "err" : "";
+    if (text && !err) sayTimer = setTimeout(() => say(""), 5000);
+  };
+
+  let state = null, sending = false, shownCams = -1;
+  const loops = [];
+
+  function render() {
+    const s = state;
+    $("title").textContent = s.host ? `Hand Tracker on ${s.host}` : "Hand Tracker";
+    document.title = s.recording ? `● ${clock(s.elapsed_s)} · Hand Tracker` : "Hand Tracker remote";
+    const cams = s.cameras || [];
+    const running = cams.filter((c) => c.fps > 0).length;
+    const status = $("status");
+    status.className = s.recording ? "rec" : "";
+    if (s.recording) status.innerHTML = `<span class="dot"></span>Recording ${clock(s.elapsed_s)}`;
+    else if (s.pending) status.textContent = s.pending;
+    else if (!s.running) status.textContent = s.savedCameras ? `Cameras off. Start cameras starts the ${s.savedCameras} picked on Hand Tracker.` : "Cameras off.";
+    else if (running < cams.length) status.textContent = `Starting cameras… ${running} of ${cams.length} running`;
+    else status.textContent = `${cams.length} camera${cams.length === 1 ? "" : "s"} running`;
+
+    $("camsBtn").hidden = !!(s.running || s.recording);
+    $("camsBtn").disabled = sending || !!s.pending;
+    $("offBtn").hidden = !s.running || !!s.recording;
+    $("offBtn").disabled = sending || !!s.pending;
+    const rec = $("recBtn");
+    rec.textContent = s.recording ? "Stop recording" : "Start recording";
+    rec.className = s.recording ? "stop" : "record";
+    rec.disabled = sending || (!!s.pending && !s.recording);
+
+    if (cams.length !== shownCams) buildGrid(cams.length);
+    cams.forEach((c, i) => {
+      const cap = document.querySelector(`#cam${i} .cap`);
+      if (!cap) return;
+      const what = c.error ? `<span class="err">${esc(c.error)}</span>` : c.fps > 0 ? `${c.fps} fps · ${c.hands && c.hands.length ? esc(c.hands.join(" + ")) : "no hands"}` : '<span class="muted">starting…</span>';
+      cap.innerHTML = `<b>${esc(c.role || c.name)}</b> <span class="muted">${esc(c.label || "")}</span><br />${what}`;
+    });
+
+    const t = s.lastTake;
+    $("take").hidden = !t;
+    if (t) $("take").innerHTML = t.ok
+      ? `Last take: ${clock(t.duration)} · ${t.hands} hand${t.hands === 1 ? "" : "s"}, saved on ${esc(s.host || "the computer")} as <b>${esc((t.files || []).join(", "))}</b><br /><span class="muted">${esc(t.dir || "")}</span>`
+      : `Last take: <span class="err">${esc(t.message || "not saved")}</span>`;
+  }
+  const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+  // A tile per camera, each with its own preview loop (a few pictures a second, only while
+  // this page is visible: the computer makes previews only while they're asked for).
+  function buildGrid(n) {
+    shownCams = n;
+    loops.forEach((l) => (l.stop = true));
+    loops.length = 0;
+    $("grid").innerHTML = Array.from({ length: n }, (_, i) => `<div class="cam" id="cam${i}"><div class="pic"><span>No picture yet</span><img alt="" hidden /></div><div class="cap"></div></div>`).join("");
+    for (let i = 0; i < n; i++) {
+      const loop = { stop: false };
+      loops.push(loop);
+      previewLoop(i, loop);
+    }
+  }
+  async function previewLoop(i, loop) {
+    const img = document.querySelector(`#cam${i} img`), note = document.querySelector(`#cam${i} .pic span`);
+    let url = null;
+    while (!loop.stop) {
+      if (document.hidden) {
+        await sleep(500);
+        continue;
+      }
+      try {
+        const res = await api(`/api/preview?i=${i}`);
+        if (res.status === 200) {
+          const next = URL.createObjectURL(await res.blob());
+          await new Promise((r) => { img.onload = img.onerror = r; img.src = next; });
+          if (url) URL.revokeObjectURL(url);
+          url = next;
+          img.hidden = false;
+          note.hidden = true;
+          await sleep(200);
+        } else {
+          await sleep(700);
+        }
+      } catch {
+        await sleep(1500);
+      }
+    }
+    if (url) URL.revokeObjectURL(url);
+  }
+
+  async function poll() {
+    for (;;) {
+      try {
+        state = await (await api("/api/state")).json();
+        render();
+        if ($("message").className === "err" && /reach|key/.test($("message").textContent)) say("");
+      } catch (err) {
+        say(err.auth
+          ? "This page needs Hand Tracker's code: open it over Tailscale, or scan the QR code under Remote recording in Hand Tracker."
+          : "Can't reach Hand Tracker. Is it still running, with Remote recording on, and is this phone on the same network (or on Tailscale)?", true);
+      }
+      await sleep(document.hidden ? 3000 : 1000);
+    }
+  }
+
+  async function command(action) {
+    sending = true;
+    if (state) render();
+    try {
+      const res = await (await api("/api/command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) })).json();
+      say(res.message || (res.ok ? "" : res.error || "That didn't work."), res.ok === false || !!res.error);
+    } catch (err) {
+      say(err.auth ? "This page's code isn't Hand Tracker's any more: scan the QR code again." : "Can't reach Hand Tracker.", true);
+    } finally {
+      sending = false;
+      try {
+        state = await (await api("/api/state")).json();
+        render();
+      } catch {}
+    }
+  }
+  $("camsBtn").addEventListener("click", () => command("cameras"));
+  $("offBtn").addEventListener("click", () => command("close"));
+  $("recBtn").addEventListener("click", () => command(state && state.recording ? "stop" : "record"));
+  poll();
+})();
+</script>
+</body>
+</html>

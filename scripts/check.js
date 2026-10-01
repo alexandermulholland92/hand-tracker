@@ -65,6 +65,8 @@ dialog.showSaveDialog = async (_win, opts) => ({ canceled: false, filePath: path
 // Luxonis OAK cameras are stood in for by the main process's SimulatedOak: two of them, no
 // camera or Python needed (see "Several cameras with Luxonis OAK cameras").
 process.env.HAND_TRACKER_OAK_SIMULATE = "1";
+// Remote recording's takes go here, not into Documents.
+process.env.HAND_TRACKER_REMOTE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-remote-"));
 require("../electron/main.js");
 const exporter = require("../electron/exporter.js");
 const validators = require("./motion-validators.js");
@@ -414,6 +416,7 @@ async function run(win) {
   await checkSeveralCameras(js);
   await checkSeveralOakCameras(js);
   await checkOakTileRetry(js);
+  await checkRemoteRecording(js);
 
   // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
   // in go through the same tracking, with the camera's confidence and measured distance.
@@ -924,6 +927,95 @@ async function checkSeveralOakCameras(js) {
       r.labels.every((l) => /Luxonis Simulated OAK SIMULATED-OAK-[AB] · depth/.test(l)) && r.names["SIMULATED-OAK-A"] === "Simulated OAK SIMULATED-OAK-A" &&
       /Head \w+/.test(r.info) && /Chest \w+/.test(r.info) && r.closed,
     JSON.stringify(r));
+}
+
+// Remote recording: a phone's browser (played here by plain requests) starts the cameras and
+// recording, sees each camera's preview, stops (the take saves itself) and stops the cameras.
+async function checkRemoteRecording(js) {
+  const out = {};
+  const setup = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // The cameras are picked once in Several cameras (the two simulated OAK cameras), then closed.
+    await MultiCamera.openPicker();
+    for (let i = 0; i < 50 && !document.querySelector('#multiCamPicks input[value^="oak:"]'); i++) await sleep(100);
+    document.querySelectorAll("#multiCamPicks input").forEach((b) => (b.checked = b.value.startsWith("oak:")));
+    document.getElementById("multiCamPicks").dispatchEvent(new Event("change", { bubbles: true }));
+    document.getElementById("multiCamStart").click();
+    for (let i = 0; i < 100 && !(MultiCamera.isActive() && MultiCamera.remoteState().cameras.every((c) => c.fps > 0)); i++) await sleep(100);
+    MultiCamera.close();
+    await sleep(500);
+    document.getElementById("remoteToggle").click();
+    let s = null;
+    for (let i = 0; i < 50 && !(s && s.on); i++) { await sleep(100); s = await desktop.remote.status(); }
+    return { status: s, card: !document.getElementById("remotePair").hidden, running: MultiCamera.isActive() };
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  out.setup = { on: setup.status && setup.status.on, card: setup.card, runningBefore: setup.running, error: setup.error };
+  const keyed = setup.status && (setup.status.urls || []).find((u) => u.keyed);
+  const key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
+  const base = setup.status && setup.status.port ? `http://127.0.0.1:${setup.status.port}` : "";
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const get = (p, k = key) => fetch(base + p, { headers: { "X-Key": k } });
+  const post = (action, k = key) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": k, "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+  const state = async () => (await get("/api/state")).json();
+  try {
+    out.page = (await (await fetch(base + "/")).text()).includes("Hand Tracker remote");
+    out.noKey = (await get("/api/state", "")).status;
+    out.wrongKey = (await get("/api/state", key.slice(0, -2) + "xx")).status;
+    // A command only from the page itself: JSON, from its own address (not another website's form).
+    const sneak = (headers) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, ...headers }, body: '{"action":"record"}' }).then((r) => r.status);
+    out.textPlain = await sneak({ "Content-Type": "text/plain" });
+    out.otherSite = await sneak({ "Content-Type": "application/json", Origin: "http://evil.example" });
+    const before = await state();
+    out.before = { running: before.running, savedCameras: before.savedCameras };
+    out.record = await (await post("record")).json();
+    let s = null;
+    for (let i = 0; i < 150 && !(s && s.recording); i++) {
+      await sleep(200);
+      s = await state();
+    }
+    out.recording = { recording: s.recording, cameras: s.cameras.map((c) => ({ fps: c.fps, hands: c.hands.length, error: c.error })) };
+    let pic = null;
+    for (let i = 0; i < 40 && !(pic && pic.status === 200); i++) {
+      pic = await get("/api/preview?i=1");
+      if (pic.status !== 200) await sleep(150);
+    }
+    const bytes = Buffer.from(await pic.arrayBuffer());
+    out.preview = { status: pic.status, type: pic.headers.get("content-type"), jpeg: bytes[0] === 0xff && bytes[1] === 0xd8, kb: Math.round(bytes.length / 1024) };
+    await sleep(1500);
+    out.stop = await (await post("stop")).json();
+    const after = await state();
+    out.take = after.lastTake;
+    const file = after.lastTake && after.lastTake.ok ? path.join(process.env.HAND_TRACKER_REMOTE_DIR, after.lastTake.files[0]) : null;
+    const saved = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
+    out.savedHands = saved ? saved.hands.map((h) => h.handedness) : null;
+    out.close = await (await post("close")).json();
+    await sleep(300);
+    out.closed = !(await state()).running;
+    out.unknown = (await post("explode")).status;
+  } catch (err) {
+    out.error = String((err && err.message) || err);
+  }
+  out.off = await js(`(async () => {
+    document.getElementById("remoteToggle").click();
+    await new Promise((r) => setTimeout(r, 300));
+    return !(await desktop.remote.status()).on;
+  })()`).catch(() => false);
+  out.refusedWhenOff = await fetch(base + "/").then(() => false, () => true);
+  // Over Tailscale no key is needed, but only addressed to this computer by its own name.
+  const { tailnetPeer, RemoteRecordServer } = require("../electron/remote-record.js");
+  out.tailnet = [tailnetPeer("100.104.1.2", "::ffff:100.90.3.4"), tailnetPeer("192.168.1.5", "100.90.3.4"), tailnetPeer("100.104.1.2", "192.168.1.9")];
+  const probe = new RemoteRecordServer({ keyStore: null, page: () => "", ask: async () => ({}) });
+  out.ownHost = [probe.ownHost({ headers: { host: "localhost:47821" } }), probe.ownHost({ headers: { host: "evil.example:47821" } })];
+  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); Start recording starts the cameras (nothing runs before), previews come through, Stop saves the take by itself, Stop cameras stops them",
+    out.setup.on && out.setup.card && !out.setup.runningBefore && key.length > 10 && out.page && out.noKey === 401 && out.wrongKey === 401 &&
+      out.before.running === false && out.before.savedCameras === 2 && out.record.ok &&
+      out.recording.recording && out.recording.cameras.length === 2 && out.recording.cameras.every((c) => c.fps > 0 && !c.error) &&
+      out.preview.status === 200 && out.preview.type === "image/jpeg" && out.preview.jpeg && out.preview.kb > 1 &&
+      out.stop.ok && out.take && out.take.ok && /\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
+      out.savedHands && out.savedHands.length === 2 && out.savedHands.some((h) => /^Head /.test(h)) && out.savedHands.some((h) => /^Chest /.test(h)) &&
+      out.close.ok && out.closed && out.unknown === 400 && out.off && out.refusedWhenOff && out.tailnet.join() === "true,false,false" &&
+      out.textPlain === 403 && out.otherSite === 403 && out.ownHost.join() === "true,false",
+    JSON.stringify(out));
 }
 
 // An OAK camera that didn't start: its tile says why and has Try again, which starts it.

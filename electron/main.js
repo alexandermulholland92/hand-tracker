@@ -20,6 +20,7 @@ const { OakCamera } = require("./oak");
 const { OpsClient } = require("./ops");
 const { FleetClient } = require("./fleet");
 const { PhoneLinkServer } = require("./phone-link");
+const { RemoteRecordServer } = require("./remote-record");
 
 const APP_ROOT = path.join(__dirname, "..");
 const SCHEME = "app";
@@ -68,6 +69,9 @@ let ops = null; // capture-session dashboard (see ops.js), created once the app 
 let fleet = null; // capture-fleet dashboard's live rig pictures (see fleet.js)
 const outputFolders = new Map(); // token -> folder the user picked for batch saving
 const exportedPaths = new Set(); // files this session wrote; the only ones "show in folder" will reveal
+// Opened at login for remote recording (remote-record.js): no camera until the phone asks.
+const remoteStandby = process.argv.includes("--remote-standby");
+let remoteRecord = null;
 // Imported videos converted to MP4 for playback: id -> { file, owner: webContents id }. Only these are served under /__media/.
 const mediaFiles = new Map();
 let mediaDir = null;
@@ -586,6 +590,101 @@ function registerLinkIpc() {
   handle("link:new-key", () => phoneLink.newKey());
 }
 
+// ---------- Remote recording: a phone starts and stops motion capture (remote-record.js) ----------
+function remoteFolder() {
+  return process.env.HAND_TRACKER_REMOTE_DIR || readSettings().remoteDir || path.join(app.getPath("documents"), "Hand Tracker recordings");
+}
+
+// Opening Hand Tracker at login, waiting for the phone (--remote-standby): the desktop's
+// autostart entry on Linux, a login item on Windows. Only for the installed app.
+const autostart = {
+  file: () => path.join(os.homedir(), ".config", "autostart", "hand-tracker.desktop"),
+  available: () => app.isPackaged && (process.platform === "linux" || process.platform === "win32"),
+  get() {
+    if (!this.available()) return false;
+    if (process.platform === "linux") return fs.existsSync(this.file());
+    return app.getLoginItemSettings({ args: ["--remote-standby"] }).openAtLogin;
+  },
+  set(on) {
+    if (!this.available()) throw new Error("Only the installed app can open at login.");
+    if (process.platform === "win32") {
+      app.setLoginItemSettings({ openAtLogin: !!on, args: ["--remote-standby"] });
+    } else if (on) {
+      const exe = process.env.APPIMAGE || process.execPath;
+      fs.mkdirSync(path.dirname(this.file()), { recursive: true });
+      // (Inside the Exec line's quotes, ", `, $ and \ are escaped with a \.)
+      const exec = `"${exe.replace(/["`$\\]/g, (c) => `\\${c}`)}" --remote-standby`;
+      const entry = ["[Desktop Entry]", "Type=Application", "Name=Hand Tracker", "Comment=Waits for remote recording from a phone", `Exec=${exec}`, "Terminal=false", "X-GNOME-Autostart-enabled=true"];
+      fs.writeFileSync(this.file(), entry.join("\n") + "\n");
+    } else {
+      fs.rmSync(this.file(), { force: true });
+    }
+    return this.get();
+  },
+};
+
+function registerRemoteIpc() {
+  const file = path.join(app.getPath("userData"), "remote-record.json");
+  const keyStore = {
+    load: () => {
+      try {
+        const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+        return saved.key && safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(saved.key, "base64")) : null;
+      } catch {
+        return null;
+      }
+    },
+    save: (key) => {
+      if (!safeStorage.isEncryptionAvailable()) return;
+      fs.writeFileSync(file, JSON.stringify({ key: safeStorage.encryptString(key).toString("base64") }));
+    },
+  };
+  const toWindow = (channel, data) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, data);
+  };
+  // What the phone asks for, carried out by the main window (remote-record-ui.js).
+  const pending = new Map();
+  let asked = 0;
+  const ask = (action) =>
+    new Promise((resolve) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return resolve({ ok: false, message: "Hand Tracker's window isn't open." });
+      const id = ++asked;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        resolve({ ok: false, message: "Hand Tracker didn't answer." });
+      }, 30000);
+      pending.set(id, (result) => {
+        clearTimeout(timer);
+        pending.delete(id);
+        resolve(result);
+      });
+      toWindow("remote:command", { id, action });
+    });
+  remoteRecord = new RemoteRecordServer({
+    keyStore,
+    page: () => fs.readFileSync(path.join(__dirname, "remote-page.html"), "utf8"),
+    ask,
+    onWantPreviews: (on) => toWindow("remote:want-previews", on),
+  });
+  remoteRecord.on("status", (s) => toWindow("remote:status", s));
+  const fromApp = (event) => event.senderFrame && isAppUrl(event.senderFrame.url);
+  handle("remote:status", () => remoteRecord.status());
+  handle("remote:start", () => remoteRecord.start());
+  handle("remote:stop", () => remoteRecord.stop());
+  handle("remote:new-key", () => remoteRecord.newKey());
+  handle("remote:settings", () => ({ standby: remoteStandby, folder: remoteFolder(), autostart: { available: autostart.available(), on: autostart.get() } }));
+  handle("remote:set-autostart", (event, on) => autostart.set(!!on));
+  ipcMain.on("remote:state", (event, state) => fromApp(event) && remoteRecord.setState(state));
+  ipcMain.on("remote:previews", (event, list) => {
+    if (!fromApp(event) || !Array.isArray(list)) return;
+    for (const p of list) if (p && p.jpeg) remoteRecord.setPreview(Number(p.i), p.jpeg);
+  });
+  ipcMain.on("remote:result", (event, { id, result } = {}) => {
+    const done = fromApp(event) && pending.get(id);
+    if (done) done(result && typeof result === "object" ? { ok: !!result.ok, message: String(result.message || "") } : { ok: true });
+  });
+}
+
 function registerFleetIpc() {
   fleet = new FleetClient(app.getPath("userData"), session.fromPartition("persist:capture-fleet"));
   handle("fleet:status", () => fleet.check());
@@ -720,6 +819,18 @@ function registerIpc() {
     const dir = await chooseFolder(event, title);
     if (!dir) return { canceled: true, results: [] };
     return { dir, results: await writeFiles(dir, baseName, files) };
+  });
+
+  // Remote recording's takes: saved without asking, into its folder (nobody may be at this screen).
+  handle("files:save-remote", async (event, { baseName, files }) => {
+    const dir = remoteFolder();
+    await fs.promises.mkdir(dir, { recursive: true });
+    return { dir, results: await writeFiles(dir, baseName, files) };
+  });
+  handle("remote:choose-folder", async (event) => {
+    const dir = await chooseFolder(event, "Choose a folder for remote recordings");
+    if (dir) writeSettings({ remoteDir: dir });
+    return remoteFolder();
   });
 
   // For saving many results into one folder: pick it once, then save into it by token.
@@ -907,6 +1018,7 @@ app.whenReady().then(() => {
   registerOpsIpc();
   registerFleetIpc();
   registerLinkIpc();
+  registerRemoteIpc();
   buildMenu();
   mainWindow = createWindow();
   mainWindow.on("closed", () => {
@@ -928,5 +1040,6 @@ app.on("will-quit", () => {
   for (const id of [...oakStreams.keys()]) stopOakStream(id);
   if (natnet.client) natnet.client.stop();
   if (phoneLink) phoneLink.stop();
+  if (remoteRecord) remoteRecord.stop();
   if (mediaDir) fs.rmSync(mediaDir, { recursive: true, force: true });
 });
