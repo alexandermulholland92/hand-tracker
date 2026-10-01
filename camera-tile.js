@@ -3,13 +3,17 @@
  * (camera-tile.html, shown in a tile): its own hand tracker, so each camera has its own
  * left and right hand, its own smoothing and its own motion capture.
  *
- * Settings come from the page's address: ?device=<camera id>&mirror=1|0&model=0|1&name=<tile name>.
+ * Settings come from the page's address: ?device=<camera id>&mirror=1|0&model=0|1&name=<tile name>,
+ * or ?oak=<OAK camera id> for a Luxonis OAK camera: its hands are found on the camera, and the
+ * page showing the tile passes its frames in (oakFrame, oakStatus).
  * The tile page's API, for the page that shows it:
  *   await Tile.ready                          the camera is running
  *   Tile.hands()                              the hands on the last frame
  *   Tile.status()                             { fps, width, height, hands, recording, error }
  *   Tile.startRecording() / Tile.stopRecording() -> the recording (RobotMotion), with
  *     clock_origin_ms: when its first frame was, in ms since 1970 (to line cameras up)
+ *   await Tile.oakFrame(jpeg, results, t)     an OAK camera's frame (results as HandTracker takes them)
+ *   Tile.oakStatus(status)                    its helper's status ("starting", "running", "error"…)
  */
 
 (function (global) {
@@ -17,6 +21,8 @@
   const SIDE_COLORS = { Left: "#4dabf7", Right: "#ff922b" };
   const video = document.getElementById("video"), stage = document.getElementById("stage"), message = document.getElementById("message");
   let latest = [], error = "";
+  const oak = params.get("oak");
+  let lastBitmap = null;
 
   // A small tag at each wrist: which hand (the main window's labels, without gestures).
   function drawTags(hands) {
@@ -46,6 +52,17 @@
   }
 
   async function start() {
+    if (oak) {
+      // The camera's helper finds the hands; this page draws and records them.
+      await HandTracker.init({ videoEl: video, canvasEl: stage, overlay: true, mirror: params.get("mirror") !== "0", maxNumHands: 2, external: "OAK camera" });
+      message.textContent = "Starting the OAK camera…";
+      HandTracker.onHandLandmarks(({ hands, timestamp }) => {
+        latest = hands;
+        drawTags(hands);
+        if (RobotMotion.isRecording()) RobotMotion.feed(hands, timestamp);
+      });
+      return;
+    }
     try {
       await HandTracker.init({
         videoEl: video,
@@ -81,6 +98,23 @@
     status: () => {
       const cam = error ? { width: 0, height: 0 } : HandTracker.getCamera();
       return { fps: error ? 0 : HandTracker.getFPS(), width: cam.width, height: cam.height, hands: latest.map((h) => h.handedness), recording: RobotMotion.isRecording(), error };
+    },
+    oakFrame: async (jpeg, results, t) => {
+      if (!oak || !jpeg) return;
+      const bitmap = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }));
+      HandTracker.pushExternalFrame(bitmap, results, t);
+      if (lastBitmap) lastBitmap.close();
+      lastBitmap = bitmap;
+      if (!error) message.hidden = true;
+    },
+    oakStatus: (s) => {
+      if (s.status === "error" || (s.status === "stopped" && s.code)) {
+        error = s.message || `The OAK camera stopped${s.detail ? `: ${s.detail}` : "."}`;
+        message.hidden = false;
+        message.textContent = error;
+      } else if (s.status === "starting" && s.message) {
+        message.textContent = s.message;
+      }
     },
     startRecording: () => RobotMotion.start(),
     stopRecording: () => {

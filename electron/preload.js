@@ -140,6 +140,24 @@ contextBridge.exposeInMainWorld("desktop", {
       ipcRenderer.on("oak:status", listener);
       return () => ipcRenderer.removeListener("oak:status", listener);
     },
+    // Several OAK cameras at once ("Several cameras"): [{ name, id, state }] of those plugged
+    // in, then a stream each by id, its frames and statuses tagged with that id.
+    list: () => ipcRenderer.invoke("oak:list"),
+    streamStart: (id, options) => ipcRenderer.invoke("oak:stream-start", { ...options, id }),
+    streamStop: (id) => ipcRenderer.invoke("oak:stream-stop", id || null),
+    // cb({ id, header, jpeg }); call streamShown(id) once it's drawn.
+    onStreamFrame: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("oak:stream-frame", listener);
+      return () => ipcRenderer.removeListener("oak:stream-frame", listener);
+    },
+    streamShown: (id) => ipcRenderer.send("oak:stream-shown", id),
+    // cb({ id, status, message, camera, depth, usb, ... })
+    onStreamStatus: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("oak:stream-status", listener);
+      return () => ipcRenderer.removeListener("oak:stream-status", listener);
+    },
   },
 
   // Controlling this computer: the hand mouse, the floating keyboard and gesture actions.

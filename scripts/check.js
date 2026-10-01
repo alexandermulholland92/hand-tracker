@@ -62,6 +62,9 @@ app.on("child-process-gone", (event, details) => {
 dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [outDir] });
 dialog.showSaveDialog = async (_win, opts) => ({ canceled: false, filePath: path.join(outDir, path.basename(opts.defaultPath)) });
 
+// Luxonis OAK cameras are stood in for by the main process's SimulatedOak: two of them, no
+// camera or Python needed (see "Several cameras with Luxonis OAK cameras").
+process.env.HAND_TRACKER_OAK_SIMULATE = "1";
 require("../electron/main.js");
 const exporter = require("../electron/exporter.js");
 const validators = require("./motion-validators.js");
@@ -409,6 +412,7 @@ async function run(win) {
   await checkOpsStreaming();
   await checkLiveRigs(js);
   await checkSeveralCameras(js);
+  await checkSeveralOakCameras(js);
 
   // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
   // in go through the same tracking, with the camera's confidence and measured distance.
@@ -873,6 +877,49 @@ async function checkSeveralCameras(js) {
     guessed.guesses.join() === "head,chest,wrist_left,wrist_right,wrist_left,wrist_right,," && guessed.assigned.join() === "chest,wrist_left,head" &&
       guessed.savedNone.join() === ",head" && guessed.savedTwice.join() === "chest,head",
     JSON.stringify(guessed));
+}
+
+// Several cameras with Luxonis OAK cameras among them, against two stand-in OAK cameras
+// (SimulatedOak in electron/main.js: each streams a moving hand, as the OAK helper does).
+async function checkSeveralOakCameras(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    await MultiCamera.openPicker();
+    let boxes = [];
+    for (let i = 0; i < 50; i++) {
+      boxes = [...document.querySelectorAll("#multiCamPicks input")].map((b) => b.value + " = " + b.parentElement.textContent.trim());
+      if (boxes.some((b) => b.startsWith("oak:"))) break;
+      await sleep(100);
+    }
+    document.getElementById("multiCamCancel").click();
+    const out = { boxes };
+    await MultiCamera.start(["oak:SIMULATED-OAK-A", "oak:SIMULATED-OAK-B"]);
+    let tiles = [];
+    for (let i = 0; i < 150; i++) {
+      tiles = MultiCamera._tiles();
+      if (tiles.length === 2 && tiles.every((t) => t.status && t.status.fps > 0 && t.status.hands.length)) break;
+      await sleep(200);
+    }
+    out.tiles = tiles.map((t) => ({ name: t.name, role: t.role, fps: t.status && t.status.fps, hands: t.status && t.status.hands, error: t.status && t.status.error }));
+    out.labels = [...document.querySelectorAll("#multiCamGrid .lbl")].map((l) => l.textContent);
+    document.getElementById("multiCamRecord").click();
+    await sleep(1500);
+    document.getElementById("multiCamRecord").click();
+    await sleep(500);
+    out.info = document.getElementById("motionInfo").textContent;
+    out.names = JSON.parse(localStorage.getItem("hand-tracker:prefs")).oakNames || {};
+    MultiCamera.close();
+    await sleep(300);
+    out.closed = document.getElementById("multiCamCard").hidden && document.querySelectorAll("#multiCamGrid iframe").length === 0;
+    document.getElementById("motionDiscardBtn").click(); // (an unexported capture would make the next one ask first)
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  check("Several cameras with Luxonis OAK cameras: the picker lists them; each gets a tile, its hands found on the camera; they record together, hands named by role",
+    r.boxes && r.boxes.filter((b) => b.startsWith("oak:")).length === 2 &&
+      r.tiles.length === 2 && r.tiles.every((t) => t.fps > 0 && t.hands.length === 1 && !t.error) && r.tiles.map((t) => t.role).join() === "head,chest" &&
+      r.labels.every((l) => /Luxonis Simulated OAK SIMULATED-OAK-[AB] · depth/.test(l)) && r.names["SIMULATED-OAK-A"] === "Simulated OAK SIMULATED-OAK-A" &&
+      /Head \w+/.test(r.info) && /Chest \w+/.test(r.info) && r.closed,
+    JSON.stringify(r));
 }
 
 // Live Rigs, against the stand-in capture-fleet dashboard (fleet-sim.js, which says what each rig does).

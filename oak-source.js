@@ -8,6 +8,9 @@
  *   await OakSource.start(settings)       // sets it up first if needed (asks), then streams
  *   OakSource.stop()
  *   OakSource.isActive()
+ *   await OakSource.ensureReady()         // the one-time setup if it's needed (asks); false if canceled
+ *   OakSource.toResults(header)           // a helper frame's hands, shaped as HandTracker takes them
+ *                                         // (also for "Several cameras", multi-camera.js)
  */
 
 (function (global) {
@@ -86,14 +89,17 @@
     }
   }
 
-  async function start(settings) {
+  async function ensureReady() {
     let status = await desktop.oak.status();
-    if (!status.ready) {
-      const ok = await askSetup(status.reason);
-      if (!ok) throw Object.assign(new Error("OAK setup canceled"), { canceled: true });
-      status = await desktop.oak.status();
-      if (!status.ready) throw new Error(status.reason);
-    }
+    if (status.ready) return true;
+    if (!(await askSetup(status.reason))) return false;
+    status = await desktop.oak.status();
+    if (!status.ready) throw new Error(status.reason);
+    return true;
+  }
+
+  async function start(settings) {
+    if (!(await ensureReady())) throw Object.assign(new Error("OAK setup canceled"), { canceled: true });
     stop();
     await HandTracker.useExternalSource("OAK camera");
     active = true;
@@ -136,6 +142,8 @@
     start,
     stop,
     isActive: () => active,
+    ensureReady,
+    toResults,
     info: () => ({ ...info }),
     onStatus: (cb) => (onChange = cb),
   };

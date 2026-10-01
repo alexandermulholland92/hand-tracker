@@ -7,7 +7,7 @@
  * .tak support (through the Motive installed on this PC) over IPC.
  */
 
-const { app, BrowserWindow, protocol, session, ipcMain, dialog, shell, Menu, desktopCapturer, screen, globalShortcut, net, safeStorage } = require("electron");
+const { app, BrowserWindow, protocol, session, ipcMain, dialog, shell, Menu, desktopCapturer, screen, globalShortcut, net, safeStorage, nativeImage } = require("electron");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -63,6 +63,7 @@ let keyboardWindow = null; // the floating keyboard
 const input = new InputDriver(); // mouse and keyboard input to this computer (see input.js)
 let oak = null; // Luxonis OAK cameras (see oak.js), created once the app is ready
 let oakViewer = null; // the window receiving the OAK camera's frames
+const oakStreams = new Map(); // several OAK cameras at once (multi-camera.js): id -> { cam, busy }
 let ops = null; // capture-session dashboard (see ops.js), created once the app is ready
 let fleet = null; // capture-fleet dashboard's live rig pictures (see fleet.js)
 const outputFolders = new Map(); // token -> folder the user picked for batch saving
@@ -402,7 +403,9 @@ function registerPcIpc() {
 // ---------- Luxonis OAK cameras ----------
 function registerOakIpc() {
   oak = new OakCamera(app.getPath("userData"), (url) => net.fetch(url));
-  handle("oak:status", () => oak.status());
+  // The automated checks' stand-in OAK cameras need no setup (see SimulatedOak).
+  const simulated = !!process.env.HAND_TRACKER_OAK_SIMULATE;
+  handle("oak:status", () => (simulated ? { ready: true, simulated: true } : oak.status()));
   handle("oak:setup", (event) =>
     oak.setup((line) => {
       if (!event.sender.isDestroyed()) event.sender.send("oak:setup-progress", line);
@@ -431,6 +434,77 @@ function registerOakIpc() {
     oak.stop();
     return true;
   });
+
+  // Several OAK cameras at once (the tiles of "Several cameras", multi-camera.js): a helper
+  // each, its frames and statuses tagged with the camera's id. A frame is dropped while the
+  // page is still showing that camera's last one.
+  handle("oak:list", async () => {
+    if (simulated) return [{ name: "sim.1", id: "SIMULATED-OAK-A", state: "X_LINK_UNBOOTED" }, { name: "sim.2", id: "SIMULATED-OAK-B", state: "X_LINK_UNBOOTED" }];
+    const msg = await oak.runBridge(["--list"]).catch(() => null);
+    return msg && msg.status === "devices" ? msg.devices : [];
+  });
+  handle("oak:stream-start", (event, { id, ...options } = {}) => {
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(String(id || ""))) throw new Error("Which OAK camera?");
+    stopOakStream(id);
+    const viewer = event.sender;
+    const stream = { cam: simulated ? new SimulatedOak() : new OakCamera(app.getPath("userData"), (url) => net.fetch(url)), busy: false };
+    oakStreams.set(id, stream);
+    stream.cam.start({ ...options, device: id }, (msg) => {
+      if (oakStreams.get(id) !== stream && msg.status !== "stopped") return;
+      if (viewer.isDestroyed()) return stopOakStream(id);
+      if (msg.frame) {
+        if (stream.busy) return;
+        stream.busy = true;
+        viewer.send("oak:stream-frame", { id, header: msg.frame, jpeg: msg.jpeg ? new Uint8Array(msg.jpeg) : null });
+      } else if (oakStreams.get(id) === stream || !oakStreams.has(id)) {
+        viewer.send("oak:stream-status", { id, ...msg });
+      }
+    });
+    return true;
+  });
+  ipcMain.on("oak:stream-shown", (event, id) => {
+    const stream = oakStreams.get(id);
+    if (stream) stream.busy = false;
+  });
+  handle("oak:stream-stop", (event, id) => {
+    for (const key of id ? [id] : [...oakStreams.keys()]) stopOakStream(key);
+    return true;
+  });
+}
+
+function stopOakStream(id) {
+  const stream = oakStreams.get(id);
+  if (!stream) return;
+  oakStreams.delete(id);
+  stream.cam.stop();
+}
+
+// For the automated checks (HAND_TRACKER_OAK_SIMULATE): an OAK camera without a camera or
+// Python, streaming like the helper does: a hand moving across a plain picture.
+class SimulatedOak {
+  start(options, onMessage) {
+    const w = 640, h = 360;
+    const pixels = Buffer.alloc(w * h * 4, 60);
+    const jpeg = nativeImage.createFromBitmap(pixels, { width: w, height: h }).toJPEG(70);
+    const T = [[0, 0], [-0.04, -0.03], [-0.08, -0.07], [-0.11, -0.1], [-0.13, -0.13], [-0.035, -0.12], [-0.04, -0.17], [-0.043, -0.2], [-0.045, -0.23],
+      [0, -0.125], [0, -0.18], [0, -0.215], [0, -0.245], [0.03, -0.115], [0.035, -0.165], [0.038, -0.195], [0.04, -0.22], [0.055, -0.1], [0.065, -0.135], [0.07, -0.16], [0.075, -0.18]];
+    const t0 = Date.now();
+    this.onMessage = onMessage;
+    onMessage({ status: "running", camera: `Simulated OAK ${options.device}`, width: w, height: h, depth: true, id: options.device, usb: "SUPER" });
+    this.timer = setInterval(() => {
+      const t = (Date.now() - t0) / 1000;
+      const cx = 0.5 + 0.2 * Math.sin(t), cy = 0.75;
+      const hand = { lm: T.map(([x, y]) => [cx + x, cy + y, 0]), world: T.map(([x, y]) => [x * 0.75, y * 0.75, 0]), label: "Left", anatomical: false, score: 0.97, lm_score: 0.95, xyz: [120, -40, 850] };
+      onMessage({ frame: { t: Math.round(t * 1000), w, h, fps: 30, hands: [hand] }, jpeg });
+    }, 33);
+  }
+
+  stop() {
+    if (!this.timer) return;
+    clearInterval(this.timer);
+    this.timer = null;
+    this.onMessage({ status: "stopped", code: 0, detail: "" });
+  }
 }
 
 // ---------- Capture sessions from a capture-operations dashboard (hidden feature) ----------
@@ -841,6 +915,7 @@ app.on("will-quit", () => {
   globalShortcut.unregisterAll();
   input.stop();
   if (oak) oak.stop();
+  for (const id of [...oakStreams.keys()]) stopOakStream(id);
   if (natnet.client) natnet.client.stop();
   if (phoneLink) phoneLink.stop();
   if (mediaDir) fs.rmSync(mediaDir, { recursive: true, force: true });

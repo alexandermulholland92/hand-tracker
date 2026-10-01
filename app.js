@@ -449,7 +449,8 @@
       cameraSelect.appendChild(opt);
     }
     if (current && cams.some((c) => c.deviceId === current)) cameraSelect.value = current;
-    if (cams.length >= 2 && window.MultiCamera) {
+    // (OAK cameras can be several cameras too: the picker lists them.)
+    if ((cams.length >= 2 || OakSource.available()) && window.MultiCamera) {
       const opt = document.createElement("option");
       opt.value = "__multi";
       opt.textContent = "Several cameras at once…";
@@ -1859,6 +1860,7 @@
     useStreamSource, leaveStreamSource, setSourceNote: (text) => showSourceNote(text),
     showMotionExport: (data) => showMotionExport(data),
     readyForNewMotion: () => readyForNewMotion(),
+    useOak: () => useOak(),
   };
 
   main().catch((err) => {

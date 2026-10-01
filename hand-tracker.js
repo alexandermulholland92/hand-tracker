@@ -5,6 +5,7 @@
  *
  *   await HandTracker.init({ videoEl, canvasEl, overlay: true, mirror: true, maxNumHands: 2,
  *                            deviceId, width: 1280, height: 720 });
+ *                            (external: "<name>" instead of a camera: frames come from pushExternalFrame)
  *   HandTracker.onHandLandmarks((data) => { ... });   // fires every processed frame, even with 0 hands
  *     data = { hands: [{ landmarks, imageLandmarks, rawImageLandmarks, handedness, handednessScore, features, orientation }, ...], timestamp }
  *     imageLandmarks are smoothed (see "Smoothing" below); rawImageLandmarks are MediaPipe's, unfiltered
@@ -1459,6 +1460,15 @@
       file.playing = false;
       for (const cb of endedCallbacks) cb();
     });
+
+    // options.external: hands and pictures come from elsewhere from the start (an OAK camera
+    // in a tile of "Several cameras"): no camera of its own, and MediaPipe isn't loaded.
+    if (options.external) {
+      source = "external";
+      external = { name: String(options.external), width: 0, height: 0 };
+      notifySource();
+      return true;
+    }
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       throw new Error("Camera access isn't available here. Run the desktop app, or serve this page over http://localhost.");
