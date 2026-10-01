@@ -16,10 +16,11 @@ const ROOT = path.join(__dirname, "..");
 const OUT = path.join(ROOT, "www");
 
 const APP_FILES = [
-  "index.html", "viewer.html",
+  "index.html", "viewer.html", "camera-tile.html", "camera-tile.js", "multi-camera.js",
   "app.js", "viewer.js", "mobile-bridge.js", "export-ui.js", "motion-import.js",
   "hand-tracker.js", "far-hands.js", "robot-motion.js", "hand-3d.js",
-  "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js", "ops-sessions.js", "rig-live.js",
+  "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js", "ops-sessions.js", "rig-live.js", "motion-video.js",
+  "natnet-parse.js", "remote-core.js", "phone-link-protocol.js", "phone-link-ui.js", "gestures.js", "phone-control.html", "phone-control.js", "qr-code.js", "video-native.js",
   "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
 ];
 

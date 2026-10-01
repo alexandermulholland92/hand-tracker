@@ -22,10 +22,14 @@ const fs = require("fs");
 const path = require("path");
 
 const UV_VERSION = "0.12.19";
+// By platform and processor. 64-bit ARM Linux: Raspberry Pi 4 and 5 and other ARM boards
+// (Luxonis's depthai, OpenCV and NumPy all have ARM builds for Python 3.12).
 const UV = {
-  win32: { file: "uv-x86_64-pc-windows-msvc.zip", size: 17955780, exe: "uv.exe" },
-  linux: { file: "uv-x86_64-unknown-linux-gnu.tar.gz", size: 19831732, exe: "uv-x86_64-unknown-linux-gnu/uv" },
+  "win32-x64": { file: "uv-x86_64-pc-windows-msvc.zip", size: 17955780, exe: "uv.exe" },
+  "linux-x64": { file: "uv-x86_64-unknown-linux-gnu.tar.gz", size: 19831732, exe: "uv-x86_64-unknown-linux-gnu/uv" },
+  "linux-arm64": { file: "uv-aarch64-unknown-linux-gnu.tar.gz", size: 18916891, exe: "uv-aarch64-unknown-linux-gnu/uv" },
 };
+const uvHere = () => UV[`${process.platform}-${process.arch}`];
 const PYTHON = "3.12";
 const PACKAGES = ["depthai==2.30.0.0", "opencv-python-headless==4.10.0.84", "numpy==1.26.4"];
 // The camera models, from geaxgx/depthai_hand_tracker at a fixed commit.
@@ -54,7 +58,7 @@ class OakCamera {
       env,
       python: process.platform === "win32" ? path.join(env, "Scripts", "python.exe") : path.join(env, "bin", "python"),
       models: path.join(this.dir, "models"),
-      uv: path.join(this.dir, "uv", UV[process.platform] ? UV[process.platform].exe : "uv"),
+      uv: path.join(this.dir, "uv", uvHere() ? uvHere().exe : "uv"),
     };
   }
 
@@ -64,7 +68,7 @@ class OakCamera {
   }
 
   async status() {
-    if (!UV[process.platform]) return { ready: false, reason: "OAK cameras work in the Windows and Linux apps." };
+    if (!uvHere()) return { ready: false, reason: "OAK cameras work in the Windows and Linux apps (64-bit PCs, and 64-bit ARM boards like the Raspberry Pi)." };
     const p = this.paths;
     const models = MODELS.every(([rel]) => fs.existsSync(path.join(p.models, path.basename(rel))));
     const python = fs.existsSync(p.python);
@@ -136,8 +140,8 @@ class OakCamera {
   }
 
   async doSetup(progress) {
-    const plat = UV[process.platform];
-    if (!plat) throw new Error("OAK cameras work in the Windows and Linux apps.");
+    const plat = uvHere();
+    if (!plat) throw new Error("OAK cameras work in the Windows and Linux apps (64-bit PCs, and 64-bit ARM boards like the Raspberry Pi).");
     const p = this.paths;
     fs.mkdirSync(this.dir, { recursive: true });
 

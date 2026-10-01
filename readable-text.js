@@ -81,6 +81,7 @@
       await worker.setParameters({
         tessedit_pageseg_mode: "11", // sparse text: find scattered words anywhere in the frame
         user_defined_dpi: "96",      // silences "Estimating resolution" warnings
+        debug_file: "/dev/null",     // and Tesseract's own notes on bits it skips ("Image too small to scale!!")
       });
       workerState = "ready";
     } catch (err) {

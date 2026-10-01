@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- The Android app controlling the phone itself: the small window that tracks your hand
+     while other apps are in front (phone-control.js, in PhoneControlService.java's overlay). -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' data: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'" />
+<title>Hand Tracker</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0e0f12; overflow: hidden; }
+  #stage { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #video { display: none; }
+  #message { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 4px;
+    color: #c9c9cf; font: 11px "Segoe UI", system-ui, sans-serif; }
+  #message[hidden] { display: none; }
+</style>
+</head>
+<body>
+<video id="video" playsinline muted></video>
+<canvas id="stage" width="320" height="240"></canvas>
+<div id="message">Starting the camera…</div>
+<!-- The hand mouse and gesture actions (pc-control.js) read their settings from the
+     "Control your PC" card's controls: the same ones, hidden, set from the app's choices. -->
+<div id="pcCard" hidden>
+  <button id="mouseToggle"> </button>
+  <select id="mouseHand"><option value="Right">right</option><option value="Left">left</option><option value="either">either</option></select>
+  <select id="mouseReach"><option value="0.4">small</option><option value="0.55" selected>medium</option><option value="0.7">large</option></select>
+  <select id="mouseScreen"><option value="primary">main screen</option></select>
+  <div id="mouseStatus"></div>
+  <button id="keyboardToggle"> </button>
+  <button id="actionsToggle"> </button>
+  <input type="checkbox" id="allowKeys" checked /><input type="checkbox" id="allowMouse" checked /><input type="checkbox" id="allowWeb" checked />
+  <button id="addAction"></button>
+  <div id="actionList"></div>
+  <div id="actionLog"></div>
+</div>
+<script src="node_modules/@mediapipe/hands/hands.js"></script>
+<script src="node_modules/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="hand-tracker.js"></script>
+<script src="gestures.js"></script>
+<script src="pc-control.js"></script>
+<script src="phone-control.js"></script>
+</body>
+</html>

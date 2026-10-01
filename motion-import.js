@@ -608,6 +608,396 @@
     throw new Error("This JSON isn't a Hand Tracker motion recording (no hands or frames).");
   }
 
+  // ---------- Hands kept as points (C3D, TRC, marker CSV/JSON, GLB, BVH, NPZ) ----------
+  // Hand Tracker's own exports name each hand's points L_wrist … R_pinky_tip (H0_… for
+  // others). A recording with all 21 of a hand's points is turned back into that hand, so
+  // it converts to every hand format again, BVH included. The points are millimetres, Z-up
+  // (the C3D convention); in the app's image units they're scaled so the middle finger
+  // (wrist to fingertip, at its longest) is CHAIN_UNITS long. Exporting scales it back to
+  // the 190 mm average hand the exports use, so the app's own files come back exactly.
+  const CHAIN_UNITS = 0.25;
+  const addV = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+  const MIDDLE_CHAIN = [0, 9, 10, 11, 12];
+  const HAND_NAMES = { L: "Left", R: "Right" };
+  const fromZUp = (q) => [q[0], -q[2], q[1]]; // inverse of the exports' (x, z, -y)
+
+  // handFrames: { prefix: [{ t, pts: 21 x [x, y, z] mm Z-up }] } -> hand recording, or null.
+  function handsFromPointFrames(handFrames, source, notes, warnings) {
+    const prefixes = Object.keys(handFrames).filter((p) => handFrames[p].length);
+    if (!prefixes.length) return null;
+    const chains = [];
+    for (const p of prefixes) for (const f of handFrames[p]) {
+      let l = 0;
+      for (let k = 1; k < MIDDLE_CHAIN.length; k++) l += Math.hypot(...sub(f.pts[MIDDLE_CHAIN[k]], f.pts[MIDDLE_CHAIN[k - 1]]));
+      chains.push(l);
+    }
+    chains.sort((a, b) => a - b);
+    const mmPerUnit = Math.max(1e-6, chains[Math.floor(chains.length * 0.9)] / CHAIN_UNITS);
+    const [iw, ih] = DEFAULT_IMAGE_SIZE;
+    const aspect = ih / iw;
+    const order = (p) => (p === "L" ? 0 : p === "R" ? 1 : 2);
+    const hands = prefixes.sort((a, b) => order(a) - order(b)).map((p) => {
+      const rows = handFrames[p].map((f) => {
+        const W = f.pts.map((q) => fromZUp(q).map((v) => v / mmPerUnit));
+        const w = W[0];
+        return {
+          t: f.t,
+          joints: W.map((q) => [q[0] - w[0], (q[1] - w[1]) / aspect, q[2] - w[2]]),
+          wrist: [w[0] + 0.5, w[1] / aspect + 0.5, w[2]],
+          quat: null,
+          phase: "idle",
+          size: [iw, ih],
+          real: null,
+          distance: null,
+        };
+      });
+      return buildHand(HAND_NAMES[p] || (p === "H0" ? "Hand" : `Hand ${Number(p.slice(1)) + 1}`), rows, warnings);
+    });
+    const out = finish(hands, DEFAULT_IMAGE_SIZE, true, notes, warnings);
+    out.source = source;
+    return out;
+  }
+
+  // A marker recording (mm, Z-up) holding Hand Tracker hands -> those hands, or null.
+  function handsFromMarkers(md, fileName) {
+    const index = new Map(md.labels.map((l, i) => [l, i]));
+    const prefixes = md.labels.map((l) => (/^(L|R|H\d+)_wrist$/.exec(l) || [])[1]).filter((p) => p && JOINTS.every((j) => index.has(`${p}_${j}`)));
+    if (!prefixes.length) return null;
+    const handFrames = {};
+    for (const p of prefixes) {
+      const cols = JOINTS.map((j) => index.get(`${p}_${j}`));
+      handFrames[p] = [];
+      for (let k = 0; k < md.frame_count; k++) {
+        const pts = cols.map((m) => {
+          const i = (k * md.labels.length + m) * 3;
+          return [md.positions[i], md.positions[i + 1], md.positions[i + 2]];
+        });
+        if (pts.every((q) => q.every(Number.isFinite))) handFrames[p].push({ t: k / md.frame_rate, pts });
+      }
+    }
+    const kind = { c3d: "C3D", trc: "TRC", csv: "marker CSV", json: "marker JSON", glb: "GLB", bvh: "BVH", npz: "NPZ" }[md.source] || md.source;
+    const other = md.labels.length - prefixes.length * 21;
+    const warnings = [...(md.warnings || [])];
+    if (other > 0) warnings.push(`${other} other point${other === 1 ? " was" : "s were"} left out: only the hands were kept.`);
+    return handsFromPointFrames(handFrames, md.source, [`Imported from ${fileName || `a ${kind} file`}: Hand Tracker hands, rebuilt from their points (joint orientations, velocities and accelerations recalculated).`], warnings);
+  }
+
+  // Any marker result: as hands when it holds Hand Tracker hands, else as it is.
+  function asHandsIfAny(result, fileName) {
+    if (!result || !result.data || result.data.kind !== "markers") return result;
+    const hands = handsFromMarkers({ ...result.data, warnings: result.warnings }, fileName);
+    return hands || result;
+  }
+
+  // ---------- BVH ----------
+  // Skeleton animation (Blender, MotionBuilder, this app): each joint's position on every
+  // frame comes from the skeleton's offsets and rotations; end sites are points too. BVH
+  // has no units: read as centimetres (as this app writes it), Y-up.
+  function fromBVH(text, fileName = "") {
+    const tokens = text.split(/\s+/).filter(Boolean);
+    let p = 0;
+    const next = () => tokens[p++];
+    const expect = (word) => {
+      const got = next();
+      if (!got || got.toUpperCase() !== word) throw new Error(`This BVH file is malformed (expected ${word}, found ${got || "the end"}).`);
+    };
+    if ((tokens[0] || "").toUpperCase() !== "HIERARCHY") throw new Error("This isn't a BVH file (it should start with HIERARCHY).");
+    next();
+    const joints = []; // depth-first: { name, parent, offset, channels, end }
+    const readJoint = (name, parent, end) => {
+      const j = { name, parent, offset: [0, 0, 0], channels: [], end };
+      joints.push(j);
+      expect("{");
+      for (;;) {
+        const word = (next() || "").toUpperCase();
+        if (word === "OFFSET") j.offset = [Number(next()), Number(next()), Number(next())];
+        else if (word === "CHANNELS") {
+          const n = Number(next());
+          for (let k = 0; k < n; k++) j.channels.push(next().toLowerCase());
+        } else if (word === "JOINT") readJoint(next(), j, false);
+        else if (word === "END") {
+          next(); // "Site"
+          readJoint(endName(j.name), j, true);
+        } else if (word === "}") return;
+        else throw new Error(`This BVH file is malformed (unexpected "${word}").`);
+      }
+    };
+    // This app's end sites are the fingertips (L_index_dip -> L_index_tip).
+    const endName = (parent) => {
+      const m = /^(.*_)(thumb_ip|index_dip|middle_dip|ring_dip|pinky_dip)$/.exec(parent);
+      return m ? `${m[1]}${m[2].replace(/_(ip|dip)$/, "_tip")}` : `${parent}_end`;
+    };
+    expect("ROOT");
+    readJoint(next(), null, false);
+    expect("MOTION");
+    if (!/^frames:?$/i.test(next())) throw new Error("This BVH file is malformed (no Frames count).");
+    const frames = Number(next());
+    if (!/^frame$/i.test(next()) || !/^time:?$/i.test(next())) throw new Error("This BVH file is malformed (no Frame Time).");
+    const frameTime = Number(next());
+    if (!(frames >= 1) || !(frameTime > 0)) throw new Error("This BVH has no frames.");
+    // Frame Time is written rounded (0.037037 for 27 fps): a rate a hair from a whole number is that number.
+    const rawRate = 1 / frameTime;
+    const rate = Math.abs(rawRate - Math.round(rawRate)) < 0.01 ? Math.round(rawRate) : rawRate;
+    const perFrame = joints.reduce((n, j) => n + j.channels.length, 0);
+    const available = Math.floor((tokens.length - p) / Math.max(1, perFrame));
+    const warnings = ["BVH has no units: read as centimetres, Y-up (as Hand Tracker writes it)."];
+    const count = Math.min(frames, available);
+    if (count < frames) warnings.push(`The file ends early: ${count} of ${frames} frames could be read.`);
+
+    const rot = (axis, deg) => {
+      const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+      if (axis === "x") return [1, 0, 0, 0, c, -s, 0, s, c];
+      if (axis === "y") return [c, 0, s, 0, 1, 0, -s, 0, c];
+      return [c, -s, 0, s, c, 0, 0, 0, 1];
+    };
+    const mm = (a, b) => [0, 1, 2].flatMap((r) => [0, 1, 2].map((c) => a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]));
+    const mv = (a, v) => [0, 1, 2].map((r) => a[r * 3] * v[0] + a[r * 3 + 1] * v[1] + a[r * 3 + 2] * v[2]);
+    const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    const labels = joints.map((j) => j.name);
+    const positions = new Float32Array(count * joints.length * 3);
+    const world = new Map();
+    for (let k = 0; k < count; k++) {
+      let c = p + k * perFrame;
+      world.clear();
+      joints.forEach((j, m) => {
+        const local = [...j.offset];
+        let R = I;
+        for (const ch of j.channels) {
+          const v = Number(tokens[c++]);
+          if (ch.endsWith("position")) local["xyz".indexOf(ch[0])] += v;
+          else R = mm(R, rot(ch[0], v));
+        }
+        const parent = j.parent ? world.get(j.parent) : { R: I, pos: [0, 0, 0] };
+        const pos = addV(parent.pos, mv(parent.R, local));
+        world.set(j, { R: mm(parent.R, R), pos });
+        const i = (k * joints.length + m) * 3;
+        // centimetres, Y-up -> millimetres, Z-up
+        positions[i] = pos[0] * 10;
+        positions[i + 1] = -pos[2] * 10;
+        positions[i + 2] = pos[1] * 10;
+      });
+    }
+    const md = markerData({
+      name: fileName.replace(/\.[^.]+$/, ""), source: "bvh", rate, firstFrame: 0, labels, positions,
+      notes: [`BVH: ${joints.length} joints and end sites × ${count} frames at ${rate.toFixed(2)} fps, as points.`], warnings,
+    });
+    return asHandsIfAny(md, fileName);
+  }
+
+  // ---------- NPZ (NumPy) ----------
+  // Zip of .npy arrays: stored (numpy.savez, this app) or deflated (numpy.savez_compressed).
+  async function unzip(buffer) {
+    const u8 = new Uint8Array(buffer), dv = new DataView(buffer);
+    let end = -1;
+    for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { end = i; break; }
+    if (end < 0) throw new Error("This isn't an NPZ file (no zip directory found).");
+    const count = dv.getUint16(end + 10, true);
+    let c = dv.getUint32(end + 16, true);
+    const files = {};
+    for (let n = 0; n < count; n++) {
+      if (dv.getUint32(c, true) !== 0x02014b50) throw new Error("This NPZ file's zip directory is damaged.");
+      const method = dv.getUint16(c + 10, true), packed = dv.getUint32(c + 20, true), size = dv.getUint32(c + 24, true);
+      const nameLen = dv.getUint16(c + 28, true), extraLen = dv.getUint16(c + 30, true), commentLen = dv.getUint16(c + 32, true);
+      const local = dv.getUint32(c + 42, true);
+      const name = new TextDecoder().decode(u8.subarray(c + 46, c + 46 + nameLen));
+      const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+      const raw = u8.subarray(start, start + packed);
+      if (method === 0) files[name] = raw.slice(0, size);
+      else if (method === 8 && global.DecompressionStream) {
+        files[name] = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+      } else throw new Error(`This NPZ file uses a compression this app can't read (method ${method}).`);
+      c += 46 + nameLen + extraLen + commentLen;
+    }
+    return files;
+  }
+
+  // One .npy array -> { shape, data } (numbers in a plain array, or strings).
+  function readNpy(bytes, name) {
+    if (bytes[0] !== 0x93 || String.fromCharCode(...bytes.subarray(1, 6)) !== "NUMPY") throw new Error(`${name} isn't a NumPy array.`);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const major = bytes[6];
+    const headerLen = major === 1 ? dv.getUint16(8, true) : dv.getUint32(8, true);
+    const headerStart = major === 1 ? 10 : 12;
+    const header = new TextDecoder().decode(bytes.subarray(headerStart, headerStart + headerLen));
+    const descr = (/'descr':\s*'([^']+)'/.exec(header) || [])[1];
+    if (/'fortran_order':\s*True/.test(header)) throw new Error(`${name} is stored in Fortran order, which this app doesn't read.`);
+    const shape = ((/'shape':\s*\(([^)]*)\)/.exec(header) || [])[1] || "").split(",").map((s) => s.trim()).filter(Boolean).map(Number);
+    const n = shape.reduce((a, b) => a * b, 1);
+    const at = headerStart + headerLen;
+    const little = descr[0] !== ">";
+    const kind = descr.slice(1);
+    const read = { f4: [4, (o) => dv.getFloat32(o, little)], f8: [8, (o) => dv.getFloat64(o, little)], i4: [4, (o) => dv.getInt32(o, little)], i8: [8, (o) => Number(dv.getBigInt64(o, little))],
+      i2: [2, (o) => dv.getInt16(o, little)], i1: [1, (o) => dv.getInt8(o)], u1: [1, (o) => dv.getUint8(o)], b1: [1, (o) => dv.getUint8(o)], u4: [4, (o) => dv.getUint32(o, little)] }[kind];
+    if (read) return { shape, data: Array.from({ length: n }, (_, i) => read[1](at + i * read[0])) };
+    if (kind[0] === "U") {
+      const width = Number(kind.slice(1));
+      return { shape, data: Array.from({ length: n }, (_, i) => {
+        let s = "";
+        for (let k = 0; k < width; k++) {
+          const code = dv.getUint32(at + (i * width + k) * 4, little);
+          if (!code) break;
+          s += String.fromCodePoint(code);
+        }
+        return s;
+      }) };
+    }
+    throw new Error(`${name} holds ${descr} values, which this app doesn't read.`);
+  }
+
+  async function fromNPZ(buffer, fileName = "") {
+    const files = await unzip(buffer);
+    const arrays = {};
+    for (const [name, bytes] of Object.entries(files)) {
+      if (!/\.npy$/i.test(name)) continue;
+      try {
+        arrays[name.replace(/\.npy$/i, "")] = readNpy(bytes, name);
+      } catch {
+        // an array of a kind this app doesn't read: left out
+      }
+    }
+    const one = (name, fallback) => (arrays[name] && arrays[name].data.length ? arrays[name].data[0] : fallback);
+    const warnings = [];
+    // Hand Tracker's hand NPZ: <hand>_t, <hand>_joints (n, 21, 3), <hand>_wrist, <hand>_palm_quat, <hand>_phase…
+    const handKeys = Object.keys(arrays).filter((k) => /_joints$/.test(k) && !/_real_joints$/.test(k) && arrays[k].shape.join() === `${arrays[k].shape[0]},21,3` && arrays[k.replace(/_joints$/, "_t")]);
+    if (handKeys.length) {
+      const phases = arrays.phase_names ? arrays.phase_names.data : ["idle", "reach", "grasp", "manipulate", "release"];
+      const imageSize = arrays.image_size && arrays.image_size.data.length === 2 ? arrays.image_size.data.map(Number) : DEFAULT_IMAGE_SIZE;
+      const order = (k) => (k === "left_joints" ? 0 : k === "right_joints" ? 1 : 2);
+      const hands = handKeys.sort((a, b) => order(a) - order(b)).map((jk) => {
+        const key = jk.replace(/_joints$/, "");
+        const get = (suffix) => arrays[`${key}_${suffix}`];
+        const t = get("t").data, J = get("joints").data, W = get("wrist"), Q = get("palm_quat"), P = get("phase"), R = get("real_joints"), D = get("distance_mm");
+        const rows = t.map((ti, i) => {
+          const real = R ? Array.from({ length: 21 }, (_, j) => R.data.slice((i * 21 + j) * 3, (i * 21 + j) * 3 + 3)) : null;
+          const distance = D ? D.data.slice(i * 3, i * 3 + 3) : null;
+          return {
+            t: ti,
+            joints: Array.from({ length: 21 }, (_, j) => J.slice((i * 21 + j) * 3, (i * 21 + j) * 3 + 3)),
+            wrist: W ? W.data.slice(i * 3, i * 3 + 3) : null,
+            quat: Q ? Q.data.slice(i * 4, i * 4 + 4) : null,
+            phase: P ? phases[P.data[i]] || "idle" : "idle",
+            size: imageSize,
+            real: real && real.every((p) => p.every(Number.isFinite)) ? real : null,
+            distance: distance && distance.every(Number.isFinite) ? distance : null,
+          };
+        });
+        const name = key === "left" ? "Left" : key === "right" ? "Right" : key.charAt(0).toUpperCase() + key.slice(1);
+        return buildHand(name, rows, warnings);
+      });
+      const out = finish(hands, imageSize, true, [`Imported from ${fileName || "an NPZ file"}: joint orientations, velocities and accelerations were recalculated from the positions.`], warnings);
+      out.source = "npz";
+      return out;
+    }
+    // Points: Hand Tracker's marker NPZ (positions, labels…), or any (frames, points, 3) array.
+    const name = arrays.positions && arrays.positions.shape.length === 3 && arrays.positions.shape[2] === 3
+      ? "positions"
+      : Object.keys(arrays).find((k) => arrays[k].shape.length === 3 && arrays[k].shape[2] === 3 && typeof arrays[k].data[0] === "number");
+    if (!name) throw new Error("This NPZ doesn't hold motion capture this viewer recognises: Hand Tracker's hand or marker NPZ, or an array of point positions shaped (frames, points, 3).");
+    const [frames, count] = arrays[name].shape;
+    const labels = arrays.labels && arrays.labels.data.length === count ? arrays.labels.data : Array.from({ length: count }, (_, i) => `${name}_${i + 1}`);
+    const t = arrays.t && arrays.t.data.length === frames ? arrays.t.data : null;
+    const rate = Number(one("frame_rate", one("fps", 0))) || (t && t.length > 1 ? 1 / (t[1] - t[0]) : 30);
+    const units = String(one("units", "mm")).toLowerCase();
+    const toMM = { mm: 1, cm: 10, m: 1000 }[units] || 1;
+    const yUp = String(one("up_axis", "z")).toLowerCase() === "y";
+    const v = arrays[name].data;
+    const positions = new Float32Array(frames * count * 3);
+    for (let i = 0; i < frames * count; i++) {
+      const x = v[i * 3] * toMM, y = v[i * 3 + 1] * toMM, z = v[i * 3 + 2] * toMM;
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = yUp ? -z : y;
+      positions[i * 3 + 2] = yUp ? y : z;
+    }
+    if (name !== "positions") warnings.push(`Read the array "${name}" as ${count} points over ${frames} frames (${units}, ${yUp ? "Y" : "Z"}-up).`);
+    const md = markerData({ name: fileName.replace(/\.[^.]+$/, ""), source: "npz", rate, firstFrame: 0, labels, positions, notes: [`NPZ: ${count} points × ${frames} frames at ${rate.toFixed(2)} fps.`], warnings });
+    return asHandsIfAny(md, fileName);
+  }
+
+  // ---------- GLB (glTF 2.0 binary) ----------
+  // Points animated by position (Hand Tracker's hand and marker GLBs, and other GLBs that
+  // animate their nodes' translation), in metres, Y-up.
+  function fromGLB(buffer, fileName = "") {
+    const dv = new DataView(buffer);
+    if (buffer.byteLength < 20 || dv.getUint32(0, true) !== 0x46546c67) throw new Error("This isn't a GLB file (the glTF signature is missing).");
+    let o = 12, gltf = null, bin = null;
+    while (o + 8 <= buffer.byteLength) {
+      const len = dv.getUint32(o, true), type = dv.getUint32(o + 4, true);
+      if (type === 0x4e4f534a) gltf = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, o + 8, len)));
+      else if (type === 0x004e4942) bin = new DataView(buffer, o + 8, len);
+      o += 8 + len;
+    }
+    if (!gltf || !bin) throw new Error("This GLB file is incomplete (no JSON or binary part).");
+    const width = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 };
+    const accessor = (i) => {
+      const a = gltf.accessors[i], view = gltf.bufferViews[a.bufferView];
+      if (a.componentType !== 5126) throw new Error("This GLB's animation isn't stored as floats, which this app doesn't read.");
+      const w = width[a.type], stride = view.byteStride || w * 4, base = (view.byteOffset || 0) + (a.byteOffset || 0);
+      return Array.from({ length: a.count }, (_, k) => Array.from({ length: w }, (_, c) => bin.getFloat32(base + k * stride + c * 4, true)));
+    };
+    const nodes = gltf.nodes || [];
+    const parent = new Map();
+    nodes.forEach((n, i) => (n.children || []).forEach((c) => parent.set(c, i)));
+    // Each node's still placement (its parents' translation, rotation and scale), as a matrix.
+    const trs = (n) => {
+      if (n.matrix) return n.matrix;
+      const [x, y, z, w] = n.rotation || [0, 0, 0, 1], [sx, sy, sz] = n.scale || [1, 1, 1], t = n.translation || [0, 0, 0];
+      return [
+        (1 - 2 * (y * y + z * z)) * sx, 2 * (x * y + z * w) * sx, 2 * (x * z - y * w) * sx, 0,
+        2 * (x * y - z * w) * sy, (1 - 2 * (x * x + z * z)) * sy, 2 * (y * z + x * w) * sy, 0,
+        2 * (x * z + y * w) * sz, 2 * (y * z - x * w) * sz, (1 - 2 * (x * x + y * y)) * sz, 0,
+        t[0], t[1], t[2], 1,
+      ];
+    };
+    const mul4 = (a, b) => Array.from({ length: 16 }, (_, i) => { const c = Math.floor(i / 4), r = i % 4; let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; return s; });
+    const parentMatrix = (i) => {
+      let m = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+      // A parent's scale is often its visibility (0 while hidden): use its placement without it.
+      for (let p = parent.get(i); p !== undefined; p = parent.get(p)) m = mul4(trs({ ...nodes[p], scale: [1, 1, 1] }), m);
+      return m;
+    };
+    const apply = (m, v) => [0, 1, 2].map((r) => m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2] + m[12 + r]);
+
+    const tracks = []; // { name, times, values }
+    for (const anim of gltf.animations || []) {
+      for (const ch of anim.channels || []) {
+        const node = ch.target && ch.target.node;
+        if (ch.target.path !== "translation" || node === undefined) continue;
+        const name = nodes[node].name || `node ${node}`;
+        if (/-/.test(name) && /_(cmc|mcp|pip|dip|ip|tip|wrist)-/.test(name)) continue; // this app's bone pieces
+        const s = anim.samplers[ch.sampler];
+        const m = parentMatrix(node);
+        tracks.push({ name, times: accessor(s.input).map((v) => v[0]), values: accessor(s.output).map((v) => apply(m, v)) });
+      }
+    }
+    if (!tracks.length) throw new Error("This GLB has no points animated by position, which is what this viewer reads (Hand Tracker's GLB exports, and other GLBs that move their nodes).");
+    // metres, Y-up -> millimetres, Z-up
+    const toMM = (v) => [v[0] * 1000, -v[2] * 1000, v[1] * 1000];
+    // Hand Tracker hands: each hand's 21 joints share their frame times.
+    const byName = new Map(tracks.map((t) => [t.name, t]));
+    const prefixes = tracks.map((t) => (/^(L|R|H\d+)_wrist$/.exec(t.name) || [])[1]).filter((p) => p && JOINTS.every((j) => byName.has(`${p}_${j}`)));
+    if (prefixes.length) {
+      const handFrames = {};
+      for (const p of prefixes) {
+        const T = JOINTS.map((j) => byName.get(`${p}_${j}`));
+        handFrames[p] = T[0].times.map((t, k) => ({ t, pts: T.map((tr) => toMM(tr.values[Math.min(k, tr.values.length - 1)])) }));
+      }
+      return handsFromPointFrames(handFrames, "glb", [`Imported from ${fileName || "a GLB file"}: Hand Tracker hands, rebuilt from their animated joints (joint orientations, velocities and accelerations recalculated).`], []);
+    }
+    // Other points: on one timeline at the most common spacing of their keys.
+    const allTimes = [...new Set(tracks.flatMap((t) => t.times.map((x) => Math.round(x * 1e5) / 1e5)))].sort((a, b) => a - b);
+    const gaps = allTimes.slice(1).map((x, k) => x - allTimes[k]).filter((d) => d > 1e-6).sort((a, b) => a - b);
+    const rate = gaps.length ? Math.round(1000 / gaps[Math.floor(gaps.length / 2)]) / 1000 : 30;
+    const t0 = allTimes[0];
+    const frames = Math.round((allTimes[allTimes.length - 1] - t0) * rate) + 1;
+    const positions = new Float32Array(frames * tracks.length * 3).fill(NaN);
+    tracks.forEach((tr, m) => tr.times.forEach((t, k) => {
+      const f = Math.round((t - t0) * rate);
+      if (f >= 0 && f < frames) positions.set(toMM(tr.values[k]), (f * tracks.length + m) * 3);
+    }));
+    return markerData({ name: fileName.replace(/\.[^.]+$/, ""), source: "glb", rate, firstFrame: 0, labels: tracks.map((t) => t.name), positions,
+      notes: [`GLB: ${tracks.length} animated points × ${frames} frames at ${rate} fps.`] });
+  }
+
   function parse(text, fileName = "") {
     const clean = String(text).replace(/^﻿/, ""); // byte-order mark from spreadsheets
     const ext = (fileName.match(/\.([a-z0-9]+)$/i) || [])[1];
@@ -615,15 +1005,30 @@
     return looksJSON ? fromJSON(clean, fileName) : fromCSV(clean, fileName);
   }
 
-  // Any supported file, as bytes: C3D is binary, the rest is text.
+  // Any supported file, as bytes: C3D and GLB are binary, the rest is text. Points that are
+  // Hand Tracker hands (its own C3D, TRC, GLB, BVH… exports) come back as hands.
   function parseFile(fileName, buffer) {
     const ext = ((fileName.match(/\.([a-z0-9]+)$/i) || [])[1] || "").toLowerCase();
     const u8 = new Uint8Array(buffer);
-    if (ext === "c3d" || (!ext && u8.length > 1024 && u8[1] === 0x50)) return fromC3D(buffer, fileName);
+    if (ext === "npz") throw new Error("NPZ files are read with parseFileAsync.");
+    if (ext === "glb" || (u8.length > 12 && new DataView(buffer).getUint32(0, true) === 0x46546c67)) return fromGLB(buffer, fileName);
+    if (ext === "c3d" || (!ext && u8.length > 1024 && u8[1] === 0x50)) return asHandsIfAny(fromC3D(buffer, fileName), fileName);
     const text = new TextDecoder().decode(u8).replace(/^\uFEFF/, "");
-    if (ext === "trc" || /^PathFileType/i.test(text)) return fromTRC(text, fileName);
-    return parse(text, fileName);
+    if (ext === "trc" || /^PathFileType/i.test(text)) return asHandsIfAny(fromTRC(text, fileName), fileName);
+    if (ext === "bvh" || /^\s*HIERARCHY/.test(text)) return fromBVH(text, fileName);
+    return asHandsIfAny(parse(text, fileName), fileName);
   }
 
-  global.MotionImport = { parse, parseFile, fromC3D, fromTRC };
+  // The same, for every format including NPZ (whose compressed form needs async unpacking).
+  async function parseFileAsync(fileName, buffer) {
+    const u8 = new Uint8Array(buffer);
+    const isZip = u8.length > 4 && u8[0] === 0x50 && u8[1] === 0x4b && u8[2] === 3 && u8[3] === 4;
+    if (/\.npz$/i.test(fileName) || isZip) return fromNPZ(buffer, fileName);
+    return parseFile(fileName, buffer);
+  }
+
+  // Every motion capture file this module reads, by extension.
+  const EXTENSIONS = ["json", "csv", "c3d", "trc", "bvh", "npz", "glb"];
+
+  global.MotionImport = { parse, parseFile, parseFileAsync, fromC3D, fromTRC, fromBVH, fromNPZ, fromGLB, EXTENSIONS };
 })(window);

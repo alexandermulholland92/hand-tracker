@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<!-- One camera of "Several cameras" (multi-camera.js): its own hand tracker, shown in a tile. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' data: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'" />
+<title>Camera</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0e0f12; overflow: hidden; }
+  #stage { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #video { display: none; }
+  #message { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 12px;
+    color: #c9c9cf; font: 13px "Segoe UI", system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<video id="video" playsinline muted></video>
+<canvas id="stage" width="1280" height="720"></canvas>
+<div id="message">Starting the camera…</div>
+<script src="node_modules/@mediapipe/hands/hands.js"></script>
+<script src="node_modules/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="hand-tracker.js"></script>
+<script src="robot-motion.js"></script>
+<script src="camera-tile.js"></script>
+</body>
+</html>

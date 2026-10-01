@@ -19,6 +19,7 @@ const { InputDriver } = require("./input");
 const { OakCamera } = require("./oak");
 const { OpsClient } = require("./ops");
 const { FleetClient } = require("./fleet");
+const { PhoneLinkServer } = require("./phone-link");
 
 const APP_ROOT = path.join(__dirname, "..");
 const SCHEME = "app";
@@ -45,6 +46,9 @@ const MIME = {
 // stops rendering it, which freezes the camera feed and stops tracking and
 // recording. Keep working when covered (minimizing still pauses).
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+// On ARM boards (a Raspberry Pi), use the GPU even if Chromium's list doubts its driver:
+// hand tracking runs on WebGL, and without the GPU it crawls.
+if (process.platform === "linux" && process.arch === "arm64") app.commandLine.appendSwitch("ignore-gpu-blocklist");
 
 protocol.registerSchemesAsPrivileged([
   { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
@@ -247,20 +251,9 @@ function handle(channel, fn) {
 // One connection for the app; every window that asks gets its status and (at most 30 a
 // second) its frames. While motion capture records, every frame is kept here, in full.
 const { NatNetClient } = require("./natnet");
+// A frame in the app's units: millimetres, Z-up (the same as the Android app's).
+const { compactFrame } = require("../natnet-parse.js");
 const natnet = { client: null, windows: new Set(), lastSent: 0, latest: null, recording: null };
-
-// A frame in the app's units: millimetres, Z-up (Motive streams metres, Y-up; this is the
-// same axis mapping as Motive's own C3D export, so it matches a .tak opened in the viewer).
-const MM = (p) => [-p[0] * 1000, p[2] * 1000, p[1] * 1000];
-function compactFrame(f) {
-  return {
-    n: f.frame,
-    t: f.timestamp,
-    markers: f.markers.map((m) => ({ id: m.id, model: m.model, p: MM(m.position) })),
-    rigidBodies: f.rigidBodies.map((rb) => ({ id: rb.id, name: rb.name, p: MM(rb.position), q: rb.rotation, valid: rb.valid })),
-    skeletons: f.skeletons.map((sk) => ({ id: sk.id, name: sk.name, bones: sk.bones.map((b) => ({ name: b.name, p: MM(b.position), valid: b.valid })) })),
-  };
-}
 
 function natnetClient() {
   if (natnet.client) return natnet.client;
@@ -461,6 +454,54 @@ function registerOpsIpc() {
   });
 }
 
+// ---------- A phone controlling this computer (the Android app, over Wi-Fi) ----------
+// Only while "Let a phone control this PC" is on; the pairing key is kept encrypted by the
+// operating system (or for this run only, where it can't be).
+let phoneLink = null;
+function registerLinkIpc() {
+  const file = path.join(app.getPath("userData"), "phone-link.json");
+  const keyStore = {
+    load: () => {
+      try {
+        const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+        return saved.key && safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(saved.key, "base64")) : null;
+      } catch {
+        return null;
+      }
+    },
+    save: (key) => {
+      if (!safeStorage.isEncryptionAvailable()) return;
+      fs.writeFileSync(file, JSON.stringify({ key: safeStorage.encryptString(key).toString("base64") }));
+    },
+  };
+  // What the phone asks for, carried out like this app's own hand mouse and keyboard.
+  const handlePhone = async (type, d) => {
+    if (type === "keyboard") {
+      if (d.show) openKeyboard();
+      else closeKeyboard();
+      return { shown: !!d.show };
+    }
+    await input.start();
+    if (type === "pointer") {
+      const p = screenPoint(d.nx, d.ny, d.screen);
+      input.move(p.x, p.y);
+    } else if (type === "button") input.button(String(d.which), String(d.action));
+    else if (type === "wheel") input.wheel(Math.max(-20, Math.min(20, Math.round(Number(d.notches) || 0))));
+    else if (type === "key") input.key(String(d.combo), String(d.action || "tap"));
+    else if (type === "text") input.text(String(d.text || "").slice(0, 2000));
+    else throw new Error(`Unknown request: ${type}`);
+    return null;
+  };
+  phoneLink = new PhoneLinkServer({ handle: handlePhone, keyStore });
+  phoneLink.on("status", (s) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("link:status", s);
+  });
+  handle("link:status", () => phoneLink.status());
+  handle("link:start", () => phoneLink.start());
+  handle("link:stop", () => phoneLink.stop());
+  handle("link:new-key", () => phoneLink.newKey());
+}
+
 function registerFleetIpc() {
   fleet = new FleetClient(app.getPath("userData"), session.fromPartition("persist:capture-fleet"));
   handle("fleet:status", () => fleet.check());
@@ -629,14 +670,19 @@ function registerIpc() {
   handle("video:export", async (event, job) => {
     const settings = readSettings();
     const win = BrowserWindow.fromWebContents(event.sender);
-    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: "Choose a folder for the exported video",
-      buttonLabel: "Export Here",
-      defaultPath: settings.lastExportDir || app.getPath("videos"),
-      properties: ["openDirectory", "createDirectory"],
-    });
-    if (canceled || !filePaths || !filePaths[0]) return { canceled: true, results: [] };
-    const dir = filePaths[0];
+    // A folder already picked with chooseFolder (several things saved together), or ask.
+    let dir = job.token ? outputFolders.get(String(job.token)) : null;
+    if (job.token && !dir) throw new Error("Choose the folder again.");
+    if (!dir) {
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+        title: "Choose a folder for the exported video",
+        buttonLabel: "Export Here",
+        defaultPath: settings.lastExportDir || app.getPath("videos"),
+        properties: ["openDirectory", "createDirectory"],
+      });
+      if (canceled || !filePaths || !filePaths[0]) return { canceled: true, results: [] };
+      dir = filePaths[0];
+    }
     writeSettings({ lastExportDir: dir });
 
     const result = await exporter.exportVideo(
@@ -776,6 +822,7 @@ app.whenReady().then(() => {
   registerOakIpc();
   registerOpsIpc();
   registerFleetIpc();
+  registerLinkIpc();
   buildMenu();
   mainWindow = createWindow();
   mainWindow.on("closed", () => {
@@ -795,5 +842,6 @@ app.on("will-quit", () => {
   input.stop();
   if (oak) oak.stop();
   if (natnet.client) natnet.client.stop();
+  if (phoneLink) phoneLink.stop();
   if (mediaDir) fs.rmSync(mediaDir, { recursive: true, force: true });
 });

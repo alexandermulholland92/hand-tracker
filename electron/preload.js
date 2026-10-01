@@ -15,7 +15,8 @@ contextBridge.exposeInMainWorld("desktop", {
   saveFiles: (job) => ipcRenderer.invoke("files:save", job),
 
   // Asks for an output folder, then converts the clip to each format.
-  // job = { bytes: ArrayBuffer, container, formats: string[], baseName, duration, fps, retimeFps? }
+  // job = { bytes: ArrayBuffer, container, formats: string[], baseName, duration, fps, retimeFps?, token? }
+  // (token: a folder from chooseFolder, instead of asking)
   // resolves { dir, results: [{ format, ok, path?, size?, error? }], canceled }
   exportVideo: (job) => ipcRenderer.invoke("video:export", job),
   cancelExport: () => ipcRenderer.invoke("video:cancel-export"),
@@ -170,6 +171,19 @@ contextBridge.exposeInMainWorld("desktop", {
       const listener = () => cb();
       ipcRenderer.on("pc:toggle-mouse", listener);
       return () => ipcRenderer.removeListener("pc:toggle-mouse", listener);
+    },
+    // A phone controlling this computer over Wi-Fi (phone-link.js): start() listens and
+    // gives the pairing text for the QR code; status: { on, port, addresses, pairing, phone }.
+    link: {
+      status: () => ipcRenderer.invoke("link:status"),
+      start: () => ipcRenderer.invoke("link:start"),
+      stop: () => ipcRenderer.invoke("link:stop"),
+      newKey: () => ipcRenderer.invoke("link:new-key"),
+      onStatus: (cb) => {
+        const listener = (_event, data) => cb(data);
+        ipcRenderer.on("link:status", listener);
+        return () => ipcRenderer.removeListener("link:status", listener);
+      },
     },
     // cb(shown) whenever the floating keyboard opens or closes.
     onKeyboard: (cb) => {

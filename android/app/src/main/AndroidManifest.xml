@@ -25,6 +25,33 @@
 
         </activity>
 
+        <!-- Controlling the phone itself with your hand: a foreground service that keeps the
+             camera and shows the pointer over other apps, and an accessibility service that
+             taps, swipes, presses Back/Home… and types (only while that's running). -->
+        <service
+            android:name=".PhoneControlService"
+            android:foregroundServiceType="camera"
+            android:exported="false" />
+        <service
+            android:name=".HandControlService"
+            android:label="@string/hand_control_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/hand_control" />
+        </service>
+
+        <!-- A dashboard's own sign-in page (Capture Sessions, Live Rigs). -->
+        <activity
+            android:name=".SignInActivity"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:theme="@style/AppTheme.NoActionBar"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -39,6 +66,17 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- OptiTrack Motive's live stream arrives by UDP multicast on Wi-Fi, which Android
+         only lets through while the app holds a multicast lock. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Controlling the phone itself: the pointer over other apps, and tracking with the
+         camera while Hand Tracker is in the background (a foreground service, with a notification). -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Hand tracking uses the camera (the web page asks via getUserMedia). -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />

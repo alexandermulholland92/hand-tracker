@@ -4,4 +4,6 @@
     <string name="title_activity_main">Hand Tracker</string>
     <string name="package_name">com.handtracker.app</string>
     <string name="custom_url_scheme">com.handtracker.app</string>
+    <string name="hand_control_label">Hand Tracker hand control</string>
+    <string name="hand_control_description">Lets Hand Tracker\'s hand mouse and gesture actions control this phone: it taps, long-presses and swipes where the pointer is, presses Back, Home, Recents, volume and media keys, and types into the text box you\'re in. It only acts while you have started "Control this phone" in Hand Tracker, and reads nothing on screen except the text box being typed into.</string>
 </resources>

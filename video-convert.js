@@ -3,7 +3,8 @@
  * Opening and converting any video in the website and the Android app, with
  * ffmpeg.wasm. (The Windows app has a real ffmpeg: see electron/exporter.js.)
  * The engine (~32 MB) is only downloaded the first time it's needed. Formats and
- * their settings come from video-formats.js.
+ * their settings come from video-formats.js; the few ffmpeg.wasm can't make (HEVC,
+ * AV1, AVIF, uncompressed AVI, Y4M) are made with video-native.js.
  *
  *   VideoConvert.supported()        true outside the Windows app, where WebAssembly works
  *   VideoConvert.formats()          VideoFormats.FORMATS, marked available or not here
@@ -13,7 +14,7 @@
  *     options = { retimeFps, constantRate, copyFromWebm, fps, duration, trim, onProgress, onResult }
  *       trim: { start, length } in seconds, to convert just that stretch (synced videos)
  *       onProgress({ format, index, total, progress 0..1, loading })  loading: engine downloading
- *       onResult({ format, ok, ext, suffix, data: Uint8Array } | { format, ok: false, error })
+ *       onResult({ format, ok, ext, suffix, data: Uint8Array | Blob } | { format, ok: false, error })
  *         called as each format finishes, so callers can save it straight away;
  *         results then leave out the data.
  *   VideoConvert.cancel()           stops the conversion in progress
@@ -40,14 +41,22 @@
     return !global.desktop && typeof WebAssembly === "object" && typeof Worker === "function";
   }
 
+  // The formats ffmpeg.wasm can't make are made by video-native.js, where this device can.
+  const native = (id) => !!global.VideoNative && global.VideoNative.handles(id);
   function formats() {
-    return global.VideoFormats.FORMATS.map((f) => ({
-      ...f,
-      detail: f.wasmDetail || f.detail,
-      available: f.wasm,
-      why: f.wasm ? "" : "Only the Windows app can make this format",
-    }));
+    return global.VideoFormats.FORMATS.map((f) => {
+      const here = f.wasm || (native(f.id) && global.VideoNative.available(f.id));
+      return {
+        ...f,
+        detail: f.wasmDetail || f.detail,
+        available: here,
+        why: here ? "" : native(f.id) ? global.VideoNative.why(f.id) : "Only the Windows app can make this format",
+      };
+    });
   }
+
+  // Resolves once it's known which of video-native.js's formats this device can make.
+  const ready = () => (global.VideoNative ? global.VideoNative.ready().then(() => true) : Promise.resolve(true));
 
   function loadScript(src) {
     return new Promise((resolve, reject) => {
@@ -202,6 +211,7 @@
   async function convert(file, ids, options = {}) {
     const { retimeFps = 0, constantRate = false, copyFromWebm = false, fps = 0, duration = 0, name, trim = null } = options;
     const onProgress = options.onProgress || (() => {});
+    await ready(); // which of video-native.js's formats this device can make
     const byId = new Map(formats().map((f) => [f.id, f]));
     const list = ids.filter((id) => byId.has(id));
     const results = [];
@@ -229,15 +239,27 @@
         const out = `/out-${jobCount}-${i}.${f.ext}`;
         report(0);
         try {
-          const args = [
-            "-y", ...trimArgs(trim, input.path),
-            ...global.VideoFormats.outputArgs(f.id, { fps: fps || info.fps, retimeFps, constantRate, copyFromWebm, wasm: true }),
-            out,
-          ];
-          const { code, text } = await run(ff, args, (t) => total && report(Math.min(1, t / total)));
-          if (code !== 0) throw failure(text);
-          const data = await ff.readFile(out);
-          await ff.deleteFile(out);
+          let data;
+          if (!f.wasm && native(f.id)) {
+            // HEVC, AV1, AVIF, uncompressed AVI and Y4M: video-native.js (its errors, even the
+            // device encoder's, are reported as they are; they don't mean the engine crashed).
+            data = await global.VideoNative.make({
+              id: f.id, ff, run, input: input.path, info, rate: fps || info.fps, retimeFps, trim, duration: total,
+              onProgress: report, canceled: () => canceled,
+            }).catch((err) => {
+              throw isCrash(err) && err && err.message ? new Error(err.message) : err;
+            });
+          } else {
+            const args = [
+              "-y", ...trimArgs(trim, input.path),
+              ...global.VideoFormats.outputArgs(f.id, { fps: fps || info.fps, retimeFps, constantRate, copyFromWebm, wasm: true }),
+              out,
+            ];
+            const { code, text } = await run(ff, args, (t) => total && report(Math.min(1, t / total)));
+            if (code !== 0) throw failure(text);
+            data = await ff.readFile(out);
+            await ff.deleteFile(out);
+          }
           report(1);
           result = { format: f.id, ok: true, ext: f.ext, suffix: f.suffix, data };
         } catch (err) {
@@ -253,7 +275,7 @@
       }
       if (options.onResult) {
         options.onResult(result);
-        if (result.ok) result = { ...result, data: undefined, size: result.data.length };
+        if (result.ok) result = { ...result, data: undefined, size: result.data.size === undefined ? result.data.length : result.data.size };
       }
       results.push(result);
     }
@@ -266,5 +288,5 @@
     discardEngine(); // stops the ffmpeg run in progress
   }
 
-  global.VideoConvert = { supported, formats, probe, toPlayable, convert, cancel };
+  global.VideoConvert = { supported, formats, ready, probe, toPlayable, convert, cancel };
 })(window);

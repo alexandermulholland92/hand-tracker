@@ -162,7 +162,16 @@
   .motive-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12.5px; margin-bottom: 8px; }
   .motive-row input[type="text"] { width: 130px; padding: 5px 8px; border-radius: 6px; border: 1px solid #333; background: #1a1b1f; color: #e8e8ea; font: inherit; }
   #motiveStatus { font-size: 12px; opacity: 0.75; line-height: 1.5; margin-bottom: 8px; }
-  #motiveView { width: 100%; height: auto; display: block; background: #0e0f12; border-radius: 8px; }
+  #motiveCard { max-width: 1180px; margin: 14px auto 0; }
+  #multiCamCard { max-width: 1180px; margin: 14px auto 0; }
+  .multi-cam-grid { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
+  .multi-cam-grid.n1 { grid-template-columns: 1fr; }
+  @media (max-width: 720px) { .multi-cam-grid { grid-template-columns: 1fr; } }
+  .multi-cam-tile iframe { width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 8px; background: #0e0f12; display: block; }
+  .multi-cam-caption { font-size: 12px; opacity: 0.85; margin-top: 4px; }
+  .multi-cam-caption .lbl { opacity: 0.6; }
+  .multi-cam-pick { display: block; margin: 6px 0; font-size: 13px; }
+  #motiveView { width: 100%; height: 380px; display: block; background: #0e0f12; border-radius: 8px; }
 
   /* Screen or window picker */
   .modal { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, 0.66); display: flex; align-items: center; justify-content: center; padding: 16px; }
@@ -200,6 +209,10 @@
   .field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; opacity: 0.9; margin-bottom: 12px; }
   .field input { width: 100%; }
   .format-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+  .link-pair { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px; }
+  .link-pair canvas { width: 180px; height: 180px; image-rendering: pixelated; border-radius: 6px; }
+  .link-pair code { word-break: break-all; font-size: 12px; user-select: all; }
+  #linkCodeInput { flex: 1; min-width: 0; }
   .format-option {
     display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 7px;
     border: 1px solid #2c2d33; background: #131418; cursor: pointer; font-size: 12.5px;
@@ -236,7 +249,8 @@
     body { padding: 12px; }
     header { flex-wrap: wrap; gap: 6px 14px; }
     #threeContainer { height: 260px; }
-    select { max-width: 100%; }
+    /* (a percentage alone doesn't hold a long camera name inside its label) */
+    select { max-width: calc(100vw - 120px); }
   }
   @media (hover: none) { kbd { display: none; } } /* no keyboard shortcuts on touch screens */
 </style>
@@ -291,7 +305,7 @@
       </label>
       <label>Model
         <select id="modelSelect">
-          <option value="0" selected>Lite (faster)</option>
+          <option value="0">Lite (faster)</option>
           <option value="1">Full (more accurate)</option>
         </select>
       </label>
@@ -417,6 +431,30 @@
 
     <div class="card" id="pcCard" hidden>
       <div class="section-label">Control your PC</div>
+      <!-- On the phone (Android app): which PC this phone controls over Wi-Fi (phone-link-ui.js). -->
+      <div id="linkPhone" hidden>
+        <div class="toolbar">
+          <button id="linkScan">Scan the PC's code</button>
+          <button id="linkEnter">Type the code…</button>
+          <button id="linkForget" hidden>Forget this PC</button>
+        </div>
+        <div id="linkEnterRow" class="toolbar" hidden>
+          <input id="linkCodeInput" type="text" placeholder="handtracker-link:1:…" spellcheck="false" autocomplete="off" autocapitalize="off" />
+          <button id="linkConnect" class="primary">Connect</button>
+        </div>
+        <div id="linkPhoneStatus" class="note"></div>
+      </div>
+      <!-- On the phone (Android app): controlling the phone itself (phone-link-ui.js). -->
+      <div id="selfControl" hidden>
+        <div class="section-label">Control this phone</div>
+        <div class="note">Your hand moves a pointer over any app, like the hand mouse on a PC: a quick curl of your index finger taps, curl and hold it to drag (to scroll or swipe), a quick curl of your middle finger is a long press. Gesture actions can press Back, Home, Recents, volume and media keys, or type. It keeps going with Hand Tracker in the background: a small camera window stays in a corner (its × stops it).</div>
+        <div class="toolbar">
+          <button id="selfOverlay">1. Allow display over other apps</button>
+          <button id="selfAccess">2. Turn on hand control in Accessibility</button>
+          <button id="selfStart" class="primary">Start controlling this phone</button>
+        </div>
+        <div id="selfStatus" class="note"></div>
+      </div>
       <div class="toolbar">
         <button id="mouseToggle" aria-pressed="false" title="Move the pointer by moving your hand. A quick curl of your index finger clicks (curl and hold to drag); a quick curl of your middle finger right-clicks. Curl both, or make a fist, to hold the pointer still while you move your hand back. Keeps working with this window minimized. Ctrl+Alt+M turns it on and off from anywhere.">Hand mouse: OFF<kbd>Ctrl+Alt+M</kbd></button>
         <label>Hand <select id="mouseHand"><option value="Right">right</option><option value="Left">left</option><option value="either">either</option></select></label>
@@ -437,6 +475,19 @@
       </div>
       <div id="actionList"></div>
       <div id="actionLog" class="note"></div>
+      <!-- On the PC: letting a phone (the Android app) control it over Wi-Fi (phone-link-ui.js). -->
+      <div id="linkPc" hidden>
+        <div class="section-label">Control from your phone</div>
+        <div class="toolbar">
+          <button id="linkToggle" aria-pressed="false" title="The Android app's hand mouse, keyboard and gesture actions control this PC over Wi-Fi. Only a phone that has read the code shown here can.">Let a phone control this PC: OFF</button>
+          <button id="linkNewKey" hidden title="A new code: phones paired with the old one can't connect any more">New code</button>
+          <span id="linkPcStatus" class="note"></span>
+        </div>
+        <div id="linkPcPair" class="link-pair" hidden>
+          <canvas id="linkQr" width="200" height="200"></canvas>
+          <div class="note">On your Android phone, open Hand Tracker, then Control your PC → <b>Scan the PC's code</b>. The phone and this PC need to be on the same network (allow Hand Tracker through the firewall if asked). Or type this code on the phone:<br /><code id="linkCode"></code></div>
+        </div>
+      </div>
     </div>
 
     <div class="card" id="exportCard" hidden>
@@ -482,18 +533,17 @@
     <div id="slotLeft"></div>
     <div id="slotRight"></div>
     <div id="bothHands" class="card" hidden></div>
-    <div id="motiveCard" class="card" hidden>
-      <div class="section-label">OptiTrack Motive</div>
-      <div class="motive-row">
-        <label>Motive's PC <input type="text" id="motiveServer" spellcheck="false" autocomplete="off" value="127.0.0.1" /></label>
-        <label title="Motive's Streaming pane: Transmission Type"><input type="checkbox" id="motiveMulticast" checked /> Multicast</label>
-        <button id="motiveConnect">Connect</button>
-      </div>
-      <div id="motiveStatus">Receives Motive's live markers, rigid bodies and skeletons (Motive: View → Streaming Pane → Broadcast Frame Data). They're recorded with motion capture and exported alongside it.</div>
-      <canvas id="motiveView" width="1280" height="720" hidden></canvas>
-      <div id="motiveInfo" class="metric-row"></div>
-    </div>
   </aside>
+</div>
+
+<div id="multiCamDialog" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="multiCamTitle">
+    <div class="modal-head"><b id="multiCamTitle">Several cameras at once</b></div>
+    <p class="note">Each camera gets its own hand tracker and its own tile, side by side. Motion capture records them all together, on one clock.</p>
+    <div id="multiCamPicks"></div>
+    <p id="multiCamPickNote" class="note"></p>
+    <div class="toolbar"><button id="multiCamStart" class="primary" disabled>Start</button><button id="multiCamCancel">Cancel</button></div>
+  </div>
 </div>
 
 <div id="captureDialog" class="modal" hidden>
@@ -602,6 +652,30 @@
   <div class="viz3d-caption">Blue = left hand &nbsp;•&nbsp; Orange = right hand &nbsp;•&nbsp; Each hand drives its own simulated gripper &nbsp;•&nbsp; Drag to rotate the view</div>
 </div>
 
+<!-- Several live cameras at once (multi-camera.js): a tile per camera. -->
+<div id="multiCamCard" class="card" hidden>
+  <div class="section-label">Several cameras</div>
+  <div id="multiCamGrid" class="multi-cam-grid"></div>
+  <div class="toolbar" style="margin-top:10px">
+    <button id="multiCamRecord" class="primary">Start Motion Capture</button>
+    <button id="multiCamClose">Close (back to one camera)</button>
+    <span id="multiCamNote" class="status"></span>
+  </div>
+</div>
+
+<!-- OptiTrack Motive's live data (Windows and Linux app): as big as the 3D view. -->
+<div id="motiveCard" class="card" hidden>
+  <div class="section-label">OptiTrack Motive</div>
+  <div class="motive-row">
+    <label>Motive's PC <input type="text" id="motiveServer" spellcheck="false" autocomplete="off" value="127.0.0.1" /></label>
+    <label title="Motive's Streaming pane: Transmission Type"><input type="checkbox" id="motiveMulticast" checked /> Multicast</label>
+    <button id="motiveConnect">Connect</button>
+    <span id="motiveInfo" class="metric-row"></span>
+  </div>
+  <div id="motiveStatus">Receives Motive's live markers, rigid bodies and skeletons (Motive: View → Streaming Pane → Broadcast Frame Data). They're recorded with motion capture and exported alongside it.</div>
+  <canvas id="motiveView" width="1280" height="420" hidden></canvas>
+</div>
+
 <!-- Libraries are installed locally (npm install) so the app works offline. -->
 <script src="node_modules/@mediapipe/hands/hands.js"></script>
 <script src="node_modules/@mediapipe/drawing_utils/drawing_utils.js"></script>
@@ -613,20 +687,28 @@
 <script src="robot-motion.js"></script>
 <script src="hand-3d.js"></script>
 <script src="video-recorder.js"></script>
+<script src="natnet-parse.js"></script>
+<script src="remote-core.js"></script>
+<script src="phone-link-protocol.js"></script>
 <script src="mobile-bridge.js"></script>
 <script src="export-ui.js"></script>
 <script src="video-formats.js"></script>
+<script src="video-native.js"></script>
 <script src="video-convert.js"></script>
 <script src="video-origin.js"></script>
 <script src="readable-text.js"></script>
 <script src="motion-export.js"></script>
 <script src="pc-control.js"></script>
+<script src="qr-code.js"></script>
+<script src="phone-link-ui.js"></script>
 <script src="oak-source.js"></script>
 <script src="ops-sessions.js"></script>
 <script src="rig-live.js"></script>
+<script src="multi-camera.js"></script>
 <script src="video-sync.js"></script>
 <script src="video-queue.js"></script>
 <script src="multi-video.js"></script>
+<script src="gestures.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

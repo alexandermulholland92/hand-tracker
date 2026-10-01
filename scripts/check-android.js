@@ -16,7 +16,7 @@
  * The native Filesystem/Share plugins themselves can only be tested on a device.
  */
 
-const { app, BrowserWindow, protocol, session } = require("electron");
+const { app, BrowserWindow, protocol, session, ipcMain } = require("electron");
 const { execSync, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -24,6 +24,8 @@ const path = require("path");
 const validators = require("./motion-validators.js");
 const { verifyExports } = require("./video-validators.js");
 const { PAGE_SIMULATION } = require("./simulated-hands.js");
+const { startNatNetSim } = require("./natnet-sim.js");
+const { startFleetSim } = require("./fleet-sim.js");
 
 const ROOT = path.join(__dirname, "..");
 const WWW = path.join(ROOT, "www");
@@ -32,6 +34,9 @@ const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; cha
 
 app.commandLine.appendSwitch("use-fake-device-for-media-stream");
 app.commandLine.appendSwitch("use-fake-ui-for-media-stream");
+// The fake camera plays a test pattern from a file: Chromium's own pattern crashes now and then (fake-camera.js).
+const fakeCamera = require("./fake-camera.js").fakeCameraFile();
+if (fakeCamera) app.commandLine.appendSwitch("use-file-for-fake-video-capture", fakeCamera);
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-android-profile-")));
 // Chromium's fake test camera sometimes crashes its capture process (an access violation
@@ -61,30 +66,53 @@ function check(name, ok, detail = "") {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 }
 
-// Copies the files the fake Filesystem holds (as the app saved them) to outDir.
+// Copies the files the fake Filesystem holds (as the app saved them) to outDir, one at a
+// time and a few MB per call (uncompressed videos are large), each only once.
+const pulled = new Map(); // path -> file on disk
 async function pullFiles(js) {
-  const saved = await js(`(() => {
-    const out = {};
-    for (const [p, bytes] of window.__fakeCapacitor.files) {
-      let s = "";
-      for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-      out[p] = btoa(s);
-    }
-    return out;
-  })()`);
+  const paths = await js("[...window.__fakeCapacitor.files.keys()]");
   const written = {};
-  for (const [p, b64] of Object.entries(saved)) {
-    const file = path.join(outDir, path.basename(p));
-    fs.writeFileSync(file, Buffer.from(b64, "base64"));
-    written[path.basename(p)] = file;
+  for (const p of paths) {
+    if (!pulled.has(p)) {
+      const size = await js(`window.__fakeCapacitor.files.get(${JSON.stringify(p)}).length`);
+      const parts = [];
+      for (let at = 0; at < size; at += 8 << 20) {
+        parts.push(Buffer.from(await js(`(() => {
+          const bytes = window.__fakeCapacitor.files.get(${JSON.stringify(p)}).subarray(${at}, ${at + (8 << 20)});
+          let s = "";
+          for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+          return btoa(s);
+        })()`), "base64"));
+      }
+      const file = path.join(outDir, path.basename(p));
+      fs.writeFileSync(file, Buffer.concat(parts));
+      pulled.set(p, file);
+    }
+    written[path.basename(p)] = pulled.get(p);
   }
   return written;
 }
 
 async function run() {
   execSync("node scripts/build-web.js", { cwd: ROOT, stdio: "inherit" });
+  // The phone's /__fleet/<rig>/<camera> (RemotePlugin.java serveFleet): the fake Remote
+  // plugin (fake-capacitor.js) says which dashboard and which cookie, as the WebView's would be.
+  const fleet = { site: null, cookie: "" };
+  ipcMain.on("fake-remote:fleet", (_event, info) => Object.assign(fleet, info));
   protocol.handle("app", async (request) => {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/__fleet/")) {
+      const fm = /^\/__fleet\/([A-Za-z0-9][A-Za-z0-9-]{0,62})\/([A-Za-z0-9_]{1,32})$/.exec(url.pathname);
+      if (!fm || !fleet.site) return new Response("Not found", { status: 404 });
+      const keyframe = url.searchParams.get("kind") === "keyframe";
+      const endpoint = keyframe ? `keyframe/${fm[2]}?` : `frame/${fm[2]}?${url.searchParams.get("full") === "1" ? "quality=full" : "fps=2"}&`;
+      const res = await fetch(`${fleet.site}/proxy/${fm[1]}/api/preview/${endpoint}t=${Date.now()}`, { headers: { Cookie: fleet.cookie }, redirect: "manual" });
+      const type = res.headers.get("content-type") || "";
+      if ((res.ok && !/^(image|video)\//.test(type)) || res.status === 401 || res.status < 200 || (res.status >= 300 && res.status < 400)) return new Response("Signed out", { status: 401 });
+      const headers = { "content-type": type || "application/octet-stream", "cache-control": "no-store" };
+      for (const h of ["x-codec-string", "x-frame-stale", "x-frame-age-ms", "x-frame-unix-ns"]) if (res.headers.get(h)) headers[h] = res.headers.get(h);
+      return new Response(await res.arrayBuffer(), { status: res.status, headers });
+    }
     const rel = decodeURIComponent(url.pathname) === "/" ? "/index.html" : decodeURIComponent(url.pathname);
     const file = path.normalize(path.join(WWW, rel));
     if (url.host !== HOST || !file.startsWith(WWW + path.sep) || !fs.existsSync(file)) return new Response("Not found", { status: 404 });
@@ -159,7 +187,8 @@ async function run() {
   for (let i = 0; i < 40 && !(await js("document.querySelectorAll('#exportResults li.ok').length")); i++) await sleep(250);
   // 3a'. The recording converted on the phone (ffmpeg.wasm) to formats the phone doesn't record in.
   const phoneFormats = ["webm", "mpg", "gif", "wmv", "ogv"];
-  const offeredOnPhones = require("../video-formats.js").FORMATS.filter((f) => f.wasm).length;
+  // ffmpeg.wasm's formats plus the six video-native.js makes with the device's encoders (all 36 where it has HEVC and AV1 ones, as here).
+  const offeredOnPhones = require("../video-formats.js").FORMATS.length;
   const converted = await js(`(async () => {
     document.getElementById("exportName").value = "phone-converted";
     document.querySelectorAll("#formatGrid input").forEach((i) => { i.checked = ${JSON.stringify(phoneFormats)}.includes(i.value); });
@@ -262,6 +291,210 @@ async function run() {
   check("An AVI on the phone is converted and every frame is tracked", avi.ok && avi.frames === 60, JSON.stringify(avi));
   await js("HandTrackerApp.backToCamera()");
 
+  // 6. OptiTrack Motive's live data on the phone: the NatNet plugin's sockets (here Node's, in
+  // fake-capacitor.js) and natnet-parse.js, from a stand-in Motive on this computer.
+  const motive = {};
+  check("The Motive panel is shown on the phone, asking for Motive's PC", await js("!motiveCard.hidden && motiveServer.value === '' && /Motive PC/.test(motiveServer.placeholder)"));
+  const motiveState = () => js("({ status: motiveStatus.textContent, info: motiveInfo.textContent, button: motiveConnect.textContent })");
+  const motiveWait = async (test) => {
+    let st;
+    for (let i = 0; i < 60; i++) {
+      st = await motiveState();
+      if (test(st)) break;
+      await sleep(250);
+    }
+    return st;
+  };
+  for (const multicast of [true, false]) {
+    const sim = await startNatNetSim({ rate: 100, multicast });
+    await js(`(() => { motiveServer.value = "127.0.0.1"; motiveMulticast.checked = ${multicast}; motiveConnect.click(); return true; })()`);
+    motive[multicast ? "multicast" : "unicast"] = await motiveWait((st) => /Connected to Motive 3\.5 \(NatNet 4\.1\)/.test(st.status) && /rigid body/.test(st.info));
+    if (!multicast) {
+      await js("document.getElementById('motionBtn').click(); true");
+      await sleep(2000);
+      await js("document.getElementById('motionBtn').click(); true");
+      for (let i = 0; i < 20 && (await js("document.getElementById('motionExportCard').hidden")); i++) await sleep(250);
+      motive.export = await js(`(async () => {
+        document.getElementById("motionName").value = "phone-motive";
+        document.querySelectorAll("#motionFormatGrid input").forEach((i) => { i.checked = i.value === "c3d"; });
+        const before = document.querySelectorAll("#motionResults li").length;
+        document.getElementById("motionExportBtn").click();
+        for (let i = 0; i < 40 && document.querySelectorAll("#motionResults li").length <= before; i++) await new Promise((r) => setTimeout(r, 250));
+        await new Promise((r) => setTimeout(r, 300));
+        return { info: document.getElementById("motionInfo").textContent, note: document.getElementById("motionNote").textContent,
+          reads: window.__fakeCapacitor.calls.filter((c) => c[0] === "natnet.recordRead").length };
+      })()`);
+    }
+    await js("motiveConnect.click(); true");
+    motive[multicast ? "stoppedMulticast" : "stoppedUnicast"] = await motiveWait((st) => st.button === "Connect");
+    sim.stop();
+  }
+  check("Connects to Motive's NatNet stream on the phone over multicast and unicast",
+    /3 labelled \+ 1 unlabelled markers · 1 rigid body · 1 skeleton \(2 bones\)/.test(motive.multicast.info) && /Connected/.test(motive.unicast.status) && motive.stoppedUnicast.button === "Connect",
+    `${motive.multicast.status} ${motive.multicast.info} | ${motive.unicast.status}`);
+  const motiveFiles = await pullFiles(js);
+  const motiveC3d = Object.keys(motiveFiles).find((n) => /^phone-motive-motive.*\.c3d$/.test(n));
+  let motiveDetail = JSON.stringify(motive.export), motiveOk = false;
+  if (motiveC3d) {
+    const c3d = validators.readC3D(motiveFiles[motiveC3d]);
+    const labels = c3d.params["POINT:LABELS"];
+    const pivot = labels.indexOf("Wand_pivot");
+    const pts = c3d.data.map((f) => f[pivot]).filter((p) => p && p[3] >= 0);
+    const radii = pts.map((p) => Math.hypot(p[0], p[1]));
+    motiveOk = ["Wand_1", "Wand_pivot", "Performer_Hip"].every((l) => labels.includes(l)) && pts.length > 50 && radii.every((r) => Math.abs(r - 300) < 1) && motive.export.reads > 0;
+    motiveDetail = `${labels.length} points, ${c3d.data.length} frames at ${c3d.header.rate.toFixed(1)} Hz; wand radius ${Math.min(...radii).toFixed(1)}–${Math.max(...radii).toFixed(1)} mm; read back in ${motive.export.reads} part(s)`;
+  }
+  check("Motive's data records with motion capture on the phone (every frame, read back from the plugin) and saves", motiveOk, motiveDetail);
+
+  // 7. Capture Sessions and Live Rigs on the phone: hidden until the version under the title
+  // is tapped 7 times; Live Rigs against the stand-in fleet dashboard (fleet-sim.js), through
+  // the Remote plugin (here fake-capacitor.js) and the phone's /__fleet/ pictures.
+  const fleetSim = await startFleetSim({ ffmpegPath: require("../electron/exporter.js").ffmpegPath, outDir });
+  const rigs = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const $ = (id) => document.getElementById(id);
+    const until = async (test, ms = 10000) => { for (let t = 0; t < ms && !test(); t += 100) await sleep(100); return test(); };
+    const out = { hiddenAtStart: $("opsBtn").hidden && $("rigsBtn").hidden };
+    for (let i = 0; i < 7; i++) $("buildInfo").click();
+    await sleep(300);
+    out.shown = !$("opsBtn").hidden && !$("rigsBtn").hidden;
+    out.asksForSite = !$("opsSetup").hidden;
+    $("opsDialog").hidden = true;
+    $("rigsBtn").click();
+    await until(() => !$("rigsSetup").hidden);
+    $("rigsSite").value = ${JSON.stringify(fleetSim.site)};
+    $("rigsConnect").click();
+    await until(() => !$("rigsSignIn").hidden);
+    $("rigsSignInBtn").click();
+    await until(() => document.querySelectorAll("#rigsList .rig-row").length > 0, 15000);
+    out.rows = [...document.querySelectorAll("#rigsList .rig-row")].map((row) => row.querySelector("b").textContent).join(",");
+    const pick = async (host, cam = "head") => {
+      if ($("rigsDialog").hidden) $("rigsBtn").click();
+      const sel = '#rigsList button[data-host="' + host + '"][data-cam="' + cam + '"]';
+      await until(() => document.querySelector(sel));
+      document.querySelector(sel).click();
+    };
+    await pick("rig-a");
+    await until(() => HandTracker.getCamera().stream && RigLive._state() && RigLive._state().frames >= 3, 10000);
+    out.jpeg = { name: HandTracker.getCamera().name, frames: RigLive._state() && RigLive._state().frames };
+    await pick("rig-d");
+    await until(() => RigLive._state() && RigLive._state().host === "rig-d" && RigLive._state().frames >= 2, 10000);
+    out.keyframes = { kind: RigLive._state() && RigLive._state().kind, size: HandTracker.getCamera().width + "x" + HandTracker.getCamera().height };
+    await pick("rig-d");
+    await until(() => !HandTracker.getCamera().stream, 10000);
+    out.back = !HandTracker.getCamera().stream;
+    $("rigsDialog").hidden = true;
+    for (let i = 0; i < 7; i++) $("buildInfo").click();
+    await sleep(300);
+    out.hiddenAgain = $("opsBtn").hidden && $("rigsBtn").hidden;
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  const remoteCalls = await js("window.__fakeCapacitor.calls.filter((c) => c[0].startsWith('remote.')).map((c) => c[0] + ' ' + (typeof c[2] === 'string' ? c[2] : c[2] === true ? 'cookies' : '')).join('; ')");
+  check("Capture Sessions and Live Rigs show on the phone after 7 taps on the version (and hide again)", rigs.hiddenAtStart && rigs.shown && rigs.asksForSite && rigs.hiddenAgain, JSON.stringify(rigs));
+  check("Live Rigs on the phone: signs in on the dashboard's page, lists the rigs (recording first) and watches a JPEG camera and a keyframe camera through /__fleet/",
+    /^Rig A,Rig F/.test(rigs.rows || "") && rigs.jpeg && rigs.jpeg.frames >= 3 && rigs.keyframes && rigs.keyframes.kind === "keyframe" && rigs.keyframes.size === "640x360" && rigs.back &&
+      /remote\.signIn cookie/.test(remoteCalls) && fleetSim.writes.length === 0,
+    JSON.stringify({ ...rigs, calls: remoteCalls.slice(0, 200), writes: fleetSim.writes }));
+  fleetSim.stop();
+
+  // 8. Controlling a PC from the phone over Wi-Fi (mobile.link, mobile.pc): a PC's link
+  // (electron/phone-link.js, with a stand-in for its mouse and keyboard) on this computer.
+  const { PhoneLinkServer } = require("../electron/phone-link.js");
+  const pcGot = [];
+  const pcLink = new PhoneLinkServer({ handle: async (type, d) => {
+    pcGot.push(`${type} ${JSON.stringify(d)}`);
+    return type === "keyboard" ? { shown: !!d.show } : null;
+  } });
+  const pcCode = (await pcLink.start()).pairing.replace(/:[0-9.,]+$/, ":127.0.0.1");
+  const linked = await js(`(async () => {
+    const $ = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const out = { card: !$("pcCard").hidden && !$("linkPhone").hidden && $("linkPc").hidden, before: $("linkPhoneStatus").textContent };
+    $("linkEnter").click();
+    $("linkCodeInput").value = ${JSON.stringify(pcCode)};
+    $("linkConnect").click();
+    for (let i = 0; i < 50 && !/Connected to/.test($("linkPhoneStatus").textContent); i++) await sleep(100);
+    out.status = $("linkPhoneStatus").textContent;
+    mobile.pc.pointer(0.25, 0.75, "primary");
+    await mobile.pc.key("ctrl+c", "tap");
+    await mobile.pc.button("left", "click");
+    out.keyboard = await mobile.pc.setKeyboard(true);
+    out.kept = !!localStorage.getItem("hand-tracker-pc-link") && !/[A-Za-z0-9_-]{22}/.test(localStorage.getItem("hand-tracker-pc-link"));
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  await sleep(300);
+  pcLink.stop();
+  linked.gone = await js(`mobile.pc.key("a", "tap").then(() => "carried out", (err) => err.message)`);
+  linked.got = pcGot;
+  check("The phone pairs with a PC from its code and controls it over Wi-Fi: pointer, keys, clicks and the PC's floating keyboard (the key kept in the Keystore)",
+    linked.card && /Connected to/.test(linked.status || "") && pcGot.some((g) => g.startsWith('pointer {"nx":0.25')) && pcGot.includes('key {"combo":"ctrl+c","action":"tap"}') &&
+      pcGot.includes('button {"which":"left","action":"click"}') && linked.keyboard === true && linked.kept && /didn't answer/.test(linked.gone || ""),
+    JSON.stringify(linked));
+
+  // 9. Controlling the phone itself: "Control this phone" hands the camera to the control
+  // window (the PhoneControl plugin stood in for) and takes it back when that stops; and the
+  // control window's page (phone-control.html) turns the hand mouse and gesture actions into
+  // the accessibility service's taps, swipes and keys (here recorded).
+  const self = await js(`(async () => {
+    const $ = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const out = { shown: !$("selfControl").hidden, ready: $("selfStatus").textContent };
+    $("selfStart").click();
+    for (let i = 0; i < 30 && !/Stop/.test($("selfStart").textContent); i++) await sleep(100);
+    out.started = window.__fakeCapacitor.calls.filter((c) => c[0] === "phoneControl.start").map((c) => JSON.parse(c[1]));
+    out.cameraReleased = HandTracker.getSource() === "external" && HandTracker.getCamera().name === "Controlling this phone";
+    out.button = $("selfStart").textContent;
+    window.__fakeCapacitor.stopPhoneControl(); // its × tapped
+    for (let i = 0; i < 50 && HandTracker.getSource() !== "camera"; i++) await sleep(100);
+    out.cameraBack = HandTracker.getSource() === "camera";
+    out.buttonAfter = $("selfStart").textContent;
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  check("Control this phone: Start hands the camera to the control window (with the hand mouse's settings); when it stops, the app has its camera back",
+    self.shown && /Ready/.test(self.ready) && self.started && self.started.length === 1 && self.started[0].hand && self.cameraReleased && /Stop/.test(self.button) &&
+      self.cameraBack && /Start/.test(self.buttonAfter),
+    JSON.stringify(self));
+  const controlWin = new BrowserWindow({
+    show: false, width: 320, height: 240,
+    webPreferences: { preload: path.join(__dirname, "fake-capacitor.js"), contextIsolation: false, sandbox: false, backgroundThrottling: false },
+  });
+  const controlSettings = { hand: "Right", reach: "0.55", actionsOn: true, allow: { keyboard: true, mouse: true, web: true },
+    rules: [{ enabled: true, gesture: "Thumbs Up", hand: "any", action: "keys", value: "volumeup", method: "GET", trigger: "enter", hold: 0, every: 1 }] };
+  await controlWin.loadURL(`app://${HOST}/phone-control.html?settings=${encodeURIComponent(JSON.stringify(controlSettings))}`);
+  const cjs = (code) => controlWin.webContents.executeJavaScript(code, true);
+  const controlled = await cjs(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 100 && !(HandTracker.getCamera().width > 0); i++) await sleep(200);
+    const out = { camera: HandTracker.getCamera().width, mouse: PcControl.isMouseOn() };
+    HandTracker.setPaused(true); // only these synthetic hands
+    const calls = window.__fakeCapacitor.calls;
+    const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],
+      [0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]];
+    const hand = (cx, cy, curled = []) => ({ handedness: "Right", imageLandmarks: T.map(([x, y], i) => {
+      const f = { 7: 5, 8: 5, 11: 9, 12: 9 }[i];
+      const bent = f !== undefined && curled.includes(f === 5 ? "index" : "middle");
+      const [bx, by] = bent ? [T[f][0] + (x - T[f][0]) * 0.2, T[f][1] + (y - T[f][1]) * 0.2] : [x, y];
+      return { x: cx + bx, y: cy + by, z: 0 };
+    }) });
+    const none = () => ({ label: "—" });
+    const frames = async (n, hands, gestureOf = none) => {
+      for (let i = 0; i < n; i++) { PcControl.update(typeof hands === "function" ? hands(i) : hands, gestureOf, true, 4 / 3); await sleep(30); }
+    };
+    await frames(20, (i) => [hand(0.35 + i * 0.015, 0.6)]);
+    out.pointers = calls.filter((c) => c[0] === "hand.pointer").length;
+    await frames(10, [hand(0.6, 0.6)]);
+    await frames(4, [hand(0.6, 0.6, ["index"])]); // a quick index curl: a tap
+    await frames(15, [hand(0.6, 0.6)]);
+    out.taps = calls.filter((c) => c[0] === "hand.button").map((c) => c.slice(1).join(" "));
+    await frames(15, [hand(0.6, 0.6)], () => ({ label: "Thumbs Up" }));
+    out.keys = calls.filter((c) => c[0] === "hand.key").map((c) => c.slice(1).join(" "));
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  controlWin.destroy();
+  check("The control window tracks with the camera and turns the hand mouse and gesture actions into taps and keys on the phone (a curl taps; Thumbs Up turns the volume up)",
+    controlled.camera > 0 && controlled.mouse && controlled.pointers > 10 && (controlled.taps || []).includes("left click") && (controlled.keys || []).some((k) => /^volumeup/.test(k)),
+    JSON.stringify(controlled));
+
   await js("document.querySelector('a[href=\"viewer.html\"]').click()");
   await sleep(1500);
   check("Recording Viewer opens in place with a Back link", await js("location.pathname.endsWith('viewer.html') && !!document.querySelector('a.back-link[href=\"index.html\"]')"));
@@ -269,14 +502,15 @@ async function run() {
   // Viewer on the phone: import the CSV and C3D just saved, convert, and save through Android.
   const viewerOpen = (name, file) => js(`(async () => {
     const bytes = Uint8Array.from(atob(${JSON.stringify(fs.readFileSync(file).toString("base64"))}), (c) => c.charCodeAt(0));
-    RecordingViewer.openBytes(${JSON.stringify(name)}, bytes.buffer);
+    await RecordingViewer.openBytes(${JSON.stringify(name)}, bytes.buffer);
     await new Promise((r) => setTimeout(r, 300));
     return { hands: document.querySelectorAll(".hand-row").length, text: document.getElementById("results").innerText,
       error: (document.querySelector("#results .error") || {}).textContent || "" };
   })()`);
   const viewerSave = (name, count) => js(`(async () => {
     document.getElementById("exportName").value = ${JSON.stringify(name)};
-    document.querySelectorAll("#exportGrid input").forEach((i) => { i.checked = !i.disabled; });
+    // Every motion format (not the videos: motion capture can be made into those too).
+    document.querySelectorAll("#exportGrid input").forEach((i) => { i.checked = !i.disabled && !i.value.startsWith("video:"); });
     document.getElementById("exportBtn").click();
     for (let i = 0; i < 80 && document.querySelectorAll("#exportResults li").length < ${count}; i++) await new Promise((r) => setTimeout(r, 250));
     return { ok: document.querySelectorAll("#exportResults li.ok").length, share: document.querySelectorAll("#exportResults li button").length,
@@ -286,10 +520,13 @@ async function run() {
   check("Viewer imports the CSV on the phone", csvView.hands === 2 && !csvView.error, csvView.error);
   const csvSaved = await viewerSave("phone-from-csv", 8);
   check("…and saves all 7 formats from it through Android (8 files)", csvSaved.ok === 8 && csvSaved.share === 8 && csvSaved.label === "Save", JSON.stringify(csvSaved));
+  // The app's own C3D and BVH hold hands: they open as those hands again, with every format.
   const c3dView = await viewerOpen("rec.c3d", find(".c3d"));
-  check("Viewer imports C3D markers on the phone", /42\s*Markers/.test(c3dView.text) && !c3dView.error, c3dView.error);
-  const c3dSaved = await viewerSave("phone-from-c3d", 6);
-  check("…and saves all 6 marker formats through Android", c3dSaved.ok === 6, JSON.stringify(c3dSaved));
+  check("Viewer imports the app's C3D on the phone as both hands again", c3dView.hands === 2 && !c3dView.error, c3dView.error);
+  const c3dSaved = await viewerSave("phone-from-c3d", 8);
+  check("…and saves all 7 formats from it through Android (8 files)", c3dSaved.ok === 8, JSON.stringify(c3dSaved));
+  const bvhView = await viewerOpen("rec-left.bvh", find("-left.bvh"));
+  check("Viewer imports a BVH on the phone (as its hand)", bvhView.hands === 1 && !bvhView.error, bvhView.error);
   const takMsg = await js(`(async () => {
     const input = document.getElementById("fileInput"), dt = new DataTransfer();
     dt.items.add(new File([new Uint8Array(8)], "Take1.tak"));
@@ -304,7 +541,8 @@ async function run() {
   const wmv = path.join(outDir, "phone-source.wmv");
   spawnSync(require("../electron/exporter.js").ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
     "-t", "2", "-c:v", "wmv2", "-b:v", "2M", "-c:a", "wmav2", "-shortest", wmv]);
-  const viewerFormats = ["mp4", "avi", "mov", "mxf", "dv", "webp", "flv", "rm", "cfhd", "utvideo"];
+  // …including the six video-native.js makes (the device's HEVC and AV1 encoders; uncompressed AVI and Y4M saved in parts).
+  const viewerFormats = ["mp4", "avi", "mov", "mxf", "dv", "webp", "flv", "rm", "cfhd", "utvideo", "hevc", "av1", "av1mp4", "avif", "y4m", "rawavi"];
   const vv = await js(`(async () => {
     const bytes = Uint8Array.from(atob(${JSON.stringify(fs.readFileSync(wmv).toString("base64"))}), (c) => c.charCodeAt(0));
     await RecordingViewer.openVideo(new File([bytes], "phone-source.wmv"));

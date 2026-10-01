@@ -93,7 +93,11 @@
 
   // One Euro filter settings, tuned on MediaPipe landmarks from real hand videos:
   // cutoff (Hz) = MIN_CUTOFF + BETA × speed (hand lengths/s), speed low-passed at D_CUTOFF.
-  const SMOOTHING = { minCutoff: 1.0, beta: 3.0, dCutoff: 1.0 };
+  // Tuned on real hands (a 27 s head-camera recording, every frame, both models): scored
+  // against the lag-free path, 3 Hz / 12 is about 30% closer than the old 1 Hz / 3, which
+  // trailed a slow-moving hand by about 160 ms (now about 50 ms), with its wobble still
+  // half of MediaPipe's own.
+  const SMOOTHING = { minCutoff: 3.0, beta: 12.0, dCutoff: 1.0 };
   // Landmarks that move more than this (average, in hand lengths) between two frames
   // have jumped (a re-detection or a tracking glitch): the filter restarts there
   // rather than sliding across.
@@ -875,13 +879,21 @@
     let reopening = false;
     let busy = false;
     let scheduled = 0; // only the latest scheduled tick runs
+    let lastAnimationFrame = performance.now();
     const schedule = () => {
       const token = ++scheduled;
       const run = () => {
         if (token === scheduled) tick();
       };
-      requestAnimationFrame(run);
-      setTimeout(run, document.hidden ? 15 : 40);
+      requestAnimationFrame(() => {
+        lastAnimationFrame = performance.now();
+        run();
+      });
+      // Once animation frames have stopped coming (minimized), the timer runs the next tick
+      // straight away rather than 40 ms after this one: with the Full model a frame takes
+      // about as long again, which would have halved the rate.
+      const stopped = document.hidden || performance.now() - lastAnimationFrame > 250;
+      setTimeout(run, stopped ? 8 : 40);
     };
     loopKick = () => {
       if (id === loopId && !busy) schedule();

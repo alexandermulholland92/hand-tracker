@@ -2,7 +2,7 @@
  * check.js — automated end-to-end check of the desktop app.
  *   npm run check
  *
- * Launches the real app with Chromium's built-in fake camera, then:
+ * Launches the real app with Chromium's fake camera (playing a test pattern, fake-camera.js), then:
  *  1. waits for MediaPipe to load and process camera frames,
  *  2. simulates two hands (Left + Right) moving and gripping,
  *  3. records motion capture and a "Camera + 3D" video,
@@ -36,6 +36,9 @@ const path = require("path");
 
 app.commandLine.appendSwitch("use-fake-device-for-media-stream");
 app.commandLine.appendSwitch("use-fake-ui-for-media-stream");
+// The fake camera plays a test pattern from a file: Chromium's own pattern crashes now and then (fake-camera.js).
+const fakeCamera = require("./fake-camera.js").fakeCameraFile();
+if (fakeCamera) app.commandLine.appendSwitch("use-file-for-fake-video-capture", fakeCamera);
 
 const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-"));
 // Fresh profile every run, so saved preferences can't change what's tested.
@@ -64,6 +67,7 @@ const exporter = require("../electron/exporter.js");
 const validators = require("./motion-validators.js");
 const { verifyExports } = require("./video-validators.js");
 const { startNatNetSim } = require("./natnet-sim.js");
+const fleetSim = require("./fleet-sim.js");
 const { PAGE_SIMULATION, gesturePoses, rigSimulation } = require("./simulated-hands.js");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -75,9 +79,26 @@ function check(name, ok, detail = "") {
 }
 
 
+// A page call that hasn't answered in this long means the page is stuck: say so (and what
+// Chromium's processes did) instead of waiting forever.
+const PAGE_CALL_LIMIT_MS = 4 * 60 * 1000;
+const processEvents = [];
+app.on("child-process-gone", (_event, d) => processEvents.push(`${new Date().toLocaleTimeString()} ${d.type}${d.name ? ` (${d.name})` : ""} ${d.reason} ${d.exitCode}`));
+function withLimit(promise, what) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`The page didn't answer for ${PAGE_CALL_LIMIT_MS / 60000} minutes (${what}). Chromium's processes: ${processEvents.join("; ") || "none ended"}`)), PAGE_CALL_LIMIT_MS);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 async function run(win) {
   const wc = win.webContents;
-  const js = (code) => wc.executeJavaScript(code, true);
+  const js = (code) => withLimit(wc.executeJavaScript(code, true), code.replace(/\s+/g, " ").slice(0, 120));
+  wc.on("unresponsive", () => console.log(`NOTE  The page stopped responding at ${new Date().toLocaleTimeString()}.`));
+  wc.on("render-process-gone", (_event, d) => console.log(`NOTE  The page's process ended (${d.reason}, ${d.exitCode}).`));
   const consoleErrors = [];
   wc.on("console-message", (...args) => {
     const d = args[0] && typeof args[0].message === "string" ? args[0] : { level: args[1], message: args[2] };
@@ -87,7 +108,7 @@ async function run(win) {
   await new Promise((r) => wc.once("did-finish-load", r));
 
   // 1. MediaPipe + camera pipeline
-  // Chromium's fake camera runs at 20 fps; wait for tracking to warm up to a steady rate.
+  // Wait for tracking to warm up to a steady rate.
   let fps = 0;
   for (let i = 0; i < 120 && fps < 15; i++) {
     await new Promise((r) => setTimeout(r, 500));
@@ -381,9 +402,11 @@ async function run(win) {
       rot.back.startsWith("0 ") && rot.back.endsWith(rot.before), JSON.stringify(rot));
 
   await checkPcControl(js);
+  await checkPhoneLink(js);
   await checkCaptureSessions(js);
   await checkOpsStreaming();
   await checkLiveRigs(js);
+  await checkSeveralCameras(js);
 
   // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
   // in go through the same tracking, with the camera's confidence and measured distance.
@@ -491,7 +514,7 @@ async function run(win) {
   await checkMirrorDefaults(js);
   await checkOptiTrack(js);
 
-  if (jsonPath) await checkViewer(jsonPath, { csv: mfile(".csv"), c3d: mfile(".c3d"), trc: mfile(".trc") });
+  if (jsonPath) await checkViewer(jsonPath, { csv: mfile(".csv"), c3d: mfile(".c3d"), trc: mfile(".trc"), glb: mfile(".glb"), npz: mfile(".npz"), bvh: mfile("-left.bvh"), json: jsonPath, markers: path.join(outDir, "motive-take-motive.c3d") });
   await checkViewerVideo();
 }
 
@@ -626,6 +649,68 @@ async function checkPcControl(js) {
 // "byte N to the end" and drops the answer when it has enough: that must stop costing
 // anything (it used to stall playback a few seconds in), the bytes must be exactly the
 // file's, parts just fetched are reused, and the file's end (where the index is) is served.
+// Letting a phone control this PC (phone-link.js): the toggle shows a QR code holding the
+// pairing code; a stand-in phone pairs from it and connects, its signed requests are carried
+// out (here only the floating keyboard, so nothing reaches the real mouse or keys), one signed
+// with another key isn't, and turning it off stops listening.
+async function checkPhoneLink(js) {
+  const dgram = require("dgram");
+  const P = require("../phone-link-protocol.js");
+  const page = () => js(`({ code: document.getElementById("linkCode").textContent, status: document.getElementById("linkPcStatus").textContent,
+    toggle: document.getElementById("linkToggle").textContent, pairShown: !document.getElementById("linkPcPair").hidden,
+    shown: !document.getElementById("linkPc").hidden && document.getElementById("linkPhone").hidden })`);
+  await js(`document.getElementById("linkToggle").click(); true`);
+  let on;
+  for (let i = 0; i < 30; i++) {
+    on = await page();
+    if (on.code) break;
+    await sleep(100);
+  }
+  const out = { shown: on.shown, toggle: on.toggle, pairShown: on.pairShown, waiting: on.status };
+  // The QR code reads back as the pairing code (when OpenCV is installed to read it).
+  const png = await js(`document.getElementById("linkQr").toDataURL("image/png")`);
+  const qrFile = path.join(outDir, "phone-link-qr.png");
+  fs.writeFileSync(qrFile, Buffer.from(png.split(",")[1], "base64"));
+  const read = spawnSync("python", ["-c", "import sys, cv2; t, _, _ = cv2.QRCodeDetector().detectAndDecode(cv2.imread(sys.argv[1])); print(t)", qrFile], { encoding: "utf8" });
+  out.qr = read.status === 0 ? (read.stdout.trim() === on.code ? "reads back" : `reads "${read.stdout.trim()}"`) : "not read (no OpenCV)";
+  const pair = P.parsePairing(on.code.replace(/:[0-9.,]+$/, ":127.0.0.1"));
+  const sock = dgram.createSocket("udp4");
+  await new Promise((r) => sock.bind(0, r));
+  const answers = [];
+  sock.on("message", async (m) => {
+    const d = await P.decode(pair.key, m);
+    if (d) answers.push(d);
+  });
+  const send = async (key, msg) => sock.send(await P.encode(key, msg), pair.port, "127.0.0.1");
+  const answer = async (seq) => {
+    for (let i = 0; i < 20; i++) {
+      const a = answers.find((x) => x.seq === seq);
+      if (a) return a.data;
+      await sleep(50);
+    }
+    return null;
+  };
+  await send(pair.key, { seq: 1, type: "hello", data: { name: "Check phone" } });
+  const hello = await answer(1);
+  out.connected = !!(hello && hello.session);
+  await sleep(200);
+  out.connectedStatus = (await page()).status;
+  await send(pair.key, { session: hello && hello.session, seq: 2, type: "keyboard", data: { show: false } });
+  out.keyboard = await answer(2);
+  await send(P.newKey(), { session: hello && hello.session, seq: 3, type: "keyboard", data: { show: true } });
+  out.forged = await answer(3);
+  sock.close();
+  await js(`document.getElementById("linkToggle").click(); true`);
+  await sleep(300);
+  const off = await page();
+  out.off = { toggle: off.toggle, pairShown: off.pairShown };
+  check("Let a phone control this PC: shows a QR code to pair it; a paired phone connects and its signed requests are carried out, others aren't; turning it off stops it",
+    out.shown && /ON/.test(out.toggle) && out.pairShown && /Waiting for the phone/.test(out.waiting) && !/reads "/.test(out.qr) && out.connected &&
+      /Connected: Check phone/.test(out.connectedStatus) && out.keyboard && out.keyboard.ok && out.keyboard.result && out.keyboard.result.shown === false &&
+      out.forged === null && /OFF/.test(out.off.toggle) && !out.off.pairShown,
+    JSON.stringify(out));
+}
+
 async function checkOpsStreaming() {
   const { OpsClient } = require("../electron/ops.js");
   const file = path.join(outDir, "session-video.mp4");
@@ -696,79 +781,54 @@ async function checkCaptureSessions(js) {
     r.hiddenAtStart && r.shown && r.asksForSite && r.remembered && r.hiddenAgain && r.batch, JSON.stringify(r));
 }
 
-// Live Rigs, against a stand-in capture-fleet dashboard on this computer: its sign-in page
-// sets a cookie, and its rig list and pictures need that cookie. Rig A (recording) sends
-// changing side-by-side stereo JPEGs (left half red, right half blue) and has no keyframes;
-// rig D only has H.264 keyframes; rig E's camera is stale (like one that stopped sending);
-// rig F is recording with its preview flag off; B has no preview and C is offline.
-function startFleetSim() {
-  const http = require("http");
-  const ffmpeg = (args, file) => {
-    spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", ...args, file]);
-    return fs.readFileSync(file);
-  };
-  const jpegs = [0, 1].map((i) => ffmpeg(["-f", "lavfi", "-i", "color=c=red:s=640x400", "-f", "lavfi", "-i", "color=c=blue:s=640x400",
-    "-filter_complex", `[0][1]hstack,drawbox=x=${100 + i * 200}:y=150:w=80:h=80:color=white:t=fill`, "-frames:v", "1"], path.join(outDir, `fleet-frame-${i}.jpg`)));
-  const monos = [0, 1].map((i) => ffmpeg(["-f", "lavfi", "-i", "color=c=gray:s=640x360", "-vf", `drawbox=x=${100 + i * 200}:y=100:w=80:h=80:color=white:t=fill`, "-frames:v", "1"], path.join(outDir, `fleet-mono-${i}.jpg`)));
-  // Annex B H.264 keyframes, as the rigs send them; the codec string comes from the SPS.
-  const keyframes = [0, 1].map((i) => ffmpeg(["-f", "lavfi", "-i", "color=c=green:s=640x360", "-vf", `drawbox=x=${100 + i * 200}:y=100:w=80:h=80:color=white:t=fill`,
-    "-frames:v", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-bsf:v", "h264_mp4toannexb", "-f", "h264"], path.join(outDir, `fleet-key-${i}.h264`)));
-  const k = keyframes[0];
-  let sps = -1;
-  for (let i = 0; i + 4 < k.length && sps < 0; i++) if (k[i] === 0 && k[i + 1] === 0 && k[i + 2] === 1 && (k[i + 3] & 0x1f) === 7) sps = i + 4;
-  const codec = "avc1." + [k[sps], k[sps + 1], k[sps + 2]].map((b) => b.toString(16).padStart(2, "0")).join("");
-  const rig = (hostname, display_name, generation, capture_state, extra) => ({ hostname, display_name, generation, capture_state, online: true, reachable: true, via_relay: false, preview_active: false, preview_cameras: ["head"], ...extra });
-  const rigs = [
-    rig("rig-a", "Rig A", "rock5c", "recording", { recording_duration_s: 42, session_name: "s1" }),
-    rig("rig-b", "Rig B", "rpi5", "idle", { preview_cameras: ["chest"] }),
-    rig("rig-c", "Rig C", "rpi5", "unknown", { online: false, reachable: false, preview_cameras: [] }),
-    rig("rig-d", "Rig D", "rpi5", "preview", { preview_active: true }),
-    rig("rig-e", "Rig E", "rpi5", "preview", { preview_active: true }),
-    rig("rig-f", "Rig F", "rpi5", "recording", { recording_duration_s: 5, session_name: "s2", preview_cameras: ["head", "chest"] }),
-  ];
-  let served = 0;
-  const count = {};
-  const writes = [];
-  const server = http.createServer((req, res) => {
-    const url = new URL(req.url, "http://x");
-    const signedIn = /(^|;\s*)fleet=ok/.test(req.headers.cookie || "");
-    if (req.method !== "GET") writes.push(`${req.method} ${url.pathname}`); // it only ever reads
-    if (url.pathname === "/login") {
-      res.writeHead(200, { "content-type": "text/html" });
-      return res.end('<!doctype html><title>Sign in</title><p>Signing in…</p><script>document.cookie = "fleet=ok; path=/";</script>');
+// Several cameras at once: a tile per camera (here the test camera twice), each with its own
+// tracker; motion capture records them together and merges them, hands named by camera.
+async function checkSeveralCameras(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const cams = await HandTracker.listCameras();
+    await MultiCamera.start([cams[0].deviceId, cams[0].deviceId]);
+    let tiles = [];
+    for (let i = 0; i < 120; i++) {
+      tiles = MultiCamera._tiles();
+      if (tiles.length === 2 && tiles.every((t) => t.status && t.status.fps > 0)) break;
+      await sleep(250);
     }
-    if (!signedIn) {
-      res.writeHead(302, { location: "/login" });
-      return res.end();
+    const out = { tiles: tiles.map((t) => t.name + ":" + (t.status ? t.status.fps + "fps " + t.status.width + "x" + t.status.height : "none")), mainPaused: HandTracker.isPaused(),
+      card: !document.getElementById("multiCamCard").hidden };
+    // Hands in each tile (the test camera has none): a left hand in Cam 1, a right one in Cam 2.
+    const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],
+      [0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]];
+    const hand = (dx) => T.map(([x, y]) => ({ x: 0.5 + x + dx, y: 0.7 + y, z: 0 }));
+    const wins = [...document.querySelectorAll("#multiCamGrid iframe")].map((f) => f.contentWindow);
+    wins.forEach((w) => w.HandTracker.setPaused(true)); // only these frames
+    document.getElementById("multiCamRecord").click();
+    await sleep(300);
+    for (let k = 0; k < 40; k++) {
+      wins.forEach((w, i) => w.HandTracker._processResults({ image: w.document.getElementById("video"), multiHandLandmarks: [hand(0.002 * k)], multiHandedness: [{ label: i ? "Left" : "Right", score: 0.95 }] }));
+      await sleep(33);
     }
-    if (url.pathname === "/api/fleet/status") {
-      res.writeHead(200, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ devices: rigs, summary: {} }));
-    }
-    const m = /^\/proxy\/([^/]+)\/api\/preview\/(frame|keyframe)\/([^/]+)$/.exec(url.pathname);
-    if (m) {
-      served++;
-      const key = `${m[1]} ${m[2]}`;
-      const n = (count[key] = (count[key] || 0) + 1);
-      const fresh = { "x-frame-age-ms": "300", "x-frame-unix-ns": `17906${String(Math.floor(n / 2)).padStart(14, "0")}` }; // a new picture every second request
-      const send = (status, type, body, headers = {}) => {
-        res.writeHead(status, { "content-type": type, ...headers });
-        res.end(body);
-      };
-      if (m[1] === "rig-a" && m[2] === "frame") return send(200, "image/jpeg", jpegs[Math.floor(n / 2) % 2], fresh);
-      if (m[1] === "rig-d" && m[2] === "keyframe") return send(200, "video/h264", keyframes[Math.floor(n / 2) % 2], { ...fresh, "x-codec-string": codec });
-      if (m[1] === "rig-e" && m[2] === "keyframe") return send(200, "video/h264", keyframes[0], { "x-codec-string": codec, "x-frame-stale": "1", "x-frame-age-ms": String(13 * 86400e3) });
-      if (m[1] === "rig-f" && m[2] === "frame") return send(200, "image/jpeg", monos[Math.floor(n / 2) % 2], fresh);
-      return send(503, "image/jpeg", "", { "x-frame-stale": "1" });
-    }
-    res.writeHead(404);
-    res.end();
-  });
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ site: `http://127.0.0.1:${server.address().port}`, writes, served: () => served, stop: () => server.close() })));
+    document.getElementById("multiCamRecord").click();
+    await sleep(500);
+    out.export = !document.getElementById("motionExportCard").hidden;
+    out.info = document.getElementById("motionInfo").textContent;
+    out.note = document.getElementById("multiCamNote").textContent;
+    MultiCamera.close();
+    await sleep(300);
+    out.closed = document.getElementById("multiCamCard").hidden && !HandTracker.isPaused() && document.querySelectorAll("#multiCamGrid iframe").length === 0;
+    document.getElementById("motionDiscardBtn").click(); // (an unexported capture would make the next one ask first)
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  // (MediaPipe's labels are the camera's view; mirrored webcams show them the other way round.)
+  check("Several cameras at once: a tile per camera, each tracking on its own; motion capture records them all and merges them on one clock, hands named by camera; closing goes back to one camera",
+    r.tiles && r.tiles.length === 2 && r.tiles.every((t) => /:[1-9]\d*fps/.test(t)) && r.mainPaused && r.card && r.export &&
+      /Cam 1 Left/.test(r.info) && /Cam 2 Right/.test(r.info) && /2 cameras/.test(r.note) && r.closed,
+    JSON.stringify(r));
 }
 
+// Live Rigs, against the stand-in capture-fleet dashboard (fleet-sim.js, which says what each rig does).
 async function checkLiveRigs(js) {
-  const sim = await startFleetSim();
+  const sim = await fleetSim.startFleetSim({ ffmpegPath: exporter.ffmpegPath, outDir });
   const r = await js(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const $ = (id) => document.getElementById(id);
@@ -1436,7 +1496,8 @@ async function checkOptiTrack(js) {
           };
           const orange = (r, g, b) => r > 200 && g > 100 && g < 190 && b < 110;
           const blue = (r, g, b) => b > 200 && g > 150 && r < 160;
-          return { size: w + "x" + h, stage: stage.width + "x" + stage.height, split, orange: count(split, h, orange), blue: count(split, h, blue),
+          const mv = document.getElementById("motiveView");
+          return { size: w + "x" + h, stage: stage.width + "x" + stage.height, motive: mv.width + "x" + mv.height, split, orange: count(split, h, orange), blue: count(split, h, blue),
             info: document.getElementById("clipInfo").textContent };
         } finally {
           window.confirm = realConfirm;
@@ -1458,9 +1519,10 @@ async function checkOptiTrack(js) {
   const vid = results.video || {};
   const [vw, vh] = String(vid.size || "0x0").split("x").map(Number);
   const [sw, sh] = String(vid.stage || "1x1").split("x").map(Number);
+  const [mw, mh] = String(vid.motive || "16x9").split("x").map(Number);
   check("Record Video can include Motive's view below the camera's (offered only while Motive is connected; remembered for when it reconnects)",
     !/motive/.test(layoutsBefore.offered) && results.layoutsConnected && /camera\+motive/.test(results.layoutsConnected.offered) && /camera\+3d\+motive/.test(results.layoutsConnected.offered) &&
-      vw > 0 && Math.abs(vh / vw - (sh / sw + 9 / 16)) < 0.02 && vid.orange > 100 && vid.blue > 20 &&
+      vw > 0 && Math.abs(vh / vw - (sh / sw + mh / mw)) < 0.02 && vid.orange > 100 && vid.blue > 20 &&
       !/motive/.test(layoutsAfter.offered) && layoutsAfter.value === "camera" && layoutsAfter.saved === "camera+motive",
     JSON.stringify({ before: layoutsBefore.offered, connected: results.layoutsConnected && results.layoutsConnected.offered, video: vid, after: layoutsAfter }));
 
@@ -1561,6 +1623,75 @@ async function checkViewerVideo() {
   win.destroy();
 }
 
+// Motion files convert to every other format: each of the app's own hand exports (C3D, TRC,
+// GLB, NPZ, BVH, CSV, JSON) reads back as hands, and its C3D export again matches the
+// original C3D; a marker recording round-trips through every marker format.
+async function checkMotionConversion(vjs, files) {
+  const b64 = (f) => JSON.stringify(fs.readFileSync(f).toString("base64"));
+  const r = await vjs(`(async () => {
+    const bytes = (s) => { const u = Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); return u.buffer; };
+    const files = { c3d: ${b64(files.c3d)}, trc: ${b64(files.trc)}, glb: ${b64(files.glb)}, npz: ${b64(files.npz)}, csv: ${b64(files.csv)}, json: ${b64(files.json)}, bvh: ${b64(files.bvh)}, markers: ${b64(files.markers)} };
+    const ref = MotionImport.fromC3D(bytes(files.c3d), "ref.c3d").data;
+    // Largest difference (mm) between two marker recordings with the same labels; Infinity if they don't line up.
+    const diff = (a, b) => {
+      if (a.labels.join() !== b.labels.join() || a.frame_count !== b.frame_count) return Infinity;
+      let worst = 0;
+      for (let i = 0; i < a.positions.length; i++) {
+        const x = a.positions[i], y = b.positions[i];
+        if (Number.isNaN(x) !== Number.isNaN(y)) return Infinity;
+        if (!Number.isNaN(x)) worst = Math.max(worst, Math.abs(x - y));
+      }
+      return worst;
+    };
+    const asC3D = (data) => MotionImport.fromC3D(MotionExport.build(data, ["c3d"], "rt")[0].data.slice().buffer, "rt.c3d").data;
+    const out = {};
+    for (const ext of ["c3d", "trc", "glb", "npz", "csv", "json"]) {
+      try {
+        const { data } = await MotionImport.parseFileAsync("rec." + ext, bytes(files[ext]));
+        out[ext] = { hands: data.hands ? data.hands.map((h) => h.handedness).join("+") : data.kind, worstMm: data.hands ? +diff(ref, asC3D(data)).toFixed(4) : null,
+          formats: data.hands ? MotionExport.build(data, MotionExport.FORMATS.map((f) => f.id), "all").length : 0 };
+      } catch (err) {
+        out[ext] = { error: String(err.message || err) };
+      }
+    }
+    // BVH: one hand; it comes back as that hand, and converts to BVH again identically.
+    try {
+      const a = (await MotionImport.parseFileAsync("rec-left.bvh", bytes(files.bvh))).data;
+      const again = MotionExport.build(a, ["bvh"], "rt")[0].data;
+      const b = (await MotionImport.parseFileAsync("rt-left.bvh", new TextEncoder().encode(again).buffer)).data;
+      out.bvh = { hands: a.hands.map((h) => h.handedness).join("+"), frames: a.hands[0].frames.length, worstMm: +diff(asC3D(a), asC3D(b)).toFixed(4),
+        formats: MotionExport.build(a, MotionExport.FORMATS.map((f) => f.id), "all").length };
+    } catch (err) {
+      out.bvh = { error: String(err.message || err) };
+    }
+    // Markers (an OptiTrack take): through every marker format and back.
+    const md = MotionImport.fromC3D(bytes(files.markers), "take.c3d").data;
+    out.markers = { labels: md.labels.length, frames: md.frame_count };
+    for (const id of MotionExport.MARKER_FORMATS.map((f) => f.id)) {
+      try {
+        const f = MotionExport.buildMarkers(md, [id], "take")[0];
+        const buf = typeof f.data === "string" ? new TextEncoder().encode(f.data).buffer : f.data.slice().buffer;
+        const back = (await MotionImport.parseFileAsync("take." + f.ext, buf)).data;
+        out.markers[id] = back.kind === "markers" ? +diff(md, back).toFixed(4) : "not markers";
+      } catch (err) {
+        out.markers[id] = String(err.message || err);
+      }
+    }
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  // Within 0.05 mm: exports scale each hand to the standard hand size, measured over its frames,
+  // and a re-export measures it over the resampled frames, a few parts per million apart.
+  const handOk = (x, hands, tol) => x && !x.error && x.hands === hands && x.worstMm <= tol && x.formats >= 7;
+  check("Hand Tracker's own C3D, TRC, GLB and NPZ (and CSV, JSON) read back as both hands and convert to all 7 formats; C3D again matches the original",
+    ["c3d", "trc", "glb", "npz", "csv", "json"].every((ext) => handOk(r[ext], "Left+Right", 0.05)),
+    JSON.stringify(Object.fromEntries(["c3d", "trc", "glb", "npz", "csv", "json"].map((k) => [k, r[k]]))));
+  check("A BVH reads back as its hand (fingertips from its end sites) and converts to all 7 formats; BVH → hands → BVH keeps every joint",
+    r.bvh && !r.bvh.error && r.bvh.hands === "Left" && r.bvh.frames > 10 && r.bvh.worstMm <= 0.05 && r.bvh.formats >= 7, JSON.stringify(r.bvh));
+  const m = r.markers || {};
+  check("A marker recording goes through every marker format (C3D, TRC, CSV, GLB, NPZ, JSON) and back unchanged",
+    m.labels > 0 && ["c3d", "trc", "csv", "glb", "npz", "json"].every((id) => typeof m[id] === "number" && m[id] <= 0.01), JSON.stringify(m));
+}
+
 async function checkViewer(jsonPath, files) {
   const win = new BrowserWindow({
     show: false, width: 920, height: 1600,
@@ -1574,26 +1705,27 @@ async function checkViewer(jsonPath, files) {
     rows: document.querySelectorAll(".hand-row").length,
     segs: document.querySelectorAll(".timeline-seg").length,
     tableRows: document.querySelectorAll("#tableBody tr").length,
-    formats: document.querySelectorAll("#exportGrid input").length,
+    formats: document.querySelectorAll('#exportGrid input:not([value^="video:"])').length,
+    videoFormats: document.querySelectorAll('#exportGrid input[value^="video:"]').length,
     error: (document.querySelector("#results .error") || {}).textContent || "",
     text: document.getElementById("results").innerText,
     injected: !!document.querySelector("#results img, #results script") || !!window.__pwned,
   })`;
   const openText = (name, text) => js(`(async () => {
-    RecordingViewer.openBytes(${JSON.stringify(name)}, new TextEncoder().encode(${JSON.stringify(text)}).buffer);
+    await RecordingViewer.openBytes(${JSON.stringify(name)}, new TextEncoder().encode(${JSON.stringify(text)}).buffer);
     await new Promise((r) => setTimeout(r, 300));
     return ${state};
   })()`);
   const openFile = (name, file) => js(`(async () => {
     const bytes = Uint8Array.from(atob(${JSON.stringify(fs.readFileSync(file).toString("base64"))}), (c) => c.charCodeAt(0));
-    RecordingViewer.openBytes(${JSON.stringify(name)}, bytes.buffer);
+    await RecordingViewer.openBytes(${JSON.stringify(name)}, bytes.buffer);
     await new Promise((r) => setTimeout(r, 300));
     return ${state};
   })()`);
-  // Picks formats in the export panel and clicks Export (the folder dialog is answered by this script).
+  // Picks every motion format in the export panel (not the videos) and clicks Export (the folder dialog is answered by this script).
   const exportAll = (name, expectOk) => js(`(async () => {
     document.getElementById("exportName").value = ${JSON.stringify(name)};
-    document.querySelectorAll("#exportGrid input").forEach((i) => { i.checked = !i.disabled; });
+    document.querySelectorAll("#exportGrid input").forEach((i) => { i.checked = !i.disabled && !i.value.startsWith("video:"); });
     document.getElementById("exportBtn").click();
     for (let i = 0; i < 240 && document.querySelectorAll("#exportResults li").length < ${expectOk}; i++) await new Promise((r) => setTimeout(r, 250));
     return { ok: document.querySelectorAll("#exportResults li.ok").length, note: document.getElementById("exportNote").textContent,
@@ -1602,8 +1734,8 @@ async function checkViewer(jsonPath, files) {
 
   // Hand recording (JSON): cards, playback, frame table, export panel.
   const v2 = await openText(path.basename(jsonPath), jsonText);
-  check("Viewer shows both hands from a two-hand file", v2.rows === 2 && v2.segs > 0 && v2.tableRows > 0 && v2.formats === 7,
-    `${v2.rows} hand rows, ${v2.segs} phase segments, ${v2.tableRows} table rows, ${v2.formats} export formats`);
+  check("Viewer shows both hands from a two-hand file", v2.rows === 2 && v2.segs > 0 && v2.tableRows > 0 && v2.formats === 7 && v2.videoFormats >= 30,
+    `${v2.rows} hand rows, ${v2.segs} phase segments, ${v2.tableRows} table rows, ${v2.formats} motion + ${v2.videoFormats} video export formats`);
   const played = await js(`(async () => {
     document.querySelector("#tableBody tr:nth-child(40)").click(); // jump playback to that frame
     await new Promise((r) => setTimeout(r, 100));
@@ -1634,7 +1766,7 @@ async function checkViewer(jsonPath, files) {
   // CSV: view it, round-trip it exactly, and rebuild a correct skeleton from it.
   const csvText = fs.readFileSync(files.csv, "utf8");
   const csvView = await openText("rec.csv", csvText);
-  check("Viewer opens the CSV export", csvView.rows === 2 && csvView.formats === 7 && !csvView.error, csvView.error);
+  check("Viewer opens the CSV export", csvView.rows === 2 && csvView.formats === 7 && !csvView.error, csvView.error || JSON.stringify(csvView).slice(0, 200));
   const rt = await js(`(() => {
     const csv = ${JSON.stringify(csvText)};
     const { data, warnings } = MotionImport.parse(csv, "rec.csv");
@@ -1660,10 +1792,11 @@ async function checkViewer(jsonPath, files) {
   const wrong = await openText("wrong.csv", "name,value\na,1\nb,2\n");
   check("A CSV that isn't motion capture gets a clear message", /missing columns/.test(wrong.error), wrong.error.slice(0, 80));
 
-  // C3D: view it as markers and convert; the TRC it produces must match the app's own TRC.
+  // C3D: the app's own C3D holds hands, so it opens as those hands again; the TRC they
+  // produce must match the app's own TRC.
   const c3dView = await openFile("rec.c3d", files.c3d);
-  check("Viewer opens C3D files as markers", /42\s*Markers/.test(c3dView.text) && c3dView.tableRows > 0 && c3dView.formats === 6, c3dView.error);
-  const markerTrc = await js(`MotionExport.buildMarkers(RecordingViewer.current().data, ["trc"], "m")[0].data`);
+  check("Viewer opens the app's own C3D as both hands again (all 7 formats)", c3dView.rows === 2 && c3dView.tableRows > 0 && c3dView.formats === 7, c3dView.error || JSON.stringify(c3dView).slice(0, 200));
+  const markerTrc = await js(`MotionExport.build(RecordingViewer.current().data, ["trc"], "m")[0].data`);
   fs.writeFileSync(path.join(outDir, "from-c3d.trc"), markerTrc);
   const a = validators.parseTRC(path.join(outDir, "from-c3d.trc")), b = validators.parseTRC(files.trc);
   let worst = 0;
@@ -1672,9 +1805,56 @@ async function checkViewer(jsonPath, files) {
     if (v === null || w === null) worst = v === w ? worst : Infinity;
     else worst = Math.max(worst, Math.abs(v - w));
   }));
-  check("C3D → TRC matches the app's TRC export", a.labels.join() === b.labels.join() && a.rows.length === b.rows.length && worst < 0.01, `max difference ${worst.toFixed(4)} mm`);
-  const saved = await exportAll("from-c3d", 6);
-  check("Viewer exports C3D markers to all 6 formats", saved.ok === 6, saved.failed.join(" | ") || saved.note);
+  check("C3D → TRC matches the app's TRC export", a.labels.join() === b.labels.join() && a.rows.length === b.rows.length && worst < 0.05, `max difference ${worst.toFixed(4)} mm`);
+  const saved = await exportAll("from-c3d", 8);
+  check("Viewer exports the C3D's hands to all 7 formats (8 files: one BVH per hand)", saved.ok === 8, saved.failed.join(" | ") || saved.note);
+  // Other C3Ds (here OptiTrack Motive's markers) open as markers, with the 6 marker formats.
+  const markerView = await openFile("take.c3d", files.markers);
+  check("Viewer opens other C3D files as markers", /6\s*Markers/.test(markerView.text) && markerView.tableRows > 0 && markerView.formats === 6, markerView.error || markerView.text.slice(0, 120));
+  const markerSaved = await exportAll("from-take-c3d", 6);
+  check("Viewer exports C3D markers to all 6 formats", markerSaved.ok === 6, markerSaved.failed.join(" | ") || markerSaved.note);
+
+  // Every motion format to every other, and several recordings converted at once.
+  await checkMotionConversion(js, files);
+  const batch = await js(`(async () => {
+    const file = (name, b64) => new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], name);
+    RecordingViewer.queueRecordings([
+      file("batch.c3d", ${JSON.stringify(fs.readFileSync(files.c3d).toString("base64"))}),
+      file("batch-left.bvh", ${JSON.stringify(fs.readFileSync(files.bvh).toString("base64"))}),
+      file("batch.npz", ${JSON.stringify(fs.readFileSync(files.npz).toString("base64"))}),
+      file("batch-take.c3d", ${JSON.stringify(fs.readFileSync(files.markers).toString("base64"))}),
+    ]);
+    const listed = document.querySelectorAll("#motionQueueList li button").length;
+    document.querySelectorAll("#motionQueueGrid input").forEach((i) => { i.checked = ["csv", "glb", "bvh"].includes(i.value); });
+    document.getElementById("motionQueueConvertBtn").click();
+    for (let i = 0; i < 200 && !/^Converted/.test(document.getElementById("motionQueueNote").textContent); i++) await new Promise((r) => setTimeout(r, 150));
+    return { listed, ok: document.querySelectorAll("#motionQueueResults li.ok").length, fail: [...document.querySelectorAll("#motionQueueResults li.fail")].map((li) => li.textContent),
+      note: document.getElementById("motionQueueNote").textContent, left: document.querySelectorAll("#motionQueueList li button").length };
+  })()`);
+  // Motion capture as video: the recording's playback drawn frame by frame, converted to MP4.
+  const asVideo = await js(`(async () => {
+    const bytes = new TextEncoder().encode(${JSON.stringify(fs.readFileSync(files.json, "utf8"))});
+    await RecordingViewer.openBytes("as-video.json", bytes.buffer);
+    document.getElementById("exportName").value = "motion-as-video";
+    document.querySelectorAll("#exportGrid input").forEach((i) => { i.checked = i.value === "video:mp4"; });
+    const offered = [...document.querySelectorAll("#exportGrid input")].filter((i) => i.value.startsWith("video:")).length;
+    document.getElementById("exportBtn").click();
+    for (let i = 0; i < 400 && !document.querySelector("#exportResults li"); i++) await new Promise((r) => setTimeout(r, 250));
+    return { offered, ok: document.querySelectorAll("#exportResults li.ok").length, note: document.getElementById("exportNote").textContent,
+      duration: RecordingViewer.current().data.duration };
+  })()`);
+  const mp4 = path.join(outDir, "motion-as-video.mp4");
+  const probe = fs.existsSync(mp4) ? spawnSync(exporter.ffmpegPath, ["-hide_banner", "-i", mp4, "-f", "null", "-"], { encoding: "utf8" }).stderr : "";
+  const vDur = /Duration: 00:00:(\d+\.\d+)/.exec(probe);
+  const vSize = /, (\d+)x(\d+)/.exec((/Video: [^\n]+/.exec(probe) || [""])[0]);
+  check("Motion capture converts to video too (all the video formats are offered; the playback is drawn frame by frame, here to MP4, as long as the recording)",
+    asVideo.offered >= 30 && asVideo.ok === 1 && vDur && Math.abs(Number(vDur[1]) - asVideo.duration) < 0.15 && vSize && vSize[1] === "1280",
+    JSON.stringify({ ...asVideo, video: vDur ? `${vDur[1]} s ${vSize ? vSize[1] + "x" + vSize[2] : ""}` : "none" }));
+
+  // c3d (two hands): csv, glb, 2 bvh; bvh (one hand): csv, glb; npz (two hands): csv, glb, 2 bvh; take (markers): csv, glb, and BVH can't be made.
+  check("Several recordings convert at once (hands to any format, markers to the marker formats; BVH from markers is refused with a reason)",
+    batch.listed === 4 && batch.ok === 12 && batch.fail.length === 1 && /skeleton/.test(batch.fail[0]) && /Converted 4 of 4/.test(batch.note),
+    JSON.stringify(batch));
 
   // OptiTrack .tak, through the Motive installed on this PC (skipped without Motive).
   const info = await js("desktop.getInfo()");

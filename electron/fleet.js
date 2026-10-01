@@ -1,6 +1,7 @@
 /**
  * fleet.js — live pictures from capture rigs on a capture-fleet dashboard (an optional,
- * hidden feature of the Windows and Linux app, next to Capture Sessions in ops.js).
+ * hidden feature of the Windows, Linux and Android apps, next to Capture Sessions in ops.js;
+ * the Android app's is in mobile-bridge.js and RemotePlugin.java).
  *
  * Built for dashboards that list their rigs at /api/fleet/status and pass each rig's own
  * preview through at /proxy/<rig>/api/preview/keyframe/<camera> (the camera's latest H.264
@@ -22,12 +23,9 @@
 
 const fs = require("fs");
 const path = require("path");
+// The rig list and address rules are shared with the Android app.
+const { fleetRigs, siteOrigin, FLEET_HOST_RE: HOST_RE, FLEET_CAMERA_RE: CAMERA_RE } = require("../remote-core.js");
 
-const HOST_RE = /^[a-z0-9][a-z0-9-]{0,62}$/i;
-const CAMERA_RE = /^[a-z0-9_]{1,32}$/i;
-// Generations whose previews start on demand; the others only show a picture while their
-// preview is already running (the dashboard's own rule; starting one would change the rig).
-const ON_DEMAND = new Set(["rock5c", "granite"]);
 const FRAME_TIMEOUT_MS = 10000;
 
 const isRedirect = (err) => /redirect/i.test(String((err && err.message) || err));
@@ -58,15 +56,7 @@ class FleetClient {
 
   // https only (http is allowed for this computer, for automated checks).
   configure(site) {
-    let url;
-    try {
-      url = new URL(String(site).trim());
-    } catch {
-      throw new Error("That isn't a web address.");
-    }
-    const local = url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
-    if (url.protocol !== "https:" && !local) throw new Error("The dashboard's address must start with https://");
-    this.cfg = { site: url.origin };
+    this.cfg = { site: siteOrigin(site) };
     this.signedIn = false;
     this.save();
     return this.status();
@@ -143,30 +133,7 @@ class FleetClient {
   async rigs() {
     const j = await this.fleetStatus();
     if (!j) throw new Error("Sign in to the fleet dashboard first.");
-    const rank = (r) => (r.state === "recording" ? 0 : r.canWatch ? 1 : r.online ? 2 : 3);
-    return j.devices
-      .filter((d) => d && HOST_RE.test(d.hostname || ""))
-      .map((d) => {
-        const roles = (Array.isArray(d.cameras_detail) ? d.cameras_detail : []).map((c) => c && c.role);
-        const cameras = [...new Set([...(Array.isArray(d.preview_cameras) ? d.preview_cameras : []), ...roles])].filter((c) => typeof c === "string" && CAMERA_RE.test(c));
-        const online = !!d.online;
-        const recording = d.capture_state === "recording";
-        return {
-          host: d.hostname,
-          name: d.display_name || d.readable_name || d.hostname,
-          generation: d.generation || "",
-          online,
-          state: d.capture_state || (online ? "online" : "offline"),
-          recordingS: Number(d.recording_duration_s) || 0,
-          session: d.session_name || "",
-          cameras,
-          // Mirrors the dashboard: a relayed rig has no proxy, and only on-demand previews,
-          // ones already running, or a recording's own pictures can be shown without starting
-          // anything on the rig.
-          canWatch: online && d.reachable !== false && !d.via_relay && cameras.length > 0 && (!!d.preview_active || recording || ON_DEMAND.has(d.generation)),
-        };
-      })
-      .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+    return fleetRigs(j);
   }
 
   // The camera's latest picture, as the dashboard's own camera tile gets it. kind

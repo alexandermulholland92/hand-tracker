@@ -23,7 +23,7 @@
   #dropZone:hover, #dropZone.drag { border-color: #74c0fc; background: #12141a; }
   #dropZone p { margin: 0 0 10px; opacity: 0.6; font-size: 13.5px; }
   #dropZone p.formats { font-size: 12px; opacity: 0.45; }
-  #fileInput, #videoInput { display: none; }
+  #fileInput, #videoInput, #convertVideoInput, #convertRecordingInput { display: none; }
   #dropZone .buttons { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   video.preview { width: 100%; max-height: 62vh; background: #000; border-radius: 8px; display: block; }
   .video-meta { font-size: 12.5px; opacity: 0.75; margin-top: 8px; line-height: 1.5; }
@@ -147,15 +147,19 @@
   <h1>Recording Viewer</h1>
 
   <div id="dropZone">
-    <p>Drop a recording or a video here, or click to choose one</p>
-    <p class="formats">Recordings: Hand Tracker JSON or CSV · C3D (Vicon, Qualisys, OptiTrack…) · OptiTrack Motive CSV · TRC · OptiTrack .tak (Windows app, with Motive installed)</p>
+    <p>Drop recordings or videos here, or click to choose them</p>
+    <p class="formats">Recordings: Hand Tracker JSON or CSV · C3D (Vicon, Qualisys, OptiTrack…) · OptiTrack Motive CSV · TRC · BVH · NPZ · GLB · OptiTrack .tak (Windows app, with Motive installed) · each converts to every other format</p>
     <p class="formats">Videos: MP4, MOV, MKV, WebM, AVI, WMV, MPEG, FLV, 3GP, MXF, DV and nearly any other format · convert them to 36 formats</p>
     <div class="buttons">
       <button type="button" id="chooseBtn">Choose Recording</button>
+      <button type="button" id="convertRecordingsBtn" title="Pick several recordings to convert them all to other formats">Convert Recordings…</button>
       <button type="button" id="videoBtn">Open Video…</button>
+      <button type="button" id="convertVideosBtn" title="Pick one or more videos to convert them all to other formats">Convert Videos…</button>
     </div>
-    <input type="file" id="fileInput" accept=".json,.csv,.c3d,.trc,.tak,application/json,text/csv" />
+    <input type="file" id="fileInput" multiple accept=".json,.csv,.c3d,.trc,.bvh,.npz,.glb,.tak,application/json,text/csv" />
     <input type="file" id="videoInput" multiple />
+    <input type="file" id="convertVideoInput" multiple />
+    <input type="file" id="convertRecordingInput" multiple accept=".json,.csv,.c3d,.trc,.bvh,.npz,.glb,application/json,text/csv" />
     <div id="fileName"></div>
   </div>
 
@@ -167,6 +171,7 @@
     <div class="format-grid" id="queueGrid"></div>
     <div class="export-actions">
       <button id="queueConvertBtn" class="primary">Convert all</button>
+      <button id="queueAddBtn">Add videos…</button>
       <button id="queueCancelBtn" hidden>Cancel</button>
       <button id="queueClearBtn">Clear queue</button>
     </div>
@@ -175,16 +180,33 @@
     <div id="queueNote" class="note"></div>
   </div>
 
+  <div id="motionQueueCard" class="card" hidden>
+    <div class="section-label">Recordings to convert</div>
+    <div class="note">Each recording is converted on its own and named after it. Hand recordings (and Hand Tracker's own C3D, TRC, BVH, GLB and NPZ files, which hold hands) convert to all seven formats; marker recordings to the six that hold markers (not BVH, which needs a skeleton).</div>
+    <ul id="motionQueueList" class="results"></ul>
+    <div class="section-label queue-formats">Convert to</div>
+    <div class="format-grid" id="motionQueueGrid"></div>
+    <div class="export-actions">
+      <button id="motionQueueConvertBtn" class="primary">Convert all</button>
+      <button id="motionQueueAddBtn">Add recordings…</button>
+      <button id="motionQueueClearBtn">Clear</button>
+    </div>
+    <ul id="motionQueueResults" class="results"></ul>
+    <div id="motionQueueNote" class="note"></div>
+  </div>
+
   <div id="results"></div>
 </div>
 
 <script src="mobile-bridge.js"></script>
 <script src="export-ui.js"></script>
 <script src="video-formats.js"></script>
+<script src="video-native.js"></script>
 <script src="video-convert.js"></script>
 <script src="video-queue.js"></script>
 <script src="motion-export.js"></script>
 <script src="motion-import.js"></script>
+<script src="motion-video.js"></script>
 <script src="viewer.js"></script>
 </body>
 </html>

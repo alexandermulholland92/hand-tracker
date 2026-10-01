@@ -97,16 +97,41 @@
   );
   dropZone.addEventListener("drop", (e) => openMany([...e.dataTransfer.files]));
 
-  // One file opens; several videos go into the export queue.
+  // One file opens; several videos go into the export queue, several recordings into the
+  // recordings queue.
   function openMany(files) {
     const videos = files.filter((f) => !isRecording(f));
-    if (videos.length > 1) return queueVideos(videos);
+    const recordings = files.filter((f) => isRecording(f) && !/\.tak$/i.test(f.name));
+    if (videos.length > 1) queueVideos(videos);
+    if (recordings.length > 1) queueRecordings(recordings);
+    if (videos.length > 1 || recordings.length > 1) return;
     if (files[0]) openAny(files[0]);
   }
 
   // Recordings are known by their extension; everything else is opened as a video (the
   // converter says so if there's no video in it), never parsed as motion data.
-  const isRecording = (file) => /\.(json|csv|c3d|trc|tak)$/i.test(file.name);
+  const RECORDING_EXT = new RegExp(`\\.(${[...MotionImport.EXTENSIONS, "tak"].join("|")})$`, "i");
+  const isRecording = (file) => RECORDING_EXT.test(file.name);
+
+  // Explicit "convert several" pickers: everything picked is queued, even a single file.
+  const convertVideoInput = $("convertVideoInput"), convertRecordingInput = $("convertRecordingInput");
+  convertVideoInput.accept = VideoFormats.IMPORT_ACCEPT;
+  for (const [btn, input] of [["convertVideosBtn", convertVideoInput], ["queueAddBtn", convertVideoInput], ["convertRecordingsBtn", convertRecordingInput], ["motionQueueAddBtn", convertRecordingInput]]) {
+    $(btn).addEventListener("click", (e) => {
+      e.stopPropagation();
+      input.click();
+    });
+  }
+  convertVideoInput.addEventListener("change", () => {
+    const files = [...convertVideoInput.files];
+    convertVideoInput.value = "";
+    if (files.length) queueVideos(files);
+  });
+  convertRecordingInput.addEventListener("change", () => {
+    const files = [...convertRecordingInput.files];
+    convertRecordingInput.value = "";
+    if (files.length) queueRecordings(files);
+  });
   function openAny(file) {
     return isRecording(file) ? openFile(file) : openVideo(file);
   }
@@ -129,16 +154,16 @@
       return openTake(desktop.pathForFile(file), file.name);
     }
     try {
-      openBytes(file.name, await file.arrayBuffer());
+      await openBytes(file.name, await file.arrayBuffer());
     } catch (err) {
       showError(err.message);
     }
   }
 
-  function openBytes(name, buffer) {
+  async function openBytes(name, buffer) {
     let parsed;
     try {
-      parsed = MotionImport.parseFile(name, buffer);
+      parsed = await MotionImport.parseFileAsync(name, buffer);
     } catch (err) {
       showError(err.message);
       return false;
@@ -370,6 +395,91 @@
 
   const baseNameOf = (name) => String(name || "recording").replace(/\.[^.]+$/, "");
 
+  // ---------- motion capture as video ----------
+  // The video formats, offered next to the motion formats: the recording's playback is drawn
+  // frame by frame (MotionVideo) and converted like any video.
+  const VIDEO_ID = "video:";
+  const VIDEO_WIDTH = 1280;
+  function withVideoFormats(motionFormats) {
+    const motion = motionFormats.map((f) => ({ ...f, group: "Motion capture" }));
+    if (!window.MotionVideo || !MotionVideo.supported()) return motion;
+    const video = videoFormats(null).map((f) => ({ ...f, id: VIDEO_ID + f.id, group: `Video${f.group ? ` · ${f.group}` : ""}` }));
+    return [...motion, ...video];
+  }
+  // Progress of a long export, under the Export button.
+  const exportProgress = (text) => {
+    const note = $("exportNote");
+    if (note) note.textContent = text;
+  };
+  const splitIds = (ids) => ({ motion: ids.filter((id) => !id.startsWith(VIDEO_ID)), video: ids.filter((id) => id.startsWith(VIDEO_ID)).map((id) => id.slice(VIDEO_ID.length)) });
+
+  // The playback drawn as a WebM at the recording's frame rate (at most 60 fps).
+  async function sceneVideo(scene, progress) {
+    const fps = Math.min(60, Math.max(1, Math.round(scene.rate || 30)));
+    const frames = Math.max(1, Math.round(scene.duration * fps) + 1);
+    const width = VIDEO_WIDTH, height = Math.round(VIDEO_WIDTH * scene.aspect);
+    const blob = await MotionVideo.render({
+      width, height, fps, frames,
+      draw: (ctx, k) => scene.draw(ctx, ctx.canvas.width, ctx.canvas.height, k / fps),
+      onProgress: (p) => progress && progress(`Drawing the video… ${Math.round(p * 100)}%`),
+    });
+    return { blob, fps, duration: frames / fps };
+  }
+
+  // Saves a recording's motion files and, for the video formats, its playback as video.
+  // folder: a { token, dir } from desktop.chooseFolder (the queue picks one for all).
+  async function saveRecording({ ids, baseName, build, scene, progress, folder = null }) {
+    const { motion, video } = splitIds(ids);
+    const desktop = window.desktop;
+    const results = [];
+    let dir = "", downloaded = 0;
+    if (desktop && !folder && (video.length || motion.length)) {
+      folder = await desktop.chooseFolder("Choose a folder for the exported files");
+      if (!folder || folder.canceled) return { canceled: true };
+    }
+    if (motion.length) {
+      const files = build(motion);
+      if (folder) {
+        const res = await desktop.saveFilesTo(folder.token, { baseName, files });
+        results.push(...res.results);
+        dir = res.dir || folder.dir;
+      } else {
+        const res = await ExportUI.saveFiles({ title: "Choose a folder for the exported files", baseName, files });
+        if (res.downloaded) downloaded += res.count;
+        else if (res.results) {
+          results.push(...res.results);
+          dir = res.dir || dir;
+        }
+      }
+    }
+    if (video.length) {
+      const clip = await sceneVideo(scene, progress);
+      if (folder) {
+        const off = desktop.onExportProgress(({ format, index, total, progress: p }) => progress && progress(`Converting ${String(format).toUpperCase()} (${index + 1} of ${total})… ${Math.round((p || 0) * 100)}%`));
+        try {
+          const res = await desktop.exportVideo({ bytes: await clip.blob.arrayBuffer(), container: "webm", formats: video, baseName, duration: clip.duration, fps: clip.fps, retimeFps: 0, token: folder.token });
+          results.push(...res.results);
+          dir = res.dir || folder.dir;
+        } finally {
+          off();
+        }
+      } else {
+        const saves = [];
+        await VideoConvert.convert(clip.blob, video, {
+          name: `${baseName}.webm`, fps: clip.fps, duration: clip.duration, constantRate: true, copyFromWebm: true,
+          onProgress: ({ format, index, total, progress: p, loading }) => progress && progress(loading ? "Loading the video converter (about 32 MB, only the first time)…" : `Converting ${String(format).toUpperCase()} (${index + 1} of ${total})… ${Math.round((p || 0) * 100)}%`),
+          onResult: (r) => saves.push(keepResult(r, baseName)),
+        });
+        const saved = await Promise.all(saves);
+        results.push(...saved);
+        dir = (saved.find((r) => r.dir) || {}).dir || dir;
+        if (!window.mobile) downloaded += saved.filter((r) => r.ok).length;
+      }
+    }
+    if (downloaded && !results.length) return { downloaded: true, count: downloaded };
+    return { dir, results };
+  }
+
   // ---------- hand recordings ----------
   function renderHands(data, warn) {
     const hands = data.hands;
@@ -421,10 +531,10 @@
     `;
 
     drawTrajectories(hands, mirrored, data.image_size);
-    setupHandPlayer(data, duration, mirrored);
+    setupHandPlayer(data, duration);
     setupHandTable(data);
-    setupExport(MotionExport.FORMATS, ["bvh"], baseNameOf(current.name), (ids, name) =>
-      ExportUI.saveFiles({ title: "Choose a folder for the exported files", baseName: name, files: MotionExport.build(data, ids, name) })
+    setupExport(withVideoFormats(MotionExport.FORMATS), ["bvh"], baseNameOf(current.name), (ids, name) =>
+      saveRecording({ ids, baseName: name, build: (motionIds) => MotionExport.build(data, motionIds, name), scene: handScene(data), progress: exportProgress })
     );
   }
 
@@ -449,57 +559,70 @@
     return phases;
   }
 
-  function setupHandPlayer(data, duration, mirrored) {
-    const canvas = $("playCanvas");
+  // A hand recording, one moment at a time, on any canvas: the playback, or each frame of a
+  // video made from it. Sizes are an 800-wide picture's, scaled to the canvas.
+  function handScene(data) {
     const [iw, ih] = Array.isArray(data.image_size) ? data.image_size : [1280, 720];
-    canvas.height = Math.round((canvas.width * ih) / iw);
-    const ctx = canvas.getContext("2d");
-    const W = canvas.width, H = canvas.height;
-    const toCanvas = (x, y) => [(mirrored ? 1 - x : x) * W, y * H];
+    const mirrored = data.display_mirrored !== false;
     const phases = data.hands.map(phaseOfFrame);
-
-    player = createPlayer(duration, (t) => {
-      ctx.fillStyle = "#0e0f12";
-      ctx.fillRect(0, 0, W, H);
-      data.hands.forEach((hand, h) => {
-        const color = handColor(hand.handedness);
-        const ee = (hand.trajectories && hand.trajectories.end_effector) || [];
-        // Faint full wrist path for context.
-        ctx.strokeStyle = `${color}40`;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ee.forEach((p, i) => {
-          const [x, y] = toCanvas(num(p[1]), num(p[2]));
-          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
-
-        const i = frameAt(hand.frames, t);
-        if (i < 0 || t - num(hand.frames[i].t) > MAX_GAP_S || !ee[i]) return; // not tracked at t
-        if (!Array.isArray(hand.frames[i].joints) || hand.frames[i].joints.length < 21) return; // malformed frame
-        const w = ee[i];
-        const pts = hand.frames[i].joints.map((j) => toCanvas(num(w[1]) + num(j.position[0]), num(w[2]) + num(j.position[1])));
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2.5;
-        ctx.lineCap = "round";
-        for (const [a, b] of CONNECTIONS) {
+    const lastT = (h) => (h.frames.length ? num(h.frames[h.frames.length - 1].t) : 0);
+    return {
+      aspect: ih / iw,
+      duration: num(data.duration, 0) || Math.max(0, ...data.hands.map(lastT)),
+      rate: num(data.frame_rate, 0) || 30,
+      draw(ctx, W, H, t) {
+        const k = W / 800;
+        const toCanvas = (x, y) => [(mirrored ? 1 - x : x) * W, y * H];
+        ctx.fillStyle = "#0e0f12";
+        ctx.fillRect(0, 0, W, H);
+        data.hands.forEach((hand, h) => {
+          const color = handColor(hand.handedness);
+          const ee = (hand.trajectories && hand.trajectories.end_effector) || [];
+          // Faint full wrist path for context.
+          ctx.strokeStyle = `${color}40`;
+          ctx.lineWidth = 1.5 * k;
           ctx.beginPath();
-          ctx.moveTo(...pts[a]);
-          ctx.lineTo(...pts[b]);
+          ee.forEach((p, i) => {
+            const [x, y] = toCanvas(num(p[1]), num(p[2]));
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          });
           ctx.stroke();
-        }
-        ctx.fillStyle = "#ff3355";
-        for (const [x, y] of pts) {
-          ctx.beginPath();
-          ctx.arc(x, y, 3.5, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.font = "600 13px 'Segoe UI', system-ui, sans-serif";
-        ctx.fillStyle = color;
-        ctx.textAlign = "center";
-        ctx.fillText(`${hand.handedness || "Hand"} · ${phases[h][i]}`, pts[0][0], Math.min(H - 6, pts[0][1] + 22));
-      });
-    });
+
+          const i = frameAt(hand.frames, t);
+          if (i < 0 || t - num(hand.frames[i].t) > MAX_GAP_S || !ee[i]) return; // not tracked at t
+          if (!Array.isArray(hand.frames[i].joints) || hand.frames[i].joints.length < 21) return; // malformed frame
+          const w = ee[i];
+          const pts = hand.frames[i].joints.map((j) => toCanvas(num(w[1]) + num(j.position[0]), num(w[2]) + num(j.position[1])));
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2.5 * k;
+          ctx.lineCap = "round";
+          for (const [a, b] of CONNECTIONS) {
+            ctx.beginPath();
+            ctx.moveTo(...pts[a]);
+            ctx.lineTo(...pts[b]);
+            ctx.stroke();
+          }
+          ctx.fillStyle = "#ff3355";
+          for (const [x, y] of pts) {
+            ctx.beginPath();
+            ctx.arc(x, y, 3.5 * k, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.font = `600 ${13 * k}px 'Segoe UI', system-ui, sans-serif`;
+          ctx.fillStyle = color;
+          ctx.textAlign = "center";
+          ctx.fillText(`${hand.handedness || "Hand"} · ${phases[h][i]}`, pts[0][0], Math.min(H - 6 * k, pts[0][1] + 22 * k));
+        });
+      },
+    };
+  }
+
+  function setupHandPlayer(data, duration) {
+    const canvas = $("playCanvas");
+    const scene = handScene(data);
+    canvas.height = Math.round(canvas.width * scene.aspect);
+    const ctx = canvas.getContext("2d");
+    player = createPlayer(duration, (t) => scene.draw(ctx, canvas.width, canvas.height, t));
   }
 
   function setupHandTable(data) {
@@ -691,14 +814,9 @@
     setupMarkerExport(md);
   }
 
-  function setupMarkerPlayer(md) {
-    const canvas = $("playCanvas");
-    const ctx = canvas.getContext("2d");
-    const W = canvas.width, H = canvas.height, pad = 28;
-    const extra = $("playExtra");
-    extra.innerHTML = `<label>View <select id="viewSelect">${Object.entries(VIEWS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("")}</select></label> <label><input type="checkbox" id="labelsToggle" /> Labels</label>`;
-    const viewSelect = $("viewSelect"), labelsToggle = $("labelsToggle");
-
+  // A marker recording, one moment at a time, on any canvas (playback and video export),
+  // seen from one side (view) and with or without labels. Sizes are an 800-wide picture's.
+  function markerScene(md, options = () => ({ view: "front", labels: false })) {
     // Bounds of every tracked sample, per axis, for a stable fit.
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
     for (let i = 0; i < md.positions.length; i += 3) {
@@ -709,50 +827,68 @@
       }
     }
     const trail = Math.max(1, Math.round(md.frame_rate / 2));
+    return {
+      aspect: 450 / 800,
+      duration: md.duration,
+      rate: md.frame_rate,
+      draw(ctx, W, H, t) {
+        const sc = W / 800, pad = 28 * sc;
+        const opt = options();
+        const view = VIEWS[opt.view] || VIEWS.front;
+        const [a, b] = view.axes;
+        const spanA = max[a] - min[a] || 1, spanB = max[b] - min[b] || 1;
+        const s = Math.min((W - pad * 2) / spanA, (H - pad * 2) / spanB);
+        const ox = (W - spanA * s) / 2, oy = (H - spanB * s) / 2;
+        const toCanvas = (p) => [ox + (p[a] - min[a]) * s, H - (oy + (p[b] - min[b]) * s)]; // up is up
+        ctx.fillStyle = "#0e0f12";
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = "#555";
+        ctx.font = `${11 * sc}px 'Segoe UI', system-ui, sans-serif`;
+        ctx.textAlign = "left";
+        ctx.fillText(`${view.label} view · ${view.names[0]} → , ${view.names[1]} ↑ · ${(Math.max(spanA, spanB) / 1000).toFixed(2)} m across`, 10 * sc, 16 * sc);
 
-    player = createPlayer(md.duration, (t) => {
-      const view = VIEWS[viewSelect.value];
-      const [a, b] = view.axes;
-      const spanA = max[a] - min[a] || 1, spanB = max[b] - min[b] || 1;
-      const s = Math.min((W - pad * 2) / spanA, (H - pad * 2) / spanB);
-      const ox = (W - spanA * s) / 2, oy = (H - spanB * s) / 2;
-      const toCanvas = (p) => [ox + (p[a] - min[a]) * s, H - (oy + (p[b] - min[b]) * s)]; // up is up
-      ctx.fillStyle = "#0e0f12";
-      ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = "#555";
-      ctx.font = "11px 'Segoe UI', system-ui, sans-serif";
-      ctx.textAlign = "left";
-      ctx.fillText(`${view.label} view · ${view.names[0]} → , ${view.names[1]} ↑ · ${(Math.max(spanA, spanB) / 1000).toFixed(2)} m across`, 10, 16);
-
-      const k = Math.min(md.frame_count - 1, Math.max(0, Math.round(t * md.frame_rate)));
-      md.labels.forEach((label, m) => {
-        const color = MARKER_COLORS[m % MARKER_COLORS.length];
-        // Short trail of recent positions.
-        ctx.strokeStyle = `${color}55`;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        let drawing = false;
-        for (let j = Math.max(0, k - trail); j <= k; j++) {
-          const p = markerAt(md, j, m);
-          if (!p) { drawing = false; continue; }
+        const k = Math.min(md.frame_count - 1, Math.max(0, Math.round(t * md.frame_rate)));
+        md.labels.forEach((label, m) => {
+          const color = MARKER_COLORS[m % MARKER_COLORS.length];
+          // Short trail of recent positions.
+          ctx.strokeStyle = `${color}55`;
+          ctx.lineWidth = 1.5 * sc;
+          ctx.beginPath();
+          let drawing = false;
+          for (let j = Math.max(0, k - trail); j <= k; j++) {
+            const p = markerAt(md, j, m);
+            if (!p) { drawing = false; continue; }
+            const [x, y] = toCanvas(p);
+            if (drawing) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+            drawing = true;
+          }
+          ctx.stroke();
+          const p = markerAt(md, k, m);
+          if (!p) return;
           const [x, y] = toCanvas(p);
-          if (drawing) ctx.lineTo(x, y); else ctx.moveTo(x, y);
-          drawing = true;
-        }
-        ctx.stroke();
-        const p = markerAt(md, k, m);
-        if (!p) return;
-        const [x, y] = toCanvas(p);
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(x, y, 5, 0, Math.PI * 2);
-        ctx.fill();
-        if (labelsToggle.checked) {
-          ctx.fillStyle = "#c9c9cf";
-          ctx.fillText(label, x + 8, y - 6);
-        }
-      });
-    });
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(x, y, 5 * sc, 0, Math.PI * 2);
+          ctx.fill();
+          if (opt.labels) {
+            ctx.fillStyle = "#c9c9cf";
+            ctx.fillText(label, x + 8 * sc, y - 6 * sc);
+          }
+        });
+      },
+    };
+  }
+
+  function setupMarkerPlayer(md) {
+    const canvas = $("playCanvas");
+    const ctx = canvas.getContext("2d");
+    const extra = $("playExtra");
+    extra.innerHTML = `<label>View <select id="viewSelect">${Object.entries(VIEWS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("")}</select></label> <label><input type="checkbox" id="labelsToggle" /> Labels</label>`;
+    const viewSelect = $("viewSelect"), labelsToggle = $("labelsToggle");
+    // The video export draws what the playback shows: the same view, labels or not.
+    current.sceneOptions = () => ({ view: viewSelect.value, labels: labelsToggle.checked });
+    const scene = markerScene(md, current.sceneOptions);
+    player = createPlayer(md.duration, (t) => scene.draw(ctx, canvas.width, canvas.height, t));
     viewSelect.addEventListener("change", () => player.redraw());
     labelsToggle.addEventListener("change", () => player.redraw());
   }
@@ -779,8 +915,8 @@
     const baseName = baseNameOf(current.name);
     const takPath = current.takPath;
     if (!takPath) {
-      setupExport(MotionExport.MARKER_FORMATS, ["trc"], baseName, (ids, name) =>
-        ExportUI.saveFiles({ title: "Choose a folder for the exported files", baseName: name, files: MotionExport.buildMarkers(md, ids, name) })
+      setupExport(withVideoFormats(MotionExport.MARKER_FORMATS), ["trc"], baseName, (ids, name) =>
+        saveRecording({ ids, baseName: name, build: (motionIds) => MotionExport.buildMarkers(md, motionIds, name), scene: markerScene(md, current.sceneOptions), progress: exportProgress })
       );
       return;
     }
@@ -960,7 +1096,7 @@
     }
     const fileName = `${baseName}${r.suffix}.${r.ext}`;
     ExportUI.downloadBlob(new Blob([r.data]), fileName);
-    return Promise.resolve({ format: r.format, ok: true, path: fileName, size: r.data.length });
+    return Promise.resolve({ format: r.format, ok: true, path: fileName, size: r.data.size === undefined ? r.data.length : r.data.size });
   }
 
   function renderConversionProgress({ format, index, total, progress, loading }) {
@@ -1187,12 +1323,134 @@
   VideoQueue.onChange(renderQueue);
   renderQueue();
 
+  // ---------- converting several recordings ----------
+  // Any motion capture file to the formats picked: hand recordings to any of the seven,
+  // marker recordings to the six that hold markers. Each is read only when it's converted.
+  const motionEls = {
+    card: $("motionQueueCard"), list: $("motionQueueList"), grid: $("motionQueueGrid"), convert: $("motionQueueConvertBtn"),
+    clear: $("motionQueueClearBtn"), results: $("motionQueueResults"), note: $("motionQueueNote"),
+  };
+  const MOTION_FORMATS_KEY = "hand-tracker:viewer-motion-formats";
+  const MARKER_IDS = MotionExport.MARKER_FORMATS.map((f) => f.id);
+  let motionQueue = []; // File
+  let motionRunning = false;
+
+  function queueRecordings(files) {
+    const known = new Set(motionQueue.map((f) => `${f.name}:${f.size}`));
+    const added = files.filter((f) => isRecording(f) && !/\.tak$/i.test(f.name) && !known.has(`${f.name}:${f.size}`));
+    motionQueue.push(...added);
+    const skipped = files.length - added.length;
+    motionEls.note.textContent = `Added ${added.length} recording${added.length === 1 ? "" : "s"}.` + (skipped ? ` ${skipped} left out (already in the list, an OptiTrack .tak, or not a recording).` : "");
+    renderMotionQueue();
+    motionEls.card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  let motionFormatsShown = false;
+  function renderMotionQueue() {
+    motionEls.card.hidden = !motionQueue.length && !motionRunning && !motionEls.results.children.length;
+    motionEls.list.innerHTML = motionQueue
+      .map((f, i) => `<li><span class="name" title="${esc(f.name)}">${esc(f.name)}</span><span class="status">${ExportUI.formatBytes(f.size)}</span>${motionRunning ? "" : `<button data-i="${i}">Remove</button>`}</li>`)
+      .join("") || '<li><span class="name">Nothing to convert yet.</span></li>';
+    motionEls.convert.disabled = motionRunning || !motionQueue.length;
+    motionEls.clear.disabled = motionRunning;
+    if (!motionFormatsShown && motionQueue.length) {
+      motionFormatsShown = true;
+      let saved = ["csv", "c3d"];
+      try {
+        saved = JSON.parse(localStorage.getItem(MOTION_FORMATS_KEY)) || saved;
+      } catch {
+        // not remembered
+      }
+      ExportUI.renderFormatGrid(motionEls.grid, withVideoFormats(MotionExport.FORMATS), saved, (ids) => {
+        try {
+          localStorage.setItem(MOTION_FORMATS_KEY, JSON.stringify(ids));
+        } catch {
+          // not remembered
+        }
+      });
+    }
+  }
+
+  async function convertRecordings() {
+    if (motionRunning) return;
+    const ids = ExportUI.checkedIds(motionEls.grid);
+    if (!ids.length) return (motionEls.note.textContent = "Pick at least one format.");
+    const desktop = window.desktop;
+    let folder = null;
+    if (desktop && desktop.chooseFolder) {
+      folder = await desktop.chooseFolder("Choose a folder for the converted recordings");
+      if (!folder || folder.canceled) return;
+    }
+    motionRunning = true;
+    motionEls.results.innerHTML = "";
+    motionEls.note.textContent = "";
+    renderMotionQueue();
+    const all = [], left = [];
+    let dir = folder ? folder.dir : "", done = 0;
+    const items = [...motionQueue];
+    for (const [n, file] of items.entries()) {
+      motionEls.note.textContent = `Converting ${file.name} (${n + 1} of ${items.length})…`;
+      const baseName = file.name.replace(/\.[^.]+$/, "");
+      try {
+        const { data } = await MotionImport.parseFileAsync(file.name, await file.arrayBuffer());
+        const markers = data.kind === "markers";
+        const use = markers ? ids.filter((id) => MARKER_IDS.includes(id) || id.startsWith(VIDEO_ID)) : ids;
+        // The file's own format again only when it's a different kind of file (C3D -> CSV, not C3D -> C3D).
+        const ext = (file.name.match(/\.([a-z0-9]+)$/i) || [])[1].toLowerCase();
+        const wanted = use.filter((id) => id !== ext);
+        if (!wanted.length) throw new Error(markers && ids.includes("bvh") ? "it holds markers, which can't become BVH (that needs a skeleton)" : "nothing to convert it to (the formats picked are its own)");
+        const res = await saveRecording({
+          ids: wanted, baseName, folder,
+          build: (motionIds) => (markers ? MotionExport.buildMarkers(data, motionIds, baseName) : MotionExport.build(data, motionIds, baseName)),
+          scene: markers ? markerScene(data) : handScene(data),
+          progress: (text) => (motionEls.note.textContent = `${file.name} (${n + 1} of ${items.length}): ${text}`),
+        });
+        if (res && res.dir) dir = res.dir;
+        const results = res && res.results && res.results.length ? res.results : [{ ok: true, format: "files", path: `${baseName} (downloaded)`, size: 0 }];
+        all.push(...results.map((r) => ({ ...r, format: `${file.name}: ${String(r.format).toUpperCase()}` })));
+        if (markers && ids.includes("bvh") && ext !== "bvh") all.push({ ok: false, format: `${file.name}: BVH`, error: "markers can't become BVH (that needs a skeleton)" });
+        if (results.every((r) => r.ok)) done++;
+        else left.push(file);
+      } catch (err) {
+        all.push({ ok: false, format: file.name, error: cleanError(err) });
+        left.push(file);
+      }
+      ExportUI.renderResults(motionEls.results, all);
+    }
+    motionQueue = left; // done ones leave the list; anything that failed stays for another go
+    motionRunning = false;
+    const saved = all.filter((r) => r.ok).length;
+    motionEls.note.textContent = `Converted ${done} of ${items.length} recording${items.length === 1 ? "" : "s"}; ` +
+      (saved ? (desktop || window.mobile ? `saved ${saved} file${saved === 1 ? "" : "s"}${dir ? ` to ${dir}` : ""}` : `downloaded ${saved} file${saved === 1 ? "" : "s"}`) : "nothing was saved") + ".";
+    renderMotionQueue();
+  }
+
+  motionEls.convert.addEventListener("click", () => convertRecordings().catch((err) => {
+    motionRunning = false;
+    motionEls.note.textContent = `Conversion failed: ${cleanError(err)}`;
+    renderMotionQueue();
+  }));
+  motionEls.clear.addEventListener("click", () => {
+    if (motionRunning) return;
+    motionQueue = [];
+    motionEls.results.innerHTML = "";
+    motionEls.note.textContent = "";
+    renderMotionQueue();
+  });
+  motionEls.list.addEventListener("click", (e) => {
+    const i = e.target.dataset && e.target.dataset.i;
+    if (i === undefined || motionRunning) return;
+    motionQueue.splice(Number(i), 1);
+    renderMotionQueue();
+  });
+
   window.RecordingViewer = {
     openBytes,
     openTake,
     openVideo,
     openAny,
     queueVideos,
+    queueRecordings,
     current: () => current,
   };
 })();
