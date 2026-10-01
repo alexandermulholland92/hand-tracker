@@ -66,6 +66,9 @@ jobs:
 
   android:
     runs-on: ubuntu-latest
+    env:
+      # Whether a signing key is saved as the repository secret ANDROID_DEBUG_KEYSTORE.
+      SAVED_KEY: ${{ secrets.ANDROID_DEBUG_KEYSTORE != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -80,22 +83,35 @@ jobs:
           java-version: 21
           cache: gradle
 
-      # Every build is signed with the same debug key, so each APK installs over the last
-      # one. The key is kept in the Actions cache, which GitHub drops after 7 days without
-      # a build; the next build then makes a new key.
-      - uses: actions/cache@v4
+      # Every build is signed with the same key, so each APK installs over the last one.
+      # Best: a key saved as the repository secret ANDROID_DEBUG_KEYSTORE (a debug.keystore,
+      # base64), kept for good; the same as a PC's key, the two install over each other too.
+      - name: Signing key from the repository's secrets
+        if: env.SAVED_KEY == 'true'
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+        run: mkdir -p ~/.android && echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
+
+      # Without one, a key kept in the Actions cache (never the secret's: other branches can
+      # read the cache), which GitHub drops after 7 days without a build; the next build then
+      # makes a new key. Made here rather than left to Gradle, so the cache always has it to keep.
+      - if: env.SAVED_KEY != 'true'
+        uses: actions/cache@v4
         with:
           path: ~/.android/debug.keystore
           key: android-debug-keystore
-
-      # A fixed key instead, when one is saved as the repository secret ANDROID_DEBUG_KEYSTORE
-      # (a debug.keystore, base64): then every build installs over every other, for good,
-      # including copies built on a PC with that same key. Without the secret, nothing changes.
-      - name: Signing key from the repository's secrets
-        env:
-          KEYSTORE: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+      - name: Signing key, made if there isn't one yet
+        if: env.SAVED_KEY != 'true'
         run: |
-          if [ -n "$KEYSTORE" ]; then mkdir -p ~/.android && echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore; echo "Signing with the saved key"; fi
+          mkdir -p ~/.android
+          [ -f ~/.android/debug.keystore ] || keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+
+      # Gradle signs with that key (named, so the runner's settings can't point it elsewhere).
+      # Its fingerprint goes in the log, to tell which key a build has.
+      - name: Signing key in use
+        run: |
+          echo "ANDROID_USER_HOME=$HOME/.android" >> "$GITHUB_ENV"
+          keytool -list -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey | grep "SHA256:"
 
       # The web bundle only copies files out of node_modules, so the install scripts
       # (Electron's and ffmpeg's desktop downloads) aren't needed.
