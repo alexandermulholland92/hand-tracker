@@ -145,4 +145,42 @@ function rigSimulation(videos) {
 })()`;
 }
 
-module.exports = { PAGE_SIMULATION, gesturePoses, rigSimulation };
+// How tall the Left/Right tag is drawn for one right hand at several distances, in
+// 640-wide units (30 at its normal size, plus its border): the hand at each size for a
+// second, on a black picture with the skeleton and box hidden, so the only orange on the
+// stage is the tag. Resolves { veryClose, armsLength, further, far, veryFar }; palm (wrist to
+// middle knuckle) 0.375, 0.2, 0.125, 0.0625 and 0.03 of the picture's height.
+const TAG_HEIGHTS = `(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  if (!window.__realSend) window.__realSend = Hands.prototype.send;
+  Hands.prototype.send = async function () {}; // only these hands
+  const T = ${TEMPLATE};
+  const shown = ["skeleton", "box"].map((k) => document.querySelector('[data-show="' + k + '"]')).filter((b) => b && b.classList.contains("active"));
+  shown.forEach((b) => b.click());
+  const stage = document.getElementById("stage");
+  const black = Object.assign(document.createElement("canvas"), { width: stage.width, height: stage.height });
+  black.getContext("2d").fillRect(0, 0, black.width, black.height);
+  const tagHeight = async (s) => {
+    for (let f = 0; f < 30; f++) {
+      HandTracker._processResults({ image: black, multiHandLandmarks: [T.map(([x, y]) => ({ x: 0.5 + x * s, y: 0.4 + y * s, z: 0 }))], multiHandedness: [{ label: "Left", score: 0.95 }] });
+      await sleep(33);
+    }
+    await sleep(150);
+    const d = stage.getContext("2d").getImageData(0, 0, stage.width, stage.height).data;
+    let y0 = Infinity, y1 = -1;
+    for (let i = 0; i < d.length; i += 4) {
+      if (Math.abs(d[i] - 255) < 40 && Math.abs(d[i + 1] - 146) < 40 && Math.abs(d[i + 2] - 43) < 50) {
+        const y = Math.floor(i / 4 / stage.width);
+        y0 = Math.min(y0, y);
+        y1 = Math.max(y1, y);
+      }
+    }
+    return y1 < 0 ? 0 : Math.round(((y1 - y0 + 1) / Math.max(1, stage.width / 640)) * 10) / 10;
+  };
+  const out = { veryClose: await tagHeight(3), armsLength: await tagHeight(1.6), further: await tagHeight(1), far: await tagHeight(0.5), veryFar: await tagHeight(0.25) };
+  HandTracker._processResults({ image: black, multiHandLandmarks: [], multiHandedness: [] });
+  shown.forEach((b) => b.click());
+  return out;
+})()`;
+
+module.exports = { PAGE_SIMULATION, gesturePoses, rigSimulation, TAG_HEIGHTS };

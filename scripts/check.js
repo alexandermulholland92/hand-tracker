@@ -68,7 +68,7 @@ const validators = require("./motion-validators.js");
 const { verifyExports } = require("./video-validators.js");
 const { startNatNetSim } = require("./natnet-sim.js");
 const fleetSim = require("./fleet-sim.js");
-const { PAGE_SIMULATION, gesturePoses, rigSimulation } = require("./simulated-hands.js");
+const { PAGE_SIMULATION, gesturePoses, rigSimulation, TAG_HEIGHTS } = require("./simulated-hands.js");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -521,44 +521,9 @@ async function run(win) {
 }
 
 // The Left/Right tag: its normal size with a hand at arm's length or closer, bigger as the
-// hand goes further away (up to 3x). One simulated right hand at several sizes, on a black
-// picture with the skeleton and box hidden, so the only orange on the stage is its tag;
-// heights in 640-wide units (the tag is 30 tall at its normal size).
+// hand goes further away (up to 3x). On a phone it starts a little bigger (check-android.js).
 async function checkTagSize(js) {
-  const r = await js(`(async () => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    if (!window.__realSend) window.__realSend = Hands.prototype.send;
-    Hands.prototype.send = async function () {}; // only these hands
-    const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],
-      [0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]];
-    const shown = ["skeleton", "box"].map((k) => document.querySelector('[data-show="' + k + '"]')).filter((b) => b && b.classList.contains("active"));
-    shown.forEach((b) => b.click());
-    const stage = document.getElementById("stage");
-    const black = Object.assign(document.createElement("canvas"), { width: stage.width, height: stage.height });
-    black.getContext("2d").fillRect(0, 0, black.width, black.height);
-    // palm: wrist to middle knuckle as a share of the picture's height (0.125 at s = 1)
-    const tagHeight = async (s) => {
-      for (let f = 0; f < 30; f++) {
-        HandTracker._processResults({ image: black, multiHandLandmarks: [T.map(([x, y]) => ({ x: 0.5 + x * s, y: 0.4 + y * s, z: 0 }))], multiHandedness: [{ label: "Left", score: 0.95 }] });
-        await sleep(33);
-      }
-      await sleep(150);
-      const d = stage.getContext("2d").getImageData(0, 0, stage.width, stage.height).data;
-      let y0 = Infinity, y1 = -1;
-      for (let i = 0; i < d.length; i += 4) {
-        if (Math.abs(d[i] - 255) < 40 && Math.abs(d[i + 1] - 146) < 40 && Math.abs(d[i + 2] - 43) < 50) {
-          const y = Math.floor(i / 4 / stage.width);
-          y0 = Math.min(y0, y);
-          y1 = Math.max(y1, y);
-        }
-      }
-      return y1 < 0 ? 0 : Math.round(((y1 - y0 + 1) / Math.max(1, stage.width / 640)) * 10) / 10;
-    };
-    const out = { veryClose: await tagHeight(3), armsLength: await tagHeight(1.6), further: await tagHeight(1), far: await tagHeight(0.5), veryFar: await tagHeight(0.25) };
-    HandTracker._processResults({ image: black, multiHandLandmarks: [], multiHandedness: [] });
-    shown.forEach((b) => b.click());
-    return out;
-  })()`);
+  const r = await js(TAG_HEIGHTS);
   const near = (v, want) => Math.abs(v - want) <= Math.max(4, want * 0.12);
   check("Left/Right tag: normal size with a hand at arm's length or closer, bigger as it goes further away (up to 3x)",
     near(r.veryClose, 32) && near(r.armsLength, 32) && near(r.further, 32 * 1.6) && near(r.far, 32 * 2.9) && near(r.veryFar, 32 * 2.9) && r.veryFar <= r.far + 4,

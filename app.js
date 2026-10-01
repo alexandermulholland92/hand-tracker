@@ -17,6 +17,8 @@
   const $ = (id) => document.getElementById(id);
   const desktop = window.desktop || null; // Windows app (electron/preload.js)
   const mobile = window.mobile || null;   // Android app (mobile-bridge.js)
+  // A phone (the Android app, or the website on a touch screen narrower than a tablet's).
+  const onPhone = !!mobile || (matchMedia("(pointer: coarse)").matches && Math.min(screen.width, screen.height) < 600);
 
   const video = $("video");
   const stage = $("stage");
@@ -376,8 +378,9 @@
       if (!text) continue;
       const wrist = HandTracker.toCanvasPoint(hand.imageLandmarks[0]);
       const color = SIDE_COLORS[hand.handedness] || "#adb5bd";
-      // Normal size up close, bigger as the hand goes further away (so it can still be read).
-      const k = unit * labelScale(hand);
+      // Normal size up close (a little bigger on a phone's small screen), bigger as the hand
+      // goes further away so it can still be read, never more than 3x.
+      const k = unit * Math.min(3, (onPhone ? 1.3 : 1) * labelScale(hand));
       const h = 30 * k;
       const padX = 12 * k;
       ctx.font = `600 ${Math.round(17 * k)}px "Segoe UI", system-ui, sans-serif`;

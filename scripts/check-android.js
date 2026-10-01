@@ -23,7 +23,7 @@ const os = require("os");
 const path = require("path");
 const validators = require("./motion-validators.js");
 const { verifyExports } = require("./video-validators.js");
-const { PAGE_SIMULATION } = require("./simulated-hands.js");
+const { PAGE_SIMULATION, TAG_HEIGHTS } = require("./simulated-hands.js");
 const { startNatNetSim } = require("./natnet-sim.js");
 const { startFleetSim } = require("./fleet-sim.js");
 
@@ -169,6 +169,14 @@ async function run() {
     `${onLabel}, ${regions} text region(s)`);
   check("Layout fits a phone screen (no sideways scrolling)", await js("document.documentElement.scrollWidth <= window.innerWidth + 1"),
     await js("`page ${document.documentElement.scrollWidth}px wide, screen ${window.innerWidth}px`"));
+
+  // The Left/Right tag starts a little bigger on a phone (1.3x), then grows with distance
+  // as on a PC, up to the same 3x.
+  const tags = await js(TAG_HEIGHTS);
+  const near = (v, want) => Math.abs(v - want) <= Math.max(4, want * 0.12);
+  check("Left/Right tag: a little bigger on a phone up close, bigger as the hand goes further away (up to 3x)",
+    near(tags.veryClose, 32 * 1.3) && near(tags.armsLength, 32 * 1.3) && near(tags.further, 32 * 2.08) && near(tags.far, 32 * 2.9) && near(tags.veryFar, 32 * 2.9),
+    JSON.stringify(tags));
 
   // 2. Record while two hands are simulated
   await js("mobile.chunkBytes = 64 * 1024"); // small chunks so saving exercises chunked writes
