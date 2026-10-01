@@ -643,7 +643,8 @@
   OakSource.onStatus((s) => {
     if (s.status === "running") {
       stageMessage.hidden = true;
-      showSourceNote(`${s.camera || "OAK camera"}: hands found on the camera${s.depth ? ", with each hand's distance (Show → Distance)" : ""}.`);
+      showSourceNote(`${s.camera || "OAK camera"}: hands found on the camera${s.depth ? ", with each hand's distance (Show → Distance)" : ""}.` +
+        (s.usb === "HIGH" ? " It's connected over USB 2, so pictures come a little slower: if it's a USB 3 camera, another cable or port may help." : ""));
     } else if (s.status === "error") {
       showStageError(new Error(s.message));
     } else if (s.status === "stopped" && OakSource.isActive() && s.code) {

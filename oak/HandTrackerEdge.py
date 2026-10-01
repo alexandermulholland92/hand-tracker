@@ -103,7 +103,8 @@ class HandTracker:
                 use_same_image=True,
                 lm_nb_threads=2,
                 stats=False,
-                trace=0
+                trace=0,
+                device=None
                 ):
 
         self.use_lm = use_lm
@@ -144,7 +145,9 @@ class HandTracker:
         self.single_hand_tolerance_thresh = single_hand_tolerance_thresh
         self.use_same_image = use_same_image
 
-        self.device = dai.Device()
+        # Hand Tracker: an OAK device already opened by oak_bridge.py (which camera, and USB 2
+        # when it can't keep a USB 3 link), or any camera as the original does.
+        self.device = device if device is not None else dai.Device()
 
         if input_src == None or input_src == "rgb" or input_src == "rgb_laconic":
             # Note that here (in Host mode), specifying "rgb_laconic" has no effect

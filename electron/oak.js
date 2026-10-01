@@ -182,7 +182,8 @@ class OakCamera {
     return s;
   }
 
-  // options: { lm: "lite" | "full", twoHands, xyz, far: null | "both" | "higher" | "left" | "right", allHands, simulate }
+  // options: { lm: "lite" | "full", twoHands, xyz, far: null | "both" | "higher" | "left" | "right", allHands, device, simulate }
+  // (device: which OAK camera, by its id; the first one found otherwise)
   start(options, onMessage) {
     this.stop();
     const args = ["-u", BRIDGE, "--models", this.paths.models, "--lm", options.lm === "full" ? "full" : "lite"];
@@ -191,6 +192,7 @@ class OakCamera {
     if (options.xyz) args.push("--xyz");
     if (["both", "higher", "left", "right"].includes(options.far)) args.push("--far", options.far);
     if (options.allHands) args.push("--all-hands");
+    if (options.device && /^[A-Za-z0-9._-]+$/.test(options.device)) args.push("--device", options.device);
     const proc = spawn(this.paths.python, args, { windowsHide: true });
     this.proc = proc;
     let buf = Buffer.alloc(0), err = "";

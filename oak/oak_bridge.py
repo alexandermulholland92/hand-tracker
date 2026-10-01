@@ -9,7 +9,8 @@ far from the camera, and, on depth cameras, each hand's distance.
 
 Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
     python oak_bridge.py --models DIR [--lm lite|full] [--two-hands] [--xyz]
-                         [--far both|higher|left|right] [--all-hands] [--fps N]
+                         [--far both|higher|left|right] [--all-hands] [--fps N] [--device ID]
+    (--device: which OAK camera, by its id from --list; the first one found otherwise)
     python oak_bridge.py --check        prints the versions it would use
     python oak_bridge.py --list         prints the OAK cameras found
     python oak_bridge.py --simulate     no camera: a moving synthetic hand, for testing
@@ -110,6 +111,32 @@ def simulate(args):
             break
 
 
+def open_device(dai, wanted):
+    """Opens the OAK camera with that id, or the first one found (None if there's none). A
+    camera that can't keep a USB 3 link (its cable or its port) boots but never comes back
+    ("Failed to find device after booting"); Luxonis's advice is USB 2, so it's started again
+    that way. (Seen with an OAK-1 Lite W on a Raspberry Pi 5: USB 3 failed every time, USB 2
+    started it in 2 s.)"""
+    devices = [d for d in dai.Device.getAllAvailableDevices() if not wanted or d.getMxId() == wanted]
+    if not devices:
+        return None
+    info = devices[0]
+    try:
+        return dai.Device(info, dai.UsbSpeed.SUPER)
+    except RuntimeError as err:
+        if "X_LINK_DEVICE_NOT_FOUND" not in str(err) and "after booting" not in str(err):
+            raise
+    mxid = info.getMxId()
+    status("starting", message="The OAK camera didn't come back in USB 3 mode: starting it in USB 2 mode.")
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        found, again = dai.Device.getDeviceByMxId(mxid)
+        if found:
+            return dai.Device(again, dai.UsbSpeed.HIGH)
+        time.sleep(0.5)
+    raise RuntimeError("X_LINK_DEVICE_NOT_FOUND: the camera didn't come back after a failed start")
+
+
 def run(args):
     models = args.models
     need = ["palm_detection_sh4.blob", f"hand_landmark_{args.lm}_sh4.blob", "PDPostProcessing_top2_sh1.blob"]
@@ -121,10 +148,6 @@ def run(args):
         return 2
 
     import depthai as dai
-
-    if not dai.Device.getAllAvailableDevices():
-        status("error", message="No OAK camera found. Check it's plugged in (a USB 3 port is best) and not in use by another program.")
-        return 3
 
     common = dict(
         pd_model=os.path.join(models, "palm_detection_sh4.blob"),
@@ -163,12 +186,22 @@ def run(args):
             hand.landmarks_f = lm
             return hand
 
+    device = None
     try:
-        tracker = Tracker(**common, **extra)
+        device = open_device(dai, args.device)
+        if device is None:
+            status("error", message="That OAK camera wasn't found: it may have been unplugged." if args.device else
+                   "No OAK camera found. Check it's plugged in (a USB 3 port is best) and not in use by another program.")
+            return 3
+        tracker = Tracker(**common, **extra, device=device)
     except SystemExit:
+        if device is not None:
+            device.close()
         status("error", message="The OAK camera couldn't be started with these settings.")
         return 4
     except Exception as err:  # device errors come as RuntimeError with a readable message
+        if device is not None:
+            device.close()
         text = str(err)
         if sys.platform.startswith("linux") and any(k in text.lower() for k in ("permission", "udev")):
             # depthai: "Insufficient permissions to communicate with X_LINK_UNBOOTED device...":
@@ -186,7 +219,8 @@ def run(args):
         return 4
 
     depth = bool(getattr(tracker, "xyz", False))
-    status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h, depth=depth)
+    status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h, depth=depth,
+           id=device.getMxId(), usb=str(device.getUsbSpeed()).split(".")[-1])
     t0 = time.time()
     last = time.time()
     frames = 0
@@ -248,6 +282,7 @@ def main():
     ap.add_argument("--far", choices=["both", "higher", "left", "right"])
     ap.add_argument("--all-hands", action="store_true", help="far mode: not only raised hands")
     ap.add_argument("--fps", type=int, default=None)
+    ap.add_argument("--device", default=None, help="which OAK camera, by its id (from --list)")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--simulate", action="store_true")
