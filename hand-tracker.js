@@ -5,7 +5,8 @@
  *
  *   await HandTracker.init({ videoEl, canvasEl, overlay: true, mirror: true, maxNumHands: 2,
  *                            deviceId, width: 1280, height: 720 });
- *                            (external: "<name>" instead of a camera: frames come from pushExternalFrame)
+ *                            (external: "<name>" instead of a camera: frames come from pushExternalFrame;
+ *                             exactCamera: true: that camera or an error, never the default one instead)
  *   HandTracker.onHandLandmarks((data) => { ... });   // fires every processed frame, even with 0 hands
  *     data = { hands: [{ landmarks, imageLandmarks, rawImageLandmarks, handedness, handednessScore, features, orientation }, ...], timestamp }
  *     imageLandmarks are smoothed (see "Smoothing" below); rawImageLandmarks are MediaPipe's, unfiltered
@@ -1484,7 +1485,7 @@
       await openCamera();
     } catch (err) {
       // A remembered camera may have been unplugged — fall back to the default one.
-      if (cameraOpts.deviceId && (err.name === "OverconstrainedError" || err.name === "NotFoundError")) {
+      if (cameraOpts.deviceId && !options.exactCamera && (err.name === "OverconstrainedError" || err.name === "NotFoundError")) {
         cameraOpts.deviceId = null;
         await openCamera();
       } else {

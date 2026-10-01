@@ -411,12 +411,14 @@ function registerOakIpc() {
       if (!event.sender.isDestroyed()) event.sender.send("oak:setup-progress", line);
     })
   );
+  const single = simulated ? new SimulatedOak() : oak; // the main window's OAK camera
   handle("oak:start", (event, options = {}) => {
     oakViewer = event.sender;
     const viewer = event.sender;
     let busy = false; // the page is still showing the last frame: drop this one
-    oak.start({ ...options, simulate: !!process.env.HAND_TRACKER_OAK_SIMULATE }, (msg) => {
-      if (viewer.isDestroyed()) return oak.stop();
+    single.stop();
+    single.start({ ...options, simulate: simulated }, (msg) => {
+      if (viewer.isDestroyed()) return single.stop();
       if (msg.frame) {
         if (busy) return;
         busy = true;
@@ -431,7 +433,7 @@ function registerOakIpc() {
     return true;
   });
   handle("oak:stop", () => {
-    oak.stop();
+    single.stop();
     return true;
   });
 
@@ -490,7 +492,7 @@ class SimulatedOak {
       [0, -0.125], [0, -0.18], [0, -0.215], [0, -0.245], [0.03, -0.115], [0.035, -0.165], [0.038, -0.195], [0.04, -0.22], [0.055, -0.1], [0.065, -0.135], [0.07, -0.16], [0.075, -0.18]];
     const t0 = Date.now();
     this.onMessage = onMessage;
-    onMessage({ status: "running", camera: `Simulated OAK ${options.device}`, width: w, height: h, depth: true, id: options.device, usb: "SUPER" });
+    onMessage({ status: "running", camera: options.device ? `Simulated OAK ${options.device}` : "Simulated OAK", width: w, height: h, depth: true, id: options.device || "SIMULATED-OAK", usb: "SUPER" });
     this.timer = setInterval(() => {
       const t = (Date.now() - t0) / 1000;
       const cx = 0.5 + 0.2 * Math.sin(t), cy = 0.75;

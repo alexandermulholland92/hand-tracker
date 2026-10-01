@@ -3,7 +3,7 @@
  * (camera-tile.html, shown in a tile): its own hand tracker, so each camera has its own
  * left and right hand, its own smoothing and its own motion capture.
  *
- * Settings come from the page's address: ?device=<camera id>&mirror=1|0&model=0|1&name=<tile name>,
+ * Settings come from the page's address: ?device=<camera id>&label=<its name>&mirror=1|0&model=0|1&name=<tile name>,
  * or ?oak=<OAK camera id> for a Luxonis OAK camera: its hands are found on the camera, and the
  * page showing the tile passes its frames in (oakFrame, oakStatus).
  * The tile page's API, for the page that shows it:
@@ -51,6 +51,26 @@
     ctx.restore();
   }
 
+  // The tile's camera. Its id from the page showing the tile works on a computer, but Android's
+  // WebView gives each page its own camera ids, so there it's found by its name ("camera 0,
+  // facing back"), which is the same everywhere. Names only show once this page may use a
+  // camera: it opens one which way the camera faces for a moment first.
+  async function cameraId() {
+    const id = params.get("device"), label = params.get("label");
+    let list = await navigator.mediaDevices.enumerateDevices();
+    if (!label || list.some((d) => d.deviceId === id)) return id;
+    const byLabel = () => list.find((d) => d.kind === "videoinput" && d.label === label);
+    if (!byLabel()) {
+      const facing = /back|rear|environment/i.test(label) ? "environment" : /front|user/i.test(label) ? "user" : null;
+      const probe = await navigator.mediaDevices.getUserMedia({ video: facing ? { facingMode: { exact: facing } } : true, audio: false });
+      probe.getTracks().forEach((t) => t.stop());
+      list = await navigator.mediaDevices.enumerateDevices();
+    }
+    const found = byLabel();
+    if (!found) throw Object.assign(new Error(`${label} wasn't found.`), { name: "NotFoundError" });
+    return found.deviceId;
+  }
+
   async function start() {
     if (oak) {
       // The camera's helper finds the hands; this page draws and records them.
@@ -71,7 +91,8 @@
         mirror: params.get("mirror") !== "0",
         maxNumHands: 2,
         modelComplexity: params.get("model") === "0" ? 0 : 1,
-        deviceId: params.get("device") || null,
+        deviceId: (await cameraId()) || null,
+        exactCamera: true, // another camera instead would be a copy of one already in a tile
         width: 1280,
         height: 720,
       });

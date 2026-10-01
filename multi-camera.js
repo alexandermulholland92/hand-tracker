@@ -123,7 +123,7 @@
       // Webcams are mirrored like a selfie, as in the main window (an OAK camera too).
       frame.src = isOak(id)
         ? `camera-tile.html?oak=${encodeURIComponent(id.slice(4))}&mirror=1&name=${encodeURIComponent(name)}`
-        : `camera-tile.html?device=${encodeURIComponent(id)}&mirror=1&model=${model}&name=${encodeURIComponent(name)}`;
+        : `camera-tile.html?device=${encodeURIComponent(id)}&label=${encodeURIComponent(labelOf(id))}&mirror=1&model=${model}&name=${encodeURIComponent(name)}`;
       els.grid.appendChild(el);
       return { name, deviceId: id, role: roles[i], label: labelOf(id), frame, el, oak: isOak(id) ? id.slice(4) : null, oakState: "" };
     });

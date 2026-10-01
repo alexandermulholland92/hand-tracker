@@ -868,7 +868,9 @@
       NotAllowedError: mobile
         ? "Camera access was denied. Open Android Settings › Apps › Hand Tracker › Permissions, allow the camera, then press Retry."
         : "Camera access was blocked. In Windows, open Settings › Privacy › Camera and turn on camera access for desktop apps, then press Retry.",
-      NotFoundError: "No camera was found. Plug in a webcam and press Retry.",
+      NotFoundError: OakSource.available()
+        ? "No webcam was found. For a Luxonis OAK camera, pick it in the camera list (or Several cameras at once…); for a webcam, plug it in and press Retry."
+        : "No camera was found. Plug in a webcam and press Retry.",
       NotReadableError: "The camera is being used by another app (Zoom, Teams, OBS…). Close it and press Retry.",
       OverconstrainedError: "This camera doesn't support the selected resolution. Pick another resolution.",
     };
@@ -1796,17 +1798,24 @@
     shape3d.addEventListener("change", () => { setPref("shape3d", shape3d.value); apply3d(); });
     spin3d.addEventListener("change", () => { setPref("spin3d", spin3d.value); apply3d(); });
 
-    await HandTracker.init({
-      videoEl: video,
-      canvasEl: stage,
-      overlay: overlayOn,
-      mirror: mirrorOn,
-      maxNumHands: Number(handsSelect.value),
-      modelComplexity: Number(modelSelect.value),
-      deviceId: prefs.cameraId || null,
-      ...parseResolution(resolutionSelect.value),
-    });
-    stageMessage.hidden = true;
+    // Without a webcam (a computer with only OAK cameras, say) everything else still starts:
+    // the camera list offers the OAK camera and Several cameras at once, and the message says so.
+    let cameraError = null;
+    try {
+      await HandTracker.init({
+        videoEl: video,
+        canvasEl: stage,
+        overlay: overlayOn,
+        mirror: mirrorOn,
+        maxNumHands: Number(handsSelect.value),
+        modelComplexity: Number(modelSelect.value),
+        deviceId: prefs.cameraId || null,
+        ...parseResolution(resolutionSelect.value),
+      });
+      stageMessage.hidden = true;
+    } catch (err) {
+      cameraError = err;
+    }
     applyDisplay();
     applySquare();
     applyFar();
@@ -1852,6 +1861,7 @@
       const videoFps = cam.source === "file" && HandTracker.file.fps() ? ` · video ${HandTracker.file.fps()} fps` : "";
       fpsBadge.textContent = `FPS: ${HandTracker.getFPS()} · ${cam.width}×${cam.height}${videoFps}`;
     });
+    if (cameraError) throw cameraError; // shown with a Retry button (main().catch)
   }
 
   // Entry points for the automated checks (same code paths as the buttons).
