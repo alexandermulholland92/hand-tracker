@@ -166,7 +166,8 @@
   #multiCamCard { max-width: 1180px; margin: 14px auto 0; }
   .multi-cam-grid { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
   .multi-cam-grid.n1 { grid-template-columns: 1fr; }
-  @media (max-width: 720px) { .multi-cam-grid { grid-template-columns: 1fr; } }
+  /* Two across (four cameras in a 2 x 2 grid) down to a phone's width. */
+  @media (max-width: 440px) { .multi-cam-grid { grid-template-columns: 1fr; } }
   .multi-cam-tile iframe { width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 8px; background: #0e0f12; display: block; }
   .multi-cam-caption { font-size: 12px; opacity: 0.85; margin-top: 4px; }
   .multi-cam-caption .lbl { opacity: 0.6; }
