@@ -58,6 +58,19 @@ jobs:
       # in for this build (see scripts/dist.js).
       - run: npm run dist:deb-arm64
 
+      # The package installs and removes cleanly, with the USB rule OAK cameras need
+      # (build/linux/*-oak.sh) and the OAK helper where Python can read it.
+      - name: Install and remove the package
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ./dist/hand-tracker_*_amd64.deb
+          grep -q 'idVendor}=="03e7"' /lib/udev/rules.d/80-hand-tracker-oak.rules
+          test -L /usr/bin/hand-tracker
+          test -f "/opt/Hand Tracker/resources/app.asar.unpacked/oak/oak_bridge.py"
+          sudo apt-get remove -y -q hand-tracker
+          test ! -e /lib/udev/rules.d/80-hand-tracker-oak.rules
+          echo "Installed and removed cleanly, with the OAK camera rule"
+
       - uses: actions/upload-artifact@v4
         with:
           name: linux

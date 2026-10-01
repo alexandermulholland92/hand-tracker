@@ -132,7 +132,9 @@ With a Luxonis OAK camera (OAK-D, OAK-D Lite, OAK-1…), pick **Luxonis OAK came
 
 - **One-time setup** (the first time you pick it, about 150 MB, a minute or so): Luxonis's depthai library version 2, which the tracking code is written for, needs Python 3.8–3.13, so Hand Tracker installs its own. It downloads [uv](https://github.com/astral-sh/uv), which installs a private Python 3.12 with depthai, OpenCV and NumPy, plus the camera models from depthai_hand_tracker. Everything goes in Hand Tracker's own data folder (`%APPDATA%\Hand Tracker\oak` on Windows); nothing else on your computer changes, and every download is checked against a known size or checksum.
 - **"The OAK camera couldn't be started: it's busy"**: close **OAK Viewer** or any other program using the camera. If that doesn't help, unplug it and plug it back in, ideally into a USB 3 port with its own cable.
-- **Linux**: allow access to the camera once: `echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/80-movidius.rules`, then `sudo udevadm control --reload-rules && sudo udevadm trigger`, and replug it.
+- **Linux** (64-bit PCs, and 64-bit ARM boards like the Raspberry Pi 4 and 5): installing the `.deb` lets Hand Tracker use OAK cameras over USB. It adds Luxonis's USB rule for them (`/lib/udev/rules.d/80-hand-tracker-oak.rules`, removed with the app), and a camera that's already plugged in can be used at once. The setup then works as on Windows, into `~/.config/Hand Tracker/oak`. Running from the source folder instead, allow it once: `echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/80-movidius.rules`, then `sudo udevadm control --reload-rules && sudo udevadm trigger`, and replug it. If Linux still doesn't let the app use the camera, it says so and what to do.
+  - On a Raspberry Pi, an OAK-D can need more power than the Pi's USB ports give: if it won't start or keeps disconnecting, power it from its own supply or a powered USB hub.
+  - GitHub checks this on every change to the OAK code (`.github/workflows/check-oak.yml`, without a camera): the setup on a 64-bit PC and on 64-bit ARM, depthai looking for cameras, and the helper's stream. Each Linux build also installs and removes the `.deb`, checking the camera rule.
 
 ## Viewing and converting recordings
 
@@ -393,6 +395,14 @@ npm run check:android
 
 It runs the exact bundle that goes into the APK in a phone-sized window, with a simulated Android file system and share sheet. It records, saves the MP4 and all 7 motion formats through the Android save path, and verifies them with the same readers as above. It converts with ffmpeg.wasm as a phone does: the recording into other formats, an AVI opened for tracking, and a WMV with sound in the Recording Viewer into 16 formats, among them HEVC, AV1, AVIF, uncompressed AVI and Y4M. It receives a stand-in Motive's stream over multicast and unicast and records it, controls a stand-in PC over the network after pairing with its code, and starts phone control and drives its control window with simulated hands. It also checks the phone layout, the OCR, Share, and the viewer's Back link. The app's own Android plugins (Motive's network stream, the network link to a PC, phone control, saving and sharing) are stood in for by `scripts/fake-capacitor.js` with the same behaviour; they themselves can only be exercised on an actual phone.
 
+And one for OAK camera support, without a camera (GitHub runs it on Linux, on a 64-bit PC and 64-bit ARM):
+
+```bash
+node scripts/check-oak.js
+```
+
+It runs the real one-time OAK setup into an empty folder (about 150 MB), then checks that it's ready, that depthai can look for cameras, and that the OAK helper streams frames from its simulated camera.
+
 ## Project layout
 
 | File | Purpose |
@@ -428,7 +438,7 @@ It runs the exact bundle that goes into the APK in a phone-sized window, with a 
 | `mobile-bridge.js` | Android: saving to Documents/Hand Tracker and sharing (Capacitor plugins), Motive's live data, controlling a PC or the phone |
 | `electron/` | Desktop app: secure local file serving, camera permission, save dialogs, ffmpeg export, `.tak` support through Motive (`tak.js`, `tak-convert.ps1`), Motive's live NatNet stream (`natnet.js`), mouse and keyboard input (`input.js`, `input-helper.ps1`), a phone controlling the PC (`phone-link.js`), and OAK cameras (`oak.js`) |
 | `android/`, `capacitor.config.json` | Android app project (Capacitor): permissions, icon, keep-screen-on, and the app's own plugins (Motive's network stream, the network link to a PC, phone control and its accessibility service) |
-| `scripts/` | `serve.js` (browser mode), `build-web.js` + `build-android.js` (APK build), `check.js`, `check-android.js`, `run-checks.js` (runs them, again if the fake camera crashed), `motion-validators.js`, `video-validators.js`, `natnet-sim.js` (a stand-in Motive for the checks), `fake-camera.js` (the checks' test camera), `fake-capacitor.js`, `simulated-hands.js`, `fixtures/` (automated checks) |
+| `scripts/` | `serve.js` (browser mode), `build-web.js` + `build-android.js` (APK build), `check.js`, `check-android.js`, `check-oak.js`, `run-checks.js` (runs them, again if the fake camera crashed), `motion-validators.js`, `video-validators.js`, `natnet-sim.js` (a stand-in Motive for the checks), `fake-camera.js` (the checks' test camera), `fake-capacitor.js`, `simulated-hands.js`, `fixtures/` (automated checks) |
 
 ## Limitations
 

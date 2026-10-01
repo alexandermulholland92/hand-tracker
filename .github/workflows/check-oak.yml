@@ -1,0 +1,32 @@
+# Checks Luxonis OAK camera support on Linux, without a camera (scripts/check-oak.js): the
+# one-time setup (a private Python with depthai, OpenCV and NumPy, and the camera models) on
+# a 64-bit PC and on 64-bit ARM (the processor of a Raspberry Pi 4 or 5), depthai looking for
+# cameras, and the OAK helper's stream from its simulated camera. Runs when the OAK code
+# changes, or by hand (Actions → Check OAK cameras on Linux → Run workflow).
+name: Check OAK cameras on Linux
+
+on:
+  push:
+    branches: [main]
+    paths: ["oak/**", "electron/oak.js", "scripts/check-oak.js", ".github/workflows/check-oak.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oak:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Only Node's own modules: no npm install needed.
+      - run: node scripts/check-oak.js

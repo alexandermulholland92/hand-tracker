@@ -170,6 +170,15 @@ def run(args):
         return 4
     except Exception as err:  # device errors come as RuntimeError with a readable message
         text = str(err)
+        if sys.platform.startswith("linux") and any(k in text.lower() for k in ("permission", "udev")):
+            # depthai: "Insufficient permissions to communicate with X_LINK_UNBOOTED device...":
+            # Linux needs a USB rule for it. The .deb adds it; elsewhere it's added once by hand.
+            status("error", message=("The OAK camera couldn't be started: Linux isn't letting Hand Tracker use it yet. "
+                                     "Unplug it and plug it back in. If that doesn't help (or Hand Tracker wasn't installed from its .deb), "
+                                     "allow it once in a terminal: echo 'SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"03e7\", MODE=\"0666\"' | "
+                                     "sudo tee /etc/udev/rules.d/80-movidius.rules && sudo udevadm control --reload-rules && sudo udevadm trigger, "
+                                     "then plug it in again."))
+            return 4
         if any(k in text.lower() for k in ("boot", "couldn't open stream", "permission", "x_link")):
             text = ("it's busy or didn't answer. Close OAK Viewer or any other program using it, then try again. "
                     "If that doesn't help, unplug it and plug it back in, ideally into a USB 3 port with the cable that came with it.")
