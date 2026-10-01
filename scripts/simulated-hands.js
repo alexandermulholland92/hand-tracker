@@ -167,15 +167,19 @@ const TAG_HEIGHTS = `(async () => {
     }
     await sleep(150);
     const d = stage.getContext("2d").getImageData(0, 0, stage.width, stage.height).data;
-    let y0 = Infinity, y1 = -1;
+    // Tag-coloured pixels per row; the tag is the unbroken run of rows around the fullest one
+    // (stray pixels of that colour elsewhere, as the live test camera's pictures now and then
+    // have, aren't joined to it).
+    const rows = new Array(stage.height).fill(0);
     for (let i = 0; i < d.length; i += 4) {
-      if (Math.abs(d[i] - 255) < 40 && Math.abs(d[i + 1] - 146) < 40 && Math.abs(d[i + 2] - 43) < 50) {
-        const y = Math.floor(i / 4 / stage.width);
-        y0 = Math.min(y0, y);
-        y1 = Math.max(y1, y);
-      }
+      if (Math.abs(d[i] - 255) < 40 && Math.abs(d[i + 1] - 146) < 40 && Math.abs(d[i + 2] - 43) < 50) rows[Math.floor(i / 4 / stage.width)]++;
     }
-    return y1 < 0 ? 0 : Math.round(((y1 - y0 + 1) / Math.max(1, stage.width / 640)) * 10) / 10;
+    const peak = rows.indexOf(Math.max(...rows));
+    if (!rows[peak]) return 0;
+    let y0 = peak, y1 = peak;
+    while (y0 > 0 && rows[y0 - 1]) y0--;
+    while (y1 < rows.length - 1 && rows[y1 + 1]) y1++;
+    return Math.round(((y1 - y0 + 1) / Math.max(1, stage.width / 640)) * 10) / 10;
   };
   const out = { veryClose: await tagHeight(3), armsLength: await tagHeight(1.6), further: await tagHeight(1), far: await tagHeight(0.5), veryFar: await tagHeight(0.25) };
   HandTracker._processResults({ image: black, multiHandLandmarks: [], multiHandedness: [] });
