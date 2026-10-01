@@ -902,6 +902,8 @@ async function checkSeveralOakCameras(js) {
     }
     out.tiles = tiles.map((t) => ({ name: t.name, role: t.role, fps: t.status && t.status.fps, hands: t.status && t.status.hands, error: t.status && t.status.error }));
     out.labels = [...document.querySelectorAll("#multiCamGrid .lbl")].map((l) => l.textContent);
+    // Running tiles show their picture, not "Starting the OAK camera…" over it.
+    out.messages = [...document.querySelectorAll("#multiCamGrid iframe")].map((f) => getComputedStyle(f.contentDocument.getElementById("message")).display);
     document.getElementById("multiCamRecord").click();
     await sleep(1500);
     document.getElementById("multiCamRecord").click();
@@ -917,6 +919,7 @@ async function checkSeveralOakCameras(js) {
   check("Several cameras with Luxonis OAK cameras: the picker lists them; each gets a tile, its hands found on the camera; they record together, hands named by role",
     r.boxes && r.boxes.filter((b) => b.startsWith("oak:")).length === 2 &&
       r.tiles.length === 2 && r.tiles.every((t) => t.fps > 0 && t.hands.length === 1 && !t.error) && r.tiles.map((t) => t.role).join() === "head,chest" &&
+      r.messages.every((d) => d === "none") &&
       r.labels.every((l) => /Luxonis Simulated OAK SIMULATED-OAK-[AB] · depth/.test(l)) && r.names["SIMULATED-OAK-A"] === "Simulated OAK SIMULATED-OAK-A" &&
       /Head \w+/.test(r.info) && /Chest \w+/.test(r.info) && r.closed,
     JSON.stringify(r));

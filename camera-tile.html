@@ -12,6 +12,7 @@
   #video { display: none; }
   #message { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 12px;
     color: #c9c9cf; font: 13px "Segoe UI", system-ui, sans-serif; }
+  #message[hidden] { display: none; } /* (display: flex above would otherwise keep it on show) */
 </style>
 </head>
 <body>
