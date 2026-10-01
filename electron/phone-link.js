@@ -109,9 +109,16 @@ class PhoneLinkServer extends EventEmitter {
     if (!msg) return; // not signed with this PC's key: ignored
     const ack = (data) => this.send(rinfo, { session: msg.session, seq: msg.seq, type: "ack", data });
     if (msg.type === "hello") {
+      // The same hello again (sent again before its answer came, or arriving over a second
+      // network, like Wi-Fi and a VPN): the session already given.
+      const helloId = String((msg.data && msg.data.id) || "");
+      if (this.peer && helloId && this.peer.helloId === helloId) {
+        await ack({ ok: true, session: this.peer.session, name: os.hostname() });
+        return;
+      }
       // A new connection: a new session id (messages from an earlier one stop counting).
       const session = P.newSession();
-      this.peer = { session, hello: msg.seq, address: rinfo.address, port: rinfo.port, name: String((msg.data && msg.data.name) || "Phone").slice(0, 60), seen: new Set(), high: 0, lastPointer: 0, at: Date.now(), shown: true };
+      this.peer = { session, helloId, address: rinfo.address, port: rinfo.port, name: String((msg.data && msg.data.name) || "Phone").slice(0, 60), seen: new Set(), high: 0, lastPointer: 0, at: Date.now(), shown: true };
       await ack({ ok: true, session, name: os.hostname() });
       this.emitStatus();
       return;

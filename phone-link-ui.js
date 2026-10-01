@@ -166,7 +166,8 @@
       try {
         // The camera can only be used by one window at a time: the control window takes it.
         await global.HandTracker.useExternalSource(SELF_SOURCE);
-        state = await control.start(settings);
+        // (Android starts the service a moment later, so it doesn't say it's running yet.)
+        state = { ...(await control.start(settings)), running: true };
       } catch (err) {
         global.HandTracker.useCamera();
         status.textContent = errText(err);

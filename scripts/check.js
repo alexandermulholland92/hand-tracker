@@ -690,9 +690,14 @@ async function checkPhoneLink(js) {
     }
     return null;
   };
-  await send(pair.key, { seq: 1, type: "hello", data: { name: "Check phone" } });
+  await send(pair.key, { seq: 1, type: "hello", data: { name: "Check phone", id: "attempt-1" } });
   const hello = await answer(1);
   out.connected = !!(hello && hello.session);
+  // The same hello again (sent again, or over a second network): the same session.
+  answers.length = 0;
+  await send(pair.key, { seq: 1, type: "hello", data: { name: "Check phone", id: "attempt-1" } });
+  const again = await answer(1);
+  out.sameSession = !!(again && hello && again.session === hello.session);
   await sleep(200);
   out.connectedStatus = (await page()).status;
   await send(pair.key, { session: hello && hello.session, seq: 2, type: "keyboard", data: { show: false } });
@@ -706,7 +711,7 @@ async function checkPhoneLink(js) {
   out.off = { toggle: off.toggle, pairShown: off.pairShown };
   check("Let a phone control this PC: shows a QR code to pair it; a paired phone connects and its signed requests are carried out, others aren't; turning it off stops it",
     out.shown && /ON/.test(out.toggle) && out.pairShown && /Waiting for the phone/.test(out.waiting) && !/reads "/.test(out.qr) && out.connected &&
-      /Connected: Check phone/.test(out.connectedStatus) && out.keyboard && out.keyboard.ok && out.keyboard.result && out.keyboard.result.shown === false &&
+      /Connected: Check phone/.test(out.connectedStatus) && out.sameSession && out.keyboard && out.keyboard.ok && out.keyboard.result && out.keyboard.result.shown === false &&
       out.forged === null && /OFF/.test(out.off.toggle) && !out.off.pairShown,
     JSON.stringify(out));
 }

@@ -88,6 +88,15 @@ jobs:
           path: ~/.android/debug.keystore
           key: android-debug-keystore
 
+      # A fixed key instead, when one is saved as the repository secret ANDROID_DEBUG_KEYSTORE
+      # (a debug.keystore, base64): then every build installs over every other, for good,
+      # including copies built on a PC with that same key. Without the secret, nothing changes.
+      - name: Signing key from the repository's secrets
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+        run: |
+          if [ -n "$KEYSTORE" ]; then mkdir -p ~/.android && echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore; echo "Signing with the saved key"; fi
+
       # The web bundle only copies files out of node_modules, so the install scripts
       # (Electron's and ffmpeg's desktop downloads) aren't needed.
       - run: npm ci --ignore-scripts

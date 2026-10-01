@@ -7,6 +7,8 @@
  *   const sim = await startNatNetSim({ rate: 120, version: [4, 1] });   // unicast on 127.0.0.1:1510
  *   version: the NatNet version to speak (4.1 adds section sizes and assets; 3.x/4.0 don't)
  *   multicast: send frames to 239.255.42.99:1511 on 127.0.0.1 (Motive's default) instead of to each client
+ *   host: the address to listen on (default 127.0.0.1; this PC's network address to reach a phone),
+ *     and the interface multicast goes out on
  *   sim.framesSent; sim.stop();
  */
 
@@ -114,7 +116,7 @@ function frame(n, t, v) {
   return packet(7, w.buf());
 }
 
-function startNatNetSim({ rate = 120, port = 1510, version = [4, 1], multicast = false } = {}) {
+function startNatNetSim({ rate = 120, port = 1510, version = [4, 1], multicast = false, host = "127.0.0.1" } = {}) {
   return new Promise((resolve, reject) => {
     const sock = dgram.createSocket("udp4");
     const clients = new Map();
@@ -141,9 +143,9 @@ function startNatNetSim({ rate = 120, port = 1510, version = [4, 1], multicast =
         sim.framesSent++;
       }
     }, Math.min(5, 1000 / rate));
-    sock.bind(port, "127.0.0.1", () => {
+    sock.bind(port, host, () => {
       if (multicast) {
-        sock.setMulticastInterface("127.0.0.1");
+        sock.setMulticastInterface(host);
         sock.setMulticastLoopback(true);
       }
       resolve(sim);

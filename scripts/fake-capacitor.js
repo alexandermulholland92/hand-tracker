@@ -304,18 +304,12 @@
     };
   }
 
+  // As Capacitor's own bridge on a phone has them: Capacitor.Plugins.<name>, and no
+  // registerPlugin (that's @capacitor/core's, which the app doesn't load).
   window.Capacitor = {
     isNativePlatform: () => true,
     getPlatform: () => "android",
-    registerPlugin(name) {
-      if (name === "Filesystem") return Filesystem;
-      if (name === "Share") return Share;
-      if (name === "NatNet") return NatNet;
-      if (name === "Remote") return Remote;
-      if (name === "Udp") return Udp;
-      if (name === "PhoneControl") return PhoneControl;
-      throw new Error(`fake-capacitor: no plugin ${name}`);
-    },
+    Plugins: { Filesystem, Share, NatNet, Remote, Udp, PhoneControl },
   };
   window.__fakeCapacitor = { files, calls, shared, stopPhoneControl: () => PhoneControl._stoppedOutside() };
 })();

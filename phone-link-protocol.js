@@ -5,9 +5,10 @@
  *
  * Pairing: the PC shows a QR code with its addresses, a port and a random key; the phone
  * reads it. Every message is signed with that key (HMAC-SHA-256), so nothing else on the
- * network can send input. Each connection starts with a hello, which the PC answers with a
- * new session id that every later message must carry: a message recorded earlier can't be
- * played back. Pointer moves are sent and forgotten (the next one replaces them); clicks,
+ * network can send input. Each connection starts with a hello (carrying an id for that
+ * attempt, as it's sent to every address the PC has, and again until answered), which the PC
+ * answers with a new session id that every later message must carry: a message recorded
+ * earlier can't be played back. Pointer moves are sent and forgotten (the next one replaces them); clicks,
  * keys and text are answered, and sent again until they are (each is carried out once).
  *
  *   PhoneLinkProtocol.pairingText({ port, key, addresses })  -> "handtracker-link:1:…"

@@ -15,8 +15,11 @@
   const cap = global.Capacitor;
   if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return;
 
-  const Filesystem = cap.registerPlugin("Filesystem");
-  const Share = cap.registerPlugin("Share");
+  // A plugin, as the app's own bridge has it: Capacitor.Plugins.<name> (registerPlugin belongs
+  // to the @capacitor/core package, which this app doesn't load; on a phone it isn't there).
+  const plugin = (name) => (typeof cap.registerPlugin === "function" ? cap.registerPlugin(name) : cap.Plugins && cap.Plugins[name]);
+  const Filesystem = plugin("Filesystem");
+  const Share = plugin("Share");
   const DIRECTORY = "DOCUMENTS"; // public Documents folder; Android 11+ lets apps write files they create there
   const FOLDER = "Hand Tracker";
   const CHUNK_BYTES = 3 * 1024 * 1024; // binary data crosses the bridge as base64, a few MB at a time (mobile.chunkBytes)
@@ -105,7 +108,7 @@
   function createNatNet() {
     const P = global.NatNetParse;
     if (!P) return null;
-    const NatNet = cap.registerPlugin("NatNet");
+    const NatNet = plugin("NatNet");
     const statusListeners = new Set(), frameListeners = new Set();
     const emit = (set, value) => {
       for (const cb of set) {
@@ -206,7 +209,7 @@
   function createRemote() {
     const Core = global.RemoteCore;
     if (!Core) return {};
-    const Remote = cap.registerPlugin("Remote");
+    const Remote = plugin("Remote");
     // A fetch-like request; with cookies, the WebView's (a sign-in on the dashboard's page).
     const request = async (url, init = {}, { cookies = false, followRedirects = true } = {}) => {
       const r = await Remote.request({
@@ -352,8 +355,8 @@
   function createLink() {
     const L = global.PhoneLinkProtocol;
     if (!L) return {};
-    const Udp = cap.registerPlugin("Udp");
-    const Remote = cap.registerPlugin("Remote");
+    const Udp = plugin("Udp");
+    const Remote = plugin("Remote");
     const STORE = "hand-tracker-pc-link"; // { port, addresses, name }; the key is in the Keystore
     const statusListeners = new Set(), keyboardListeners = new Set(), toggleListeners = new Set();
     const state = { paired: false, connected: false, pc: "", address: "", error: "" };
@@ -435,7 +438,9 @@
           await ready;
           if (!pairing) throw new Error("Connect to a PC first: on the PC, open Control your PC and turn on Let a phone control this PC, then scan its code here.");
           await open();
-          const a = await request("hello", { name: deviceName() }, pairing.addresses).catch(() => {
+          // (One id for this attempt: its hello is sent to every address, and again until answered.)
+          const id = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, "0")).join("");
+          const a = await request("hello", { name: deviceName(), id }, pairing.addresses).catch(() => {
             throw new Error(`The PC didn't answer at ${pairing.addresses.join(" or ")}. Is Let a phone control this PC on, and is this phone on the same Wi-Fi?`);
           });
           peer = { host: a.host, session: a.session, name: a.name || "" };
@@ -561,7 +566,7 @@
   // Controlling the phone itself with your hand (PhoneControlPlugin.java): the pointer over
   // every app and the hand mouse's taps, swipes and keys, while Hand Tracker is in the background.
   function createPhoneControl() {
-    const PhoneControl = cap.registerPlugin("PhoneControl");
+    const PhoneControl = plugin("PhoneControl");
     const stopped = new Set();
     PhoneControl.addListener("stopped", () => stopped.forEach((cb) => cb()));
     return {
