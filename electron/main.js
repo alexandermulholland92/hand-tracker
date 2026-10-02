@@ -642,7 +642,7 @@ const autostart = {
 // (a page can't reach a device on the network itself). Only that page's own requests, to a
 // name and port: its state, a command (JSON), a camera's preview and the Wi-Fi networks.
 const RIG_HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*):(\d{1,5})$/i;
-const RIG_PATH = /^\/api\/(state|command|wifi|preview\?i=[0-3](&full=1)?)$/;
+const RIG_PATH = /^\/api\/(state|command|wifi|takes|preview\?i=[0-3](&full=1)?|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/;
 const RIG_ANSWER_BYTES = 4 << 20;
 function rigRequest({ rig, path: where, method = "GET", body = null, key = "" } = {}) {
   const m = RIG_HOST.exec(String(rig || ""));
@@ -715,6 +715,7 @@ function registerRemoteIpc() {
     ask,
     onWantPreviews: (on) => toWindow("remote:want-previews", on),
     wifi: createWifi(), // a phone on the hotspot (or over Tailscale) can change the Wi-Fi
+    takes: () => remoteFolder(), // its takes: listed, downloaded, and deleted once downloaded
   });
   remoteRecord.on("status", (s) => toWindow("remote:status", s));
   const fromApp = (event) => event.senderFrame && isAppUrl(event.senderFrame.url);

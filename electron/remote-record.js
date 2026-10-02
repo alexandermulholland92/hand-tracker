@@ -42,9 +42,17 @@
  * camera one is looking at full screen (null for none), which then comes bigger and more often
  * (/api/preview?i=N&full=1: each request waits for that camera's next picture).
  * keyStore: { load() -> key | null, save(key) } (main.js keeps it encrypted by the OS).
+ *
+ * takes: () => the remote recording folder (or null: none listed). Its takes (each the files
+ * saved for it) are listed at /api/takes, downloaded in slices (/api/take?f=<file>&at=<byte>:
+ * every way of reaching this computer carries those, the apps' included), and deleted by the
+ * "deleteTakes" command only with each file's size and CRC32 as a page received them, which
+ * must match the files here (so a take is deleted only once it's safely on that device).
  */
 
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const { execFile } = require("child_process");
 const http = require("http");
 const os = require("os");
@@ -57,7 +65,7 @@ const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it t
 const FULL_WAIT_MS = 400; // a full-screen request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
-const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
 const ROLES = ["", "head", "chest", "wrist_left", "wrist_right"];
@@ -107,6 +115,139 @@ function cleanSettings(s) {
 }
 
 // Tailscale's addresses: 100.64.0.0/10.
+// ---------- the takes in the remote recording folder ----------
+// A take is the files saved for it: its name, then "-left"/"-right" (BVH), "-motive" (Motive's
+// markers), and " (2)" if the name was taken; the formats Hand Tracker saves.
+const TAKE_FILE = /^[^/\\:*?"<>|\u0000-\u001f]{1,240}\.(json|csv|bvh|glb|c3d|trc|npz|mcap)$/i;
+const TAKE_SLICE = 2 << 20; // bytes per download request (the apps carry up to 4 MB an answer)
+const MAX_TAKES = 500;
+const takeOf = (file) => file.replace(/\.[a-z0-9]+$/i, "").replace(/ \(\d+\)$/, "").replace(/(-motive)?(-left|-right)?$/, "");
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes, crc = 0) {
+  let c = ~crc >>> 0;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return ~c >>> 0;
+}
+async function fileCrc(file) {
+  let crc = 0;
+  for await (const chunk of fs.createReadStream(file, { highWaterMark: 1 << 20 })) crc = crc32(chunk, crc);
+  return crc;
+}
+
+class Takes {
+  constructor(folder) {
+    this.folder = folder;
+  }
+  // -> [{ id, at (ms, its newest file), size, files: [{ name, size }] }], newest first.
+  async all() {
+    const dir = this.folder();
+    let entries = [];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const byId = new Map();
+    for (const e of entries) {
+      if (!e.isFile() || !TAKE_FILE.test(e.name)) continue;
+      let st;
+      try {
+        st = await fs.promises.stat(path.join(dir, e.name));
+      } catch {
+        continue;
+      }
+      const id = takeOf(e.name);
+      const t = byId.get(id) || { id, at: 0, size: 0, files: [] };
+      t.files.push({ name: e.name, size: st.size });
+      t.size += st.size;
+      t.at = Math.max(t.at, st.mtimeMs);
+      byId.set(id, t);
+    }
+    for (const t of byId.values()) t.files.sort((a, b) => a.name.localeCompare(b.name));
+    return [...byId.values()].sort((a, b) => b.at - a.at);
+  }
+  async list() {
+    const all = await this.all();
+    return { takes: all.slice(0, MAX_TAKES), more: Math.max(0, all.length - MAX_TAKES) };
+  }
+  // A file of a take, by its name (in the folder itself, nowhere else), from byte at.
+  async slice(name, at) {
+    if (!TAKE_FILE.test(name) || !Number.isInteger(at) || at < 0) return null;
+    let fh;
+    try {
+      fh = await fs.promises.open(path.join(this.folder(), name), "r");
+      const st = await fh.stat();
+      if (!st.isFile()) return null;
+      const buf = Buffer.alloc(Math.max(0, Math.min(TAKE_SLICE, st.size - at)));
+      const { bytesRead } = await fh.read(buf, 0, buf.length, at);
+      return buf.subarray(0, bytesRead);
+    } catch {
+      return null;
+    } finally {
+      if (fh) await fh.close().catch(() => {});
+    }
+  }
+  // Deletes the takes whose every file a page has, as it received them:
+  // [{ id, files: [{ name, size, crc }] }]; each file's size and CRC32 must match the one here.
+  async remove(wanted) {
+    const all = new Map((await this.all()).map((t) => [t.id, t]));
+    const deleted = [], refused = [];
+    for (const w of wanted) {
+      const t = all.get(w.id);
+      if (!t) {
+        refused.push({ id: w.id, why: "It isn't there any more." });
+        continue;
+      }
+      const sent = new Map(w.files.map((f) => [f.name, f]));
+      if (t.files.length !== sent.size || !t.files.every((f) => sent.has(f.name))) {
+        refused.push({ id: w.id, why: "It has files this device didn't get: download it again." });
+        continue;
+      }
+      let whole = true;
+      for (const f of t.files) {
+        const got = sent.get(f.name);
+        if (got.size !== f.size || got.crc !== (await fileCrc(path.join(this.folder(), f.name)))) whole = false;
+      }
+      if (!whole) {
+        refused.push({ id: w.id, why: "Not every file arrived intact: download it again." });
+        continue;
+      }
+      try {
+        for (const f of t.files) await fs.promises.unlink(path.join(this.folder(), f.name));
+        deleted.push(w.id);
+      } catch (err) {
+        refused.push({ id: w.id, why: err.message });
+      }
+    }
+    const n = deleted.length;
+    return { ok: !refused.length, deleted, refused, message: `Deleted ${n} take${n === 1 ? "" : "s"}${refused.length ? `; ${refused.length} not` : ""}.` };
+  }
+}
+// The takes a page asks to delete, with what it received of each file.
+function cleanTakes(list) {
+  if (!Array.isArray(list) || !list.length || list.length > 20) return null;
+  const out = [];
+  for (const t of list) {
+    if (!t || typeof t.id !== "string" || !t.id || t.id.length > 240 || !Array.isArray(t.files) || !t.files.length || t.files.length > 24) return null;
+    const files = [];
+    for (const f of t.files) {
+      if (!f || typeof f.name !== "string" || !TAKE_FILE.test(f.name) || !Number.isInteger(f.size) || f.size < 0 || !Number.isInteger(f.crc) || f.crc < 0 || f.crc > 0xffffffff) return null;
+      files.push({ name: f.name, size: f.size, crc: f.crc });
+    }
+    out.push({ id: t.id, files });
+  }
+  return out;
+}
+
 function isTailscale(address) {
   const [p, q] = String(address || "").replace(/^::ffff:/, "").split(".").map(Number);
   return p === 100 && q >= 64 && q <= 127;
@@ -158,8 +299,9 @@ function tailscaleName() {
 const newKey = () => crypto.randomBytes(16).toString("base64url");
 
 class RemoteRecordServer extends EventEmitter {
-  constructor({ keyStore, page, host = os.hostname(), ask, onWantPreviews = () => {}, hotspot = hotspotAddress, wifi = null }) {
+  constructor({ keyStore, page, host = os.hostname(), ask, onWantPreviews = () => {}, hotspot = hotspotAddress, wifi = null, takes = null }) {
     super();
+    this.takes = takes ? new Takes(takes) : null;
     this.hotspot = hotspot;
     this.wifi = wifi;
     this.keyStore = keyStore;
@@ -360,6 +502,16 @@ class RemoteRecordServer extends EventEmitter {
       if (!wifiHere) return this.send(res, 403, { error: "The Wi-Fi can be changed only from this computer's hotspot or over Tailscale." });
       return this.send(res, 200, await this.wifi.list());
     }
+    // The takes saved here: listed, and downloaded a slice at a time.
+    if (req.method === "GET" && url.pathname === "/api/takes") {
+      if (!this.takes) return this.send(res, 404, { error: "No takes here." });
+      return this.send(res, 200, await this.takes.list());
+    }
+    if (req.method === "GET" && url.pathname === "/api/take") {
+      const data = this.takes && (await this.takes.slice(String(url.searchParams.get("f") || ""), Number(url.searchParams.get("at") || 0)));
+      if (!data) return this.send(res, 404, { error: "No such file." });
+      return this.send(res, 200, data, "application/octet-stream");
+    }
     if (req.method === "GET" && url.pathname === "/api/preview") {
       const i = Number(url.searchParams.get("i"));
       this.wantUntil = Date.now() + PREVIEW_WANTED_MS;
@@ -391,7 +543,7 @@ class RemoteRecordServer extends EventEmitter {
         body += chunk;
         if (body.length > 8192) return this.send(res, 413, { error: "Too long" });
       }
-      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null;
+      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null;
       try {
         const msg = JSON.parse(body);
         action = String(msg.action || "");
@@ -401,6 +553,7 @@ class RemoteRecordServer extends EventEmitter {
         mode = cleanMode(msg.mode);
         settings = cleanSettings(msg.settings);
         wifi = cleanWifi(msg.wifi);
+        takes = cleanTakes(msg.takes);
       } catch {
         return this.send(res, 400, { error: "Not JSON" });
       }
@@ -409,6 +562,12 @@ class RemoteRecordServer extends EventEmitter {
       if (action === "pick" && !pick) return this.send(res, 400, { error: "Which camera?" });
       if (action === "mode" && !mode) return this.send(res, 400, { error: "Which mode?" });
       if (action === "settings" && !settings) return this.send(res, 400, { error: "Which setting?" });
+      // Takes this page has safely: deleted here (checked file by file).
+      if (action === "deleteTakes") {
+        if (!this.takes) return this.send(res, 404, { error: "No takes here." });
+        if (!takes) return this.send(res, 400, { error: "Which takes?" });
+        return this.send(res, 200, await this.takes.remove(takes));
+      }
       if (action === "wifi") {
         if (!wifiHere) return this.send(res, 403, { error: "The Wi-Fi can be changed only from this computer's hotspot or over Tailscale." });
         if (!wifi) return this.send(res, 400, { error: "That isn't a Wi-Fi network's name and password (8 to 63 characters)." });
@@ -427,4 +586,4 @@ class RemoteRecordServer extends EventEmitter {
   }
 }
 
-module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_IF, cleanDetails, cleanCamera, cleanPick, cleanWifi };
+module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_IF, cleanDetails, cleanCamera, cleanPick, cleanWifi, crc32 };

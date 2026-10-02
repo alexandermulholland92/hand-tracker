@@ -241,6 +241,348 @@
   let screenOn = true;
   $("screenBtn").addEventListener("click", () => command("settings", { settings: { screenPictures: !screenOn } }));
 
+  // ---------- the takes on the computer: download them, then delete them from it ----------
+  // Hand Tracker lists the takes in its remote recording folder (Hand Tracker on a phone keeps
+  // its own, so none are listed there). The ones ticked come to this device a slice at a time
+  // (as the apps can carry them too), each file checked by its length and a CRC32: in a browser
+  // as one .zip in its downloads; in the Android app into Documents/Hand Tracker/Takes from
+  // <computer>; in the Windows and Linux app into a folder picked for them. Only then can they
+  // be deleted from the computer (two taps), which first checks every file against the same
+  // CRC32s: one that didn't arrive whole, or changed since, stays.
+  let takes = [], takesHere = false, takesAsked = false, takesBusy = false, takesArmed = 0, lastTakeAt = null;
+  const picked = new Set();
+  const got = new Map(); // take id -> [{ name, size, crc }]: on this device, whole
+  const failed = new Map(); // take id -> why it didn't come
+  const CRC = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+  const crc32 = (bytes, crc = 0) => {
+    let c = ~crc >>> 0;
+    for (let i = 0; i < bytes.length; i++) c = CRC[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+    return ~c >>> 0;
+  };
+  const sizeText = (n) => (n < 1e6 ? `${Math.max(1, Math.round(n / 1e3))} KB` : `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)} MB`);
+  const whenText = (ms) => new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const hostName = () => (state && state.host) || "the computer";
+  const localStamp = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}_${String(d.getHours()).padStart(2, "0")}-${String(d.getMinutes()).padStart(2, "0")}`;
+  const concat = (parts) => {
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let at = 0;
+    for (const p of parts) {
+      out.set(p, at);
+      at += p.length;
+    }
+    return out;
+  };
+  const toBase64 = (bytes) => {
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  };
+  const takesNote = (text, err = false) => {
+    $("takesNote").textContent = text || "";
+    $("takesNote").className = err ? "err" : "";
+  };
+
+  // A .zip of files as they are (no compression: motion files are a small part of a phone's room).
+  function zip(entries) {
+    const enc = new TextEncoder(), parts = [], central = [];
+    const d = new Date();
+    const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+    const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    let offset = 0;
+    for (const e of entries) {
+      const name = enc.encode(e.name), crc = crc32(e.data);
+      const head = (size, sig) => {
+        const v = new DataView(new ArrayBuffer(size));
+        v.setUint32(0, sig, true);
+        return v;
+      };
+      const local = head(30, 0x04034b50);
+      local.setUint16(4, 20, true);
+      local.setUint16(6, 0x0800, true); // names in UTF-8
+      local.setUint16(10, time, true);
+      local.setUint16(12, date, true);
+      local.setUint32(14, crc, true);
+      local.setUint32(18, e.data.length, true);
+      local.setUint32(22, e.data.length, true);
+      local.setUint16(26, name.length, true);
+      parts.push(new Uint8Array(local.buffer), name, e.data);
+      const c = head(46, 0x02014b50);
+      c.setUint16(4, 20, true);
+      c.setUint16(6, 20, true);
+      c.setUint16(8, 0x0800, true);
+      c.setUint16(12, time, true);
+      c.setUint16(14, date, true);
+      c.setUint32(16, crc, true);
+      c.setUint32(20, e.data.length, true);
+      c.setUint32(24, e.data.length, true);
+      c.setUint16(28, name.length, true);
+      c.setUint32(42, offset, true);
+      central.push(new Uint8Array(c.buffer), name);
+      offset += 30 + name.length + e.data.length;
+    }
+    const size = central.reduce((n, p) => n + p.length, 0);
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true);
+    end.setUint16(8, entries.length, true);
+    end.setUint16(10, entries.length, true);
+    end.setUint32(12, size, true);
+    end.setUint32(16, offset, true);
+    return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
+  }
+
+  // Where the downloaded files go: { where, file(name) -> { write(bytes), close() }, finish() }
+  // (null if no folder was picked).
+  async function takeSaver() {
+    const host = hostName().replace(/[^\w.-]+/g, "_").slice(0, 60) || "computer";
+    const files = nativeRemote ? (typeof cap.registerPlugin === "function" ? cap.registerPlugin("Filesystem") : cap.Plugins && cap.Plugins.Filesystem) : null;
+    if (files) {
+      const folder = `Hand Tracker/Takes from ${host}`;
+      return {
+        where: `Documents/${folder}`,
+        file(name) {
+          const at = `${folder}/${name}`;
+          let first = true;
+          return {
+            async write(bytes) {
+              if (first) await files.writeFile({ path: at, directory: "DOCUMENTS", data: toBase64(bytes), recursive: true });
+              else await files.appendFile({ path: at, directory: "DOCUMENTS", data: toBase64(bytes) });
+              first = false;
+            },
+            async close() {
+              if (first) await files.writeFile({ path: at, directory: "DOCUMENTS", data: "", recursive: true });
+            },
+          };
+        },
+        async finish() {},
+      };
+    }
+    if (desktopRig && window.desktop.chooseFolder && window.desktop.saveFilesTo) {
+      const pick = await window.desktop.chooseFolder(`Choose a folder for the takes from ${hostName()}`);
+      if (!pick || pick.canceled) return null;
+      const saver = {
+        where: "",
+        file(name) {
+          const parts = [];
+          return {
+            async write(bytes) {
+              parts.push(bytes);
+            },
+            async close() {
+              const ext = name.replace(/^.*\./, "").toLowerCase();
+              const r = await window.desktop.saveFilesTo(pick.token, { baseName: name.slice(0, -(ext.length + 1)), files: [{ format: ext, suffix: "", ext, data: concat(parts) }] });
+              const res = (r.results || [])[0];
+              if (!res || !res.ok) throw new Error((res && res.error) || "it wasn't saved");
+              saver.where = r.dir;
+            },
+          };
+        },
+        async finish() {},
+      };
+      return saver;
+    }
+    const entries = [];
+    const saver = {
+      zip: true,
+      where: "",
+      file(name) {
+        const parts = [];
+        return {
+          async write(bytes) {
+            parts.push(bytes);
+          },
+          async close() {
+            entries.push({ name, data: concat(parts) });
+          },
+        };
+      },
+      async finish(label) {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(zip(entries));
+        a.download = label;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+        saver.where = `${label}, in this device's downloads`;
+      },
+    };
+    return saver;
+  }
+
+  async function loadTakes() {
+    try {
+      const r = await api("/api/takes");
+      takesHere = r.status === 200;
+      if (takesHere) {
+        const list = r.json();
+        takes = list.takes || [];
+        const ids = new Set(takes.map((t) => t.id));
+        for (const id of [...picked]) if (!ids.has(id)) picked.delete(id);
+        for (const id of [...got.keys()]) if (!ids.has(id)) got.delete(id);
+        if (list.more) takesNote(`The newest ${takes.length} are listed (${list.more} older not).`);
+      }
+    } catch {
+      // the status line says when the computer can't be reached
+    }
+    renderTakes();
+  }
+
+  function renderTakes() {
+    $("takesPanel").hidden = !takesHere;
+    if (!takesHere) return;
+    const host = hostName();
+    $("takesTitle").textContent = `Takes on ${host}`;
+    $("takeRows").innerHTML = takes.length
+      ? takes.map((t) => {
+        const kinds = [...new Set(t.files.map((f) => f.name.replace(/^.*\./, "").toUpperCase()))].join(", ");
+        const status = got.has(t.id) ? ' · <span class="ok">✓ on this device</span>' : failed.has(t.id) ? ` · <span class="err">${esc(failed.get(t.id))}</span>` : "";
+        return `<div class="takerow"><label><input type="checkbox" data-id="${esc(t.id)}"${picked.has(t.id) ? " checked" : ""}${takesBusy ? " disabled" : ""} /> <span>${esc(t.id)}</span></label>` +
+          `<div class="meta">${esc(whenText(t.at))} · ${esc(sizeText(t.size))} · ${esc(kinds)}${status}</div></div>`;
+      }).join("")
+      : '<div class="muted">None yet: each take is saved here when recording stops.</div>';
+    const all = $("takesAll");
+    all.checked = !!takes.length && takes.every((t) => picked.has(t.id));
+    all.indeterminate = !all.checked && takes.some((t) => picked.has(t.id));
+    all.disabled = takesBusy || !takes.length;
+    const n = takes.filter((t) => picked.has(t.id)).length;
+    const ready = takes.filter((t) => picked.has(t.id) && got.has(t.id)).length;
+    $("takesGet").disabled = takesBusy || !n;
+    $("takesGet").textContent = n ? `Download ${n} take${n === 1 ? "" : "s"}` : "Download";
+    $("takesRefresh").disabled = takesBusy;
+    const del = $("takesDel");
+    del.hidden = !ready;
+    del.disabled = takesBusy;
+    const armed = Date.now() - takesArmed < 4000;
+    del.textContent = `${armed ? "Tap again to delete" : "Delete"} ${ready} from ${host}`;
+  }
+
+  $("takeRows").addEventListener("change", (e) => {
+    const id = e.target.dataset && e.target.dataset.id;
+    if (!id) return;
+    if (e.target.checked) picked.add(id);
+    else picked.delete(id);
+    takesArmed = 0;
+    renderTakes();
+  });
+  $("takesAll").addEventListener("change", (e) => {
+    for (const t of takes) {
+      if (e.target.checked) picked.add(t.id);
+      else picked.delete(t.id);
+    }
+    takesArmed = 0;
+    renderTakes();
+  });
+  $("takesRefresh").addEventListener("click", () => {
+    takesNote("");
+    loadTakes();
+  });
+
+  $("takesGet").addEventListener("click", async () => {
+    const chosen = takes.filter((t) => picked.has(t.id));
+    if (!chosen.length || takesBusy) return;
+    takesBusy = true;
+    takesArmed = 0;
+    renderTakes();
+    let saver = null;
+    try {
+      saver = await takeSaver();
+    } catch (err) {
+      takesNote(`Couldn't save here: ${err.message || err}`, true);
+    }
+    if (!saver) {
+      takesBusy = false;
+      return renderTakes();
+    }
+    const total = chosen.reduce((n, t) => n + t.size, 0) || 1;
+    let done = 0;
+    const came = [];
+    for (const t of chosen) {
+      failed.delete(t.id);
+      const files = [];
+      try {
+        for (const f of t.files) {
+          const out = saver.file(f.name);
+          let at = 0, crc = 0;
+          while (at < f.size) {
+            const r = await api(`/api/take?f=${encodeURIComponent(f.name)}&at=${at}`);
+            if (r.status !== 200 || !r.bytes.length) throw new Error(`${f.name} stopped coming`);
+            crc = crc32(r.bytes, crc);
+            await out.write(r.bytes);
+            at += r.bytes.length;
+            done += r.bytes.length;
+            takesNote(`Downloading… ${Math.min(99, Math.round((done / total) * 100))}%`);
+          }
+          if (at !== f.size) throw new Error(`${f.name} came the wrong size`);
+          await out.close();
+          files.push({ name: f.name, size: at, crc });
+        }
+        came.push({ id: t.id, files });
+        if (!saver.zip) got.set(t.id, files);
+      } catch (err) {
+        failed.set(t.id, `didn't come: ${err.message || err}`);
+      }
+      renderTakes();
+    }
+    if (saver.zip && came.length) {
+      try {
+        await saver.finish(came.length === 1 ? `${came[0].id}.zip` : `${hostName().replace(/[^\w.-]+/g, "_")} takes ${localStamp()}.zip`);
+        for (const c of came) got.set(c.id, c.files);
+      } catch (err) {
+        for (const c of came) failed.set(c.id, `didn't save: ${err.message || err}`);
+      }
+    }
+    takesBusy = false;
+    const lost = chosen.length - came.length;
+    if (came.length) takesNote(`${came.length} take${came.length === 1 ? "" : "s"} on this device${saver.where ? ` (${saver.where})` : ""}${lost ? `; ${lost} didn't come` : ""}. They can now be deleted from ${hostName()}.`, !!lost);
+    else takesNote("Nothing came: try again.", true);
+    renderTakes();
+  });
+
+  $("takesDel").addEventListener("click", async () => {
+    const ready = takes.filter((t) => picked.has(t.id) && got.has(t.id));
+    if (!ready.length || takesBusy) return;
+    if (Date.now() - takesArmed > 4000) {
+      takesArmed = Date.now();
+      renderTakes();
+      setTimeout(renderTakes, 4100);
+      return;
+    }
+    takesArmed = 0;
+    takesBusy = true;
+    renderTakes();
+    let deleted = 0;
+    const refused = [];
+    try {
+      for (let i = 0; i < ready.length; i += 5) {
+        const batch = ready.slice(i, i + 5);
+        const res = await post({ action: "deleteTakes", takes: batch.map((t) => ({ id: t.id, files: got.get(t.id) })) });
+        for (const id of res.deleted || []) {
+          got.delete(id);
+          picked.delete(id);
+          deleted++;
+        }
+        for (const r of res.refused || []) {
+          failed.set(r.id, r.why);
+          refused.push(r.why);
+        }
+        if (res.error) refused.push(res.error);
+      }
+    } catch (err) {
+      refused.push(err.message || String(err));
+    }
+    takesBusy = false;
+    takesNote(`Deleted ${deleted} from ${hostName()}${refused.length ? `; ${refused.length} not: ${refused[0]}` : "."}`, !!refused.length);
+    await loadTakes();
+  });
+
   // ---------- the computer's Wi-Fi (from its own hotspot, or over Tailscale) ----------
   // Hand Tracker lists the networks around it; one tapped asks for its password (a saved one
   // doesn't need it), and the computer joins it. Its hotspot moves to that network's channel,
@@ -405,6 +747,13 @@
     showNote();
     fillDetails(s.details);
 
+    // The takes: listed once the page opens, and again when a take has been saved.
+    const takeAt = s.lastTake ? s.lastTake.at : null;
+    if ((!takesAsked || takeAt !== lastTakeAt) && !takesBusy) {
+      takesAsked = true;
+      lastTakeAt = takeAt;
+      loadTakes();
+    }
     const t = s.lastTake;
     $("take").hidden = !t;
     const named = t && t.details ? ["task", "contributor", "location"].map((k) => t.details[k]).filter(Boolean).join(" · ") : "";

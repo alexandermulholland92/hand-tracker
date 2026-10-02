@@ -719,8 +719,11 @@ async function checkRemoteFromPhone(win, js) {
     available: { at: 1, scanning: false, note: "", cameras: [{ id: "oak:PHONE-TEST", label: "Luxonis OAK-D …E-TEST", present: true, use: true, role: "head" }] },
   };
   const asked = [];
+  // Its takes folder: one take, to download to the phone and then delete from the computer.
+  const takesDir = fs.mkdtempSync(path.join(require("os").tmpdir(), "hand-tracker-android-takes-"));
+  fs.writeFileSync(path.join(takesDir, "Phone-Take_1s_2026-10-02_12-00-00.json"), JSON.stringify({ format_version: 2, hands: [] }));
   const server = new RemoteRecordServer({
-    keyStore: null, host: "rig-test", hotspot: () => null,
+    keyStore: null, host: "rig-test", hotspot: () => null, takes: () => takesDir,
     page: (name) => fs.readFileSync(path.join(ROOT, name === "js" ? "remote-client.js" : "remote-client.html"), "utf8"),
     ask: async (action, extra) => {
       asked.push(action);
@@ -757,6 +760,24 @@ async function checkRemoteFromPhone(win, js) {
         rows: [...document.querySelectorAll("#camRows .camrow label")].map((r) => r.textContent.trim()), before, after: pressed(), back: !document.getElementById("back").hidden,
         calls: window.__fakeCapacitor.calls.filter((c) => c[0] === "remote.rigRequest").length, fits: document.documentElement.scrollWidth <= innerWidth + 1 };
     })()`);
+    // Its takes, saved into Documents/Hand Tracker/Takes from <computer>, then deleted there.
+    out.takes = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.getElementById("takesRefresh").click();
+      const rows = () => [...document.querySelectorAll("#takeRows .takerow")];
+      for (let i = 0; i < 100 && !rows().length; i++) await sleep(100);
+      const listed = rows().length;
+      rows()[0].querySelector("input").click();
+      document.getElementById("takesGet").click();
+      for (let i = 0; i < 100 && !/on this device|Nothing came/.test(document.getElementById("takesNote").textContent); i++) await sleep(100);
+      const note = document.getElementById("takesNote").textContent;
+      const saved = [...window.__fakeCapacitor.files.keys()].filter((k) => k.startsWith("Hand Tracker/Takes from rig-test/"));
+      document.getElementById("takesDel").click();
+      document.getElementById("takesDel").click();
+      for (let i = 0; i < 100 && rows().length; i++) await sleep(100);
+      return { listed, note, saved, after: rows().length };
+    })()`);
+    out.takesLeft = fs.readdirSync(takesDir);
     // One camera running, held upright (a phone's): it takes the whole grid, in its own tall
     // shape (no black bars), and the roles with no camera are listed under it.
     state.running = true;
@@ -789,6 +810,8 @@ async function checkRemoteFromPhone(win, js) {
     !out.error && out.launcher.path === "/remote.html" && out.launcher.back && /opens here/.test(out.launcher.where) &&
       c.path === "/remote-client.html" && c.hash === "" && c.title === "Hand Tracker on rig-test" && /Cameras off/.test(c.status) && c.rows.length === 1 &&
       c.before === "Stereo" && c.after === "Ego" && c.back && c.calls > 2 && c.fits && out.asked.includes("mode") &&
+      out.takes && out.takes.listed === 1 && /on this device \(Documents\/Hand Tracker\/Takes from rig-test\)/.test(out.takes.note) &&
+      out.takes.saved.join() === "Hand Tracker/Takes from rig-test/Phone-Take_1s_2026-10-02_12-00-00.json" && out.takes.after === 0 && out.takesLeft.length === 0 &&
       out.one && out.one.one && out.one.boxes === 1 && out.one.missing === "Not connected: Chest, Left wrist, Right wrist" && out.one.ratio === "180 / 320" && out.one.h > out.one.w * 1.5,
     JSON.stringify(out));
 }

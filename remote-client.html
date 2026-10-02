@@ -11,9 +11,9 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'" />
 <title>Hand Tracker remote</title>
 <style>
-  :root { --bg: #111216; --card: #1b1c22; --line: #2c2e36; --text: #e9ecef; --muted: #a3a9b1; --red: #e03131; --green: #2b8a3e; --err: #ff8787; --accent: #74c0fc; }
+  :root { --bg: #111216; --card: #1b1c22; --line: #2c2e36; --text: #e9ecef; --muted: #a3a9b1; --red: #e03131; --green: #2b8a3e; --err: #ff8787; --ok: #69db7c; --accent: #74c0fc; }
   @media (prefers-color-scheme: light) {
-    :root { --bg: #f4f5f7; --card: #ffffff; --line: #dde0e4; --text: #1d1f23; --muted: #5f6670; --err: #c92a2a; --accent: #1971c2; }
+    :root { --bg: #f4f5f7; --card: #ffffff; --line: #dde0e4; --text: #1d1f23; --muted: #5f6670; --err: #c92a2a; --ok: #2b8a3e; --accent: #1971c2; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -80,6 +80,17 @@
   .grid.one { grid-template-columns: 1fr; }
   #missing { font-size: 13px; color: var(--muted); margin-top: 6px; }
   #missing:empty { display: none; }
+  .takeall { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 2px 0 6px; }
+  .takerow { border-top: 1px solid var(--line); padding: 7px 0; }
+  .takerow label { display: flex; align-items: flex-start; gap: 8px; overflow-wrap: anywhere; font-size: 14px; }
+  .takerow input, .takeall input { width: 20px; height: 20px; flex: none; margin: 0; }
+  .takerow .meta { font-size: 13px; color: var(--muted); margin: 2px 0 0 28px; }
+  .takerow .meta .ok { color: var(--ok); }
+  .takerow .meta .err { color: var(--err); }
+  .takebtns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+  .takebtns button { flex: 1 1 150px; padding: 11px 14px; font-weight: 600; }
+  #takesNote { font-size: 13px; color: var(--muted); min-height: 1.3em; margin-top: 6px; }
+  #takesNote.err { color: var(--err); }
   #wifiNow, #wifiNote { font-size: 14px; }
   #wifiNote { color: var(--muted); min-height: 1.3em; margin-top: 6px; }
   .net { border-top: 1px solid var(--line); padding: 6px 0; }
@@ -142,6 +153,17 @@
     <img id="fullImg" alt="" />
     <div class="fullbar"><span id="fullName"></span><span id="fullRate"></span><button type="button" id="fullClose" aria-label="Back to every camera">✕</button></div>
   </div>
+
+  <section class="panel" id="takesPanel" aria-labelledby="takesTitle" hidden>
+    <h2><span id="takesTitle" class="grow">Takes</span><button type="button" id="takesRefresh" class="small">Refresh</button></h2>
+    <label class="takeall"><input type="checkbox" id="takesAll" /> Select all</label>
+    <div id="takeRows"></div>
+    <div class="takebtns">
+      <button type="button" id="takesGet" disabled>Download</button>
+      <button type="button" id="takesDel" class="record" hidden>Delete</button>
+    </div>
+    <div id="takesNote"></div>
+  </section>
 
   <section class="panel" id="screenPanel" aria-labelledby="screenTitle" hidden>
     <h2><span id="screenTitle" class="grow">Pictures on its screen</span><button type="button" id="screenBtn" class="small on" aria-pressed="true">On</button></h2>

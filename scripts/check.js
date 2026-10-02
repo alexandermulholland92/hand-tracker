@@ -432,6 +432,7 @@ async function run(win) {
   await checkRemoteRecording(js);
   await checkRemoteLauncher(js);
   await checkRemoteHotspotWifi();
+  await checkRemoteTakes();
 
   // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
   // in go through the same tracking, with the camera's confidence and measured distance.
@@ -711,13 +712,11 @@ async function checkPhoneLink(js) {
     await sleep(100);
   }
   const out = { shown: on.shown, toggle: on.toggle, pairShown: on.pairShown, waiting: on.status };
-  // The QR code reads back as the pairing code (when OpenCV is installed to read it).
-  const png = await js(`document.getElementById("linkQr").toDataURL("image/png")`);
-  const qrFile = path.join(outDir, "phone-link-qr.png");
-  fs.writeFileSync(qrFile, Buffer.from(png.split(",")[1], "base64"));
-  // (OpenCV's reader misses some codes at their drawn size: it tries them twice as big too.)
-  const read = spawnSync("python", ["-c", "import sys, cv2; d = cv2.QRCodeDetector(); i = cv2.imread(sys.argv[1]); print(d.detectAndDecode(i)[0] or d.detectAndDecode(cv2.resize(i, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST))[0])", qrFile], { encoding: "utf8" });
-  out.qr = read.status === 0 ? (read.stdout.trim() === on.code ? "reads back" : `reads "${read.stdout.trim()}"`) : "not read (no OpenCV)";
+  // The QR code reads back as the pairing code: jsQR reads its pixels, as a phone's camera app
+  // would (OpenCV's reader, used before, missed some codes that read fine everywhere else).
+  const qrPixels = await js(`(() => { const c = document.getElementById("linkQr"); const d = c.getContext("2d").getImageData(0, 0, c.width, c.height); return { w: c.width, h: c.height, data: Array.from(d.data) }; })()`);
+  const qrRead = require("jsqr")(Uint8ClampedArray.from(qrPixels.data), qrPixels.w, qrPixels.h);
+  out.qr = qrRead && qrRead.data === on.code ? "reads back" : `reads "${qrRead ? qrRead.data : ""}"`;
   const pair = P.parsePairing(on.code.replace(/:[0-9.,]+$/, ":127.0.0.1"));
   const sock = dgram.createSocket("udp4");
   await new Promise((r) => sock.bind(0, r));
@@ -1272,7 +1271,25 @@ async function checkRemoteLauncher(js) {
       out.client = await wjs(`(async () => {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         for (let i = 0; i < 150 && !(/Hand Tracker on/.test(document.getElementById("title").textContent) && document.querySelectorAll("#camRows .camrow").length); i++) await sleep(200);
+        // Its takes: the one the remote recording check saved, into a folder (the checks pick the
+        // output folder), then deleted from the computer.
+        const rows = () => [...document.querySelectorAll("#takeRows .takerow")];
+        for (let i = 0; i < 100 && !rows().length; i++) await sleep(100);
+        const takeRows = rows().length;
+        const first = rows()[0] && rows()[0].querySelector("input");
+        let takes = { rows: takeRows };
+        if (first) {
+          first.click();
+          document.getElementById("takesGet").click();
+          for (let i = 0; i < 150 && !/on this device|Nothing came/.test(document.getElementById("takesNote").textContent); i++) await sleep(100);
+          takes = { ...takes, id: first.dataset.id, note: document.getElementById("takesNote").textContent, del: !document.getElementById("takesDel").hidden };
+          document.getElementById("takesDel").click();
+          document.getElementById("takesDel").click();
+          for (let i = 0; i < 100 && rows().length >= takeRows; i++) await sleep(100);
+          takes.after = rows().length;
+        }
         return {
+          takes,
           path: location.pathname, rig: new URLSearchParams(location.search).get("rig"), hash: location.hash,
           title: document.getElementById("title").textContent, status: document.getElementById("status").textContent,
           cameras: document.querySelectorAll("#camRows .camrow").length, rows: [...document.querySelectorAll("#camRows .camrow label")].map((r) => r.textContent.trim()), modes: [...document.querySelectorAll("#modes button")].map((b) => b.textContent).join(),
@@ -1290,12 +1307,113 @@ async function checkRemoteLauncher(js) {
   }
   out.browser = opened;
   const l = out.launcher || {}, c = out.client || {};
+  const t = c.takes || {};
+  const savedTake = t.id ? fs.readdirSync(outDir).filter((f) => f.startsWith(t.id)) : [];
+  const leftTake = t.id ? fs.readdirSync(process.env.HAND_TRACKER_REMOTE_DIR).filter((f) => f.startsWith(t.id)) : ["?"];
+  out.takeFiles = { saved: savedTake, left: leftTake };
   check("The Remote recording page (as on the website) opens from the header in a window of its own, and the computer's page opens right there (the app reaching it, its code from the pasted address): its cameras and modes, never a browser",
     out.link.shown && out.link.target === "_blank" && l.backHidden && /doesn't look like/.test(l.error) && /opens here/.test(l.where) &&
       c.path === "/remote-client.html" && c.rig === `127.0.0.1:${port}` && c.hash === "" && /^Hand Tracker on /.test(c.title) && /Cameras off/.test(c.status) &&
       c.cameras >= 2 && c.modes === "Ego,Stereo,Freeform" && c.back && c.saved[0] === (port === 47821 ? "127.0.0.1" : `127.0.0.1:${port}`) && c.wifiHidden &&
-      out.stillOpen === "app://hand-tracker/remote-client.html" && out.mainPage === "/index.html" && opened.length === 0,
+      out.stillOpen === "app://hand-tracker/remote-client.html" && out.mainPage === "/index.html" && opened.length === 0 &&
+      t.rows >= 1 && /on this device/.test(t.note) && t.del && t.after === t.rows - 1 && savedTake.length >= 1 && leftTake.length === 0,
     JSON.stringify(out));
+}
+
+// The takes on a computer, from its remote recording page in a browser: listed (a take is
+// its files: JSON, both BVHs…), ticked ("Select all"), and downloaded as one .zip, each file
+// checked; only then does "Delete … from <computer>" show, and two taps delete them there.
+// Hand Tracker deletes only a take whose every file came whole (by CRC32), and serves nothing
+// that isn't a take in its folder.
+async function checkRemoteTakes() {
+  const { RemoteRecordServer, crc32 } = require("../electron/remote-record.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-takes-"));
+  const big = Buffer.alloc(5 * 1024 * 1024 + 321); // more than one slice
+  for (let i = 0; i < big.length; i++) big[i] = (i * 31) & 255;
+  const SAM = "Sam-Smith_Lab-2_Pick-up-cup_2s_2026-10-02_10-30-24", ANA = "Ana_Lab-1_Wave_1s_2026-10-02_11-00-00";
+  fs.writeFileSync(path.join(dir, `${SAM}.json`), big);
+  fs.writeFileSync(path.join(dir, `${SAM}-left.bvh`), "HIERARCHY left\n");
+  fs.writeFileSync(path.join(dir, `${SAM}-right.bvh`), "HIERARCHY right\n");
+  fs.writeFileSync(path.join(dir, `${ANA}.mcap`), Buffer.from([0x89, 0x4d, 0x43, 0x41, 0x50]));
+  fs.writeFileSync(path.join(dir, "notes.txt"), "not a take");
+  fs.writeFileSync(path.join(path.dirname(dir), "outside.json"), "{}");
+  const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : "remote-client.html"), "utf8");
+  const server = new RemoteRecordServer({ keyStore: null, page, ask: async () => ({ ok: true, message: "" }), host: "rig-test", hotspot: () => null, takes: () => dir });
+  server.setState({
+    kind: "rig", running: false, recording: false, mode: "freeform", requirement: { ok: true, missing: [], message: "" }, detailsRequired: true,
+    details: { contributor: "", location: "", task: "" }, cameras: [], available: { at: 1, scanning: false, note: "", cameras: [] },
+  });
+  const { port } = await server.start();
+  const base = `http://127.0.0.1:${port}`, H = { "X-Key": server.key };
+  // (A test computer stopped just before used this port: Node may try its old connection once.)
+  const fetch = async (url, opts) => {
+    for (let i = 0; ; i++) {
+      try {
+        return await globalThis.fetch(url, opts);
+      } catch (err) {
+        if (i >= 2) throw err;
+        await sleep(200);
+      }
+    }
+  };
+  const out = {};
+  let win = null;
+  try {
+    // Nothing but a take in its folder; and a take isn't deleted without every file whole.
+    out.outside = (await fetch(`${base}/api/take?f=${encodeURIComponent("../outside.json")}&at=0`, { headers: H })).status;
+    out.notTake = (await fetch(`${base}/api/take?f=notes.txt&at=0`, { headers: H })).status;
+    const wrong = await fetch(`${base}/api/command`, { method: "POST", headers: { ...H, "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "deleteTakes", takes: [{ id: ANA, files: [{ name: `${ANA}.mcap`, size: 5, crc: (crc32(fs.readFileSync(path.join(dir, `${ANA}.mcap`))) + 1) >>> 0 }] }] }) });
+    out.wrongCrc = await wrong.json();
+    // The page in a browser: the .zip lands in its downloads.
+    win = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-remote-takes" } });
+    const downloads = [];
+    win.webContents.session.on("will-download", (_event, item) => {
+      const to = path.join(outDir, `downloaded-${item.getFilename()}`);
+      item.setSavePath(to);
+      item.once("done", (_e, state) => downloads.push({ to, state }));
+    });
+    await win.loadURL(`${base}/#k=${server.key}`);
+    out.page = await withLimit(win.webContents.executeJavaScript(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      const rows = () => [...document.querySelectorAll("#takeRows .takerow")];
+      for (let i = 0; i < 100 && rows().length < 2; i++) await sleep(100);
+      const listed = rows().map((r) => r.textContent.replace(/\\s+/g, " ").trim());
+      const before = { title: $("takesTitle").textContent, del: !$("takesDel").hidden, get: $("takesGet").disabled };
+      $("takesAll").click();
+      const picked = $("takesGet").textContent;
+      $("takesGet").click();
+      for (let i = 0; i < 150 && !/on this device|Nothing came/.test($("takesNote").textContent); i++) await sleep(100);
+      const after = { note: $("takesNote").textContent, del: !$("takesDel").hidden, delText: $("takesDel").textContent, ok: rows().filter((r) => /on this device/.test(r.textContent)).length };
+      $("takesDel").click();
+      const armed = $("takesDel").textContent;
+      $("takesDel").click();
+      for (let i = 0; i < 100 && rows().length; i++) await sleep(100);
+      return { listed, before, picked, after, armed, end: { rows: rows().length, note: $("takesNote").textContent, empty: $("takeRows").textContent.trim() } };
+    })()`, true), "the takes page");
+    for (let i = 0; i < 50 && !downloads.length; i++) await sleep(100);
+    out.download = downloads.map((d) => ({ name: path.basename(d.to), state: d.state }));
+    // The .zip, read by Python's zipfile (every file's CRC checked), against the originals.
+    const zipFile = downloads[0] && downloads[0].to;
+    const read = zipFile ? spawnSync("python", ["-c", "import sys, zipfile, json; z = zipfile.ZipFile(sys.argv[1]); print(json.dumps({'bad': z.testzip(), 'files': {i.filename: i.file_size for i in z.infolist()}}))", zipFile], { encoding: "utf8" }) : null;
+    out.zip = read && read.status === 0 ? JSON.parse(read.stdout) : { error: read ? read.stderr.slice(-200) : "no download" };
+    out.left = fs.readdirSync(dir).sort();
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    if (win && !win.isDestroyed()) win.destroy();
+    server.stop();
+  }
+  const p = out.page || {}, z = out.zip || {};
+  check("Remote recording's takes: the page lists them (a take is its files), downloads the ticked ones (as one .zip in a browser, each file checked), and only then offers to delete them there (two taps); a take is deleted only if every file came whole, and nothing outside the folder is served",
+    !out.error && out.outside === 404 && out.notTake === 404 && out.wrongCrc.ok === false && /intact/.test((out.wrongCrc.refused[0] || {}).why) &&
+      p.listed.length === 2 && p.listed[0].startsWith(ANA) && /JSON/.test(p.listed[1]) && /BVH/.test(p.listed[1]) && p.before.title === "Takes on rig-test" && !p.before.del && p.before.get &&
+      p.picked === "Download 2 takes" && /2 takes on this device/.test(p.after.note) && p.after.del && p.after.delText === "Delete 2 from rig-test" && p.after.ok === 2 &&
+      p.armed === "Tap again to delete 2 from rig-test" && p.end.rows === 0 && /Deleted 2 from rig-test/.test(p.end.note) &&
+      out.download.length === 1 && out.download[0].state === "completed" && z.bad === null && z.files[`${SAM}.json`] === big.length && z.files[`${ANA}.mcap`] === 5 && Object.keys(z.files).length === 4 &&
+      out.left.join() === "notes.txt",
+    JSON.stringify(out).slice(0, 2500));
 }
 
 // A phone on the computer's own hotspot needs no code, and there (as over Tailscale: both are

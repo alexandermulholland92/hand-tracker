@@ -195,7 +195,7 @@
       async rigRequest({ rig, path, method = "GET", body = "", key = "" }) {
         calls.push(["remote.rigRequest", rig, path, method]);
         const m = /^(\[[0-9a-f:.]+\]|[a-z0-9.-]+):(\d{1,5})$/i.exec(rig || "");
-        if (!m || !/^\/api\/(state|command|wifi|preview\?i=[0-3](&full=1)?)$/.test(path) || (method === "POST") !== (path === "/api/command")) throw new Error("Not a remote recording request.");
+        if (!m || !/^\/api\/(state|command|wifi|takes|preview\?i=[0-3](&full=1)?|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/.test(path) || (method === "POST") !== (path === "/api/command")) throw new Error("Not a remote recording request.");
         return new Promise((resolve, reject) => {
           const headers = {};
           if (/^[A-Za-z0-9_-]{8,64}$/.test(key)) headers["X-Key"] = key;

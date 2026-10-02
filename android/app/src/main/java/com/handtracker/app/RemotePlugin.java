@@ -204,7 +204,7 @@ public class RemotePlugin extends Plugin {
 
     // ---------- remote recording on another computer ----------
     private static final Pattern RIG = Pattern.compile("^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*):(\\d{1,5})$");
-    private static final Pattern RIG_PATH = Pattern.compile("^/api/(state|command|wifi|preview\\?i=[0-3](&full=1)?)$");
+    private static final Pattern RIG_PATH = Pattern.compile("^/api/(state|command|wifi|takes|preview\\?i=[0-3](&full=1)?|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12})$");
     private static final Pattern RIG_KEY = Pattern.compile("^[A-Za-z0-9_-]{8,64}$");
     private static final int RIG_TIMEOUT_MS = 10000;
     private static final int RIG_MAX_BYTES = 4 * 1024 * 1024;
