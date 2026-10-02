@@ -11,12 +11,18 @@
  * The tiles sit in a 2 × 2 grid by role: head top left, chest top right, left wrist bottom
  * left, right wrist bottom right (a block with no camera says so); changing a camera's role
  * moves it. Each tile can be turned 90° at a time and flipped (mirrored) on its own, remembered
- * for that camera: webcams start mirrored like a selfie, OAK cameras not.
+ * for that camera: every camera starts mirrored like a selfie, OAK cameras too.
+ *
+ * The picker ticks every camera found (up to four, OAK cameras first) except one that was
+ * unticked before; only the ticked ones start. Remote recording shares the picks.
  *
  * Luxonis OAK cameras can be among them (Windows and Linux app): the picker lists each one
  * plugged in ("oak:<id>"), the camera finds the hands itself (a helper each, electron/oak.js),
  * and its tile only draws and records them. They're started one after another, which is
- * easier on USB power than all at once.
+ * easier on USB power than all at once. Their pictures can be left off this screen ("Hide
+ * pictures", or Remote recording's page): decoding and drawing them is most of what a small
+ * computer like a Raspberry Pi does with four cameras, and the hands don't need them. They're
+ * then only drawn as often as remote recording's previews need them.
  *
  *   MultiCamera.init({ prefs, setPref, app: HandTrackerApp, modelOf: () => 0 | 1 });
  *   await MultiCamera.openPicker();          // choose cameras, then start
@@ -25,6 +31,8 @@
  *   await MultiCamera.startRecording() / MultiCamera.stopRecording(show, extra)   // -> { ok, message } / the take (or null; extra: added to it)
  *   MultiCamera.remoteState(); MultiCamera.previewSources();           // for remote recording (remote-record-ui.js)
  *   MultiCamera.setRole(i, role); MultiCamera.setView(i, { rotation, mirror })
+ *   MultiCamera.setScreenPictures(on); MultiCamera.screenPictures()   // OAK pictures on this screen (remembered)
+ *   MultiCamera.setPreviewWant({ on, focus, ms, focusMs })             // remote recording's previews: how often each is made
  */
 
 (function (global) {
@@ -42,6 +50,7 @@
   let restoreOak = false; // the main window's OAK camera was in use: back to it when the tiles close
   let oakPorts = {}; // OAK camera id -> its USB port, from the last listing
   let home = null; // where the card goes back to when the cameras close: { parent, next }
+  let previewWant = { on: false, focus: null, ms: 250, focusMs: 66 }; // remote recording's previews
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -61,6 +70,22 @@
     els.dialog.hidden = false;
     updatePickButton();
     if (oakAvailable()) await listOak(box);
+    tickNew();
+    updatePickButton();
+  }
+
+  // Every camera found is ticked, up to four (OAK cameras first), except one unticked before
+  // (here or in Remote recording) or meanwhile.
+  function tickNew() {
+    const off = Array.isArray(prefs.multiCamerasOff) ? prefs.multiCamerasOff : [];
+    const boxes = [...els.pickList.querySelectorAll("input")];
+    let n = boxes.filter((b) => b.checked).length;
+    for (const b of [...boxes.filter((x) => isOak(x.value)), ...boxes.filter((x) => !isOak(x.value))]) {
+      if (n >= MAX_CAMERAS) break;
+      if (b.checked || b.dataset.touched || off.includes(b.value)) continue;
+      b.checked = true;
+      n++;
+    }
   }
 
   // The OAK cameras plugged in, once OAK support is set up. One the main window is using
@@ -174,6 +199,7 @@
     });
     tiles.forEach(showView);
     layout();
+    showPictures();
     if (tiles.some((t) => t.oak)) startOakTiles(tiles.filter((t) => t.oak));
     els.record.disabled = false;
     els.note.textContent = "Each camera has its own hand tracker. With several cameras each one runs slower than a single camera would.";
@@ -213,7 +239,7 @@
   // the main window), OAK cameras as they are.
   function viewOf(id) {
     const v = (prefs.multiCameraView || {})[id] || {};
-    return { rotation: [0, 90, 180, 270].includes(v.rotation) ? v.rotation : 0, mirror: typeof v.mirror === "boolean" ? v.mirror : !isOak(id) };
+    return { rotation: [0, 90, 180, 270].includes(v.rotation) ? v.rotation : 0, mirror: typeof v.mirror === "boolean" ? v.mirror : true };
   }
   function setView(i, change) {
     const t = tiles[i];
@@ -246,7 +272,7 @@
     for (const t of tiles) {
       const api = tileApi(t);
       const st = api ? api.status() : null;
-      t.el.querySelector(".st").textContent = !st ? "starting…" : st.error ? st.error : `${st.fps} fps · ${st.hands.length ? st.hands.join(" + ") : "no hands"}${st.recording ? " · recording" : ""}`;
+      t.el.querySelector(".st").textContent = !st ? "starting…" : st.error ? st.error : `${st.fps} fps · ${st.hands.length ? st.hands.join(" + ") : "no hands"}${st.recording ? " · recording" : ""}${t.oak && !screenPictures() ? " · picture off" : ""}`;
       t.el.querySelector(".retry").hidden = !(t.oak && st && st.error && t.oakState !== "starting");
     }
   }
@@ -284,14 +310,56 @@
     }
   }
 
+  // ---------- an OAK camera's pictures ----------
+  // On this screen (unless they're off, or the window is hidden); otherwise only as often as
+  // remote recording's previews need them. Each frame's hands go to its tile either way.
+  const screenPictures = () => prefs.screenPictures !== false;
+  const screenShows = () => screenPictures() && document.visibilityState !== "hidden";
+  function pictureDue(t, i) {
+    if (!t.lastPicture || screenShows()) return true; // (the first one: the tile shows something)
+    const w = previewWant;
+    const every = !w.on ? Infinity : w.focus !== null ? (w.focus === i ? w.focusMs : Infinity) : w.ms;
+    return performance.now() - t.lastPicture >= every - 15;
+  }
+
   function onOakFrame({ id, header, jpeg }) {
-    const t = tiles.find((x) => x.oak === id);
+    const i = tiles.findIndex((x) => x.oak === id);
+    const t = tiles[i];
     const api = t && tileApi(t);
     if (!api || !api.oakFrame) return desktop.oak.streamShown(id);
+    const results = OakSource.toResults(header);
+    if (!pictureDue(t, i) && api.oakHands) {
+      try {
+        api.oakHands(header.w, header.h, results, header.t);
+      } catch {
+        // its page going away meanwhile
+      }
+      return desktop.oak.streamShown(id);
+    }
+    t.lastPicture = performance.now();
     api
-      .oakFrame(jpeg, OakSource.toResults(header), header.t)
+      .oakFrame(jpeg, results, header.t)
       .catch(() => {})
       .finally(() => desktop.oak.streamShown(id));
+  }
+
+  function setScreenPictures(on) {
+    setPref("screenPictures", !!on);
+    showPictures();
+  }
+
+  function setPreviewWant(w = {}) {
+    previewWant = { ...previewWant, ...w, on: !!w.on, focus: w.on && Number.isInteger(w.focus) ? w.focus : null };
+  }
+
+  // The card's button, and each OAK tile dimmed (its picture is old) while they're off.
+  function showPictures() {
+    if (!els.screenBtn) return;
+    const oak = tiles.some((t) => t.oak);
+    els.screenBtn.hidden = !oak;
+    els.screenBtn.textContent = screenPictures() ? "Hide pictures" : "Show pictures";
+    els.screenBtn.setAttribute("aria-pressed", String(!screenPictures()));
+    for (const t of tiles) t.el.classList.toggle("no-picture", !!t.oak && !screenPictures());
   }
 
   function onOakStatus(s) {
@@ -459,16 +527,33 @@
     els = {
       dialog: $("multiCamDialog"), pickList: $("multiCamPicks"), pickNote: $("multiCamPickNote"), start: $("multiCamStart"), cancel: $("multiCamCancel"),
       card: $("multiCamCard"), grid: $("multiCamGrid"), record: $("multiCamRecord"), closeBtn: $("multiCamClose"), note: $("multiCamNote"),
+      screenBtn: $("multiCamScreen"),
     };
     if (!els.dialog) return;
-    els.pickList.addEventListener("change", updatePickButton);
+    // OAK cameras used to start not mirrored, and a camera turned then kept that: it's let go
+    // once, so they're mirrored like the others (a flip from now on is remembered as ever).
+    if (!prefs.oakMirrored) {
+      const views = { ...(prefs.multiCameraView || {}) };
+      for (const [id, v] of Object.entries(views)) {
+        if (isOak(id) && v && v.mirror === false) views[id] = { rotation: v.rotation };
+      }
+      setPref("multiCameraView", views);
+      setPref("oakMirrored", true);
+    }
+    els.pickList.addEventListener("change", (e) => {
+      if (e.target && e.target.dataset) e.target.dataset.touched = "1";
+      updatePickButton();
+    });
     els.cancel.addEventListener("click", () => {
       els.dialog.hidden = true;
       if (restoreOak && !tiles.length) close(); // the main window's OAK camera, let go to list it
     });
     els.start.addEventListener("click", () => {
       const ids = picked();
+      // Those left unticked stay that way next time (a new camera is ticked by itself).
+      const left = [...els.pickList.querySelectorAll("input:not(:checked)")].map((b) => b.value);
       setPref("multiCameras", ids);
+      setPref("multiCamerasOff", [...new Set([...(prefs.multiCamerasOff || []).filter((id) => !ids.includes(id)), ...left])]);
       start(ids);
     });
     els.record.addEventListener("click", () => toggleRecording());
@@ -484,7 +569,12 @@
       else if (b.matches("button.flip") && tiles[i]) setView(i, { mirror: !tiles[i].view.mirror });
     });
     els.closeBtn.addEventListener("click", () => close());
+    if (els.screenBtn) els.screenBtn.addEventListener("click", () => setScreenPictures(!screenPictures()));
   }
 
-  global.MultiCamera = { init, openPicker, start, close, startRecording, stopRecording, remoteState, previewSources, setRole, setView, isActive: () => tiles.length > 0, isRecording: () => recording, _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null })) };
+  global.MultiCamera = {
+    init, openPicker, start, close, startRecording, stopRecording, remoteState, previewSources, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
+    isActive: () => tiles.length > 0, isRecording: () => recording,
+    _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null })),
+  };
 })(window);

@@ -114,6 +114,7 @@
         return r;
       },
       stopRecording: (show, extra) => hta.stopMotionCapture(extra),
+      setPreviewWant: () => {},
       start: async () => {},
       close: () => {},
       setRole: () => {},
@@ -171,7 +172,7 @@
     if (onPhone) return { ...common, kind: "phone", mode: null, requirement: { ok: true, missing: [], message: "" }, available: null };
     return {
       ...common, kind: "rig",
-      mode: modeNow(), requirement: requirement(),
+      mode: modeNow(), requirement: requirement(), screenPictures: cams().screenPictures(),
       available: { at: scanned.at, scanning: scanned.scanning, note: scanned.note, cameras: available() },
     };
   }
@@ -195,6 +196,7 @@
   function setPreviews(want) {
     const w = want && typeof want === "object" ? want : { on: !!want, focus: null };
     focus = w.on && Number.isInteger(w.focus) ? w.focus : null;
+    if (cams()) cams().setPreviewWant({ on: !!w.on, focus, ms: PREVIEW_MS, focusMs: FOCUS_MS }); // (how often its pictures are needed)
     clearInterval(previewTimer);
     previewTimer = w.on ? setInterval(sendPreviews, focus !== null ? FOCUS_MS : PREVIEW_MS) : null;
   }
@@ -233,8 +235,16 @@
 
   const oakLabel = (id, port) => `Luxonis ${(prefs.oakNames || {})[id] || "OAK camera"}${port ? ` (USB ${port})` : ""} …${id.slice(-6)}`;
   const labelOf = (id) => labels[id] || (id.startsWith("oak:") ? oakLabel(id.slice(4)) : "Webcam");
-  // Picked: those last picked here or in Several cameras (up to four); none picked yet, every one found.
-  const pickedIds = () => (Array.isArray(prefs.multiCameras) ? prefs.multiCameras : scanned.found.map((c) => c.id)).slice(0, MAX_CAMERAS);
+  // Picked: every camera found, up to four (those picked before first, then OAK cameras), except
+  // one unticked here or in Several cameras; one picked that isn't plugged in is still listed
+  // (if there's room). Only the picked ones start.
+  function pickedIds() {
+    const saved = Array.isArray(prefs.multiCameras) ? prefs.multiCameras : [];
+    const off = Array.isArray(prefs.multiCamerasOff) ? prefs.multiCamerasOff : [];
+    const found = scanned.found.map((c) => c.id);
+    const present = [...saved.filter((id) => found.includes(id)), ...found.filter((id) => !saved.includes(id) && !off.includes(id))];
+    return [...present.slice(0, MAX_CAMERAS), ...saved.filter((id) => !found.includes(id))].slice(0, MAX_CAMERAS);
+  }
 
   // The cameras plugged in now: OAK cameras ("oak:<id>", once OAK support is set up), then
   // webcams. What stops OAK cameras being listed is said (it isn't the same as none).
@@ -319,8 +329,11 @@
     if (i < 0) return { ok: false, message: "That camera isn't plugged in any more." };
     if (typeof use === "boolean") {
       const picked = pickedIds().filter((x) => x !== id);
-      if (use && picked.length >= MAX_CAMERAS) return { ok: false, message: `At most ${MAX_CAMERAS} cameras.` };
+      if (use && picked.filter((x) => list.some((c) => c.id === x && c.present)).length >= MAX_CAMERAS) return { ok: false, message: `At most ${MAX_CAMERAS} cameras.` };
       setPref("multiCameras", use ? [...picked, id] : picked);
+      // Unticked stays unticked (a camera never unticked is picked by itself when it's found).
+      const off = (prefs.multiCamerasOff || []).filter((x) => x !== id);
+      setPref("multiCamerasOff", use ? off : [...off, id]);
     }
     if (role !== undefined) {
       const roles = CameraRoles.pick(list.map((c) => c.role), i, role);
@@ -438,8 +451,17 @@
       return { ok: true, message: "" };
     }
     if (action === "settings") {
+      const st = data.settings || {};
+      // The OAK cameras' pictures on this computer's screen (any time: recording doesn't mind).
+      if (typeof st.screenPictures === "boolean" && !onPhone) {
+        cams().setScreenPictures(st.screenPictures);
+        if (typeof st.detailsRequired !== "boolean") {
+          return { ok: true, message: st.screenPictures ? "The cameras' pictures are on its screen." : "The cameras' pictures are off its screen: the hands are still tracked and recorded." };
+        }
+      }
+      if (typeof st.detailsRequired !== "boolean") return { ok: false, message: "Which setting?" };
       if (recording) return { ok: false, message: "Stop recording first." };
-      setPref("remoteDetailsRequired", !!(data.settings && data.settings.detailsRequired));
+      setPref("remoteDetailsRequired", st.detailsRequired);
       return { ok: true, message: detailsRequired() ? "The take details are needed before recording." : "The take details are optional now." };
     }
     if (pending) return { ok: false, message: `Busy: ${pending}` };

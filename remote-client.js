@@ -132,24 +132,26 @@
   function renderCameras(s) {
     const a = s.available || {};
     const list = a.cameras || [];
-    const off = !s.running && !s.recording && s.kind !== "phone";
-    $("camPanel").hidden = !off;
-    if (!off) return;
+    // Shown while the cameras run too (which ones they are), to change once they're stopped.
+    $("camPanel").hidden = s.kind === "phone";
+    if (s.kind === "phone") return;
+    const busy = !!(s.running || s.recording || s.pending);
     // Rebuilt only when something changed (so a select being used isn't swapped under a finger).
-    const sig = JSON.stringify(list);
+    const sig = JSON.stringify(list) + busy;
     if (sig !== shownRows && !$("camRows").contains(document.activeElement)) {
       shownRows = sig;
       $("camRows").innerHTML = list.map((c) =>
-        `<div class="camrow"><label><input type="checkbox" data-id="${esc(c.id)}"${c.use ? " checked" : ""}${c.present ? "" : " disabled"} /> ` +
+        `<div class="camrow"><label><input type="checkbox" data-id="${esc(c.id)}"${c.use ? " checked" : ""}${c.present && !busy ? "" : " disabled"} /> ` +
         `<span>${esc(c.label)}${c.present ? "" : ' <span class="gone">not plugged in</span>'}</span></label>` +
-        `<select data-id="${esc(c.id)}" aria-label="Role of ${esc(c.label)}">${roleOptions(c.role)}</select></div>`).join("");
+        `<select data-id="${esc(c.id)}" aria-label="Role of ${esc(c.label)}"${busy ? " disabled" : ""}>${roleOptions(c.role)}</select></div>`).join("");
     }
     const note = $("camNote");
     note.className = "";
-    if (a.scanning) note.textContent = "Looking for cameras…";
+    if (busy) note.textContent = s.recording ? "Recording with the cameras ticked. Stop recording, then Stop cameras, to choose others." : "The cameras ticked are on. Stop cameras to choose others (each one's role can be changed under its picture).";
+    else if (a.scanning) note.textContent = "Looking for cameras…";
     else if (!list.length) note.textContent = a.note || "No cameras found. Plug one in, then Refresh.";
     else note.textContent = a.note || "Tick the cameras to start; each one's role is where it's worn.";
-    $("scanBtn").disabled = !!a.scanning || sending;
+    $("scanBtn").disabled = busy || !!a.scanning || sending;
   }
 
   // ---------- take details: kept by Hand Tracker (every phone sees the same), sent as typed ----------
@@ -234,6 +236,11 @@
     }
   });
   $("requiredBtn").addEventListener("click", () => command("settings", { settings: { detailsRequired: !required } }));
+
+  // The OAK cameras' pictures on the computer's own screen: off leaves its processor for the
+  // hands (a Raspberry Pi with four cameras, nobody looking at its screen).
+  let screenOn = true;
+  $("screenBtn").addEventListener("click", () => command("settings", { settings: { screenPictures: !screenOn } }));
 
   // ---------- the computer's Wi-Fi (from its own hotspot, or over Tailscale) ----------
   // Hand Tracker lists the networks around it; one tapped asks for its password (a saved one
@@ -361,6 +368,18 @@
 
     renderCameras(s);
     renderWifi(s);
+    $("screenPanel").hidden = phone || typeof s.screenPictures !== "boolean";
+    if (typeof s.screenPictures === "boolean") {
+      screenOn = s.screenPictures;
+      const where = s.host || "the computer";
+      $("screenBtn").textContent = screenOn ? "On" : "Off";
+      $("screenBtn").classList.toggle("on", screenOn);
+      $("screenBtn").setAttribute("aria-pressed", String(screenOn));
+      $("screenBtn").disabled = sending;
+      $("screenNote").textContent = screenOn
+        ? `The OAK cameras' pictures are drawn on ${where}'s screen. Off leaves more of its processor for finding hands.`
+        : `Not drawn on ${where}'s screen, leaving its processor for the hands: they're still tracked and recorded, and this page still shows the cameras.`;
+    }
     // Something that went wrong in the background (cameras that couldn't start, say), said once.
     const noticeAt = s.notice ? s.notice.at : 0;
     if (lastNoticeAt !== null && noticeAt && noticeAt !== lastNoticeAt) say(s.notice.message, true);

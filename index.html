@@ -173,6 +173,7 @@
   .multi-cam-tile iframe { width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 8px; background: #0e0f12; display: block; }
   .multi-cam-empty .box { aspect-ratio: 16 / 9; border: 1px dashed #3a3d46; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 12px; opacity: 0.6; }
   .multi-cam-caption { font-size: 12px; opacity: 0.85; margin-top: 4px; }
+  .multi-cam-tile.no-picture iframe { opacity: 0.35; }
   .multi-cam-caption .lbl { opacity: 0.6; }
   .multi-cam-caption select.role, .multi-table select.role { font-size: 12px; padding: 2px 4px; }
   .multi-cam-caption button.retry, .multi-cam-caption button.rot, .multi-cam-caption button.flip { font-size: 12px; padding: 1px 8px; margin-left: 2px; }
@@ -685,6 +686,7 @@
   <div class="toolbar" style="margin-top:10px">
     <button id="multiCamRecord" class="primary">Start Motion Capture</button>
     <button id="multiCamClose">Close (back to one camera)</button>
+    <button id="multiCamScreen" aria-pressed="false" hidden title="The OAK cameras' pictures on this screen. Off leaves more of the processor for finding hands: they're still tracked and recorded, and Remote recording's page still shows the cameras.">Hide pictures</button>
     <span id="multiCamNote" class="status"></span>
   </div>
 </div>

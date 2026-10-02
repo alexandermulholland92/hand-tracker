@@ -48,6 +48,8 @@
  *   HandTracker.getFocus();               // { region, body } of the last frame in far mode, for drawing
  *   HandTracker.useExternalSource(name);  // hands and pictures come from elsewhere (an OAK camera):
  *   HandTracker.pushExternalFrame(image, results, timestamp); // feed one, results shaped like MediaPipe's
+ *   HandTracker.pushExternalHands(width, height, results, timestamp); // its hands only, from a picture that size:
+ *                            tracked and recorded as usual, nothing drawn (the stage keeps its last picture)
  *   HandTracker.stop();
  *
  * Each hand also has worldLandmarks: MediaPipe's estimate of the hand's real shape, in
@@ -736,11 +738,12 @@
     // The skeleton is drawn from the smoothed landmarks, so it doesn't shake.
     // (MediaPipe hands back what it was given: a cut-out in far mode, the glove picture with
     // Black gloves on. The stage shows the whole picture as it is.)
-    drawStage(results.fullImage || ((region || gloves) && fullFrame) || results.image || videoEl, outHands.map((h) => h.imageLandmarks));
+    if (!results.noPicture) drawStage(results.fullImage || ((region || gloves) && fullFrame) || results.image || videoEl, outHands.map((h) => h.imageLandmarks));
 
     // Always notify — including with zero hands — so consumers can clear
-    // their UI when hands leave the frame.
+    // their UI when hands leave the frame. (noPicture: nothing was drawn this time.)
     const payload = { hands: outHands, timestamp };
+    if (results.noPicture) payload.noPicture = true;
     for (const cb of callbacks) cb(payload);
   }
 
@@ -1199,8 +1202,17 @@
   }
 
   function pushExternalFrame(image, results = {}, timestamp = performance.now()) {
-    if (source !== "external" || !external || paused) return;
-    const sw = image.width || image.videoWidth, sh = image.height || image.videoHeight;
+    externalFrame(image, image.width || image.videoWidth, image.height || image.videoHeight, results, timestamp);
+  }
+
+  // Just the hands, found in a picture sw x sh (unturned) that isn't drawn: drawing it is most of
+  // the work on a small computer with several cameras, and the hands don't need it.
+  function pushExternalHands(sw, sh, results = {}, timestamp = performance.now()) {
+    externalFrame(null, sw, sh, results, timestamp);
+  }
+
+  function externalFrame(image, sw, sh, results, timestamp) {
+    if (source !== "external" || !external || paused || !sw || !sh) return;
     const turned = rotation === 90 || rotation === 270;
     const w = turned ? sh : sw, h = turned ? sw : sh;
     const resized = w !== external.width || h !== external.height;
@@ -1208,17 +1220,19 @@
     external.height = h;
     if (rotation) {
       // The hands were found in the unturned picture: turn it and them.
-      if (!externalCanvas) externalCanvas = document.createElement("canvas");
-      if (externalCanvas.width !== w || externalCanvas.height !== h) {
-        externalCanvas.width = w;
-        externalCanvas.height = h;
+      if (image) {
+        if (!externalCanvas) externalCanvas = document.createElement("canvas");
+        if (externalCanvas.width !== w || externalCanvas.height !== h) {
+          externalCanvas.width = w;
+          externalCanvas.height = h;
+        }
+        const ectx = externalCanvas.getContext("2d");
+        ectx.save();
+        turnContext(ectx, w, h);
+        ectx.drawImage(image, 0, 0, sw, sh);
+        ectx.restore();
+        image = externalCanvas;
       }
-      const ectx = externalCanvas.getContext("2d");
-      ectx.save();
-      turnContext(ectx, w, h);
-      ectx.drawImage(image, 0, 0, sw, sh);
-      ectx.restore();
-      image = externalCanvas;
       const pt = (p) => {
         const [x, y] = turnPoint(p.x, p.y);
         return { x, y, z: p.z };
@@ -1234,9 +1248,9 @@
         extras: (results.extras || []).map((e) => (e && e.xyz ? { ...e, xyz: [...turnVector(e.xyz[0], e.xyz[1]), e.xyz[2]] } : e)),
       };
     }
-    lastFrame = image;
+    if (image) lastFrame = image;
     if (resized) notifySource();
-    onResults({ ...results, fullImage: image, region: null, externalTime: timestamp });
+    onResults({ ...results, fullImage: image, region: null, externalTime: timestamp, noPicture: !image });
   }
 
   // Stops the current loop and waits for its last frame, whose result is dropped.
@@ -1686,6 +1700,7 @@
     getFocus: () => (far.enabled ? { region: lastFocus.region, body: lastFocus.body } : { region: null, body: null }),
     useExternalSource,
     pushExternalFrame,
+    pushExternalHands,
     forgetStream,
     getFPS: () => fps,
     quaternionToEuler: quatToEuler,

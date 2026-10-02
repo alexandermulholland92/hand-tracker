@@ -415,6 +415,7 @@ async function run(win) {
   await checkLiveRigs(js);
   await checkSeveralCameras(js);
   await checkSeveralOakCameras(js);
+  await checkOakPicturesOff(js);
   await checkOakTileRetry(js);
   await checkRemoteRecording(js);
   await checkRemoteLauncher(js);
@@ -932,6 +933,72 @@ async function checkSeveralOakCameras(js) {
     JSON.stringify(r));
 }
 
+// Several cameras' OAK pictures left off the screen ("Hide pictures"): the hands are still
+// tracked and recorded, and pictures are only made as often as remote previews need them
+// (a few a second each, or the one looked at full screen, often); back on, every frame.
+async function checkOakPicturesOff(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    await MultiCamera.start(["oak:SIMULATED-OAK-A", "oak:SIMULATED-OAK-B"]);
+    for (let i = 0; i < 150; i++) {
+      const t = MultiCamera._tiles();
+      if (t.length === 2 && t.every((x) => x.status && x.status.fps > 0 && x.status.hands.length)) break;
+      await sleep(200);
+    }
+    const pics = () => MultiCamera._tiles().map((t) => t.status.pictures);
+    const drawn = async (ms) => {
+      const a = pics();
+      await sleep(ms);
+      return pics().map((n, i) => n - a[i]);
+    };
+    const btn = document.getElementById("multiCamScreen");
+    const out = { visible: document.visibilityState, shown: !btn.hidden, before: btn.textContent };
+    out.onDrawn = await drawn(1000);
+    btn.click();
+    out.after = btn.textContent;
+    out.dimmed = document.querySelectorAll("#multiCamGrid .multi-cam-tile.no-picture").length;
+    await sleep(300);
+    out.offDrawn = await drawn(2000);
+    out.offTiles = MultiCamera._tiles().map((t) => ({ fps: t.status.fps, hands: t.status.hands.length }));
+    out.status = [...document.querySelectorAll("#multiCamGrid .st")].map((s) => s.textContent);
+    MultiCamera.setPreviewWant({ on: true, focus: null, ms: 250, focusMs: 66 });
+    out.previewDrawn = await drawn(2000);
+    // The pictures made for the previews have the skeleton on them (its green), as ever.
+    out.skeleton = [...document.querySelectorAll("#multiCamGrid iframe")].map((f) => {
+      const c = f.contentDocument.getElementById("stage");
+      const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let k = 0; k < d.length; k += 4) if (d[k] < 80 && d[k + 1] > 200 && d[k + 2] > 90 && d[k + 2] < 180) n++;
+      return n;
+    });
+    MultiCamera.setPreviewWant({ on: true, focus: 1, ms: 250, focusMs: 66 });
+    await sleep(100);
+    out.focusDrawn = await drawn(2000);
+    MultiCamera.setPreviewWant({ on: false });
+    document.getElementById("multiCamRecord").click();
+    await sleep(1500);
+    document.getElementById("multiCamRecord").click();
+    await sleep(500);
+    out.info = document.getElementById("motionInfo").textContent;
+    document.getElementById("motionDiscardBtn").click();
+    btn.click();
+    out.back = btn.textContent;
+    await sleep(200);
+    out.backDrawn = await drawn(1000);
+    out.pref = JSON.parse(localStorage.getItem("hand-tracker:prefs")).screenPictures;
+    MultiCamera.close();
+    await sleep(300);
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  const all = (list, ok) => Array.isArray(list) && list.length === 2 && list.every(ok);
+  check("Several cameras: the OAK cameras' pictures can be left off the screen (hands still tracked and recorded); then they're made only as often as remote previews need them, skeleton drawn",
+    r.shown && r.before === "Hide pictures" && r.after === "Show pictures" && r.dimmed === 2 && all(r.onDrawn, (n) => n >= 10) &&
+      all(r.offDrawn, (n) => n === 0) && all(r.offTiles, (t) => t.fps > 0 && t.hands === 1) && all(r.status, (s) => /picture off/.test(s)) &&
+      all(r.previewDrawn, (n) => n >= 3 && n <= 12) && all(r.skeleton, (n) => n > 50) && r.focusDrawn[0] === 0 && r.focusDrawn[1] >= 12 &&
+      /Head \w+/.test(r.info) && /Chest \w+/.test(r.info) && r.back === "Hide pictures" && all(r.backDrawn, (n) => n >= 10) && r.pref === true,
+    JSON.stringify(r));
+}
+
 // Remote recording: a phone's browser (played here by plain requests) starts the cameras (only
 // those plugged in) and recording, sees each camera's preview, moves a camera to another role's
 // block, turns and flips one, fills in the take details, stops (the take saves itself, named
@@ -942,8 +1009,10 @@ async function checkRemoteRecording(js) {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // The cameras are picked once in Several cameras (the two simulated OAK cameras, and a third
     // that's since been unplugged), then closed.
-    await MultiCamera.openPicker();
+    const opening = MultiCamera.openPicker();
     for (let i = 0; i < 50 && !document.querySelector('#multiCamPicks input[value^="oak:"]'); i++) await sleep(100);
+    await opening;
+    const ticked = [...document.querySelectorAll("#multiCamPicks input:checked")].map((b) => b.value);
     const gone = document.createElement("input");
     gone.type = "checkbox";
     gone.value = "oak:SIMULATED-OAK-UNPLUGGED";
@@ -957,9 +1026,9 @@ async function checkRemoteRecording(js) {
     document.getElementById("remoteToggle").click();
     let s = null;
     for (let i = 0; i < 50 && !(s && s.on); i++) { await sleep(100); s = await desktop.remote.status(); }
-    return { status: s, card: !document.getElementById("remotePair").hidden, running: MultiCamera.isActive() };
+    return { status: s, card: !document.getElementById("remotePair").hidden, running: MultiCamera.isActive(), ticked };
   })()`).catch((err) => ({ error: String((err && err.message) || err) }));
-  out.setup = { on: setup.status && setup.status.on, card: setup.card, runningBefore: setup.running, error: setup.error };
+  out.setup = { on: setup.status && setup.status.on, card: setup.card, runningBefore: setup.running, error: setup.error, ticked: setup.ticked };
   const keyed = setup.status && (setup.status.urls || []).find((u) => u.keyed);
   const key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
   const base = setup.status && setup.status.port ? `http://127.0.0.1:${setup.status.port}` : "";
@@ -1037,7 +1106,7 @@ async function checkRemoteRecording(js) {
     out.inPlace = await js(`(() => { const card = document.getElementById("multiCamCard"), wrap = document.getElementById("wrap"); return { inPlace: card.classList.contains("in-place"), beforeView: card.nextElementSibling === wrap, viewShown: getComputedStyle(wrap).display !== "none" }; })()`);
     // The first camera to the right wrist's block; the second turned and flipped.
     out.moved = await (await post("camera", { camera: { index: 0, role: "wrist_right" } })).json();
-    out.turned = await (await post("camera", { camera: { index: 1, rotation: 90, mirror: true } })).json();
+    out.turned = await (await post("camera", { camera: { index: 1, rotation: 90, mirror: false } })).json();
     await sleep(600);
     const changed = await state();
     out.changed = changed.cameras.map((c) => ({ role: c.roleId, rotation: c.rotation, mirror: c.mirror }));
@@ -1046,7 +1115,7 @@ async function checkRemoteRecording(js) {
     // Back as they were (so the take's hands are Head and Chest). The details can't be changed
     // while it records (the previews go on).
     await post("camera", { camera: { index: 0, role: "head" } });
-    await post("camera", { camera: { index: 1, rotation: 0, mirror: false } });
+    await post("camera", { camera: { index: 1, rotation: 0, mirror: true } });
     out.changedDetails = await (await post("details", { details: { contributor: "Sam Smith", location: "Lab 3", task: "" } })).json();
     const whileRecording = await state();
     out.lockedDetails = { locked: whileRecording.detailsLocked, details: whileRecording.details };
@@ -1105,8 +1174,9 @@ async function checkRemoteRecording(js) {
   out.tailnet = [tailnetPeer("100.104.1.2", "::ffff:100.90.3.4"), tailnetPeer("192.168.1.5", "100.90.3.4"), tailnetPeer("100.104.1.2", "192.168.1.9")];
   const probe = new RemoteRecordServer({ keyStore: null, page: () => "", ask: async () => ({}) });
   out.ownHost = [probe.ownHost({ headers: { host: "localhost:47821" } }), probe.ownHost({ headers: { host: "evil.example:47821" } })];
-  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so) and picked, with roles; Ego needs all four roles, Stereo a head camera; Start recording needs all three take details (unless the hidden switch makes them optional; then locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras not mirrored), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself, Stop cameras stops them",
+  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so) and picked, with roles; Ego needs all four roles, Stereo a head camera; Start recording needs all three take details (unless the hidden switch makes them optional; then locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras mirrored like webcams; every camera found is ticked unless unticked before), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself, Stop cameras stops them",
     out.setup.on && out.setup.card && !out.setup.runningBefore && key.length > 10 && out.page && out.noKey === 401 && out.wrongKey === 401 &&
+      ["oak:SIMULATED-OAK-A", "oak:SIMULATED-OAK-B"].every((id) => (out.setup.ticked || []).includes(id)) &&
       out.before.running === false && out.script && out.scan &&
       out.available.filter((c) => c.id.startsWith("oak:SIMULATED-OAK-") && c.present && c.use).length === 2 &&
       out.available.some((c) => c.id === "oak:SIMULATED-OAK-UNPLUGGED" && !c.present && c.use) && out.available.some((c) => c.id === "webcam" && c.present && !c.use) &&
@@ -1119,9 +1189,9 @@ async function checkRemoteRecording(js) {
       out.refused.ok === false && (out.refused.missing || []).join() === "location,task" && /Fill in Location and Task first/.test(out.refused.message) && out.refusedStarted === false &&
       out.record.ok && out.changedDetails.ok === false && out.changedDetails.locked && out.lockedDetails.locked === true &&
       out.lockedDetails.details.location === "Lab 2" && out.lockedDetails.details.task === "Pick up cup" && out.unlocked.locked === false && out.unlocked.cleared && /^Sam-Smith_Lab-2_Pick-up-cup_/.test(out.nameLocked) &&
-      out.recording.recording && out.recording.cameras.length === 2 && out.recording.cameras.every((c) => c.fps > 0 && !c.error && c.mirror === false && c.rotation === 0) &&
+      out.recording.recording && out.recording.cameras.length === 2 && out.recording.cameras.every((c) => c.fps > 0 && !c.error && c.mirror === true && c.rotation === 0) &&
       out.gridBefore.orders.join() === "0,1" && out.gridBefore.empty.filter(Boolean).join() === "Left wrist: no camera,Right wrist: no camera" &&
-      out.moved.ok && out.turned.ok && out.changed.map((c) => `${c.role}/${c.rotation}/${c.mirror}`).join() === "wrist_right/0/false,chest/90/true" &&
+      out.moved.ok && out.turned.ok && out.changed.map((c) => `${c.role}/${c.rotation}/${c.mirror}`).join() === "wrist_right/0/true,chest/90/false" &&
       out.gridAfter.orders.join() === "3,1" && out.gridAfter.empty.filter(Boolean).join() === "Head: no camera,Left wrist: no camera" && out.gridAfter.shapes.join() === "wide,tall" &&
       out.badCamera === 400 && out.details.ok && out.detailsKept.contributor === "Sam Smith" && out.detailsKept.task === "Pick up cup" &&
       out.preview.status === 200 && out.preview.type === "image/jpeg" && out.preview.jpeg && out.preview.kb > 1 &&

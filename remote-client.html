@@ -68,7 +68,7 @@
   .tools { display: flex; gap: 6px; margin-bottom: 5px; }
   .tools select { flex: 1 1 auto; min-width: 0; }
   .tools button { flex: none; font-size: 13px; font-weight: 500; padding: 6px 10px; border-radius: 8px; background: #495057; }
-  .tools button.on { background: var(--green); }
+  .tools button.on, button.small.on { background: var(--green); }
   .cam:not(.empty) .pic { cursor: zoom-in; }
   #full { position: fixed; inset: 0; z-index: 20; background: #000; display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
   #full img { max-width: 100%; max-height: 100%; object-fit: contain; }
@@ -131,8 +131,8 @@
 
   <div class="controls">
     <button type="button" id="camsBtn" hidden>Start cameras</button>
-    <button type="button" id="recBtn" class="record" disabled>Start recording</button>
     <button type="button" id="offBtn" class="stop" hidden>Stop cameras</button>
+    <button type="button" id="recBtn" class="record" disabled>Start recording</button>
   </div>
   <div id="message"></div>
   <div id="grid" class="grid"></div>
@@ -142,6 +142,11 @@
     <img id="fullImg" alt="" />
     <div class="fullbar"><span id="fullName"></span><span id="fullRate"></span><button type="button" id="fullClose" aria-label="Back to every camera">✕</button></div>
   </div>
+
+  <section class="panel" id="screenPanel" aria-labelledby="screenTitle" hidden>
+    <h2><span id="screenTitle" class="grow">Pictures on its screen</span><button type="button" id="screenBtn" class="small on" aria-pressed="true">On</button></h2>
+    <div id="screenNote" class="muted"></div>
+  </section>
 
   <section class="panel" id="wifiPanel" aria-labelledby="wifiTitle" hidden>
     <h2><span id="wifiTitle" class="grow">Wi-Fi</span><button type="button" id="wifiBtn" class="small">Change</button></h2>

@@ -36,7 +36,8 @@
  * "details" (only the take details: { contributor, location, task }, which any request can
  * bring along, and which go into the takes), "camera" (one running camera's { index, role,
  * rotation, mirror }), "scan" (look for the cameras it can start), "pick" (one of those:
- * { id, use, role }), "mode" ("ego", "stereo" or "freeform") or "settings" ({ detailsRequired }).
+ * { id, use, role }), "mode" ("ego", "stereo" or "freeform") or "settings" ({ detailsRequired, screenPictures }:
+ * whether the take details are needed, and whether the OAK cameras' pictures are drawn on its screen).
  * onWantPreviews({ on, focus }): a page is (or stopped) looking at the previews; focus: the
  * camera one is looking at full screen (null for none), which then comes bigger and more often
  * (/api/preview?i=N&full=1: each request waits for that camera's next picture).
@@ -98,7 +99,12 @@ function cleanWifi(w) {
   if (password && (password.length < 8 || password.length > 63 || /[\u0000-\u001f\u007f]/.test(password))) return null;
   return { ssid, password };
 }
-const cleanSettings = (s) => (s && typeof s === "object" && typeof s.detailsRequired === "boolean" ? { detailsRequired: s.detailsRequired } : null);
+function cleanSettings(s) {
+  if (!s || typeof s !== "object") return null;
+  const out = {};
+  for (const k of ["detailsRequired", "screenPictures"]) if (typeof s[k] === "boolean") out[k] = s[k];
+  return Object.keys(out).length ? out : null;
+}
 
 // Tailscale's addresses: 100.64.0.0/10.
 function isTailscale(address) {

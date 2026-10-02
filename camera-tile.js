@@ -13,6 +13,7 @@
  *   Tile.startRecording() / Tile.stopRecording() -> the recording (RobotMotion), with
  *     clock_origin_ms: when its first frame was, in ms since 1970 (to line cameras up)
  *   await Tile.oakFrame(jpeg, results, t)     an OAK camera's frame (results as HandTracker takes them)
+ *   Tile.oakHands(w, h, results, t)           just its hands (a picture w x h that isn't drawn)
  *   Tile.oakStatus(status)                    its helper's status ("starting", "running", "error"…)
  *   Tile.setView({ rotation, mirror })        turn the picture (and its tracking) clockwise by 0, 90, 180
  *                                             or 270 degrees, and show it mirrored or not (just the look:
@@ -26,6 +27,7 @@
   let latest = [], error = "";
   const oak = params.get("oak");
   let lastBitmap = null;
+  let pictures = 0; // pictures drawn (an OAK camera's hands can come without theirs)
 
   // A small tag at each wrist: which hand (the main window's labels, without gestures).
   function drawTags(hands) {
@@ -80,9 +82,9 @@
       await HandTracker.init({ videoEl: video, canvasEl: stage, overlay: true, mirror: params.get("mirror") !== "0", maxNumHands: 2, external: "OAK camera" });
       HandTracker.setRotation(Number(params.get("rot")) || 0);
       message.textContent = "Starting the OAK camera…";
-      HandTracker.onHandLandmarks(({ hands, timestamp }) => {
+      HandTracker.onHandLandmarks(({ hands, timestamp, noPicture }) => {
         latest = hands;
-        drawTags(hands);
+        if (!noPicture) drawTags(hands);
         if (RobotMotion.isRecording()) RobotMotion.feed(hands, timestamp);
       });
       return;
@@ -123,14 +125,20 @@
     hands: () => latest,
     status: () => {
       const cam = error ? { width: 0, height: 0 } : HandTracker.getCamera();
-      return { fps: error ? 0 : HandTracker.getFPS(), width: cam.width, height: cam.height, hands: latest.map((h) => h.handedness), recording: RobotMotion.isRecording(), error };
+      return { fps: error ? 0 : HandTracker.getFPS(), width: cam.width, height: cam.height, hands: latest.map((h) => h.handedness), recording: RobotMotion.isRecording(), error, pictures };
     },
     oakFrame: async (jpeg, results, t) => {
       if (!oak || !jpeg) return;
       const bitmap = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }));
       HandTracker.pushExternalFrame(bitmap, results, t);
+      pictures++;
       if (lastBitmap) lastBitmap.close();
       lastBitmap = bitmap;
+      if (!error) message.hidden = true;
+    },
+    oakHands: (w, h, results, t) => {
+      if (!oak) return;
+      HandTracker.pushExternalHands(w, h, results, t);
       if (!error) message.hidden = true;
     },
     oakStatus: (s) => {
