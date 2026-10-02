@@ -691,6 +691,9 @@ async function checkPhoneAsRig(win, js) {
 async function checkRemoteFromPhone(win, js) {
   const { RemoteRecordServer } = require("../electron/remote-record.js");
   const wc = win.webContents;
+  // From the app's main page (a check before may have left the Recording Viewer open).
+  await wc.loadURL(`app://${HOST}/index.html`);
+  for (let i = 0; i < 60 && !(await js("!!(window.HandTracker && HandTracker.getCamera().width > 0)")); i++) await sleep(250);
   const state = {
     running: false, recording: false, mode: "stereo", requirement: { ok: true, missing: [], message: "" }, detailsRequired: true,
     details: { contributor: "", location: "", task: "" }, cameras: [],
