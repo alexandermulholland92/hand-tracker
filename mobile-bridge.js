@@ -573,6 +573,7 @@
       status: () => PhoneControl.status(),
       openOverlaySettings: () => PhoneControl.openOverlaySettings(),
       openAccessibilitySettings: () => PhoneControl.openAccessibilitySettings(),
+      openAppInfo: () => PhoneControl.openAppInfo(),
       start: (settings) => PhoneControl.start({ settings: JSON.stringify(settings || {}) }),
       stop: () => PhoneControl.stop(),
       onStopped: (cb) => (stopped.add(cb), () => stopped.delete(cb)),

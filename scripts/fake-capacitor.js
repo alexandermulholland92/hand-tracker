@@ -277,11 +277,12 @@
     };
   })();
 
-  // PhoneControl (PhoneControlPlugin.java): both permissions given; start and stop recorded.
+  // PhoneControl (PhoneControlPlugin.java): both permissions given (unless a check says not), on
+  // Android 14; start and stop recorded.
   const PhoneControl = (() => {
     const ev = events();
-    let running = false;
-    const status = async () => ({ overlay: true, accessibility: true, running });
+    let running = false, accessibility = true;
+    const status = async () => ({ overlay: true, accessibility, running, sdk: 34 });
     return {
       addListener: ev.addListener,
       status,
@@ -290,6 +291,12 @@
       },
       async openAccessibilitySettings() {
         calls.push(["phoneControl.openAccessibilitySettings"]);
+      },
+      async openAppInfo() {
+        calls.push(["phoneControl.openAppInfo"]);
+      },
+      _setAccessibility(on) {
+        accessibility = on;
       },
       async start({ settings }) {
         calls.push(["phoneControl.start", settings]);
@@ -387,5 +394,5 @@
     getPlatform: () => "android",
     Plugins: { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer },
   };
-  window.__fakeCapacitor = { files, calls, shared, stopPhoneControl: () => PhoneControl._stoppedOutside() };
+  window.__fakeCapacitor = { files, calls, shared, stopPhoneControl: () => PhoneControl._stoppedOutside(), setAccessibility: (on) => PhoneControl._setAccessibility(on) };
 })();

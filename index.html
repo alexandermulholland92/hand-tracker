@@ -483,6 +483,11 @@
           <button id="selfAccess">2. Turn on hand control in Accessibility</button>
           <button id="selfStart" class="primary">Start controlling this phone</button>
         </div>
+        <!-- Android 13+: a downloaded app's Accessibility service is blocked until allowed (phone-link-ui.js). -->
+        <div id="selfRestricted" class="note" hidden>
+          <b>"Restricted setting"?</b> Android 13 and later block this for apps installed from a downloaded file. Tap <b>Open App info</b>, then <b>⋮</b> (top right) → <b>Allow restricted settings</b>, and confirm with your PIN or fingerprint. Then tap <b>2. Turn on hand control in Accessibility</b> again. (⋮ offers it only once the "Restricted setting" box has appeared; installing a newer Hand Tracker keeps it allowed.)
+          <div class="toolbar"><button id="selfAppInfo">Open App info</button></div>
+        </div>
         <div id="selfStatus" class="note"></div>
       </div>
       <div class="toolbar">

@@ -3,6 +3,7 @@ package com.handtracker.app;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Build;
 import android.provider.Settings;
 
 import androidx.core.content.ContextCompat;
@@ -17,9 +18,11 @@ import com.getcapacitor.annotation.CapacitorPlugin;
  * PhoneControl — controlling the phone itself with your hand (PhoneControlService.java,
  * HandControlService.java), for the "Control your PC" card on the phone (phone-link-ui.js):
  *
- *   status() -> { overlay, accessibility, running }   the two permissions it needs, and whether it's on
+ *   status() -> { overlay, accessibility, running, sdk }   the two permissions it needs, whether
+ *                                  it's on, and Android's API level (33+: "Restricted setting")
  *   openOverlaySettings()          Android's "Display over other apps" page for this app
  *   openAccessibilitySettings()    Android's Accessibility settings (turn on Hand Tracker there)
+ *   openAppInfo()                  this app's App info page (⋮ → Allow restricted settings)
  *   start({ settings })            settings: JSON for phone-control.js (hand, reach, gesture actions…)
  *   stop()
  *   "stopped" event                when it ends (its × or the notification's Stop)
@@ -37,6 +40,7 @@ public class PhoneControlPlugin extends Plugin {
         s.put("overlay", Settings.canDrawOverlays(c));
         s.put("accessibility", HandControlService.isEnabled(c));
         s.put("running", PhoneControlService.running != null);
+        s.put("sdk", Build.VERSION.SDK_INT);
         return s;
     }
 
@@ -56,6 +60,17 @@ public class PhoneControlPlugin extends Plugin {
     @PluginMethod
     public void openAccessibilitySettings(PluginCall call) {
         Intent i = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        getContext().startActivity(i);
+        call.resolve();
+    }
+
+    // Android 13 and later block an Accessibility service of an app installed from a downloaded
+    // APK ("Restricted setting") until it's allowed on the app's App info page: ⋮ → Allow
+    // restricted settings (shown there once the block has been seen).
+    @PluginMethod
+    public void openAppInfo(PluginCall call) {
+        Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getContext().getPackageName()));
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         getContext().startActivity(i);
         call.resolve();

@@ -128,6 +128,9 @@
     $("selfControl").hidden = false;
     const status = $("selfStatus");
     let state = { overlay: false, accessibility: false, running: false };
+    // Back from Accessibility settings and it's still off, on Android 13 or later: likely its
+    // "Restricted setting" block (an app installed from a downloaded file), which App info lifts.
+    let askedAccessibility = false;
     const show = () => {
       const done = (btn, ok, text) => {
         btn.textContent = ok ? `✓ ${text}` : text;
@@ -136,6 +139,7 @@
       done($("selfOverlay"), state.overlay, "1. Allow display over other apps");
       done($("selfAccess"), state.accessibility, "2. Turn on hand control in Accessibility");
       $("selfStart").textContent = state.running ? "Stop controlling this phone" : "Start controlling this phone";
+      $("selfRestricted").hidden = !(askedAccessibility && !state.accessibility && state.sdk >= 33);
       status.textContent = state.running
         ? "Controlling this phone: switch to any app. The camera window's × (or Stop in the notification) ends it."
         : !state.overlay
@@ -151,7 +155,11 @@
       if (!s.running && global.HandTracker.getSource() === "external" && global.HandTracker.getCamera().name === SELF_SOURCE) global.HandTracker.useCamera();
     }).catch(() => {});
     $("selfOverlay").addEventListener("click", () => control.openOverlaySettings());
-    $("selfAccess").addEventListener("click", () => control.openAccessibilitySettings());
+    $("selfAccess").addEventListener("click", () => {
+      askedAccessibility = true;
+      control.openAccessibilitySettings();
+    });
+    $("selfAppInfo").addEventListener("click", () => control.openAppInfo());
     $("selfStart").addEventListener("click", async () => {
       if (state.running) {
         state = await control.stop();

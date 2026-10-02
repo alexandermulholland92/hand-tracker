@@ -462,6 +462,30 @@ async function run() {
     self.shown && /Ready/.test(self.ready) && self.started && self.started.length === 1 && self.started[0].hand && self.cameraReleased && /Stop/.test(self.button) &&
       self.cameraBack && /Start/.test(self.buttonAfter),
     JSON.stringify(self));
+  // Android 13+'s "Restricted setting": back from Accessibility settings with hand control still
+  // off, the card explains it and opens App info (where it's allowed); once on, it's gone.
+  const restricted = await js(`(async () => {
+    const $ = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const back = async () => { document.dispatchEvent(new Event("visibilitychange")); await sleep(300); };
+    window.__fakeCapacitor.setAccessibility(false);
+    await back();
+    const out = { before: !$("selfRestricted").hidden };
+    $("selfAccess").click();
+    await back();
+    out.shown = !$("selfRestricted").hidden;
+    out.text = $("selfRestricted").textContent.replace(/\\s+/g, " ").trim();
+    $("selfAppInfo").click();
+    out.opened = window.__fakeCapacitor.calls.filter((c) => c[0] === "phoneControl.openAppInfo").length;
+    window.__fakeCapacitor.setAccessibility(true);
+    await back();
+    out.after = !$("selfRestricted").hidden;
+    out.button = $("selfAccess").textContent;
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  check("Hand control blocked by Android 13+'s Restricted setting: back from Accessibility with it still off, the card says how to allow it and opens App info; once it's on, the note goes",
+    !restricted.error && restricted.before === false && restricted.shown && /Allow restricted settings/.test(restricted.text) && restricted.opened === 1 && restricted.after === false && /^✓/.test(restricted.button),
+    JSON.stringify(restricted));
   const controlWin = new BrowserWindow({
     show: false, width: 320, height: 240,
     webPreferences: { preload: path.join(__dirname, "fake-capacitor.js"), contextIsolation: false, sandbox: false, backgroundThrottling: false },
