@@ -954,6 +954,15 @@ async function checkOakPicturesOff(js) {
     const btn = document.getElementById("multiCamScreen");
     const out = { visible: document.visibilityState, shown: !btn.hidden, before: btn.textContent };
     out.onDrawn = await drawn(1000);
+    // A picture that takes long to draw (as on a Raspberry Pi with nobody at its screen) doesn't
+    // hold up the hands: they still come at the camera's rate, the pictures as they can.
+    const wins = [...document.querySelectorAll("#multiCamGrid iframe")].map((f) => f.contentWindow);
+    const quick = wins.map((w) => w.Tile.oakPicture);
+    wins.forEach((w, k) => (w.Tile.oakPicture = async (...a) => { await sleep(700); return quick[k](...a); }));
+    await sleep(2500);
+    out.slow = { drawn: await drawn(2000), fps: MultiCamera._tiles().map((t) => t.status.fps) };
+    wins.forEach((w, k) => (w.Tile.oakPicture = quick[k]));
+    await sleep(800);
     btn.click();
     out.after = btn.textContent;
     out.dimmed = document.querySelectorAll("#multiCamGrid .multi-cam-tile.no-picture").length;
@@ -991,8 +1000,9 @@ async function checkOakPicturesOff(js) {
     return out;
   })()`).catch((err) => ({ error: String((err && err.message) || err) }));
   const all = (list, ok) => Array.isArray(list) && list.length === 2 && list.every(ok);
-  check("Several cameras: the OAK cameras' pictures can be left off the screen (hands still tracked and recorded); then they're made only as often as remote previews need them, skeleton drawn",
+  check("Several cameras: the OAK cameras' pictures can be left off the screen (hands still tracked and recorded); then they're made only as often as remote previews need them, skeleton drawn; a slow picture never holds up the hands",
     r.shown && r.before === "Hide pictures" && r.after === "Show pictures" && r.dimmed === 2 && all(r.onDrawn, (n) => n >= 10) &&
+      r.slow && all(r.slow.drawn, (n) => n >= 1 && n <= 4) && all(r.slow.fps, (f) => f >= 15) &&
       all(r.offDrawn, (n) => n === 0) && all(r.offTiles, (t) => t.fps > 0 && t.hands === 1) && all(r.status, (s) => /picture off/.test(s)) &&
       all(r.previewDrawn, (n) => n >= 3 && n <= 12) && all(r.skeleton, (n) => n > 50) && r.focusDrawn[0] === 0 && r.focusDrawn[1] >= 12 &&
       /Head \w+/.test(r.info) && /Chest \w+/.test(r.info) && r.back === "Hide pictures" && all(r.backDrawn, (n) => n >= 10) && r.pref === true,

@@ -5,15 +5,16 @@
  *
  * Settings come from the page's address: ?device=<camera id>&label=<its name>&mirror=1|0&rot=0|90|180|270&model=0|1&name=<tile name>,
  * or ?oak=<OAK camera id> for a Luxonis OAK camera: its hands are found on the camera, and the
- * page showing the tile passes its frames in (oakFrame, oakStatus).
+ * page showing the tile passes its frames in (oakHands, then oakPicture now and then; oakStatus).
  * The tile page's API, for the page that shows it:
  *   await Tile.ready                          the camera is running
  *   Tile.hands()                              the hands on the last frame
  *   Tile.status()                             { fps, width, height, hands, recording, error }
  *   Tile.startRecording() / Tile.stopRecording() -> the recording (RobotMotion), with
  *     clock_origin_ms: when its first frame was, in ms since 1970 (to line cameras up)
- *   await Tile.oakFrame(jpeg, results, t)     an OAK camera's frame (results as HandTracker takes them)
- *   Tile.oakHands(w, h, results, t)           just its hands (a picture w x h that isn't drawn)
+ *   Tile.oakHands(w, h, results, t)           an OAK camera's frame's hands (results as HandTracker takes
+ *                                             them; its picture, w x h, isn't drawn) -> the hands
+ *   await Tile.oakPicture(jpeg, hands)        then its picture, drawn with those hands
  *   Tile.oakStatus(status)                    its helper's status ("starting", "running", "error"…)
  *   Tile.setView({ rotation, mirror })        turn the picture (and its tracking) clockwise by 0, 90, 180
  *                                             or 270 degrees, and show it mirrored or not (just the look:
@@ -127,19 +128,20 @@
       const cam = error ? { width: 0, height: 0 } : HandTracker.getCamera();
       return { fps: error ? 0 : HandTracker.getFPS(), width: cam.width, height: cam.height, hands: latest.map((h) => h.handedness), recording: RobotMotion.isRecording(), error, pictures };
     },
-    oakFrame: async (jpeg, results, t) => {
+    oakHands: (w, h, results, t) => {
+      if (!oak) return null;
+      HandTracker.pushExternalHands(w, h, results, t);
+      if (!error) message.hidden = true;
+      return latest;
+    },
+    oakPicture: async (jpeg, hands) => {
       if (!oak || !jpeg) return;
       const bitmap = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }));
-      HandTracker.pushExternalFrame(bitmap, results, t);
+      HandTracker.drawExternalPicture(bitmap, (hands || []).map((h) => h.imageLandmarks));
+      drawTags(hands || []);
       pictures++;
       if (lastBitmap) lastBitmap.close();
       lastBitmap = bitmap;
-      if (!error) message.hidden = true;
-    },
-    oakHands: (w, h, results, t) => {
-      if (!oak) return;
-      HandTracker.pushExternalHands(w, h, results, t);
-      if (!error) message.hidden = true;
     },
     oakStatus: (s) => {
       if (s.status === "error" || (s.status === "stopped" && s.code)) {

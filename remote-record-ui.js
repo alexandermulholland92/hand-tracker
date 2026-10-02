@@ -268,19 +268,22 @@
         // A camera just let go restarts for a few seconds and isn't listed meanwhile, so a
         // picked one that's missing is looked for again before it counts as unplugged.
         const wantOak = wanted.filter((id) => id.startsWith("oak:"));
-        let devices = [];
+        let devices = [], silent = [];
         for (let tries = 0; tries < 3; tries++) {
           try {
-            devices = await desktop.oak.list();
+            ({ devices, silent } = await desktop.oak.list({ detail: true }));
             note = "";
           } catch (err) {
             devices = [];
+            silent = [];
             note = `OAK cameras: ${errText(err)}`;
           }
           if (wantOak.every((id) => devices.some((d) => `oak:${d.id}` === id))) break;
           await sleep(1500);
         }
         for (const d of devices) found.push({ id: `oak:${d.id}`, label: oakLabel(d.id, d.name) });
+        // One plugged in that didn't answer is said, rather than just missing.
+        if (silent.length) note = OakSource.silentNote(silent);
       }
     }
     for (const c of await HandTracker.listCameras().catch(() => [])) if (c.deviceId) found.push({ id: c.deviceId, label: c.label });
@@ -338,7 +341,11 @@
     if (role !== undefined) {
       const roles = CameraRoles.pick(list.map((c) => c.role), i, role);
       const saved = { ...(prefs.multiCameraRoles || {}) };
-      list.forEach((c, j) => (saved[c.id] = roles[j]));
+      // Only this camera's role and the one it took it from (a camera merely shown with no role
+      // isn't set to "No role", which would stay).
+      list.forEach((c, j) => {
+        if (j === i || roles[j] !== c.role) saved[c.id] = roles[j];
+      });
       setPref("multiCameraRoles", saved);
     }
     return { ok: true, message: "" };

@@ -110,10 +110,12 @@
         restoreOak = true;
         await sleep(2500); // the camera resets before it can be listed again
       }
-      const devices = await desktop.oak.list();
+      const { devices, silent } = await desktop.oak.list({ detail: true });
       if (!area.isConnected) return; // the picker went meanwhile
       oakPorts = Object.fromEntries(devices.map((d) => [d.id, d.name]));
-      area.outerHTML = devices.length ? devices.map((d) => box(`oak:${d.id}`, oakLabel(d.id))).join("") : '<div class="note">No Luxonis OAK cameras found.</div>';
+      // One plugged in that didn't answer is said, rather than just missing.
+      const stuck = silent.length ? `<div class="note">${esc(OakSource.silentNote(silent))}</div>` : "";
+      area.outerHTML = (devices.length ? devices.map((d) => box(`oak:${d.id}`, oakLabel(d.id))).join("") : stuck ? "" : '<div class="note">No Luxonis OAK cameras found.</div>') + stuck;
     } catch (err) {
       if (area.isConnected) area.textContent = `Luxonis OAK cameras: ${errText(err)}`;
     }
@@ -311,8 +313,11 @@
   }
 
   // ---------- an OAK camera's pictures ----------
-  // On this screen (unless they're off, or the window is hidden); otherwise only as often as
-  // remote recording's previews need them. Each frame's hands go to its tile either way.
+  // Each frame's hands go to its tile at once, and the next frame is asked for straight away:
+  // its picture follows when one's due and the last one is drawn (decoding and drawing a
+  // picture can take far longer than a frame on a Raspberry Pi, and the hands don't wait).
+  // Pictures are due on this screen (unless they're off, or the window is hidden); otherwise
+  // only as often as remote recording's previews need them.
   const screenPictures = () => prefs.screenPictures !== false;
   const screenShows = () => screenPictures() && document.visibilityState !== "hidden";
   function pictureDue(t, i) {
@@ -326,21 +331,21 @@
     const i = tiles.findIndex((x) => x.oak === id);
     const t = tiles[i];
     const api = t && tileApi(t);
-    if (!api || !api.oakFrame) return desktop.oak.streamShown(id);
-    const results = OakSource.toResults(header);
-    if (!pictureDue(t, i) && api.oakHands) {
-      try {
-        api.oakHands(header.w, header.h, results, header.t);
-      } catch {
-        // its page going away meanwhile
-      }
-      return desktop.oak.streamShown(id);
+    if (!api || !api.oakHands) return desktop.oak.streamShown(id);
+    let hands = null;
+    try {
+      hands = api.oakHands(header.w, header.h, OakSource.toResults(header), header.t);
+    } catch {
+      // its page going away meanwhile
     }
+    desktop.oak.streamShown(id);
+    if (!hands || !jpeg || t.drawing || !pictureDue(t, i)) return;
+    t.drawing = true;
     t.lastPicture = performance.now();
     api
-      .oakFrame(jpeg, results, header.t)
+      .oakPicture(jpeg, hands)
       .catch(() => {})
-      .finally(() => desktop.oak.streamShown(id));
+      .finally(() => (t.drawing = false));
   }
 
   function setScreenPictures(on) {

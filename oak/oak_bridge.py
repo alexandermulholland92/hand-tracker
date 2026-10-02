@@ -77,7 +77,33 @@ def list_devices():
     import depthai as dai
 
     found = [{"name": getattr(d, "name", ""), "id": d.getMxId(), "state": str(d.state).split(".")[-1]} for d in dai.Device.getAllAvailableDevices()]
-    status("devices", devices=found)
+    status("devices", devices=found, silent=silent_devices({d["name"] for d in found}))
+
+
+def silent_devices(listed):
+    """OAK cameras plugged in that depthai couldn't list (Linux): waiting to start, but not
+    answering when asked who they are (unplugging one and plugging it back in resets it).
+    Their USB ports, named as depthai names them ("3.2" is bus 3, port 2)."""
+    root = "/sys/bus/usb/devices"
+    found = []
+    try:
+        entries = sorted(os.listdir(root))
+    except OSError:
+        return found  # not Linux
+    for base in entries:
+        if "-" not in base or ":" in base:
+            continue
+        try:
+            with open(os.path.join(root, base, "idVendor")) as f:
+                vendor = f.read().strip()
+            with open(os.path.join(root, base, "idProduct")) as f:
+                product = f.read().strip()
+        except OSError:
+            continue
+        name = base.replace("-", ".", 1)
+        if vendor == "03e7" and product == "2485" and name not in listed:
+            found.append(name)
+    return found
 
 
 def simulate(args):

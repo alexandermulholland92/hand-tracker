@@ -451,10 +451,18 @@ function registerOakIpc() {
   // Several OAK cameras at once (the tiles of "Several cameras", multi-camera.js): a helper
   // each, its frames and statuses tagged with the camera's id. A frame is dropped while the
   // page is still showing that camera's last one.
-  handle("oak:list", async () => {
-    if (simulated) return [{ name: "sim.1", id: "SIMULATED-OAK-A", state: "X_LINK_UNBOOTED" }, { name: "sim.2", id: "SIMULATED-OAK-B", state: "X_LINK_UNBOOTED" }];
+  // detail: { devices, silent } — silent: the USB ports of OAK cameras plugged in that didn't
+  // answer (Linux), to say so rather than leave them out.
+  handle("oak:list", async (event, opts) => {
+    const detail = !!(opts && opts.detail);
+    if (simulated) {
+      const devices = [{ name: "sim.1", id: "SIMULATED-OAK-A", state: "X_LINK_UNBOOTED" }, { name: "sim.2", id: "SIMULATED-OAK-B", state: "X_LINK_UNBOOTED" }];
+      return detail ? { devices, silent: [] } : devices;
+    }
     const msg = await oak.runBridge(["--list"]).catch(() => null);
-    return msg && msg.status === "devices" ? msg.devices : [];
+    const devices = msg && msg.status === "devices" ? msg.devices : [];
+    const silent = msg && Array.isArray(msg.silent) ? msg.silent.filter((n) => typeof n === "string" && /^[0-9.]{1,32}$/.test(n)).slice(0, 16) : [];
+    return detail ? { devices, silent } : devices;
   });
   handle("oak:stream-start", (event, { id, ...options } = {}) => {
     if (!/^[A-Za-z0-9._-]{1,64}$/.test(String(id || ""))) throw new Error("Which OAK camera?");

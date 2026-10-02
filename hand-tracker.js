@@ -50,6 +50,7 @@
  *   HandTracker.pushExternalFrame(image, results, timestamp); // feed one, results shaped like MediaPipe's
  *   HandTracker.pushExternalHands(width, height, results, timestamp); // its hands only, from a picture that size:
  *                            tracked and recorded as usual, nothing drawn (the stage keeps its last picture)
+ *   HandTracker.drawExternalPicture(image, landmarksList); // then that picture, with those hands' skeleton
  *   HandTracker.stop();
  *
  * Each hand also has worldLandmarks: MediaPipe's estimate of the hand's real shape, in
@@ -1211,6 +1212,36 @@
     externalFrame(null, sw, sh, results, timestamp);
   }
 
+  // A picture of an external source's hands, drawn later than they were given (pushExternalHands):
+  // a picture can take a while on a small computer, and the hands don't wait for it. The skeleton
+  // drawn is those hands' (each one's imageLandmarks), so it matches the picture.
+  function drawExternalPicture(image, landmarksList = []) {
+    if (source !== "external" || !external || paused) return;
+    const sw = image.width || image.videoWidth, sh = image.height || image.videoHeight;
+    if (!sw || !sh) return;
+    image = turnedExternal(image, sw, sh);
+    lastFrame = image;
+    drawStage(image, landmarksList);
+  }
+
+  // An external source's picture (sw x sh) turned by the rotation (on a canvas kept for it).
+  function turnedExternal(image, sw, sh) {
+    if (!rotation) return image;
+    const turned = rotation === 90 || rotation === 270;
+    const w = turned ? sh : sw, h = turned ? sw : sh;
+    if (!externalCanvas) externalCanvas = document.createElement("canvas");
+    if (externalCanvas.width !== w || externalCanvas.height !== h) {
+      externalCanvas.width = w;
+      externalCanvas.height = h;
+    }
+    const ectx = externalCanvas.getContext("2d");
+    ectx.save();
+    turnContext(ectx, w, h);
+    ectx.drawImage(image, 0, 0, sw, sh);
+    ectx.restore();
+    return externalCanvas;
+  }
+
   function externalFrame(image, sw, sh, results, timestamp) {
     if (source !== "external" || !external || paused || !sw || !sh) return;
     const turned = rotation === 90 || rotation === 270;
@@ -1218,21 +1249,9 @@
     const resized = w !== external.width || h !== external.height;
     external.width = w;
     external.height = h;
+    if (image) image = turnedExternal(image, sw, sh);
     if (rotation) {
-      // The hands were found in the unturned picture: turn it and them.
-      if (image) {
-        if (!externalCanvas) externalCanvas = document.createElement("canvas");
-        if (externalCanvas.width !== w || externalCanvas.height !== h) {
-          externalCanvas.width = w;
-          externalCanvas.height = h;
-        }
-        const ectx = externalCanvas.getContext("2d");
-        ectx.save();
-        turnContext(ectx, w, h);
-        ectx.drawImage(image, 0, 0, sw, sh);
-        ectx.restore();
-        image = externalCanvas;
-      }
+      // The hands were found in the unturned picture: turn them too.
       const pt = (p) => {
         const [x, y] = turnPoint(p.x, p.y);
         return { x, y, z: p.z };
@@ -1701,6 +1720,7 @@
     useExternalSource,
     pushExternalFrame,
     pushExternalHands,
+    drawExternalPicture,
     forgetStream,
     getFPS: () => fps,
     quaternionToEuler: quatToEuler,

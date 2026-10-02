@@ -141,8 +141,9 @@ contextBridge.exposeInMainWorld("desktop", {
       return () => ipcRenderer.removeListener("oak:status", listener);
     },
     // Several OAK cameras at once ("Several cameras"): [{ name, id, state }] of those plugged
-    // in, then a stream each by id, its frames and statuses tagged with that id.
-    list: () => ipcRenderer.invoke("oak:list"),
+    // in (with { detail: true }, { devices, silent }: silent, the USB ports of ones plugged in
+    // that didn't answer), then a stream each by id, its frames and statuses tagged with that id.
+    list: (opts) => ipcRenderer.invoke("oak:list", opts && opts.detail ? { detail: true } : undefined),
     streamStart: (id, options) => ipcRenderer.invoke("oak:stream-start", { ...options, id }),
     streamStop: (id) => ipcRenderer.invoke("oak:stream-stop", id || null),
     // cb({ id, header, jpeg }); call streamShown(id) once it's drawn.

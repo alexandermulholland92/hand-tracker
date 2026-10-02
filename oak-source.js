@@ -10,6 +10,7 @@
  *   OakSource.isActive()
  *   await OakSource.ensureReady()         // the one-time setup if it's needed (asks); false if canceled
  *   OakSource.toResults(header)           // a helper frame's hands, shaped as HandTracker takes them
+ *   OakSource.silentNote(ports)           // what to say of OAK cameras plugged in that didn't answer
  *                                         // (also for "Several cameras", multi-camera.js)
  */
 
@@ -137,7 +138,16 @@
     });
   }
 
+  // OAK cameras plugged in that didn't answer when listed (USB ports, from desktop.oak.list's
+  // silent): stuck, until they're unplugged and plugged back in.
+  function silentNote(ports) {
+    if (!ports || !ports.length) return "";
+    const one = ports.length === 1;
+    return `${one ? "An OAK camera is" : `${ports.length} OAK cameras are`} plugged in (USB ${ports.join(", ")}) but not answering, so ${one ? "it isn't" : "they aren't"} listed: unplug ${one ? "it" : "them"} and plug ${one ? "it" : "them"} back in (a powered hub is best).`;
+  }
+
   global.OakSource = {
+    silentNote,
     available: () => !!(desktop && desktop.oak),
     start,
     stop,
