@@ -274,23 +274,29 @@ async function run(win) {
 
   // The same on real hands: landmarks measured from photos (upright, phone-portrait crops
   // and turned sideways), each fed through the tracker as if from a camera that size, as a
-  // hand newly appearing (so smoothing starts fresh).
+  // hand newly appearing (so smoothing starts fresh). The frames carry their own times (a
+  // camera's 30 a second, and a second between photos, longer than the tracker keeps a lost
+  // hand), so they needn't wait for the clock: only the hand card's redraw is waited for.
   const real = await js(`(async () => {
     const cases = ${fs.readFileSync(path.join(__dirname, "fixtures", "gesture-hands.json"), "utf8")}.cases;
     const cameraOf = HandTracker.getCamera;
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const SPECIAL = ["The Bird", "Thumbs Down", "Live Long and Prosper", "Peace", "OK Sign"];
     const wrong = [], tally = {};
+    let clock = performance.now();
     for (const c of cases) {
-      await sleep(300); // longer than the tracker keeps a lost hand, so this is a new hand
+      clock += 1000; // a new hand
       HandTracker.getCamera = () => ({ ...cameraOf(), width: c.width, height: c.height });
       const frame = Object.assign(document.createElement("canvas"), { width: c.width, height: c.height });
       const landmarks = c.landmarks.map(([x, y, z]) => ({ x, y, z }));
-      for (let f = 0; f < 12; f++) {
-        HandTracker._processResults({ image: frame, multiHandLandmarks: [landmarks], multiHandedness: [{ label: c.handedness, score: 0.9 }] });
-        await sleep(20);
-      }
-      await sleep(80); // hand cards redraw about 15 times a second
+      const show = () => {
+        clock += 33;
+        HandTracker._processResults({ image: frame, multiHandLandmarks: [landmarks], multiHandedness: [{ label: c.handedness, score: 0.9 }], externalTime: clock });
+      };
+      for (let f = 0; f < 12; f++) show();
+      // The hand cards redraw at most about 15 times a second: one more frame once they can.
+      await sleep(70);
+      show();
       const side = c.handedness === "Left" ? "Right" : "Left"; // HandTracker swaps MediaPipe's labels
       const badge = document.querySelector("#slot" + side + " .gesture-badge");
       const got = badge ? badge.textContent : "(no card)";
@@ -299,8 +305,8 @@ async function run(win) {
       tally[c.expect][1]++;
       if (right) tally[c.expect][0]++;
       else wrong.push(c.photo + " " + c.variant + ": " + got + " (expected " + c.expect + ")");
-      HandTracker._processResults({ image: frame, multiHandLandmarks: [], multiHandedness: [] });
-      await sleep(30);
+      clock += 33;
+      HandTracker._processResults({ image: frame, multiHandLandmarks: [], multiHandedness: [], externalTime: clock });
     }
     HandTracker.getCamera = cameraOf;
     return { wrong, tally };
@@ -1508,8 +1514,11 @@ function withPhoneMetadata(src, dst, keys) {
 async function checkVideoFiles(win, js) {
   const dir = path.join(outDir, "videos");
   fs.mkdirSync(dir, { recursive: true });
+  // A second each (they play in real time), but the last two: the recording check below plays it again.
+  const last = TEST_VIDEOS[TEST_VIDEOS.length - 1][0];
+  const seconds = (name) => (name === last ? 2 : 1);
   for (const [name, opts] of TEST_VIDEOS) {
-    spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "2", ...opts, path.join(dir, name)]);
+    spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", String(seconds(name)), ...opts, path.join(dir, name)]);
   }
   // Opens a file the way the Open Video button does; returns what was tracked.
   const open = (file) => js(`(async () => {
@@ -1531,7 +1540,9 @@ async function checkVideoFiles(win, js) {
   let allGood = true;
   for (const [name] of TEST_VIDEOS) {
     const r = await open(path.join(dir, name));
-    const good = r.ok && r.frames === 60 && r.ordered && Math.abs(r.last - 1966.7) < 5 && Math.abs(r.fps - 30) < 0.1 && !r.mirrored;
+    // Every frame, the last one at its own time (frame 29 at 966.7 ms, or 59 at 1966.7).
+    const frames = seconds(name) * 30;
+    const good = r.ok && r.frames === frames && r.ordered && Math.abs(r.last - ((frames - 1) * 1000) / 30) < 5 && Math.abs(r.fps - 30) < 0.1 && !r.mirrored;
     allGood = allGood && good;
     summary.push(r.ok ? `${name} ${r.converted ? "converted" : "native"} ${r.frames}f${r.mirrored ? " MIRRORED" : ""}` : `${name} FAILED ${r.note}`);
   }
