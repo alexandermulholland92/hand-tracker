@@ -6,7 +6,7 @@
  *  1. waits for MediaPipe to load and process camera frames,
  *  2. simulates two hands (Left + Right) moving and gripping,
  *  3. records motion capture and a "Camera + 3D" video,
- *  4. exports motion capture to all 7 formats and video to every format (video-formats.js),
+ *  4. exports motion capture to all 8 formats and video to every format (video-formats.js),
  *  5. verifies every output file with independent readers (BVH replayed with
  *     forward kinematics, GLB played in three.js, C3D read from the spec,
  *     NPZ loaded with NumPy, each video decoded by ffmpeg), and recognises
@@ -151,12 +151,12 @@ async function run(win) {
   check("Motion export panel appears", await js("!document.getElementById('motionExportCard').hidden"));
   await js("document.querySelectorAll('#motionFormatGrid input').forEach((i) => { i.checked = true; }); document.getElementById('motionExportBtn').click();");
   let saved = 0;
-  for (let i = 0; i < 80 && saved < 8; i++) {
+  for (let i = 0; i < 80 && saved < 9; i++) {
     await sleep(250);
     saved = await js("document.querySelectorAll('#motionResults li.ok').length");
   }
   const motionFiles = fs.readdirSync(outDir).filter((f) => f.startsWith("robot-motion-"));
-  check("All 7 motion formats saved (8 files: one BVH per hand)", saved === 8, motionFiles.map((f) => f.replace(/^robot-motion-[\d_-]+?(?=[-.][a-z])/, "…")).join(" "));
+  check("All 8 motion formats saved (9 files: one BVH per hand)", saved === 9, motionFiles.map((f) => f.replace(/^robot-motion-[\d_-]+?(?=[-.][a-z])/, "…")).join(" "));
   const mfile = (ending) => {
     const f = motionFiles.find((n) => n.endsWith(ending));
     return f ? path.join(outDir, f) : null;
@@ -190,6 +190,12 @@ async function run(win) {
     report("TRC: OpenSim marker table is well formed", () => validators.checkTRC((trc = validators.parseTRC(mfile(".trc")))));
     report("C3D: header, parameters and data match TRC", () => validators.checkC3D(mfile(".c3d"), trc));
     report("NPZ: loads in NumPy, arrays match JSON", () => validators.checkNPZ(mfile(".npz"), jsonPath, data));
+    try {
+      const r = await validators.checkMCAP(mfile(".mcap"), data);
+      check("MCAP: Foxglove's reader and ROS 2 decoder read every message (each hand's 21 joints a frame, the skeletons, on the take's clock) and the attached recording", r.ok, r.detail);
+    } catch (err) {
+      check("MCAP: Foxglove's reader and ROS 2 decoder read every message (each hand's 21 joints a frame, the skeletons, on the take's clock) and the attached recording", false, err.message);
+    }
 
     // GLB: parse with three.js's glTF loader, play the animation, compare with TRC.
     const glb = fs.readFileSync(mfile(".glb")).toString("base64");
@@ -2205,6 +2211,19 @@ async function checkMotionConversion(vjs, files) {
         out[ext] = { error: String(err.message || err) };
       }
     }
+    // MCAP: Hand Tracker's own reads back exactly (its attached recording), and still as both
+    // hands from its ROS 2 messages alone (as after a ROS tool dropped the attachment).
+    try {
+      const rec = (await MotionImport.parseFileAsync("rec.json", bytes(files.json))).data;
+      const mcap = MotionExport.build(rec, ["mcap"], "rt")[0].data;
+      const own = (await MotionImport.parseFileAsync("rec.mcap", mcap.slice().buffer)).data;
+      const bare = MotionImport.fromMCAP(mcap.slice().buffer, "rec.mcap", { useAttachment: false }).data;
+      out.mcap = { hands: own.hands.map((h) => h.handedness).join("+"), exact: JSON.stringify(own) === JSON.stringify(rec),
+        bareHands: bare.hands ? bare.hands.map((h) => h.handedness).join("+") : bare.kind, worstMm: bare.hands ? +diff(asC3D(rec), asC3D(bare)).toFixed(4) : null,
+        formats: MotionExport.build(own, MotionExport.FORMATS.map((f) => f.id), "all").length };
+    } catch (err) {
+      out.mcap = { error: String(err.message || err) };
+    }
     // BVH: one hand; it comes back as that hand, and converts to BVH again identically.
     try {
       const a = (await MotionImport.parseFileAsync("rec-left.bvh", bytes(files.bvh))).data;
@@ -2232,15 +2251,17 @@ async function checkMotionConversion(vjs, files) {
   })()`).catch((err) => ({ error: String((err && err.message) || err) }));
   // Within 0.05 mm: exports scale each hand to the standard hand size, measured over its frames,
   // and a re-export measures it over the resampled frames, a few parts per million apart.
-  const handOk = (x, hands, tol) => x && !x.error && x.hands === hands && x.worstMm <= tol && x.formats >= 7;
-  check("Hand Tracker's own C3D, TRC, GLB and NPZ (and CSV, JSON) read back as both hands and convert to all 7 formats; C3D again matches the original",
+  const handOk = (x, hands, tol) => x && !x.error && x.hands === hands && x.worstMm <= tol && x.formats >= 8;
+  check("Hand Tracker's own C3D, TRC, GLB and NPZ (and CSV, JSON) read back as both hands and convert to all 8 formats; C3D again matches the original",
     ["c3d", "trc", "glb", "npz", "csv", "json"].every((ext) => handOk(r[ext], "Left+Right", 0.05)),
     JSON.stringify(Object.fromEntries(["c3d", "trc", "glb", "npz", "csv", "json"].map((k) => [k, r[k]]))));
-  check("A BVH reads back as its hand (fingertips from its end sites) and converts to all 7 formats; BVH → hands → BVH keeps every joint",
-    r.bvh && !r.bvh.error && r.bvh.hands === "Left" && r.bvh.frames > 10 && r.bvh.worstMm <= 0.05 && r.bvh.formats >= 7, JSON.stringify(r.bvh));
+  check("A BVH reads back as its hand (fingertips from its end sites) and converts to all 8 formats; BVH → hands → BVH keeps every joint",
+    r.bvh && !r.bvh.error && r.bvh.hands === "Left" && r.bvh.frames > 10 && r.bvh.worstMm <= 0.05 && r.bvh.formats >= 8, JSON.stringify(r.bvh));
+  check("MCAP (ROS 2): Hand Tracker's own reads back exactly, and as both hands from its ROS 2 messages alone; it converts to all 8 formats",
+    r.mcap && !r.mcap.error && r.mcap.hands === "Left+Right" && r.mcap.exact && r.mcap.bareHands === "Left+Right" && r.mcap.worstMm <= 1 && r.mcap.formats >= 8, JSON.stringify(r.mcap));
   const m = r.markers || {};
-  check("A marker recording goes through every marker format (C3D, TRC, CSV, GLB, NPZ, JSON) and back unchanged",
-    m.labels > 0 && ["c3d", "trc", "csv", "glb", "npz", "json"].every((id) => typeof m[id] === "number" && m[id] <= 0.01), JSON.stringify(m));
+  check("A marker recording goes through every marker format (C3D, TRC, CSV, GLB, NPZ, JSON, MCAP) and back unchanged",
+    m.labels > 0 && ["c3d", "trc", "csv", "glb", "npz", "json", "mcap"].every((id) => typeof m[id] === "number" && m[id] <= 0.01), JSON.stringify(m));
 }
 
 async function checkViewer(jsonPath, files) {
@@ -2285,7 +2306,7 @@ async function checkViewer(jsonPath, files) {
 
   // Hand recording (JSON): cards, playback, frame table, export panel.
   const v2 = await openText(path.basename(jsonPath), jsonText);
-  check("Viewer shows both hands from a two-hand file", v2.rows === 2 && v2.segs > 0 && v2.tableRows > 0 && v2.formats === 7 && v2.videoFormats >= 30,
+  check("Viewer shows both hands from a two-hand file", v2.rows === 2 && v2.segs > 0 && v2.tableRows > 0 && v2.formats === 8 && v2.videoFormats >= 30,
     `${v2.rows} hand rows, ${v2.segs} phase segments, ${v2.tableRows} table rows, ${v2.formats} motion + ${v2.videoFormats} video export formats`);
   const played = await js(`(async () => {
     document.querySelector("#tableBody tr:nth-child(40)").click(); // jump playback to that frame
@@ -2317,7 +2338,7 @@ async function checkViewer(jsonPath, files) {
   // CSV: view it, round-trip it exactly, and rebuild a correct skeleton from it.
   const csvText = fs.readFileSync(files.csv, "utf8");
   const csvView = await openText("rec.csv", csvText);
-  check("Viewer opens the CSV export", csvView.rows === 2 && csvView.formats === 7 && !csvView.error, csvView.error || JSON.stringify(csvView).slice(0, 200));
+  check("Viewer opens the CSV export", csvView.rows === 2 && csvView.formats === 8 && !csvView.error, csvView.error || JSON.stringify(csvView).slice(0, 200));
   const rt = await js(`(() => {
     const csv = ${JSON.stringify(csvText)};
     const { data, warnings } = MotionImport.parse(csv, "rec.csv");
@@ -2346,7 +2367,7 @@ async function checkViewer(jsonPath, files) {
   // C3D: the app's own C3D holds hands, so it opens as those hands again; the TRC they
   // produce must match the app's own TRC.
   const c3dView = await openFile("rec.c3d", files.c3d);
-  check("Viewer opens the app's own C3D as both hands again (all 7 formats)", c3dView.rows === 2 && c3dView.tableRows > 0 && c3dView.formats === 7, c3dView.error || JSON.stringify(c3dView).slice(0, 200));
+  check("Viewer opens the app's own C3D as both hands again (all 8 formats)", c3dView.rows === 2 && c3dView.tableRows > 0 && c3dView.formats === 8, c3dView.error || JSON.stringify(c3dView).slice(0, 200));
   const markerTrc = await js(`MotionExport.build(RecordingViewer.current().data, ["trc"], "m")[0].data`);
   fs.writeFileSync(path.join(outDir, "from-c3d.trc"), markerTrc);
   const a = validators.parseTRC(path.join(outDir, "from-c3d.trc")), b = validators.parseTRC(files.trc);
@@ -2357,13 +2378,13 @@ async function checkViewer(jsonPath, files) {
     else worst = Math.max(worst, Math.abs(v - w));
   }));
   check("C3D → TRC matches the app's TRC export", a.labels.join() === b.labels.join() && a.rows.length === b.rows.length && worst < 0.05, `max difference ${worst.toFixed(4)} mm`);
-  const saved = await exportAll("from-c3d", 8);
-  check("Viewer exports the C3D's hands to all 7 formats (8 files: one BVH per hand)", saved.ok === 8, saved.failed.join(" | ") || saved.note);
-  // Other C3Ds (here OptiTrack Motive's markers) open as markers, with the 6 marker formats.
+  const saved = await exportAll("from-c3d", 9);
+  check("Viewer exports the C3D's hands to all 8 formats (9 files: one BVH per hand)", saved.ok === 9, saved.failed.join(" | ") || saved.note);
+  // Other C3Ds (here OptiTrack Motive's markers) open as markers, with the 7 marker formats.
   const markerView = await openFile("take.c3d", files.markers);
-  check("Viewer opens other C3D files as markers", /6\s*Markers/.test(markerView.text) && markerView.tableRows > 0 && markerView.formats === 6, markerView.error || markerView.text.slice(0, 120));
-  const markerSaved = await exportAll("from-take-c3d", 6);
-  check("Viewer exports C3D markers to all 6 formats", markerSaved.ok === 6, markerSaved.failed.join(" | ") || markerSaved.note);
+  check("Viewer opens other C3D files as markers", /6\s*Markers/.test(markerView.text) && markerView.tableRows > 0 && markerView.formats === 7, markerView.error || markerView.text.slice(0, 120));
+  const markerSaved = await exportAll("from-take-c3d", 7);
+  check("Viewer exports C3D markers to all 7 formats", markerSaved.ok === 7, markerSaved.failed.join(" | ") || markerSaved.note);
 
   // Every motion format to every other, and several recordings converted at once.
   await checkMotionConversion(js, files);
@@ -2418,8 +2439,8 @@ async function checkViewer(jsonPath, files) {
       opened.error || `${opened.md.labels} markers × ${opened.md.frames} frames at ${opened.md.rate} fps`);
     await js(`document.getElementById("labelsToggle").click()`);
     fs.writeFileSync(path.join(outDir, "viewer-tak.png"), (await win.webContents.capturePage()).toPNG());
-    const takSaved = await exportAll("take5", 7);
-    check("Exports the take to C3D, TRC, CSV, FBX (Motive) and GLB, NPZ, JSON", takSaved.ok === 7, takSaved.failed.join(" | ") || takSaved.note);
+    const takSaved = await exportAll("take5", 8);
+    check("Exports the take to C3D, TRC, CSV, FBX (Motive) and GLB, NPZ, JSON, MCAP", takSaved.ok === 8, takSaved.failed.join(" | ") || takSaved.note);
     const out = (ext) => path.join(outDir, `take5.${ext}`);
     const c3d = validators.readC3D(out("c3d"));
     const trc = validators.parseTRC(out("trc"));

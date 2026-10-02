@@ -303,4 +303,50 @@ function checkNPZ(file, jsonFile, data) {
   return { ok, detail: `${out.keys.length} arrays; ${Object.entries(out.hands).map(([k, r]) => `${k}_joints ${r.shape.join("×")}`).join(", ")}` };
 }
 
-module.exports = { checkCSV, checkBVH, parseTRC, checkTRC, checkC3D, checkNPZ, readC3D };
+// MCAP, read the way Foxglove reads it: its indexed reader (footer, summary, chunk indexes)
+// and its ROS 2 decoder (from the .msg definitions in the file). Each hand's joints come as
+// PoseArrays of 21 poses, one per recorded frame, on that frame's time; the skeletons as
+// MarkerArrays (21 spheres, 21 bones); the recording attached as it is.
+async function checkMCAP(file, data) {
+  const { McapIndexedReader } = require("@mcap/core");
+  const { parse } = require("@foxglove/rosmsg");
+  const { MessageReader } = require("@foxglove/rosmsg2-serialization");
+  const buf = fs.readFileSync(file);
+  const readable = { size: async () => BigInt(buf.length), read: async (o, l) => new Uint8Array(buf.buffer, buf.byteOffset + Number(o), Number(l)) };
+  const r = await McapIndexedReader.Initialize({ readable });
+  const readers = new Map();
+  for (const [id, ch] of r.channelsById) {
+    const schema = r.schemasById.get(ch.schemaId);
+    readers.set(id, { topic: ch.topic, type: schema.name, read: new MessageReader(parse(new TextDecoder().decode(schema.data), { ros2: true })) });
+  }
+  const origin = Date.parse(data.recorded_at);
+  const perTopic = {}, problems = [];
+  let chainCm = null;
+  for await (const m of r.readMessages()) {
+    const ch = readers.get(m.channelId);
+    const msg = ch.read.readMessage(m.data);
+    perTopic[ch.topic] = (perTopic[ch.topic] || 0) + 1;
+    if (ch.type === "geometry_msgs/msg/PoseArray") {
+      const P = msg.poses.map((p) => [p.position.x, p.position.y, p.position.z]);
+      if (P.length !== 21 || !P.every((p) => p.every(Number.isFinite))) problems.push(`${ch.topic}: ${P.length} poses`);
+      if (msg.poses.some((p) => Math.abs(Math.hypot(p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w) - 1) > 1e-6)) problems.push(`${ch.topic}: a quaternion isn't unit length`);
+      if (Number(m.logTime) !== msg.header.stamp.sec * 1e9 + msg.header.stamp.nanosec) problems.push(`${ch.topic}: stamp differs from its log time`);
+      if (chainCm === null) chainCm = [0, 9, 10, 11, 12].slice(1).reduce((sum, j, k, arr) => sum + Math.hypot(...P[j].map((v, i) => v - P[k === 0 ? 0 : arr[k - 1]][i])), 0) * 100;
+    } else if (ch.type === "visualization_msgs/msg/MarkerArray") {
+      const [joints, bones] = msg.markers;
+      if (!(joints && joints.type === 7 && joints.points.length === 21 && bones && bones.type === 5 && bones.points.length === 42)) problems.push(`${ch.topic}: unexpected markers`);
+    }
+  }
+  const want = Object.fromEntries(data.hands.map((h) => [`/hand_tracker/${h.handedness.toLowerCase()}/joints`, h.frames.length]));
+  const firstLeft = data.hands[0].frames[0].t;
+  let attached = null;
+  for await (const a of r.readAttachments()) if (a.name === "hand_tracker.json") attached = JSON.parse(new TextDecoder().decode(a.data));
+  const start = r.statistics ? Number(r.statistics.messageStartTime) / 1e6 : NaN;
+  const ok = r.header.profile === "ros2" && !problems.length &&
+    Object.entries(want).every(([t, n]) => perTopic[t] === n) && perTopic["/hand_tracker/skeleton"] === data.hands.reduce((n, h) => n + h.frames.length, 0) &&
+    Math.abs(start - (origin + Math.min(...data.hands.map((h) => h.frames[0].t)) * 1000)) < 1 && chainCm > 5 && chainCm < 25 &&
+    attached && JSON.stringify(attached) === JSON.stringify(data);
+  return { ok, detail: `${r.chunkIndexes.length} chunk(s); ${Object.entries(perTopic).map(([t, n]) => `${t} ×${n}`).join(", ")}; middle finger ${chainCm && chainCm.toFixed(1)} cm; first message ${(start - origin) / 1000 - firstLeft >= -1e-3 ? "on" : "off"} the take's clock${problems.length ? "; " + problems.slice(0, 3).join("; ") : ""}` };
+}
+
+module.exports = { checkCSV, checkBVH, parseTRC, checkTRC, checkC3D, checkNPZ, checkMCAP, readC3D };

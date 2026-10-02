@@ -1,6 +1,6 @@
 # Hand Tracker
 
-Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmarks per hand), with a live 3D view, gesture and finger-curl readouts, **motion capture export in 7 formats**, **video recording**, and a **video converter** that opens nearly any video format and exports **36 formats**. Runs as a Windows or Linux desktop app, an Android app, or in a browser.
+Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmarks per hand), with a live 3D view, gesture and finger-curl readouts, **motion capture export in 8 formats**, **video recording**, and a **video converter** that opens nearly any video format and exports **36 formats**. Runs as a Windows or Linux desktop app, an Android app, or in a browser.
 
 ## Run it
 
@@ -49,7 +49,7 @@ Video import and export work in all three: the Windows and Linux app converts wi
 - **Convert any video**: the Recording Viewer's *Open Video…* opens nearly any video and converts it to any of 36 formats, one at a time or several in a queue; see [Converting videos](#converting-videos).
 - **Mirror view with readable text**: front (selfie) cameras and webcams are shown mirrored so movements feel natural; rear cameras and video files are shown as they are. The Mirror button switches it, and the app remembers your choice for each camera. Times in the picture, like a clock or a timestamp, are always shown the right way round: the app finds them with on-device OCR (tesseract.js, bundled) and flips them back. Other text (signs, screens, printing) reads backwards unless you turn on the optional **Readable text** button (off by default; your choice is remembered), which flips all text back. The app's own labels are always drawn the right way round. To avoid flipping things that only look like text (cloth, shadows, stripes), an area is only shown the right way round once it has been read as text in three scans running, so real text straightens about a second after it appears. Anything read on or right next to a hand is ignored too (OCR takes an OK sign's ring for an "O"), so no flipped patch is left behind when the hand moves away.
 - **Gestures**: pinch, OK sign (thumb and index in a ring, the other fingers out), thumbs up, fist, open palm, finger counting (*Two*: thumb and index out, like an L; *Three*: thumb, index and middle; *Four*: four fingers up with the thumb folded in; one is *Point* and five is *Open Palm*), peace (at any angle, upright, leaning or on its side), rock on, call me, shaka, point, thumbs down, *live long and prosper* (the Vulcan salute: fingers in two pairs with a V between the middle and ring fingers) and *the bird* (only the middle finger raised, pointing up or sideways but not down, with the hand facing the camera rather than side-on; sideways counts so it still works on a phone held on its side), plus palm yaw/pitch/roll and per-finger curl. Call Me and Shaka are the same hand shape: rocking the wrist back and forth makes it Shaka, holding it still is Call Me. A label must hold for a few frames before it changes, so it doesn't flicker. Gestures are judged mostly by how far each fingertip reaches from the wrist (in palm lengths), which holds up on real hands better than finger-bend angles do; the rules are checked against 202 hands measured from real photos (`scripts/fixtures/gesture-hands.json`) and were tuned on a live webcam session.
-- **Recording Viewer** (header link or *File → Open Recording Viewer*): opens hand recordings (JSON, CSV, BVH, NPZ, GLB), **C3D** and TRC files, and **OptiTrack `.tak`** takes. You can play them back, browse the frames, and convert them to every other motion format, or to any of the 36 video formats, one at a time or several in a queue; see [Viewing and converting recordings](#viewing-and-converting-recordings).
+- **Recording Viewer** (header link or *File → Open Recording Viewer*): opens hand recordings (JSON, CSV, BVH, NPZ, GLB, MCAP), **C3D** and TRC files, and **OptiTrack `.tak`** takes. You can play them back, browse the frames, and convert them to every other motion format, or to any of the 36 video formats, one at a time or several in a queue; see [Viewing and converting recordings](#viewing-and-converting-recordings).
 - **Recovers from camera dropouts**: if the camera stops sending frames, the app shows a notice and reconnects automatically.
 - **3D view**: *Hand shape: Real size* draws each hand at its real size and shape in metres (MediaPipe's world landmarks), and with an OAK-D at its measured distance; *From the picture* shows it as the camera sees it. *View* can rotate or swing back and forth by itself.
 - **Control your PC** (Windows and Linux app): a hand mouse, a floating keyboard and gesture actions. The Android app can do the same to a PC over Wi-Fi, or to the phone itself; see [Control your PC](#control-your-pc).
@@ -81,11 +81,12 @@ Press **Start Motion Capture**, do the movement, press **Stop**, then pick forma
 | **C3D** | Vicon Nexus, Qualisys, Visual3D, Mokka, ezc3d | 42 3D markers (21 per hand); frames where a hand wasn't visible are marked invalid |
 | **TRC** | OpenSim | The same 42 markers as a text table |
 | **NPZ** | Python / NumPy (`np.load`) | Per hand: `left_t`, `left_joints` (T×21×3), `left_wrist`, `left_palm_quat`, `left_phase`, `left_real_joints` (T×21×3, metres), with an OAK-D `left_distance_mm` (T×3); plus `joint_names`, `parents` |
+| **MCAP** (ROS 2) | `ros2 bag play`, RViz, Foxglove | ROS 2 messages: each hand's 21 joints as a `geometry_msgs/PoseArray` on `/hand_tracker/<hand>/joints` (each joint's x axis along its bone, the wrist's the palm's), and the skeletons as a `visualization_msgs/MarkerArray` on `/hand_tracker/skeleton` (spheres and lines, a colour per hand), one message per recorded frame, timed from when the take was recorded. The whole recording is attached (`hand_tracker.json`), which is what Hand Tracker reads back |
 
 Units and axes:
 
 - **JSON, CSV and NPZ** keep MediaPipe's raw units: x and y as fractions of the image width/height, and z as relative depth. The joint positions are relative to the wrist.
-- **BVH, GLB, C3D and TRC** are converted to real-world-style units: BVH in cm, GLB in m, C3D and TRC in mm. They use right-handed axes: Y-up for BVH, GLB and TRC; Z-up for C3D.
+- **BVH, GLB, C3D, TRC and MCAP** are converted to real-world-style units: BVH in cm, GLB and MCAP in m, C3D and TRC in mm. They use right-handed axes: Y-up for BVH, GLB and TRC; Z-up for C3D; ROS's axes for MCAP (frame `hand_tracker`: x away from the camera, y to the left, z up).
 - The real shape (`world_joints`, `…_real_…`) is MediaPipe's own estimate of the hand in metres, around the hand's centre (x right, y down, z away from the camera). An OAK-D's `distance_mm` is measured: the wrist's position from the camera in mm (x right, y down, z forward).
 - A single webcam can't measure distance, so the size is **estimated** by assuming an average adult hand (wrist to middle fingertip ≈ 19 cm). Treat absolute distances as approximate; relative motion and angles are what's reliable.
 - The 3D formats show the hands as the camera saw them (not mirrored), so a left hand stays a left hand.
@@ -180,6 +181,7 @@ The **Recording Viewer** opens:
 | **BVH** | Blender, MotionBuilder, and Hand Tracker | Every joint and end site, from the skeleton and its rotations, as points (in centimetres, as BVH is usually written); a Hand Tracker BVH opens as its hand again |
 | **NPZ** | NumPy, and Hand Tracker | Marker positions with their labels |
 | **GLB** | glTF animations, and Hand Tracker | The animated nodes' positions, as points |
+| **MCAP** | ROS 2 (`ros2 bag record`), Foxglove, and Hand Tracker | Hand Tracker's own exactly as recorded (from the recording attached to it; if a ROS tool dropped it, its hands are rebuilt from the joint messages). Others: every `geometry_msgs` PoseArray pose, PoseStamped and PointStamped as a marker named after its topic, converted from ROS's axes to Z-up millimetres; uncompressed, LZ4 and zstd files (ROS 2's recorder uses zstd) |
 | **.tak** | OptiTrack Motive takes | Windows app only, and **OptiTrack Motive must be installed on that PC** (see below) |
 
 For every recording you get:
@@ -188,12 +190,12 @@ For every recording you get:
 - **Playback**: hand skeletons for hand recordings, and markers with front, side and top views for C3D and `.tak`.
 - A **frame table**; click a row to jump to it.
 - An **Export** panel that converts the recording:
-  - **Hand recordings** can be exported to all 7 motion capture formats. So a CSV you edited can become BVH, GLB, C3D and so on.
-  - **Marker recordings** (C3D, `.tak`) can be exported to C3D, TRC, CSV, GLB, NPZ and JSON.
+  - **Hand recordings** can be exported to all 8 motion capture formats. So a CSV you edited can become BVH, GLB, C3D and so on.
+  - **Marker recordings** (C3D, `.tak`) can be exported to C3D, TRC, CSV, GLB, NPZ, JSON and MCAP.
   - **Any recording can become a video** in any of the 36 video formats: its playback (the skeletons, or the markers from the front) is drawn frame by frame, 1280 pixels wide, at the recording's frame rate (up to 60), so it's as long as the recording.
 - **Several recordings at once**: choose or drop more than one, or use **Convert recordings…**, pick the formats and click **Convert all**. Hand recordings go to any format and marker recordings to the marker ones (BVH needs a skeleton, so a marker recording says it can't); a file isn't converted to its own format again. Each one leaves the list once it's done.
 
-Any file can be chosen or dropped either way: recordings (`.json`, `.csv`, `.c3d`, `.trc`, `.bvh`, `.npz`, `.glb`, `.tak`) open in the viewer, and everything else opens as a video. **Convert videos…** queues several videos for converting.
+Any file can be chosen or dropped either way: recordings (`.json`, `.csv`, `.c3d`, `.trc`, `.bvh`, `.npz`, `.glb`, `.mcap`, `.tak`) open in the viewer, and everything else opens as a video. **Convert videos…** queues several videos for converting.
 
 The **Markers** list, the **frame table** and the export **Formats** list start collapsed to one line, which says what's inside (for example "42 markers" or the formats that are ticked). Click **Show** to open them and **Hide** to fold them away again. The video converter's format list works the same way.
 
@@ -383,7 +385,7 @@ From a PC with USB debugging turned on, you can use `adb install dist/HandTracke
 
 - **Video** is recorded as **MP4** by the phone's own video encoder, and plays in the gallery and every app. The other formats are converted on the phone with ffmpeg.wasm, which downloads once, about 32 MB. HEVC, AV1 and AVIF use the phone's own encoders, where it has them (a format the phone can't make says so); uncompressed AVI and Y4M are made a stretch at a time and saved in parts, so they never have to fit in memory at once.
 - **OptiTrack Motive's live data**, **controlling a PC over Wi-Fi** and **controlling the phone itself** work on the phone too; see [OptiTrack cameras and Motive](#optitrack-cameras-and-motive) and [Control your PC](#control-your-pc).
-- **Motion capture** exports all 7 formats, exactly as on the desktop.
+- **Motion capture** exports all 8 formats, exactly as on the desktop.
 - Files are saved to **Documents/Hand Tracker** on the phone. Each saved file has a **Share** button to send it to Photos, Drive, email or another app.
 - The screen stays on while the app is open, so tracking and recording aren't interrupted.
 - The Recording Viewer opens in the same screen, with a *Back to tracker* link.
@@ -455,8 +457,9 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `oak-source.js` | A Luxonis OAK camera as the source: setup dialog, frames into HandTracker |
 | `oak/` | OAK tracking code from depthai_hand_tracker, and `oak_bridge.py`, which streams its hands and pictures to the app |
 | `robot-motion.js` | Two-hand motion capture recorder |
-| `motion-export.js` | CSV / BVH / GLB / C3D / TRC / NPZ writers (hands and markers) |
-| `motion-import.js` | Reads JSON, CSV, C3D, TRC, BVH, NPZ and GLB back in (with a C3D reader built from the format's published description), as hands where they hold Hand Tracker's hands |
+| `motion-export.js` | CSV / BVH / GLB / C3D / TRC / NPZ / MCAP writers (hands and markers) |
+| `mcap.js` | MCAP files: a writer and reader, and ROS 2 messages in CDR (zstd chunks with fzstd) |
+| `motion-import.js` | Reads JSON, CSV, C3D, TRC, BVH, NPZ, GLB and MCAP back in (with a C3D reader built from the format's published description), as hands where they hold Hand Tracker's hands |
 | `export-ui.js` | Export panels shared by the main window and the viewer |
 | `hand-3d.js` | Three.js view of both hands and grippers |
 | `video-recorder.js` | Records the camera view (and the 3D and Motive views) with MediaRecorder |

@@ -17,7 +17,7 @@ const OUT = path.join(ROOT, "www");
 
 const APP_FILES = [
   "index.html", "viewer.html", "camera-tile.html", "camera-tile.js", "camera-roles.js", "multi-camera.js",
-  "app.js", "viewer.js", "mobile-bridge.js", "export-ui.js", "motion-import.js",
+  "app.js", "viewer.js", "mobile-bridge.js", "export-ui.js", "motion-import.js", "mcap.js",
   "hand-tracker.js", "far-hands.js", "robot-motion.js", "hand-3d.js",
   "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js", "ops-sessions.js", "rig-live.js", "motion-video.js",
   "natnet-parse.js", "remote-core.js", "phone-link-protocol.js", "phone-link-ui.js", "remote-record-ui.js", "remote.html", "remote-launcher.js", "remote-client.html", "remote-client.js", "gestures.js", "phone-control.html", "phone-control.js", "qr-code.js", "video-native.js",
@@ -36,6 +36,7 @@ const LIBRARY_FILES = [
     .filter((f) => /\.(js|wasm|data|binarypb)$/.test(f) || f === "pose_landmark_lite.tflite")
     .map((f) => `node_modules/@mediapipe/pose/${f}`),
   "node_modules/@mediapipe/drawing_utils/drawing_utils.js",
+  "node_modules/fzstd/umd/index.js",
   "node_modules/three/build/three.min.js",
   "node_modules/three/examples/js/controls/OrbitControls.js",
   // OCR (readable text in mirrored view): the browser worker only loads the LSTM builds.

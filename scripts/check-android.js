@@ -7,7 +7,7 @@
  * (fake-capacitor.js), then:
  *  1. confirms the page runs in Android mode (mobile bridge, no desktop bridge),
  *  2. simulates two hands while recording motion capture and video,
- *  3. saves the video (MP4 on phones) and all 7 motion formats through the
+ *  3. saves the video (MP4 on phones) and all 8 motion formats through the
  *     Android save path, in small chunks to exercise chunked writes,
  *  4. verifies every saved file with the same independent readers as check.js,
  *  5. checks Share and the Recording Viewer's Back link,
@@ -212,11 +212,11 @@ async function run() {
   // 3b. Motion capture, all formats
   await js("document.querySelectorAll('#motionFormatGrid input').forEach((i) => { i.checked = true; }); document.getElementById('motionExportBtn').click();");
   let saved = 0;
-  for (let i = 0; i < 80 && saved < 8; i++) {
+  for (let i = 0; i < 80 && saved < 9; i++) {
     await sleep(250);
     saved = await js("document.querySelectorAll('#motionResults li.ok').length");
   }
-  check("All 7 motion formats saved to Documents/Hand Tracker (8 files)", saved === 8, await js("document.getElementById('motionNote').textContent"));
+  check("All 8 motion formats saved to Documents/Hand Tracker (9 files)", saved === 9, await js("document.getElementById('motionNote').textContent"));
 
   const files = await pullFiles(js);
   const calls = await js("window.__fakeCapacitor.calls");
@@ -550,13 +550,13 @@ async function run() {
   })()`);
   const csvView = await viewerOpen("rec.csv", find(".csv"));
   check("Viewer imports the CSV on the phone", csvView.hands === 2 && !csvView.error, csvView.error);
-  const csvSaved = await viewerSave("phone-from-csv", 8);
-  check("…and saves all 7 formats from it through Android (8 files)", csvSaved.ok === 8 && csvSaved.share === 8 && csvSaved.label === "Save", JSON.stringify(csvSaved));
+  const csvSaved = await viewerSave("phone-from-csv", 9);
+  check("…and saves all 8 formats from it through Android (9 files)", csvSaved.ok === 9 && csvSaved.share === 9 && csvSaved.label === "Save", JSON.stringify(csvSaved));
   // The app's own C3D and BVH hold hands: they open as those hands again, with every format.
   const c3dView = await viewerOpen("rec.c3d", find(".c3d"));
   check("Viewer imports the app's C3D on the phone as both hands again", c3dView.hands === 2 && !c3dView.error, c3dView.error);
-  const c3dSaved = await viewerSave("phone-from-c3d", 8);
-  check("…and saves all 7 formats from it through Android (8 files)", c3dSaved.ok === 8, JSON.stringify(c3dSaved));
+  const c3dSaved = await viewerSave("phone-from-c3d", 9);
+  check("…and saves all 8 formats from it through Android (9 files)", c3dSaved.ok === 9, JSON.stringify(c3dSaved));
   const bvhView = await viewerOpen("rec-left.bvh", find("-left.bvh"));
   check("Viewer imports a BVH on the phone (as its hand)", bvhView.hands === 1 && !bvhView.error, bvhView.error);
   const takMsg = await js(`(async () => {

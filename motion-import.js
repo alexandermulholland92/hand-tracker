@@ -11,6 +11,10 @@
  *    { kind: "markers", labels, frame_rate, first_frame, frame_count, duration,
  *      positions: Float32Array (frame-major x,y,z in mm, Z-up, NaN = missing) }.
  *
+ *  - MCAP files (ROS 2, Foxglove): Hand Tracker's own read back exactly (from the recording
+ *    attached to them); others' positions as markers: each geometry_msgs PoseArray pose,
+ *    PoseStamped and PointStamped (chunks uncompressed, lz4 or zstd), labelled by topic.
+ *
  *   MotionImport.parseFile(fileName, arrayBuffer) -> { data, source, warnings: [string] }
  *   MotionImport.parse(text, fileName)            -> same, for text formats
  *   MotionImport.fromC3D(arrayBuffer, fileName)   -> marker data
@@ -675,11 +679,100 @@
         if (pts.every((q) => q.every(Number.isFinite))) handFrames[p].push({ t: k / md.frame_rate, pts });
       }
     }
-    const kind = { c3d: "C3D", trc: "TRC", csv: "marker CSV", json: "marker JSON", glb: "GLB", bvh: "BVH", npz: "NPZ" }[md.source] || md.source;
+    const kind = { c3d: "C3D", trc: "TRC", csv: "marker CSV", json: "marker JSON", glb: "GLB", bvh: "BVH", npz: "NPZ", mcap: "MCAP" }[md.source] || md.source;
     const other = md.labels.length - prefixes.length * 21;
     const warnings = [...(md.warnings || [])];
     if (other > 0) warnings.push(`${other} other point${other === 1 ? " was" : "s were"} left out: only the hands were kept.`);
     return handsFromPointFrames(handFrames, md.source, [`Imported from ${fileName || `a ${kind} file`}: Hand Tracker hands, rebuilt from their points (joint orientations, velocities and accelerations recalculated).`], warnings);
+  }
+
+  // ---------- MCAP ----------
+  // Hand Tracker's own: the recording attached to it (hand_tracker.json), as it was. Otherwise
+  // (another program's, or one a ROS tool rewrote without its attachments) every position in it
+  // as a marker: each pose of a PoseArray (named from the channel's "labels" when it has them,
+  // as Hand Tracker's do, else "<topic> 1", "<topic> 2"…), each PoseStamped and PointStamped,
+  // put on frames at the busiest topic's rate. ROS axes (x forward, y left, z up, metres) become
+  // Z-up millimetres (x right, y forward). useAttachment: false reads only the messages.
+  function fromMCAP(buffer, fileName = "", { useAttachment = true } = {}) {
+    if (!global.Mcap) throw new Error("MCAP files can't be read here (mcap.js is missing).");
+    const file = Mcap.read(buffer);
+    const own = useAttachment && file.attachments.find((a) => a.name === "hand_tracker.json");
+    if (own) {
+      const res = parse(new TextDecoder().decode(own.data), fileName.replace(/\.mcap$/i, ".json"));
+      return asHandsIfAny(res, fileName);
+    }
+    const KINDS = /^geometry_msgs\/(msg\/)?(PoseArray|PoseStamped|PointStamped)$/;
+    const channels = [...file.channels.values()].filter((c) => c.messageEncoding === "cdr" && c.schema && KINDS.test(c.schema.name));
+    if (!channels.length) {
+      const kinds = [...new Set([...file.channels.values()].map((c) => (c.schema ? c.schema.name : c.messageEncoding)))].join(", ");
+      throw new Error(`${fileName || "This MCAP file"} holds no positions Hand Tracker can read (it reads PoseArray, PoseStamped and PointStamped messages)${kinds ? `: it has ${kinds}` : ""}.`);
+    }
+    const byChannel = new Map(channels.map((c) => [c.id, []]));
+    // Times from when the take was recorded (Hand Tracker's say, in their metadata), else from
+    // the first message.
+    const recorded = Date.parse(((file.metadata.find((m) => m.name === "hand_tracker") || {}).metadata || {}).recorded_at);
+    let t0 = Number.isFinite(recorded) ? BigInt(recorded) * 1000000n : null;
+    for (const m of file.messages) {
+      const list = byChannel.get(m.channel);
+      if (!list) continue;
+      const d = Mcap.cdr.decode(file.channels.get(m.channel).schema.name, m.data);
+      if (!d) continue;
+      if (t0 === null) t0 = m.logTime;
+      list.push({ t: Number(m.logTime - t0) / 1e9, points: d.points });
+    }
+    const labelsOf = (c) => {
+      try {
+        return JSON.parse(c.metadata.labels || "null");
+      } catch {
+        return String(c.metadata.labels || "").split(",");
+      }
+    };
+    // ROS (x forward, y left, z up; m) -> Z-up mm (x right, y forward).
+    const zUp = (p) => [-p[1] * 1000, p[0] * 1000, p[2] * 1000];
+    // Hand Tracker's hands (a topic per hand, its poses named "L_wrist", "L_thumb_cmc"…): rebuilt
+    // on their messages' own times.
+    const handFrames = {};
+    for (const c of channels) {
+      const named = labelsOf(c);
+      const prefix = Array.isArray(named) && named.length === 21 && (/^(L|R|H\d+)_wrist$/.exec(named[0]) || [])[1];
+      if (!prefix || !JOINTS.every((j, i) => named[i] === `${prefix}_${j}`)) continue;
+      handFrames[prefix] = byChannel.get(c.id).filter((f) => f.points.length === 21 && f.points.every((p) => p.every(Number.isFinite))).map((f) => ({ t: f.t, pts: f.points.map(zUp) }));
+    }
+    const handTopics = Object.keys(handFrames).length;
+    if (handTopics) {
+      const others = channels.length - handTopics;
+      const hands = handsFromPointFrames(handFrames, "mcap",
+        [`Imported from ${fileName || "an MCAP file"}: Hand Tracker hands, rebuilt from their joint messages (joint orientations, velocities and accelerations recalculated).`],
+        others ? [`${others} other topic${others === 1 ? " was" : "s were"} left out: only the hands were kept.`] : []);
+      if (hands) return hands;
+    }
+    // Labels: each channel's points, in order.
+    const labels = [], base = new Map();
+    for (const c of channels) {
+      const most = Math.max(0, ...byChannel.get(c.id).map((f) => f.points.length));
+      const named = labelsOf(c);
+      base.set(c.id, labels.length);
+      const topic = c.topic.replace(/^\//, "");
+      for (let i = 0; i < most; i++) labels.push(Array.isArray(named) && named.length === most && named[i] ? String(named[i]) : most === 1 ? topic : `${topic} ${i + 1}`);
+    }
+    // Frames at the busiest channel's rate (its median interval).
+    const busiest = [...byChannel.values()].sort((a, b) => b.length - a.length)[0];
+    const gaps = busiest.slice(1).map((f, i) => f.t - busiest[i].t).filter((d) => d > 0).sort((a, b) => a - b);
+    const rate = gaps.length ? Math.min(1000, Math.max(1, Math.round(1 / gaps[Math.floor(gaps.length / 2)]))) : 30;
+    const last = Math.max(0, ...[...byChannel.values()].map((l) => (l.length ? l[l.length - 1].t : 0)));
+    const frameCount = Math.round(last * rate) + 1;
+    const positions = new Float32Array(frameCount * labels.length * 3).fill(NaN);
+    for (const [id, list] of byChannel) {
+      for (const f of list) {
+        const k = Math.min(frameCount - 1, Math.round(f.t * rate));
+        f.points.forEach((p, i) => {
+          if (!p.every(Number.isFinite)) return;
+          positions.set(zUp(p), (k * labels.length + base.get(id) + i) * 3);
+        });
+      }
+    }
+    const notes = [`MCAP: ${channels.length} topic${channels.length === 1 ? "" : "s"} (${channels.map((c) => c.topic).join(", ")}), ${labels.length} point${labels.length === 1 ? "" : "s"} × ${frameCount} frames at ${rate} fps.`];
+    return asHandsIfAny(markerData({ name: fileName.replace(/\.[^.]+$/, ""), source: "mcap", rate, firstFrame: 0, labels, positions, notes }), fileName);
   }
 
   // Any marker result: as hands when it holds Hand Tracker hands, else as it is.
@@ -1011,6 +1104,7 @@
     const ext = ((fileName.match(/\.([a-z0-9]+)$/i) || [])[1] || "").toLowerCase();
     const u8 = new Uint8Array(buffer);
     if (ext === "npz") throw new Error("NPZ files are read with parseFileAsync.");
+    if (ext === "mcap" || (u8.length > 8 && u8[0] === 0x89 && u8[1] === 0x4d && u8[2] === 0x43 && u8[3] === 0x41 && u8[4] === 0x50)) return fromMCAP(buffer, fileName);
     if (ext === "glb" || (u8.length > 12 && new DataView(buffer).getUint32(0, true) === 0x46546c67)) return fromGLB(buffer, fileName);
     if (ext === "c3d" || (!ext && u8.length > 1024 && u8[1] === 0x50)) return asHandsIfAny(fromC3D(buffer, fileName), fileName);
     const text = new TextDecoder().decode(u8).replace(/^\uFEFF/, "");
@@ -1028,7 +1122,7 @@
   }
 
   // Every motion capture file this module reads, by extension.
-  const EXTENSIONS = ["json", "csv", "c3d", "trc", "bvh", "npz", "glb"];
+  const EXTENSIONS = ["json", "csv", "c3d", "trc", "bvh", "npz", "glb", "mcap"];
 
-  global.MotionImport = { parse, parseFile, parseFileAsync, fromC3D, fromTRC, fromBVH, fromNPZ, fromGLB, EXTENSIONS };
+  global.MotionImport = { parse, parseFile, parseFileAsync, fromC3D, fromTRC, fromBVH, fromNPZ, fromGLB, fromMCAP, EXTENSIONS };
 })(window);

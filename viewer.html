@@ -156,10 +156,10 @@
       <button type="button" id="videoBtn">Open Video…</button>
       <button type="button" id="convertVideosBtn" title="Pick one or more videos to convert them all to other formats">Convert Videos…</button>
     </div>
-    <input type="file" id="fileInput" multiple accept=".json,.csv,.c3d,.trc,.bvh,.npz,.glb,.tak,application/json,text/csv" />
+    <input type="file" id="fileInput" multiple accept=".json,.csv,.c3d,.trc,.bvh,.npz,.glb,.mcap,.tak,application/json,text/csv" />
     <input type="file" id="videoInput" multiple />
     <input type="file" id="convertVideoInput" multiple />
-    <input type="file" id="convertRecordingInput" multiple accept=".json,.csv,.c3d,.trc,.bvh,.npz,.glb,application/json,text/csv" />
+    <input type="file" id="convertRecordingInput" multiple accept=".json,.csv,.c3d,.trc,.bvh,.npz,.glb,.mcap,application/json,text/csv" />
     <div id="fileName"></div>
   </div>
 
@@ -204,6 +204,8 @@
 <script src="video-native.js"></script>
 <script src="video-convert.js"></script>
 <script src="video-queue.js"></script>
+<script src="node_modules/fzstd/umd/index.js"></script>
+<script src="mcap.js"></script>
 <script src="motion-export.js"></script>
 <script src="motion-import.js"></script>
 <script src="motion-video.js"></script>

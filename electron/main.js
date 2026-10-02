@@ -36,7 +36,7 @@ const PAGES = new Map([
 // Keys that work even while the app is minimized: the hand mouse and the floating keyboard on/off.
 const SHORTCUTS = { mouse: "CommandOrControl+Alt+M", keyboard: "CommandOrControl+Alt+K" };
 const ALLOWED_PERMISSIONS = new Set(["media", "fullscreen", "clipboard-sanitized-write"]);
-const SAVE_EXTENSIONS = new Set(["json", "csv", "bvh", "glb", "c3d", "trc", "npz"]); // motion capture exports
+const SAVE_EXTENSIONS = new Set(["json", "csv", "bvh", "glb", "c3d", "trc", "npz", "mcap"]); // motion capture exports
 const readFile = promisify(fs.readFile); // callback fs is asar-aware in packaged builds
 
 const MIME = {

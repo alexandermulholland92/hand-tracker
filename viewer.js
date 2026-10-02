@@ -931,8 +931,9 @@
       { id: "glb", label: "GLB (glTF)", detail: "Animated 3D markers · Blender, Unity" },
       { id: "npz", label: "NPZ", detail: "NumPy arrays · Python, ML" },
       { id: "json", label: "JSON", detail: "Plain data · any language" },
+      { id: "mcap", label: "MCAP (ROS 2)", detail: "ROS 2 bag · ros2 bag play, RViz, Foxglove" },
     ];
-    const OURS = ["glb", "npz", "json"];
+    const OURS = ["glb", "npz", "json", "mcap"];
     setupExport(formats, ["c3d"], baseName, (ids, name) =>
       window.desktop.exportTake({
         path: takPath,

@@ -10,9 +10,10 @@
  *   C3D   3D marker trajectories                -> Vicon, Qualisys, Visual3D, Mokka
  *   TRC   3D marker trajectories (text)         -> OpenSim
  *   NPZ   NumPy arrays                          -> Python, ML and robotics pipelines
+ *   MCAP  ROS 2 messages (mcap.js)              -> ros2 bag play, RViz, Foxglove
  *
  * Marker recordings (imported C3D files and OptiTrack .tak takes, see motion-import.js):
- *   C3D, TRC, CSV, GLB, NPZ, JSON — the same writers, fed with labelled 3D points.
+ *   C3D, TRC, CSV, GLB, NPZ, JSON, MCAP — the same writers, fed with labelled 3D points.
  *
  *   MotionExport.FORMATS / MotionExport.build(data, ["bvh", ...], baseName)
  *   MotionExport.MARKER_FORMATS / MotionExport.buildMarkers(markerData, ["trc", ...], baseName)
@@ -59,6 +60,7 @@
     { id: "c3d", label: "C3D", detail: "Mocap standard · Vicon, Qualisys, Visual3D, Mokka" },
     { id: "trc", label: "TRC", detail: "Marker trajectories · OpenSim" },
     { id: "npz", label: "NPZ", detail: "NumPy arrays · Python, ML, robotics" },
+    { id: "mcap", label: "MCAP (ROS 2)", detail: "ROS 2 bag · ros2 bag play, RViz, Foxglove" },
   ];
 
   // ---------- vector / quaternion helpers (quaternions are [x, y, z, w]) ----------
@@ -798,6 +800,7 @@
     { id: "glb", label: "GLB (glTF)", detail: "Animated 3D markers · Blender, Unity, 3D Viewer" },
     { id: "npz", label: "NPZ", detail: "NumPy arrays · Python, ML, robotics" },
     { id: "json", label: "JSON", detail: "Plain data · any language" },
+    { id: "mcap", label: "MCAP (ROS 2)", detail: "ROS 2 bag · ros2 bag play, RViz, Foxglove" },
   ];
   const MARKER_PALETTE = [[0.30, 0.67, 0.97], [1.0, 0.57, 0.17], [0.32, 0.81, 0.40], [0.97, 0.51, 0.67], [0.75, 0.55, 0.98], [1.0, 0.83, 0.23]];
 
@@ -918,6 +921,9 @@
         case "json":
           out.push({ format: id, suffix: "", ext: "json", data: toMarkerJSON(md) });
           break;
+        case "mcap":
+          out.push({ format: id, suffix: "", ext: "mcap", data: toMarkerMCAP(md) });
+          break;
         default:
           throw new Error(`Unknown marker format: ${id}`);
       }
@@ -926,6 +932,104 @@
   }
 
   // ---------- entry point ----------
+  // ---------- MCAP (ROS 2) ----------
+  // ROS 2 messages in an MCAP file (mcap.js), which `ros2 bag play`, RViz and Foxglove read:
+  // each hand's 21 joints as a geometry_msgs/PoseArray on /hand_tracker/<hand>/joints (metres,
+  // each joint's x axis along its bone, the wrist's the palm's), and every hand's skeleton as a
+  // visualization_msgs/MarkerArray on /hand_tracker/skeleton, in the frame "hand_tracker" (x away
+  // from the camera, y to the left, z up, as ROS has it), timed from when the take was recorded.
+  // The JSON export rides along as an attachment (hand_tracker.json): what Hand Tracker reads back.
+  const MCAP_FRAME = "hand_tracker";
+  const MCAP_LIFETIME_NS = BigInt(MAX_GAP_S * 1e9); // a hand not seen for this long disappears
+  const rosName = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").replace(/^(\d)/, "h$1") || "hand";
+  const utf8 = (s) => new TextEncoder().encode(s);
+  // Image axes (x right, y down, z away) in mm -> ROS (x away, y left, z up) in m.
+  const imageToRos = (p, mmPerUnit) => [(p[2] * mmPerUnit) / 1000, (-p[0] * mmPerUnit) / 1000, (-p[1] * mmPerUnit) / 1000];
+  // Z-up mm (x right, y away, z up: C3D, Motive) -> ROS m, and back (motion-import.js).
+  const zUpToRos = (p) => [p[1] / 1000, -p[0] / 1000, p[2] / 1000];
+
+  // Each joint's orientation: its x axis along its bone (a fingertip's, along the bone that ends
+  // there), the wrist's the palm's.
+  function jointQuats(P) {
+    return P.map((p, j) => {
+      if (j === 0) return palmQuat(P);
+      const child = PARENT.indexOf(j);
+      const d = child >= 0 ? sub(P[child], p) : sub(p, P[PARENT[j]]);
+      return length(d) > 1e-9 ? qFromTo([1, 0, 0], norm(d)) : [0, 0, 0, 1];
+    });
+  }
+
+  function mcapWriter() {
+    const M = global.Mcap;
+    if (!M) throw new Error("MCAP export isn't available here (mcap.js is missing).");
+    const w = M.writer({ profile: "ros2", library: "Hand Tracker" });
+    return {
+      M, w,
+      poseArray: w.schema("geometry_msgs/msg/PoseArray", "ros2msg", M.ROS2.PoseArray),
+      markerArray: w.schema("visualization_msgs/msg/MarkerArray", "ros2msg", M.ROS2.MarkerArray),
+      qos: { offered_qos_profiles: M.QOS },
+    };
+  }
+
+  function toMCAP(prep, data) {
+    const { M, w, poseArray, markerArray, qos } = mcapWriter();
+    const origin = BigInt(Date.parse(data.recorded_at) || 0) * 1000000n;
+    const at = (t) => origin + BigInt(Math.round(t * 1e9));
+    const topics = new Set();
+    const channels = prep.tracks.map((tr) => {
+      let name = rosName(tr.name);
+      for (let k = 2; topics.has(name); k++) name = `${rosName(tr.name)}_${k}`;
+      topics.add(name);
+      // The joints' names, as Hand Tracker's C3D names them (so they read back as this hand).
+      return w.channel(`/hand_tracker/${name}/joints`, "cdr", poseArray, { ...qos, labels: JSON.stringify(JOINTS.map((j) => `${tr.prefix}_${j}`)) });
+    });
+    const skeleton = w.channel("/hand_tracker/skeleton", "cdr", markerArray, qos);
+    const frames = [];
+    prep.tracks.forEach((tr, h) => tr.samples.forEach((s) => frames.push({ h, s })));
+    frames.sort((a, b) => a.s.t - b.s.t);
+    for (const { h, s } of frames) {
+      const tr = prep.tracks[h], t = at(s.t);
+      const P = s.world.map((p) => imageToRos(p, prep.mmPerUnit));
+      const Q = jointQuats(P);
+      w.message(channels[h], t, M.cdr.poseArray(t, MCAP_FRAME, P.map((p, j) => ({ p, q: Q[j] }))));
+      const side = /Left$/.test(tr.name) ? "Left" : /Right$/.test(tr.name) ? "Right" : "";
+      const color = [...(HAND_COLORS[side] || tr.color), 1];
+      const ns = rosName(tr.name);
+      w.message(skeleton, t, M.cdr.markerArray([
+        { timeNs: t, frameId: MCAP_FRAME, ns, id: 0, type: 7, scale: [0.012, 0.012, 0.012], color, lifetimeNs: MCAP_LIFETIME_NS, points: P },
+        { timeNs: t, frameId: MCAP_FRAME, ns, id: 1, type: 5, scale: [0.005, 0, 0], color, lifetimeNs: MCAP_LIFETIME_NS, points: CONNECTIONS.flatMap(([a, b]) => [P[a], P[b]]) },
+      ]));
+    }
+    const meta = { recorded_at: String(data.recorded_at || ""), hands: prep.tracks.map((tr) => tr.name).join(", "), frame_rate: String(prep.fps), units: "m", frame_id: MCAP_FRAME };
+    for (const [k, v] of Object.entries(data.metadata || {})) if (v !== null && v !== undefined && typeof v !== "object") meta[k] = String(v);
+    w.metadata("hand_tracker", meta);
+    w.attachment("hand_tracker.json", "application/json", utf8(JSON.stringify(data)), origin);
+    return w.finish();
+  }
+
+  // A marker recording: its points as one geometry_msgs/PoseArray on /markers/points (missing
+  // ones NaN, in the order of the channel's "labels"), and the ones seen as spheres on
+  // /markers/spheres, in the frame "mocap".
+  function toMarkerMCAP(md) {
+    const { M, w, poseArray, markerArray, qos } = mcapWriter();
+    const origin = BigInt(Date.parse(md.recorded_at) || 0) * 1000000n;
+    const points = w.channel("/markers/points", "cdr", poseArray, { ...qos, labels: JSON.stringify(md.labels) });
+    const spheres = w.channel("/markers/spheres", "cdr", markerArray, qos);
+    for (let k = 0; k < md.frame_count; k++) {
+      const t = origin + BigInt(Math.round((k / md.frame_rate) * 1e9));
+      const P = md.labels.map((_, m) => {
+        const p = markerPoint(md, k, m);
+        return p ? zUpToRos(p) : [NaN, NaN, NaN];
+      });
+      w.message(points, t, M.cdr.poseArray(t, "mocap", P.map((p) => ({ p, q: [0, 0, 0, 1] }))));
+      w.message(spheres, t, M.cdr.markerArray([{ timeNs: t, frameId: "mocap", ns: "markers", id: 0, type: 7, scale: [0.014, 0.014, 0.014], color: [...MARKER_PALETTE[0], 1],
+        lifetimeNs: BigInt(Math.round(2e9 / md.frame_rate)), points: P.filter((p) => p.every(Number.isFinite)) }]));
+    }
+    w.metadata("hand_tracker", { kind: "markers", labels: String(md.labels.length), frame_rate: String(md.frame_rate), units: "m", frame_id: "mocap" });
+    w.attachment("hand_tracker.json", "application/json", utf8(toMarkerJSON(md)), origin);
+    return w.finish();
+  }
+
   function build(data, formatIds, baseName = "motion") {
     const prep = prepare(data);
     if (!prep.tracks.length) throw new Error("This recording has no hand frames.");
@@ -952,6 +1056,9 @@
           break;
         case "npz":
           out.push({ format: id, suffix: "", ext: "npz", data: toNPZ(prep) });
+          break;
+        case "mcap":
+          out.push({ format: id, suffix: "", ext: "mcap", data: toMCAP(prep, data) });
           break;
         default:
           throw new Error(`Unknown motion format: ${id}`);
