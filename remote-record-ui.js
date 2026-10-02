@@ -9,12 +9,19 @@
  *   stop    — stop it, and save the take into the remote recording folder by itself, in the
  *             export card's formats (a previous take not yet exported is saved the same way
  *             before a new one starts, rather than asking here);
- *   close   — stop the cameras.
- * Nothing starts by itself: the cameras only run once the phone (or someone here) asks.
+ *   close   — stop the cameras;
+ *   details — only the take details (contributor, location, task), which any request can
+ *             bring along: kept here (so every phone sees them, and they last), and when a
+ *             take is stopped, its name ("Sam_Lab-2_Pick-up-cup_2026-10-01_16-30-00") and
+ *             its metadata;
+ *   camera  — one running camera's role (which moves it to that block of the grid), its turn
+ *             (0, 90, 180 or 270 degrees) or its flip.
+ * Only cameras that are plugged in get a tile. Nothing starts by itself: the cameras only run once the phone (or someone here) asks.
  * While the phone's page is open, each camera's picture with its hands drawn goes to it a few
  * times a second.
  *
- *   RemoteRecordUI.init({ desktop, prefs, setPref, app: HandTrackerApp });
+ *   RemoteRecordUI.init({ desktop, mobile, prefs, setPref, app: HandTrackerApp });
+ * (On the website it only shows the header's link to remote.html, which opens a rig's page.)
  */
 
 (function (global) {
@@ -64,10 +71,51 @@
     $("remoteAutostart").checked = !!auto.on;
   }
 
+  // ---------- the take details ----------
+  const DETAILS = ["contributor", "location", "task"];
+  const DETAIL_LABELS = { contributor: "Contributor", location: "Location", task: "Task" };
+  const details = () => Object.fromEntries(DETAILS.map((k) => [k, String((prefs.remoteDetails || {})[k] || "")]));
+  // A take can't start without all three (each take is named after them).
+  const missingDetails = () => DETAILS.filter((k) => !details()[k].trim());
+  const listOf = (words) => (words.length > 1 ? `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}` : words[0] || "");
+  // The details a take started with: locked from when recording is asked for until the take is
+  // saved (the next take can have others). Recording started at the computer locks them too.
+  let takeDetails = null;
+  let recordStarting = false; // starting the cameras, then recording
+  function detailsLocked() {
+    if (takeDetails && !recordStarting && !MultiCamera.isRecording()) takeDetails = null; // stopped at the computer
+    return !!takeDetails || recordStarting || MultiCamera.isRecording();
+  }
+  function setDetails(d) {
+    const next = Object.fromEntries(DETAILS.map((k) => [k, String((d && d[k]) || "").slice(0, 200)]));
+    if (DETAILS.some((k) => next[k] !== details()[k])) setPref("remoteDetails", next);
+  }
+
+  const p2 = (n) => String(n).padStart(2, "0");
+  // A recording's length: "1:05" (or "1:02:03") for the metadata; "1m05s" (or "1h02m03s", "42s") for names.
+  function lengthText(seconds, forName) {
+    const s = Math.max(0, Math.floor(seconds || 0)); // whole seconds, as the timer showed them
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    if (forName) return h ? `${h}h${p2(m)}m${p2(sec)}s` : m ? `${m}m${p2(sec)}s` : `${sec}s`;
+    return h ? `${h}:${p2(m)}:${p2(sec)}` : `${m}:${p2(sec)}`;
+  }
+
+  // A take's name: its details and length, then when it started
+  // ("Sam_Lab-2_Pick-up-cup_1m05s_2026-10-01_16-30-00"), or "robot-motion_<length>_<when>"
+  // without any details. (Each part is kept short, so the length and time always fit.)
+  function takeName(d, when, seconds) {
+    const part = (v) => String(v || "").trim().replace(/[<>:"/\\|?*]+/g, "-").replace(/\s+/g, "-").replace(/-{2,}/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 28).replace(/[-.]+$/, "");
+    const parts = DETAILS.map((k) => part(d[k])).filter(Boolean);
+    const t = new Date(when);
+    const stamp = `${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())}_${p2(t.getHours())}-${p2(t.getMinutes())}-${p2(t.getSeconds())}`;
+    return [...(parts.length ? parts : ["robot-motion"]), lengthText(seconds, true), stamp].join("_");
+  }
+
   // ---------- what the phone's page shows ----------
   function state() {
     const st = MultiCamera.remoteState();
-    return { ...st, pending, lastTake, savedCameras: Array.isArray(prefs.multiCameras) ? prefs.multiCameras.length : 0 };
+    const locked = detailsLocked();
+    return { ...st, pending, lastTake, details: takeDetails || details(), detailsLocked: locked, savedCameras: Array.isArray(prefs.multiCameras) ? prefs.multiCameras.length : 0 };
   }
   const push = () => on && remote.setState(state());
   function startState() {
@@ -110,22 +158,41 @@
   }
 
   // ---------- what the phone asks for ----------
-  // The cameras last picked in Several cameras; failing that, every OAK camera, or every webcam.
-  async function cameraIds() {
-    if (Array.isArray(prefs.multiCameras) && prefs.multiCameras.length) return prefs.multiCameras.slice(0, MAX_CAMERAS);
-    let ids = [];
+  // The cameras plugged in now: OAK cameras ("oak:<id>", once OAK support is set up), then webcams.
+  async function connectedIds() {
+    const ids = [];
     if (global.OakSource && OakSource.available() && global.desktop.oak) {
       const status = await desktop.oak.status().catch(() => ({}));
-      if (status.ready) ids = (await desktop.oak.list().catch(() => [])).map((d) => `oak:${d.id}`);
+      if (status.ready) {
+        // One the main window is using isn't listed: it's let go first (as Several cameras would).
+        if (OakSource.isActive()) {
+          OakSource.stop();
+          await sleep(2500);
+        }
+        ids.push(...(await desktop.oak.list().catch(() => [])).map((d) => `oak:${d.id}`));
+      }
     }
-    if (!ids.length) ids = (await HandTracker.listCameras()).map((c) => c.deviceId);
-    return ids.slice(0, MAX_CAMERAS);
+    ids.push(...(await HandTracker.listCameras()).map((c) => c.deviceId));
+    return ids;
+  }
+
+  // Those of the cameras last picked in Several cameras that are plugged in now (a tile for
+  // one that isn't would only say so); with none picked, every OAK camera, else every webcam.
+  async function cameraIds() {
+    const connected = await connectedIds();
+    const picked = Array.isArray(prefs.multiCameras) ? prefs.multiCameras : [];
+    if (picked.length) return picked.filter((id) => connected.includes(id)).slice(0, MAX_CAMERAS);
+    const oaks = connected.filter((id) => id.startsWith("oak:"));
+    return (oaks.length ? oaks : connected).slice(0, MAX_CAMERAS);
   }
 
   async function startCameras() {
     if (MultiCamera.isActive()) return;
     const ids = await cameraIds();
-    if (!ids.length) throw new Error("No cameras found.");
+    if (!ids.length) {
+      const picked = Array.isArray(prefs.multiCameras) ? prefs.multiCameras.length : 0;
+      throw new Error(picked ? `None of the ${picked} cameras picked in Several cameras is plugged in.` : "No cameras found.");
+    }
     await MultiCamera.start(ids);
   }
 
@@ -148,16 +215,21 @@
     return MultiCamera.startRecording();
   }
 
+  // The take gets the details it started with (they can't change meanwhile) and its length,
+  // from Start to Stop, as metadata and in its name.
   async function stopAndSave() {
-    const take = MultiCamera.stopRecording(true);
+    const d = takeDetails || details();
+    const seconds = Math.round(MultiCamera.remoteState().elapsed_s * 100) / 100;
+    const take = MultiCamera.stopRecording(true, { metadata: { ...d, length: lengthText(seconds), length_s: seconds } });
     const at = new Date().toISOString();
     if (!take) {
       lastTake = { ok: false, at, message: "No hands were recorded, so nothing was saved." };
       return { ok: false, message: lastTake.message };
     }
-    const saved = await app.saveMotionNow();
+    const saved = await app.saveMotionNow(takeName(d, take.recorded_at || Date.now(), seconds));
+    takeDetails = null; // saved: the next take can have others
     lastTake = saved && saved.ok
-      ? { ok: true, at, files: saved.files, dir: saved.dir, duration: take.duration, hands: take.hands.length }
+      ? { ok: true, at, files: saved.files, dir: saved.dir, duration: seconds, hands: take.hands.length, details: d }
       : { ok: false, at, message: `Recorded, but not saved: ${(saved && saved.message) || "export it on the computer"}` };
     return { ok: lastTake.ok, message: lastTake.ok ? `Saved ${saved.files.join(", ")}` : lastTake.message };
   }
@@ -174,7 +246,18 @@
       });
   }
 
-  async function carryOut(action) {
+  async function carryOut(action, data = {}) {
+    const locked = detailsLocked();
+    if (data.details && !locked) setDetails(data.details);
+    if (action === "details") return locked ? { ok: false, locked: true, message: "The take details can't be changed while recording." } : { ok: true, message: "" };
+    if (action === "camera") {
+      // One running camera's role (it moves to that block), turn or flip.
+      const c = data.camera || {};
+      if (!MultiCamera.remoteState().cameras.some((x) => x.index === c.index)) return { ok: false, message: "That camera isn't running." };
+      if (c.role !== undefined) MultiCamera.setRole(c.index, c.role);
+      if (c.rotation !== undefined || c.mirror !== undefined) MultiCamera.setView(c.index, { rotation: c.rotation, mirror: c.mirror });
+      return { ok: true, message: "" };
+    }
     if (pending) return { ok: false, message: `Busy: ${pending}` };
     const recording = MultiCamera.isRecording();
     if (action === "cameras") {
@@ -184,12 +267,26 @@
     }
     if (action === "record") {
       if (recording) return { ok: true, message: "Already recording." };
-      if (MultiCamera.isActive()) return startRecording();
+      const missing = missingDetails();
+      if (missing.length) return { ok: false, missing, message: `Fill in ${listOf(missing.map((k) => DETAIL_LABELS[k]))} first: each take is named after them.` };
+      // The details are the take's from now on (until it's saved).
+      takeDetails = details();
+      recordStarting = true;
+      const started = (r) => {
+        recordStarting = false;
+        if (!r.ok) takeDetails = null;
+        return r;
+      };
+      if (MultiCamera.isActive()) return started(await startRecording().catch((err) => ({ ok: false, message: errText(err) })));
       inBackground("Starting the cameras, then recording…", async () => {
-        await startCameras();
-        if (!(await camerasReady())) throw new Error("No camera started, so recording didn't.");
-        const r = await startRecording();
-        if (!r.ok) throw new Error(r.message);
+        let r = { ok: false, message: "No camera started, so recording didn't." };
+        try {
+          await startCameras();
+          if (await camerasReady()) r = await startRecording();
+        } catch (err) {
+          r = { ok: false, message: errText(err) };
+        }
+        if (!started(r).ok) throw new Error(r.message);
       });
       return { ok: true, message: "Starting the cameras, then recording…" };
     }
@@ -206,6 +303,17 @@
   }
 
   function init(opts) {
+    // A link to the page for opening a rig's remote page (remote.html): in place on the website
+    // and in the Android app (it has a way back), a window of its own in the Windows and Linux app.
+    const link = $("remoteLink");
+    if (link) {
+      link.hidden = false;
+      if (opts.desktop) {
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = "Remote recording ↗";
+      }
+    }
     remote = opts.desktop && opts.desktop.remote;
     if (!remote || !$("remoteRec")) return;
     prefs = opts.prefs;
@@ -214,10 +322,10 @@
     $("remoteRec").hidden = false;
     remote.onStatus(show);
     remote.onWantPreviews(setPreviews);
-    remote.onCommand(async ({ id, action }) => {
+    remote.onCommand(async ({ id, action, details: d, camera }) => {
       let result;
       try {
-        result = await carryOut(action);
+        result = await carryOut(action, { details: d, camera });
       } catch (err) {
         result = { ok: false, message: errText(err) };
       }
@@ -259,5 +367,5 @@
     });
   }
 
-  global.RemoteRecordUI = { init, _carryOut: carryOut };
+  global.RemoteRecordUI = { init, _carryOut: carryOut, _takeName: takeName };
 })(window);

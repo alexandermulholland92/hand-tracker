@@ -22,9 +22,12 @@
  *   remote.setState(state); // what the page shows, from the main window (about twice a second)
  *   remote.setPreview(i, jpeg); // camera i's latest preview (only sent while a page asks for them)
  *
- * ask(action) -> Promise<{ ok, message }>: the main window carries out "cameras" (start the
- * cameras), "record" (start recording, starting the cameras first if need be), "stop" (stop
- * and save the take) or "close" (stop the cameras). onWantPreviews(bool): a page is (or stopped) looking at the previews.
+ * ask(action, { details, camera }) -> Promise<{ ok, message }>: the main window carries out
+ * "cameras" (start the cameras), "record" (start recording, starting the cameras first if need
+ * be), "stop" (stop and save the take), "close" (stop the cameras), "details" (only the take
+ * details: { contributor, location, task }, which any request can bring along, and which go
+ * into the takes) or "camera" (one camera's { index, role, rotation, mirror }).
+ * onWantPreviews(bool): a page is (or stopped) looking at the previews.
  * keyStore: { load() -> key | null, save(key) } (main.js keeps it encrypted by the OS).
  */
 
@@ -39,7 +42,26 @@ const PORTS_TRIED = 10;
 const PREVIEW_WANTED_MS = 3000; // previews are made while a page asked for one this recently
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
-const ACTIONS = new Set(["cameras", "record", "stop", "close"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera"]);
+const DETAILS = ["contributor", "location", "task"];
+const DETAIL_CHARS = 200;
+const ROLES = ["", "head", "chest", "wrist_left", "wrist_right"];
+
+// The take details from a request: those three, as short single-line text.
+function cleanDetails(d) {
+  if (!d || typeof d !== "object") return null;
+  return Object.fromEntries(DETAILS.map((k) => [k, String(d[k] == null ? "" : d[k]).replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, DETAIL_CHARS)]));
+}
+
+// One camera's settings from a request: which (0-3), and any of role, rotation and mirror.
+function cleanCamera(c) {
+  if (!c || typeof c !== "object" || !Number.isInteger(c.index) || c.index < 0 || c.index > 3) return null;
+  const out = { index: c.index };
+  if (ROLES.includes(c.role)) out.role = c.role;
+  if ([0, 90, 180, 270].includes(c.rotation)) out.rotation = c.rotation;
+  if (typeof c.mirror === "boolean") out.mirror = c.mirror;
+  return out;
+}
 
 // Tailscale's addresses: 100.64.0.0/10.
 function isTailscale(address) {
@@ -272,20 +294,27 @@ class RemoteRecordServer extends EventEmitter {
       let body = "";
       for await (const chunk of req) {
         body += chunk;
-        if (body.length > 1024) return this.send(res, 413, { error: "Too long" });
+        if (body.length > 8192) return this.send(res, 413, { error: "Too long" });
       }
-      let action = "";
+      let action = "", details = null, camera = null;
       try {
-        action = String(JSON.parse(body).action || "");
+        const msg = JSON.parse(body);
+        action = String(msg.action || "");
+        details = cleanDetails(msg.details);
+        camera = cleanCamera(msg.camera);
       } catch {
         return this.send(res, 400, { error: "Not JSON" });
       }
       if (!ACTIONS.has(action)) return this.send(res, 400, { error: `Unknown action: ${action}` });
-      const result = await this.ask(action);
+      if (action === "camera" && !camera) return this.send(res, 400, { error: "Which camera?" });
+      const extra = {};
+      if (details) extra.details = details;
+      if (camera) extra.camera = camera;
+      const result = await this.ask(action, extra);
       return this.send(res, 200, result || { ok: true });
     }
     return this.send(res, 404, { error: "Not found" });
   }
 }
 
-module.exports = { RemoteRecordServer, addresses, tailnetPeer };
+module.exports = { RemoteRecordServer, addresses, tailnetPeer, cleanDetails, cleanCamera };

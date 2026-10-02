@@ -14,6 +14,10 @@
  *   CameraRoles.pick(roles, i, role)     roles with source i set to role; a source that had it
  *                                        takes source i's old one instead, so no role is used twice
  *   CameraRoles.options(selected)        the <option>s for a role <select>
+ *   CameraRoles.blocks(roles)            where each of up to four sources goes in a 2 × 2 grid,
+ *                                        by role: head top left, chest top right, left wrist bottom
+ *                                        left, right wrist bottom right (one with no role takes the
+ *                                        first free block) -> { slots: [block per source], empty: [blocks] }
  */
 
 (function (global) {
@@ -73,5 +77,17 @@
   const options = (selected) =>
     [{ id: "", label: "No role" }, ...ROLES].map((r) => `<option value="${esc(r.id)}"${r.id === (selected || "") ? " selected" : ""}>${esc(r.label)}</option>`).join("");
 
-  global.CameraRoles = { ROLES, label, guess, assign, pick, options };
+  function blocks(roles) {
+    const slots = roles.map((r) => ids.indexOf(r));
+    const used = new Set(slots.filter((b) => b >= 0));
+    slots.forEach((b, i) => {
+      if (b >= 0) return;
+      const free = ids.findIndex((_, k) => !used.has(k));
+      slots[i] = free >= 0 ? free : ids.length + i;
+      if (free >= 0) used.add(free);
+    });
+    return { slots, empty: ids.map((_, k) => k).filter((k) => !used.has(k)) };
+  }
+
+  global.CameraRoles = { ROLES, label, guess, assign, pick, options, blocks };
 })(window);

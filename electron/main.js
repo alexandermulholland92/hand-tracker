@@ -25,7 +25,12 @@ const { RemoteRecordServer } = require("./remote-record");
 const APP_ROOT = path.join(__dirname, "..");
 const SCHEME = "app";
 const HOST = "hand-tracker";
-const PAGES = new Set(["index.html", "viewer.html"]);
+// Pages a link can open as an app window of their own, and their size.
+const PAGES = new Map([
+  ["index.html", { width: 920, height: 960 }],
+  ["viewer.html", { width: 920, height: 960 }],
+  ["remote.html", { width: 760, height: 820 }],
+]);
 // Keys that work even while the app is minimized: the hand mouse and the floating keyboard on/off.
 const SHORTCUTS = { mouse: "CommandOrControl+Alt+M", keyboard: "CommandOrControl+Alt+K" };
 const ALLOWED_PERMISSIONS = new Set(["media", "fullscreen", "clipboard-sanitized-write"]);
@@ -181,7 +186,7 @@ function createWindow(page = "index.html", size = { width: 1320, height: 940 }) 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (isAppUrl(url)) {
       const target = new URL(url).pathname.replace(/^\//, "");
-      if (PAGES.has(target)) createWindow(target, { width: 920, height: 960 });
+      if (PAGES.has(target)) createWindow(target, PAGES.get(target));
     } else if (/^https?:\/\//.test(url)) {
       shell.openExternal(url);
     }
@@ -645,7 +650,7 @@ function registerRemoteIpc() {
   // What the phone asks for, carried out by the main window (remote-record-ui.js).
   const pending = new Map();
   let asked = 0;
-  const ask = (action) =>
+  const ask = (action, extra = {}) =>
     new Promise((resolve) => {
       if (!mainWindow || mainWindow.isDestroyed()) return resolve({ ok: false, message: "Hand Tracker's window isn't open." });
       const id = ++asked;
@@ -658,7 +663,7 @@ function registerRemoteIpc() {
         pending.delete(id);
         resolve(result);
       });
-      toWindow("remote:command", { id, action });
+      toWindow("remote:command", { ...extra, id, action });
     });
   remoteRecord = new RemoteRecordServer({
     keyStore,
@@ -681,7 +686,13 @@ function registerRemoteIpc() {
   });
   ipcMain.on("remote:result", (event, { id, result } = {}) => {
     const done = fromApp(event) && pending.get(id);
-    if (done) done(result && typeof result === "object" ? { ok: !!result.ok, message: String(result.message || "") } : { ok: true });
+    if (!done) return;
+    if (!result || typeof result !== "object") return done({ ok: true });
+    const out = { ok: !!result.ok, message: String(result.message || "") };
+    // Which take details recording needs first, and whether they're locked (a take has them).
+    if (Array.isArray(result.missing)) out.missing = result.missing.filter((k) => ["contributor", "location", "task"].includes(k));
+    if (result.locked) out.locked = true;
+    done(out);
   });
 }
 

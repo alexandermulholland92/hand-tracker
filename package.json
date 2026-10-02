@@ -63,6 +63,7 @@
       "camera-tile.html",
       "phone-control.html",
       "keyboard.html",
+      "remote.html",
       "*.js",
       "*.css",
       "!scripts/**",

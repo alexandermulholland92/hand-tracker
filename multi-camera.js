@@ -7,6 +7,11 @@
  * with each hand named after its camera's role ("Head Left", "Chest Right"…, or "Cam 1 Left"
  * for a camera with no role), which then exports like any recording.
  *
+ * The tiles sit in a 2 × 2 grid by role: head top left, chest top right, left wrist bottom
+ * left, right wrist bottom right (a block with no camera says so); changing a camera's role
+ * moves it. Each tile can be turned 90° at a time and flipped (mirrored) on its own, remembered
+ * for that camera: webcams start mirrored like a selfie, OAK cameras not.
+ *
  * Luxonis OAK cameras can be among them (Windows and Linux app): the picker lists each one
  * plugged in ("oak:<id>"), the camera finds the hands itself (a helper each, electron/oak.js),
  * and its tile only draws and records them. They're started one after another, which is
@@ -16,8 +21,9 @@
  *   await MultiCamera.openPicker();          // choose cameras, then start
  *   await MultiCamera.start(deviceIds);      // (the picker's Start; deviceIds may repeat, for checks)
  *   MultiCamera.close();
- *   await MultiCamera.startRecording() / MultiCamera.stopRecording()   // -> { ok, message } / the take (or null)
+ *   await MultiCamera.startRecording() / MultiCamera.stopRecording(show, extra)   // -> { ok, message } / the take (or null; extra: added to it)
  *   MultiCamera.remoteState(); MultiCamera.previewSources();           // for remote recording (remote-record-ui.js)
+ *   MultiCamera.setRole(i, role); MultiCamera.setView(i, { rotation, mirror })
  */
 
 (function (global) {
@@ -26,7 +32,8 @@
 
   let prefs = {}, setPref = () => {}, app = null, modelOf = () => 1;
   let els = {};
-  let tiles = []; // { name, deviceId, role, label, frame, el, oak (its id, for an OAK camera), oakState }
+  let tiles = []; // { name, deviceId, role, view: { rotation, mirror }, label, frame, el, oak (its id, for an OAK camera), oakState }
+  let placeholders = []; // the grid's four blocks' "no camera" stand-ins, by block
   let statusTimer = null;
   let recording = false;
   let recordingSince = 0;
@@ -112,24 +119,40 @@
     HandTracker.setPaused(true);
     els.dialog.hidden = true;
     els.card.hidden = false;
-    els.grid.className = `multi-cam-grid n${Math.min(deviceIds.length, MAX_CAMERAS)}`;
+    els.grid.className = "multi-cam-grid";
     const model = modelOf();
     const ids = deviceIds.slice(0, MAX_CAMERAS);
     const saved = prefs.multiCameraRoles || {};
     const roles = CameraRoles.assign(ids.map((id) => ({ name: labelOf(id), saved: saved[id] })));
     tiles = ids.map((id, i) => {
       const name = `Cam ${i + 1}`;
+      const view = viewOf(id);
       const el = document.createElement("div");
       el.className = "multi-cam-tile";
-      el.innerHTML = `<iframe title="${esc(name)}" allow="camera"></iframe><div class="multi-cam-caption"><b>${esc(name)}</b> <select class="role" data-i="${i}" title="Where this camera is worn: its hands are named after it">${CameraRoles.options(roles[i])}</select> <span class="lbl">${esc(labelOf(id))}</span> <span class="st"></span> <button type="button" class="retry" data-i="${i}" hidden>Try again</button></div>`;
+      el.innerHTML =
+        `<iframe title="${esc(name)}" allow="camera"></iframe><div class="multi-cam-caption"><b>${esc(name)}</b> ` +
+        `<select class="role" data-i="${i}" title="Where this camera is worn: its hands are named after it, and its picture goes in that block">${CameraRoles.options(roles[i])}</select> ` +
+        `<button type="button" class="rot" data-i="${i}" title="Turn this camera's picture (and its tracking) 90° clockwise"></button> ` +
+        `<button type="button" class="flip" data-i="${i}" aria-pressed="false" title="Show this camera's picture mirrored (only the look: the left hand stays the left)">Flip</button> ` +
+        `<span class="lbl">${esc(labelOf(id))}</span> <span class="st"></span> <button type="button" class="retry" data-i="${i}" hidden>Try again</button></div>`;
       const frame = el.querySelector("iframe");
-      // Webcams are mirrored like a selfie, as in the main window (an OAK camera too).
+      const look = `mirror=${view.mirror ? 1 : 0}&rot=${view.rotation}`;
       frame.src = isOak(id)
-        ? `camera-tile.html?oak=${encodeURIComponent(id.slice(4))}&mirror=1&name=${encodeURIComponent(name)}`
-        : `camera-tile.html?device=${encodeURIComponent(id)}&label=${encodeURIComponent(labelOf(id))}&mirror=1&model=${model}&name=${encodeURIComponent(name)}`;
+        ? `camera-tile.html?oak=${encodeURIComponent(id.slice(4))}&${look}&name=${encodeURIComponent(name)}`
+        : `camera-tile.html?device=${encodeURIComponent(id)}&label=${encodeURIComponent(labelOf(id))}&${look}&model=${model}&name=${encodeURIComponent(name)}`;
       els.grid.appendChild(el);
-      return { name, deviceId: id, role: roles[i], label: labelOf(id), frame, el, oak: isOak(id) ? id.slice(4) : null, oakState: "" };
+      return { name, deviceId: id, role: roles[i], view, label: labelOf(id), frame, el, oak: isOak(id) ? id.slice(4) : null, oakState: "" };
     });
+    // The blocks with no camera say whose block it is.
+    placeholders = CameraRoles.ROLES.map((r) => {
+      const el = document.createElement("div");
+      el.className = "multi-cam-tile multi-cam-empty";
+      el.innerHTML = `<div class="box">${esc(r.label)}: no camera</div>`;
+      els.grid.appendChild(el);
+      return el;
+    });
+    tiles.forEach(showView);
+    layout();
     if (tiles.some((t) => t.oak)) startOakTiles(tiles.filter((t) => t.oak));
     els.record.disabled = false;
     els.note.textContent = "Each camera has its own hand tracker. With several cameras each one runs slower than a single camera would.";
@@ -143,6 +166,7 @@
 
   // A role picked for one camera: a camera that had it takes this one's old role.
   function setRole(i, role) {
+    if (!tiles[i] || (role && !CameraRoles.ROLES.some((r) => r.id === role))) return;
     const roles = CameraRoles.pick(tiles.map((t) => t.role), i, role);
     const saved = { ...(prefs.multiCameraRoles || {}) };
     tiles.forEach((t, j) => {
@@ -151,6 +175,42 @@
       saved[t.deviceId] = t.role;
     });
     setPref("multiCameraRoles", saved);
+    layout();
+  }
+
+  // Each tile in its role's block (by CSS order, so no tile's page reloads), the rest "no camera".
+  function layout() {
+    const { slots, empty } = CameraRoles.blocks(tiles.map((t) => t.role));
+    tiles.forEach((t, i) => (t.el.style.order = slots[i]));
+    placeholders.forEach((el, b) => {
+      el.style.order = b;
+      el.hidden = !empty.includes(b);
+    });
+  }
+
+  // A camera's turn and flip, remembered for it: webcams start mirrored like a selfie (as in
+  // the main window), OAK cameras as they are.
+  function viewOf(id) {
+    const v = (prefs.multiCameraView || {})[id] || {};
+    return { rotation: [0, 90, 180, 270].includes(v.rotation) ? v.rotation : 0, mirror: typeof v.mirror === "boolean" ? v.mirror : !isOak(id) };
+  }
+  function setView(i, change) {
+    const t = tiles[i];
+    if (!t) return;
+    const next = { ...t.view };
+    if (change.rotation !== undefined) next.rotation = (((Math.round(Number(change.rotation) / 90) * 90) % 360) + 360) % 360;
+    if (change.mirror !== undefined) next.mirror = !!change.mirror;
+    t.view = next;
+    const api = tileApi(t);
+    if (api && api.setView) api.setView(next);
+    setPref("multiCameraView", { ...(prefs.multiCameraView || {}), [t.deviceId]: next });
+    showView(t);
+  }
+  function showView(t) {
+    t.el.querySelector("button.rot").textContent = `⟳ ${t.view.rotation}°`;
+    const flip = t.el.querySelector("button.flip");
+    flip.classList.toggle("active", t.view.mirror);
+    flip.setAttribute("aria-pressed", String(t.view.mirror));
   }
 
   const tileApi = (t) => {
@@ -236,6 +296,8 @@
     const hadOak = tiles.some((t) => t.oak);
     for (const t of tiles) t.el.remove(); // a tile's page going away releases its camera
     tiles = [];
+    for (const el of placeholders) el.remove();
+    placeholders = [];
     if (hadOak) desktop.oak.streamStop().catch(() => {});
     for (const off of oakOff) off();
     oakOff = [];
@@ -277,7 +339,8 @@
   }
 
   // Returns the take (null if no hands were recorded); show: hand it to the export card.
-  function stopRecording(show = true) {
+  // extra: more for the take (remote recording's take details).
+  function stopRecording(show = true, extra = null) {
     if (!recording) return null;
     recording = false;
     els.record.textContent = "Start Motion Capture";
@@ -294,6 +357,7 @@
       els.note.textContent = "No hands were recorded.";
       return null;
     }
+    if (extra) Object.assign(merged, extra);
     els.note.textContent = `Recorded ${merged.hands.length} hand${merged.hands.length === 1 ? "" : "s"} from ${parts.length} camera${parts.length === 1 ? "" : "s"}: export below.`;
     app.showMotionExport(merged);
     return merged;
@@ -305,10 +369,13 @@
       running: tiles.length > 0,
       recording,
       elapsed_s: recording ? (Date.now() - recordingSince) / 1000 : 0,
-      cameras: tiles.map((t) => {
+      cameras: tiles.map((t, i) => {
         const api = tileApi(t);
         const st = api ? api.status() : null;
-        return { name: t.name, role: CameraRoles.label(t.role) || "", label: t.label, fps: st ? st.fps : 0, hands: st ? st.hands : [], error: st ? st.error || "" : "" };
+        return {
+          index: i, name: t.name, roleId: t.role || "", role: CameraRoles.label(t.role) || "", label: t.label, rotation: t.view.rotation, mirror: t.view.mirror,
+          fps: st ? st.fps : 0, hands: st ? st.hands : [], error: st ? st.error || "" : "",
+        };
       }),
       note: els.note ? els.note.textContent : "",
     };
@@ -387,10 +454,15 @@
       if (e.target.matches && e.target.matches("select.role")) setRole(Number(e.target.dataset.i), e.target.value);
     });
     els.grid.addEventListener("click", (e) => {
-      if (e.target.matches && e.target.matches("button.retry")) retryOak(tiles[Number(e.target.dataset.i)]);
+      const b = e.target.closest && e.target.closest("button");
+      if (!b) return;
+      const i = Number(b.dataset.i);
+      if (b.matches("button.retry")) retryOak(tiles[i]);
+      else if (b.matches("button.rot") && tiles[i]) setView(i, { rotation: tiles[i].view.rotation + 90 });
+      else if (b.matches("button.flip") && tiles[i]) setView(i, { mirror: !tiles[i].view.mirror });
     });
     els.closeBtn.addEventListener("click", () => close());
   }
 
-  global.MultiCamera = { init, openPicker, start, close, startRecording, stopRecording, remoteState, previewSources, isActive: () => tiles.length > 0, isRecording: () => recording, _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null })) };
+  global.MultiCamera = { init, openPicker, start, close, startRecording, stopRecording, remoteState, previewSources, setRole, setView, isActive: () => tiles.length > 0, isRecording: () => recording, _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null })) };
 })(window);

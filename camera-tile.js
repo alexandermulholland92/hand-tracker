@@ -3,7 +3,7 @@
  * (camera-tile.html, shown in a tile): its own hand tracker, so each camera has its own
  * left and right hand, its own smoothing and its own motion capture.
  *
- * Settings come from the page's address: ?device=<camera id>&label=<its name>&mirror=1|0&model=0|1&name=<tile name>,
+ * Settings come from the page's address: ?device=<camera id>&label=<its name>&mirror=1|0&rot=0|90|180|270&model=0|1&name=<tile name>,
  * or ?oak=<OAK camera id> for a Luxonis OAK camera: its hands are found on the camera, and the
  * page showing the tile passes its frames in (oakFrame, oakStatus).
  * The tile page's API, for the page that shows it:
@@ -14,6 +14,9 @@
  *     clock_origin_ms: when its first frame was, in ms since 1970 (to line cameras up)
  *   await Tile.oakFrame(jpeg, results, t)     an OAK camera's frame (results as HandTracker takes them)
  *   Tile.oakStatus(status)                    its helper's status ("starting", "running", "error"…)
+ *   Tile.setView({ rotation, mirror })        turn the picture (and its tracking) clockwise by 0, 90, 180
+ *                                             or 270 degrees, and show it mirrored or not (just the look:
+ *                                             Left stays the person's left)
  */
 
 (function (global) {
@@ -75,6 +78,7 @@
     if (oak) {
       // The camera's helper finds the hands; this page draws and records them.
       await HandTracker.init({ videoEl: video, canvasEl: stage, overlay: true, mirror: params.get("mirror") !== "0", maxNumHands: 2, external: "OAK camera" });
+      HandTracker.setRotation(Number(params.get("rot")) || 0);
       message.textContent = "Starting the OAK camera…";
       HandTracker.onHandLandmarks(({ hands, timestamp }) => {
         latest = hands;
@@ -96,6 +100,7 @@
         width: 1280,
         height: 720,
       });
+      HandTracker.setRotation(Number(params.get("rot")) || 0);
       message.hidden = true;
       HandTracker.onHandLandmarks(({ hands, timestamp }) => {
         latest = hands;
@@ -141,6 +146,10 @@
       } else if (s.status === "running") {
         error = "";
       }
+    },
+    setView: ({ rotation, mirror } = {}) => {
+      if (rotation !== undefined) HandTracker.setRotation(rotation);
+      if (mirror !== undefined) HandTracker.setMirror(!!mirror);
     },
     startRecording: () => RobotMotion.start(),
     stopRecording: () => {

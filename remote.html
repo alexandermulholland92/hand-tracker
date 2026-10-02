@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<!-- The way to a camera rig's remote recording page from the website, the Android app and the
+     Windows and Linux app (remote-launcher.js): type the computer's name once, then one tap
+     opens its page. The page itself comes from that computer (Hand Tracker's
+     electron/remote-page.html): browsers don't let a website talk to a device on your own
+     network directly, but they do let it open that device's own page. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'" />
+<title>Remote recording · Hand Tracker</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px 16px 40px; background: #0e0f12; color: #e8e8ea; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; }
+  a { color: #74c0fc; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .lead { opacity: 0.75; margin: 0 0 18px; }
+  .card { background: #17181d; border: 1px solid #2a2c33; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  label { display: block; font-size: 13px; opacity: 0.75; margin-bottom: 4px; }
+  .row { display: flex; gap: 8px; }
+  input { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 16px; color: #e8e8ea; background: #0e0f12; border: 1px solid #2a2c33; border-radius: 9px; padding: 10px 12px; }
+  input:focus { outline: 2px solid #74c0fc; outline-offset: 0; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 9px; padding: 10px 16px; color: #fff; background: #2b8a3e; cursor: pointer; }
+  button.quiet { background: #343a40; font-weight: 500; }
+  #error { color: #ff8787; font-size: 14px; min-height: 1.4em; margin-top: 6px; }
+  #opened { font-size: 14px; color: #8ce99a; }
+  #opened:empty { display: none; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid #2a2c33; }
+  li:first-child { border-top: 0; }
+  li .name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .note { font-size: 13px; opacity: 0.7; }
+  .note p { margin: 0 0 8px; }
+  code { font-size: 13px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <p id="back"><a href="./">← Hand Tracker</a></p>
+  <h1>Remote recording</h1>
+  <p class="lead">Start and stop recording on a computer running Hand Tracker with <b>Remote recording</b> on (a camera rig on a Raspberry Pi, say), with a live preview of each camera.</p>
+
+  <div class="card">
+    <form id="connectForm" novalidate>
+      <label for="host">The computer's name or address</label>
+      <div class="row">
+        <input id="host" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="pi" />
+        <button type="submit">Connect</button>
+      </div>
+      <div id="error" role="alert"></div>
+      <div id="opened" role="status"></div>
+    </form>
+  </div>
+
+  <div class="card" id="savedCard" hidden>
+    <label>Connected before</label>
+    <ul id="saved"></ul>
+  </div>
+
+  <div class="note">
+    <p><b>Over Tailscale</b> (from anywhere, with Tailscale on this device): its Tailscale name, such as <code>pi</code> or <code>pi.your-tailnet.ts.net</code>, or its 100.x address. No code is needed: only your own devices can reach it there.</p>
+    <p><b>On the same Wi-Fi without Tailscale</b>: scan the QR code under Remote recording in Hand Tracker instead. It carries the code that page needs.</p>
+    <p>This opens the computer's own page (on port 47821) in the browser, since browsers don't let a website or app control a device on your network directly.</p>
+  </div>
+</main>
+<script src="remote-launcher.js"></script>
+</body>
+</html>

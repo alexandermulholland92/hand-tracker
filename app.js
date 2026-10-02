@@ -1124,6 +1124,8 @@
     const motiveText = motive ? ` · Motive: ${motive.labels.length} points × ${motive.frame_count} frames at ${motive.frame_rate} Hz` : "";
     motionInfo.textContent = handText + motiveText;
     motionName.value = `robot-motion-${timestampName()}`;
+    motionName.readOnly = false;
+    motionName.title = "";
     motionResults.innerHTML = "";
     if (data.hands.length) renderFormatGrid(motionFormatGrid, MotionExport.FORMATS, "motionFormats", ["json"]);
     else renderFormatGrid(motionFormatGrid, MotionExport.MARKER_FORMATS, "motiveFormats", ["c3d"]);
@@ -1197,15 +1199,22 @@
   motionExportBtn.addEventListener("click", exportMotion);
 
   // A capture saved without asking where (remote recording: nobody may be at this screen):
-  // the export card's formats, into the remote recording folder. -> { ok, dir, files, message }
-  async function saveMotionNow() {
+  // the export card's formats, into the remote recording folder, named baseName if given (the
+  // card shows it too). -> { ok, dir, files, message }
+  async function saveMotionNow(baseName) {
     if (!motion || motion.exported) return null;
+    if (baseName) motionName.value = baseName;
     try {
       const { baseName, files } = motionFiles();
       const res = await desktop.remote.saveTake({ baseName, files });
       renderResults(motionResults, res.results);
       const saved = res.results.filter((r) => r.ok);
-      if (saved.length) motion.exported = true;
+      if (saved.length) {
+        motion.exported = true;
+        // Its name (and the details in it) are final: other formats exported here keep it.
+        motionName.readOnly = true;
+        motionName.title = "A remote recording take keeps the name it was saved with.";
+      }
       motionNote.textContent = saved.length ? `Saved ${saved.length} file${saved.length === 1 ? "" : "s"} to ${res.dir}` : "Nothing was saved.";
       const failed = res.results.find((r) => !r.ok);
       return { ok: saved.length > 0, dir: res.dir, files: saved.map((r) => r.path.split(/[\\/]/).pop()), message: failed ? failed.error : "" };
@@ -1777,7 +1786,7 @@
     // Several live cameras at once, each with its own tracker.
     MultiCamera.init({ prefs, setPref, app: window.HandTrackerApp, modelOf: () => Number(modelSelect.value) });
     // A phone's browser starting and stopping recording with those cameras (Windows and Linux app).
-    RemoteRecordUI.init({ desktop, prefs, setPref, app: window.HandTrackerApp });
+    RemoteRecordUI.init({ desktop, mobile, prefs, setPref, app: window.HandTrackerApp });
     // Capture sessions from a capture-operations dashboard: hidden until Ctrl+Alt+P (on a
     // phone: tapping the version under the title 7 times). So is watching a capture rig live,
     // from a capture-fleet dashboard. (The phone's bridge has the same ops/fleet/saving calls.)
@@ -1909,7 +1918,7 @@
     showMotionExport: (data) => showMotionExport(data),
     readyForNewMotion: () => readyForNewMotion(),
     hasUnsavedMotion: () => !!(motion && !motion.exported),
-    saveMotionNow: () => saveMotionNow(),
+    saveMotionNow: (baseName) => saveMotionNow(baseName),
     useOak: () => useOak(),
   };
 

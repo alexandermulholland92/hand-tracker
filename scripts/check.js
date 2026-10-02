@@ -28,7 +28,7 @@
  * Output goes to a temp folder that is printed at the end.
  */
 
-const { app, dialog, BrowserWindow } = require("electron");
+const { app, dialog, BrowserWindow, shell } = require("electron");
 const { spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -417,6 +417,7 @@ async function run(win) {
   await checkSeveralOakCameras(js);
   await checkOakTileRetry(js);
   await checkRemoteRecording(js);
+  await checkRemoteLauncher(js);
 
   // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
   // in go through the same tracking, with the camera's confidence and measured distance.
@@ -929,15 +930,22 @@ async function checkSeveralOakCameras(js) {
     JSON.stringify(r));
 }
 
-// Remote recording: a phone's browser (played here by plain requests) starts the cameras and
-// recording, sees each camera's preview, stops (the take saves itself) and stops the cameras.
+// Remote recording: a phone's browser (played here by plain requests) starts the cameras (only
+// those plugged in) and recording, sees each camera's preview, moves a camera to another role's
+// block, turns and flips one, fills in the take details, stops (the take saves itself, named
+// after the details and its length, which its metadata holds too) and stops the cameras.
 async function checkRemoteRecording(js) {
   const out = {};
   const setup = await js(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    // The cameras are picked once in Several cameras (the two simulated OAK cameras), then closed.
+    // The cameras are picked once in Several cameras (the two simulated OAK cameras, and a third
+    // that's since been unplugged), then closed.
     await MultiCamera.openPicker();
     for (let i = 0; i < 50 && !document.querySelector('#multiCamPicks input[value^="oak:"]'); i++) await sleep(100);
+    const gone = document.createElement("input");
+    gone.type = "checkbox";
+    gone.value = "oak:SIMULATED-OAK-UNPLUGGED";
+    document.getElementById("multiCamPicks").appendChild(gone);
     document.querySelectorAll("#multiCamPicks input").forEach((b) => (b.checked = b.value.startsWith("oak:")));
     document.getElementById("multiCamPicks").dispatchEvent(new Event("change", { bubbles: true }));
     document.getElementById("multiCamStart").click();
@@ -955,7 +963,12 @@ async function checkRemoteRecording(js) {
   const base = setup.status && setup.status.port ? `http://127.0.0.1:${setup.status.port}` : "";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const get = (p, k = key) => fetch(base + p, { headers: { "X-Key": k } });
-  const post = (action, k = key) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": k, "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+  const post = (action, extra = {}) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...extra }) });
+  const grid = () => js(`(() => ({
+    orders: [...document.querySelectorAll("#multiCamGrid .multi-cam-tile:not(.multi-cam-empty)")].map((el) => el.style.order),
+    empty: [...document.querySelectorAll("#multiCamGrid .multi-cam-empty")].map((el) => el.hidden ? "" : el.textContent),
+    shapes: [...document.querySelectorAll("#multiCamGrid iframe")].map((f) => { const c = f.contentDocument.getElementById("stage"); return c.width > c.height ? "wide" : "tall"; }),
+  }))()`);
   const state = async () => (await get("/api/state")).json();
   try {
     out.page = (await (await fetch(base + "/")).text()).includes("Hand Tracker remote");
@@ -967,13 +980,36 @@ async function checkRemoteRecording(js) {
     out.otherSite = await sneak({ "Content-Type": "application/json", Origin: "http://evil.example" });
     const before = await state();
     out.before = { running: before.running, savedCameras: before.savedCameras };
+    // Recording needs all three take details (nothing starts without them), then starts.
+    out.refused = await (await post("record", { details: { contributor: "Sam Smith", location: " ", task: "" } })).json();
+    await sleep(300);
+    const refusedState = await state();
+    out.refusedStarted = refusedState.running || refusedState.recording || !!refusedState.pending;
+    out.details = await (await post("details", { details: { contributor: "Sam Smith", location: "Lab 2", task: "Pick up cup" } })).json();
+    out.detailsKept = (await state()).details;
     out.record = await (await post("record")).json();
     let s = null;
     for (let i = 0; i < 150 && !(s && s.recording); i++) {
       await sleep(200);
       s = await state();
     }
-    out.recording = { recording: s.recording, cameras: s.cameras.map((c) => ({ fps: c.fps, hands: c.hands.length, error: c.error })) };
+    out.recording = { recording: s.recording, cameras: s.cameras.map((c) => ({ fps: c.fps, hands: c.hands.length, error: c.error, role: c.roleId, mirror: c.mirror, rotation: c.rotation })) };
+    out.gridBefore = await grid();
+    // The first camera to the right wrist's block; the second turned and flipped.
+    out.moved = await (await post("camera", { camera: { index: 0, role: "wrist_right" } })).json();
+    out.turned = await (await post("camera", { camera: { index: 1, rotation: 90, mirror: true } })).json();
+    await sleep(600);
+    const changed = await state();
+    out.changed = changed.cameras.map((c) => ({ role: c.roleId, rotation: c.rotation, mirror: c.mirror }));
+    out.gridAfter = await grid();
+    out.badCamera = (await post("camera", { camera: { index: 7 } })).status;
+    // Back as they were (so the take's hands are Head and Chest). The details can't be changed
+    // while it records (the previews go on).
+    await post("camera", { camera: { index: 0, role: "head" } });
+    await post("camera", { camera: { index: 1, rotation: 0, mirror: false } });
+    out.changedDetails = await (await post("details", { details: { contributor: "Sam Smith", location: "Lab 3", task: "" } })).json();
+    const whileRecording = await state();
+    out.lockedDetails = { locked: whileRecording.detailsLocked, details: whileRecording.details };
     let pic = null;
     for (let i = 0; i < 40 && !(pic && pic.status === 200); i++) {
       pic = await get("/api/preview?i=1");
@@ -988,6 +1024,11 @@ async function checkRemoteRecording(js) {
     const file = after.lastTake && after.lastTake.ok ? path.join(process.env.HAND_TRACKER_REMOTE_DIR, after.lastTake.files[0]) : null;
     const saved = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
     out.savedHands = saved ? saved.hands.map((h) => h.handedness) : null;
+    out.metadata = saved ? saved.metadata : null;
+    // Its name is final at the computer too (other formats exported there keep it).
+    out.nameLocked = await js(`document.getElementById("motionName").readOnly && document.getElementById("motionName").value`);
+    // Saved: the next take's details can be filled in.
+    out.unlocked = { locked: after.detailsLocked, cleared: (await (await post("details", { details: { contributor: "", location: "", task: "" } })).json()).ok };
     out.close = await (await post("close")).json();
     await sleep(300);
     out.closed = !(await state()).running;
@@ -1006,15 +1047,72 @@ async function checkRemoteRecording(js) {
   out.tailnet = [tailnetPeer("100.104.1.2", "::ffff:100.90.3.4"), tailnetPeer("192.168.1.5", "100.90.3.4"), tailnetPeer("100.104.1.2", "192.168.1.9")];
   const probe = new RemoteRecordServer({ keyStore: null, page: () => "", ask: async () => ({}) });
   out.ownHost = [probe.ownHost({ headers: { host: "localhost:47821" } }), probe.ownHost({ headers: { host: "evil.example:47821" } })];
-  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); Start recording starts the cameras (nothing runs before), previews come through, Stop saves the take by itself, Stop cameras stops them",
+  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); Start recording needs all three take details (then locked until the take is saved), then starts the cameras plugged in (nothing runs before; OAK cameras not mirrored), previews come through, a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself, Stop cameras stops them",
     out.setup.on && out.setup.card && !out.setup.runningBefore && key.length > 10 && out.page && out.noKey === 401 && out.wrongKey === 401 &&
-      out.before.running === false && out.before.savedCameras === 2 && out.record.ok &&
-      out.recording.recording && out.recording.cameras.length === 2 && out.recording.cameras.every((c) => c.fps > 0 && !c.error) &&
+      out.before.running === false && out.before.savedCameras === 3 &&
+      out.refused.ok === false && (out.refused.missing || []).join() === "location,task" && /Fill in Location and Task first/.test(out.refused.message) && out.refusedStarted === false &&
+      out.record.ok && out.changedDetails.ok === false && out.changedDetails.locked && out.lockedDetails.locked === true &&
+      out.lockedDetails.details.location === "Lab 2" && out.lockedDetails.details.task === "Pick up cup" && out.unlocked.locked === false && out.unlocked.cleared && /^Sam-Smith_Lab-2_Pick-up-cup_/.test(out.nameLocked) &&
+      out.recording.recording && out.recording.cameras.length === 2 && out.recording.cameras.every((c) => c.fps > 0 && !c.error && c.mirror === false && c.rotation === 0) &&
+      out.gridBefore.orders.join() === "0,1" && out.gridBefore.empty.filter(Boolean).join() === "Left wrist: no camera,Right wrist: no camera" &&
+      out.moved.ok && out.turned.ok && out.changed.map((c) => `${c.role}/${c.rotation}/${c.mirror}`).join() === "wrist_right/0/false,chest/90/true" &&
+      out.gridAfter.orders.join() === "3,1" && out.gridAfter.empty.filter(Boolean).join() === "Head: no camera,Left wrist: no camera" && out.gridAfter.shapes.join() === "wide,tall" &&
+      out.badCamera === 400 && out.details.ok && out.detailsKept.contributor === "Sam Smith" && out.detailsKept.task === "Pick up cup" &&
       out.preview.status === 200 && out.preview.type === "image/jpeg" && out.preview.jpeg && out.preview.kb > 1 &&
-      out.stop.ok && out.take && out.take.ok && /\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
+      out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
+      out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
+      /^0:\d\d$/.test(out.metadata.length) && out.metadata.length_s > 1 &&
       out.savedHands && out.savedHands.length === 2 && out.savedHands.some((h) => /^Head /.test(h)) && out.savedHands.some((h) => /^Chest /.test(h)) &&
       out.close.ok && out.closed && out.unknown === 400 && out.off && out.refusedWhenOff && out.tailnet.join() === "true,false,false" &&
       out.textPlain === 403 && out.otherSite === 403 && out.ownHost.join() === "true,false",
+    JSON.stringify(out));
+}
+
+// The website's Remote recording page (remote.html) from the app's header: a window of its own,
+// whose Connect remembers the computer and opens its page in the browser (never in the app).
+async function checkRemoteLauncher(js) {
+  const opened = [];
+  const realOpen = shell.openExternal;
+  shell.openExternal = async (url) => {
+    opened.push(url);
+  };
+  const before = new Set(BrowserWindow.getAllWindows().map((w) => w.id));
+  const out = {};
+  try {
+    out.link = await js(`(() => { const a = document.getElementById("remoteLink"); a.click(); return { shown: !a.hidden, target: a.target, text: a.textContent }; })()`);
+    let win = null;
+    for (let i = 0; i < 50 && !win; i++) {
+      await sleep(100);
+      win = BrowserWindow.getAllWindows().find((w) => !before.has(w.id));
+    }
+    if (win) {
+      await new Promise((r) => (win.webContents.isLoading() ? win.webContents.once("did-finish-load", r) : r()));
+      out.page = await withLimit(win.webContents.executeJavaScript(`(async () => {
+        const host = document.getElementById("host");
+        const connect = document.querySelector("#connectForm button[type=submit]");
+        host.value = "not a name!";
+        connect.click();
+        const error = document.getElementById("error").textContent;
+        host.value = "rig-pi";
+        connect.click();
+        await new Promise((r) => setTimeout(r, 300));
+        return { url: location.href, backHidden: document.getElementById("back").hidden, error, opened: document.getElementById("opened").textContent,
+          saved: [...document.querySelectorAll("#saved .name")].map((e) => e.textContent) };
+      })()`, true), "remote.html");
+      await sleep(300);
+      out.stillOpen = !win.isDestroyed() && win.webContents.getURL();
+      win.close();
+    }
+    out.mainPage = await js("location.pathname");
+  } finally {
+    shell.openExternal = realOpen;
+  }
+  out.browser = opened;
+  const p = out.page || {};
+  check("The Remote recording page (as on the website) opens from the header in a window of its own; Connect remembers the computer and opens its page in the browser, not in the app",
+    out.link.shown && out.link.target === "_blank" && p.url === "app://hand-tracker/remote.html" && p.backHidden && /doesn't look like/.test(p.error) &&
+      opened.join() === "http://rig-pi:47821/" && /rig-pi/.test(p.opened) && p.saved && p.saved[0] === "rig-pi" &&
+      out.stillOpen === "app://hand-tracker/remote.html" && out.mainPage === "/index.html",
     JSON.stringify(out));
 }
 
@@ -1715,6 +1813,9 @@ async function checkOptiTrack(js) {
           const stage = document.getElementById("stage");
           const w = v.videoWidth, h = v.videoHeight;
           if (!w || !h) return { size: "0x0", error: document.getElementById("videoStatus").textContent || "no clip" };
+          // A frame a second in: the clip's very first frame can come before Motive's view is in it.
+          v.currentTime = 1;
+          await new Promise((r) => { v.addEventListener("seeked", r, { once: true }); setTimeout(r, 3000); });
           const c = document.createElement("canvas");
           c.width = w; c.height = h;
           const ctx = c.getContext("2d");
