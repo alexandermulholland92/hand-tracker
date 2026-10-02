@@ -46,10 +46,10 @@
   const FOCUS_WIDTH = 960;
 
   let remote = null, prefs = {}, setPref = () => {}, app = null;
-  // The cameras remote recording uses: Several cameras (Windows and Linux app), or the phone's
-  // own camera (Android app: phoneCamera below), behind the same calls.
-  let engine = null, onPhone = false;
-  const cams = () => engine;
+  // The cameras remote recording uses: Several cameras, on a computer and on a phone alike (a
+  // phone's own cameras, front and back, and any plugged into it).
+  let onPhone = false;
+  const cams = () => global.MultiCamera;
   let on = false, pending = "", lastTake = null, settings = {};
   let stateTimer = null, previewTimer = null, shownQr = "";
 
@@ -87,39 +87,6 @@
     const auto = settings.autostart || {};
     $("remoteAutostartRow").hidden = !auto.available;
     $("remoteAutostart").checked = !!auto.on;
-  }
-
-  // ---------- the phone's own camera (Android app) ----------
-  // The main view's camera and its motion capture, as the one camera remote recording has.
-  function phoneCamera(hta) {
-    let since = 0;
-    return {
-      isActive: () => true,
-      isRecording: () => RobotMotion.isRecording(),
-      remoteState() {
-        const cam = HandTracker.getCamera();
-        const recording = RobotMotion.isRecording();
-        return {
-          running: true, recording, elapsed_s: recording ? (Date.now() - since) / 1000 : 0,
-          cameras: [{
-            index: 0, name: "Phone camera", roleId: "", role: "", label: cam.name || (cam.facing === "user" ? "Front camera" : cam.facing ? "Back camera" : "Camera"),
-            rotation: cam.rotation || 0, mirror: hta.isMirrored(), fps: Math.round(HandTracker.getFPS()), hands: hta.handsNow(), error: "",
-          }],
-        };
-      },
-      previewSources: () => [{ i: 0, canvas: $("stage") }],
-      async startRecording() {
-        const r = hta.startMotionCapture();
-        if (r.ok) since = Date.now();
-        return r;
-      },
-      stopRecording: (show, extra) => hta.stopMotionCapture(extra),
-      setPreviewWant: () => {},
-      start: async () => {},
-      close: () => {},
-      setRole: () => {},
-      setView: () => {},
-    };
   }
 
   // ---------- the take details ----------
@@ -169,10 +136,10 @@
     const st = cams().remoteState();
     const locked = detailsLocked();
     const common = { ...st, pending, lastTake, notice, details: takeDetails || details(), detailsLocked: locked, detailsRequired: detailsRequired() };
-    if (onPhone) return { ...common, kind: "phone", mode: null, requirement: { ok: true, missing: [], message: "" }, available: null };
     return {
       ...common, kind: "rig",
-      mode: modeNow(), requirement: requirement(), screenPictures: cams().screenPictures(),
+      // (Pictures on its own screen: OAK cameras only, which a phone doesn't have.)
+      mode: modeNow(), requirement: requirement(), screenPictures: onPhone ? undefined : cams().screenPictures(),
       available: { at: scanned.at, scanning: scanned.scanning, note: scanned.note, cameras: available() },
     };
   }
@@ -234,12 +201,13 @@
   const labels = {}; // camera id -> its label when last found (for one picked that's gone)
 
   const oakLabel = (id, port) => `Luxonis ${(prefs.oakNames || {})[id] || "OAK camera"}${port ? ` (USB ${port})` : ""} …${id.slice(-6)}`;
-  const labelOf = (id) => labels[id] || (id.startsWith("oak:") ? oakLabel(id.slice(4)) : "Webcam");
+  const labelOf = (id) => labels[id] || (id.startsWith("oak:") ? oakLabel(id.slice(4)) : id.startsWith("cam:") ? id.slice(4) : "Webcam");
   // Picked: every camera found, up to four (those picked before first, then OAK cameras), except
   // one unticked here or in Several cameras; one picked that isn't plugged in is still listed
   // (if there's room). Only the picked ones start.
   function pickedIds() {
-    const saved = Array.isArray(prefs.multiCameras) ? prefs.multiCameras : [];
+    // (On a phone, cameras picked by a device id from before are gone: it changes every start.)
+    const saved = (Array.isArray(prefs.multiCameras) ? prefs.multiCameras : []).filter((id) => !onPhone || /^(cam|oak):/.test(id));
     const off = Array.isArray(prefs.multiCamerasOff) ? prefs.multiCamerasOff : [];
     const found = scanned.found.map((c) => c.id);
     const present = [...saved.filter((id) => found.includes(id)), ...found.filter((id) => !saved.includes(id) && !off.includes(id))];
@@ -286,7 +254,7 @@
         if (silent.length) note = OakSource.silentNote(silent);
       }
     }
-    for (const c of await HandTracker.listCameras().catch(() => [])) if (c.deviceId) found.push({ id: c.deviceId, label: c.label });
+    for (const c of await HandTracker.listCameras().catch(() => [])) if (c.deviceId) found.push({ id: cams().keyOf(c), label: c.label });
     for (const c of found) labels[c.id] = c.label;
     return { found, note };
   }
@@ -441,9 +409,6 @@
       return { ok: true, message: "" };
     }
     const recording = cams().isRecording();
-    if (onPhone && ["scan", "pick", "mode", "camera", "cameras", "close"].includes(action)) {
-      return action === "cameras" ? { ok: true, message: "This phone's camera is on." } : { ok: false, message: "This phone has just its own camera." };
-    }
     if (action === "scan") {
       if (!cams().isActive()) scan();
       return { ok: true, message: "" };
@@ -538,11 +503,10 @@
     remote = (opts.desktop && opts.desktop.remote) || (opts.mobile && opts.mobile.remote) || null;
     if (!remote || !$("remoteRec")) return;
     onPhone = !opts.desktop;
-    engine = onPhone ? phoneCamera(opts.app) : global.MultiCamera;
     // On a phone takes always go to Documents/Hand Tracker, and it doesn't open by itself.
     if (onPhone) {
       $("remoteFolderBtn").hidden = true;
-      $("remoteToggle").title = "Lets another device (Hand Tracker on your PC, from its Remote recording page, or any browser) start and stop motion capture with this phone's camera, with a live preview.";
+      $("remoteToggle").title = "Lets another device (Hand Tracker on your PC, from its Remote recording page, or any browser) start and stop motion capture with this phone's cameras (picked on its page), with a live preview of each.";
     }
     prefs = opts.prefs;
     setPref = opts.setPref;

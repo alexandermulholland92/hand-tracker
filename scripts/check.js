@@ -1046,8 +1046,9 @@ async function checkRemoteRecording(js) {
   const get = (p, k = key) => fetch(base + p, { headers: { "X-Key": k } });
   const post = (action, extra = {}) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...extra }) });
   const grid = () => js(`(() => ({
-    orders: [...document.querySelectorAll("#multiCamGrid .multi-cam-tile:not(.multi-cam-empty)")].map((el) => el.style.order),
-    empty: [...document.querySelectorAll("#multiCamGrid .multi-cam-empty")].map((el) => el.hidden ? "" : el.textContent),
+    orders: [...document.querySelectorAll("#multiCamGrid .multi-cam-tile")].map((el) => el.style.order),
+    missing: document.getElementById("multiCamMissing").textContent,
+    one: document.getElementById("multiCamGrid").classList.contains("one"),
     shapes: [...document.querySelectorAll("#multiCamGrid iframe")].map((f) => { const c = f.contentDocument.getElementById("stage"); return c.width > c.height ? "wide" : "tall"; }),
   }))()`);
   const state = async () => (await get("/api/state")).json();
@@ -1200,9 +1201,9 @@ async function checkRemoteRecording(js) {
       out.record.ok && out.changedDetails.ok === false && out.changedDetails.locked && out.lockedDetails.locked === true &&
       out.lockedDetails.details.location === "Lab 2" && out.lockedDetails.details.task === "Pick up cup" && out.unlocked.locked === false && out.unlocked.cleared && /^Sam-Smith_Lab-2_Pick-up-cup_/.test(out.nameLocked) &&
       out.recording.recording && out.recording.cameras.length === 2 && out.recording.cameras.every((c) => c.fps > 0 && !c.error && c.mirror === true && c.rotation === 0) &&
-      out.gridBefore.orders.join() === "0,1" && out.gridBefore.empty.filter(Boolean).join() === "Left wrist: no camera,Right wrist: no camera" &&
+      out.gridBefore.orders.join() === "0,1" && out.gridBefore.missing === "Not connected: Left wrist, Right wrist" && !out.gridBefore.one &&
       out.moved.ok && out.turned.ok && out.changed.map((c) => `${c.role}/${c.rotation}/${c.mirror}`).join() === "wrist_right/0/true,chest/90/false" &&
-      out.gridAfter.orders.join() === "3,1" && out.gridAfter.empty.filter(Boolean).join() === "Head: no camera,Left wrist: no camera" && out.gridAfter.shapes.join() === "wide,tall" &&
+      out.gridAfter.orders.join() === "3,1" && out.gridAfter.missing === "Not connected: Head, Left wrist" && out.gridAfter.shapes.join() === "wide,tall" &&
       out.badCamera === 400 && out.details.ok && out.detailsKept.contributor === "Sam Smith" && out.detailsKept.task === "Pick up cup" &&
       out.preview.status === 200 && out.preview.type === "image/jpeg" && out.preview.jpeg && out.preview.kb > 1 &&
       out.full.frames >= 12 && out.full.size && out.full.small && out.full.size.w > out.full.small.w && out.full.fps >= 6 &&

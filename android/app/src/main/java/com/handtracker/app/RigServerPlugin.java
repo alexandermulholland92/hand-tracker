@@ -73,6 +73,8 @@ public class RigServerPlugin extends Plugin {
     private static final int BODY_BYTES = 8192;
     private static final Set<String> ACTIONS = new HashSet<>(java.util.Arrays.asList(
             "cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings"));
+    private static final Set<String> ROLES = new HashSet<>(java.util.Arrays.asList("", "head", "chest", "wrist_left", "wrist_right"));
+    private static final Set<String> MODES = new HashSet<>(java.util.Arrays.asList("ego", "stereo", "freeform"));
     private static final String CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
     private final ExecutorService pool = Executors.newCachedThreadPool();
@@ -550,6 +552,34 @@ public class RigServerPlugin extends Plugin {
                 JSObject settings = new JSObject();
                 settings.put("detailsRequired", st.optBoolean("detailsRequired"));
                 cmd.put("settings", settings);
+            }
+            // The cameras to start (picked, with a role), the mode, and a running camera's role,
+            // turn and flip: checked as the computer checks them (electron/remote-record.js).
+            JSONObject pk = msg.optJSONObject("pick");
+            if (pk != null && pk.opt("id") instanceof String && pk.optString("id").matches("[A-Za-z0-9:._+/=-]{1,200}")) {
+                JSObject pick = new JSObject();
+                pick.put("id", pk.optString("id"));
+                if (pk.opt("use") instanceof Boolean) pick.put("use", pk.optBoolean("use"));
+                if (pk.opt("role") instanceof String && ROLES.contains(pk.optString("role"))) pick.put("role", pk.optString("role"));
+                cmd.put("pick", pick);
+            }
+            if (msg.opt("mode") instanceof String && MODES.contains(msg.optString("mode"))) cmd.put("mode", msg.optString("mode"));
+            JSONObject cm = msg.optJSONObject("camera");
+            if (cm != null && cm.opt("index") instanceof Integer && cm.optInt("index") >= 0 && cm.optInt("index") <= 3) {
+                JSObject camera = new JSObject();
+                camera.put("index", cm.optInt("index"));
+                if (cm.opt("role") instanceof String && ROLES.contains(cm.optString("role"))) camera.put("role", cm.optString("role"));
+                if (cm.opt("rotation") instanceof Integer && java.util.Arrays.asList(0, 90, 180, 270).contains(cm.optInt("rotation"))) camera.put("rotation", cm.optInt("rotation"));
+                if (cm.opt("mirror") instanceof Boolean) camera.put("mirror", cm.optBoolean("mirror"));
+                cmd.put("camera", camera);
+            }
+            String missingPart = action.equals("pick") && !cmd.has("pick") ? "Which camera?"
+                    : action.equals("camera") && !cmd.has("camera") ? "Which camera?"
+                    : action.equals("mode") && !cmd.has("mode") ? "Which mode?"
+                    : action.equals("settings") && !cmd.has("settings") ? "Which setting?" : null;
+            if (missingPart != null) {
+                json(out, 400, error(missingPart));
+                return;
             }
             CompletableFuture<String> answer = new CompletableFuture<>();
             pending.put(id, answer);

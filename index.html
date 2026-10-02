@@ -171,7 +171,10 @@
   .multi-cam-grid { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
   @media (max-width: 440px) { .multi-cam-grid { grid-template-columns: 1fr; } }
   .multi-cam-tile iframe { width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 8px; background: #0e0f12; display: block; }
-  .multi-cam-empty .box { aspect-ratio: 16 / 9; border: 1px dashed #3a3d46; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 12px; opacity: 0.6; }
+  .multi-cam-grid.one { grid-template-columns: 1fr; }
+  .multi-cam-tile iframe { margin: 0 auto; }
+  #multiCamMissing { font-size: 12px; opacity: 0.7; margin-top: 6px; }
+  #multiCamMissing:empty { display: none; }
   .multi-cam-caption { font-size: 12px; opacity: 0.85; margin-top: 4px; }
   .multi-cam-tile.no-picture iframe { opacity: 0.35; }
   .multi-cam-caption .lbl { opacity: 0.6; }
@@ -683,6 +686,7 @@
 <div id="multiCamCard" class="card" hidden>
   <div class="section-label">Several cameras</div>
   <div id="multiCamGrid" class="multi-cam-grid"></div>
+  <div id="multiCamMissing" class="note"></div>
   <div class="toolbar" style="margin-top:10px">
     <button id="multiCamRecord" class="primary">Start Motion Capture</button>
     <button id="multiCamClose">Close (back to one camera)</button>

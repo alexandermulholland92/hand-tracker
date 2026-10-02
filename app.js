@@ -1067,7 +1067,6 @@
   // Set while trackWholeVideo waits for a Capture Whole Video run: gets the motion data
   // instead of the export panel.
   let captureWaiter = null;
-  let lastHandNames = []; // the hands seen in the last frame (for remote recording's page)
 
   // Before a new motion capture: an unexported one is only dropped if you say so.
   function readyForNewMotion() {
@@ -1905,7 +1904,6 @@
     HandTracker.onHandLandmarks(({ hands, timestamp }) => {
       syncStageAspect();
       updateGestures(hands);
-      lastHandNames = hands.map((h) => h.handedness);
       // Un-flip text in the camera picture, or only times with Readable text off (not with a
       // crop: OCR reads the whole picture).
       if (!HandTracker.getCamera().crop) ReadableText.process(HandTracker.getFrameImage(), stage, mirrorOn, hands, !readableOn);
@@ -1936,16 +1934,6 @@
     showMotionExport: (data) => showMotionExport(data),
     readyForNewMotion: () => readyForNewMotion(),
     hasUnsavedMotion: () => !!(motion && !motion.exported),
-    // Remote recording on the phone (remote-record-ui.js): its own camera's motion capture.
-    startMotionCapture: () => {
-      if (RobotMotion.isRecording()) return { ok: true, message: "Already recording." };
-      if (motion && !motion.exported) return { ok: false, message: "The last motion capture hasn't been saved." };
-      toggleMotion();
-      return RobotMotion.isRecording() ? { ok: true, message: "" } : { ok: false, message: "Motion capture didn't start." };
-    },
-    stopMotionCapture: (extra) => stopMotionNow(extra),
-    handsNow: () => lastHandNames.slice(),
-    isMirrored: () => mirrorOn,
     saveMotionNow: (baseName) => saveMotionNow(baseName),
     useOak: () => useOak(),
   };

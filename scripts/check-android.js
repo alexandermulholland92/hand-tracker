@@ -612,10 +612,10 @@ async function run() {
   await checkPhoneAsRig(win, js);
 }
 
-// The phone recording with its own camera, started and stopped from another device (the PC's
-// Hand Tracker, played here by plain requests): Remote recording in the phone's Record card,
-// then the same page and requests as a computer's, with one camera and no modes; the take is
-// saved on the phone, named after its details.
+// The phone as a rig, like a computer: another device (the PC's Hand Tracker, played here by
+// plain requests) sees the phone's cameras listed (any new one ticked), picks the mode, starts
+// the cameras (Several cameras, on the phone) and recording, sees the previews (bigger full
+// screen), and the take is saved on the phone, named after its details.
 async function checkPhoneAsRig(win, js) {
   const wc = win.webContents;
   await wc.loadURL(`app://${HOST}/index.html`);
@@ -640,15 +640,29 @@ async function checkPhoneAsRig(win, js) {
     out.page = (await (await fetch(base + "/")).text()).includes('src="remote-client.js"');
     out.noKey = (await fetch(base + "/api/state")).status;
     const st = await state();
-    out.state = { kind: st.kind, host: st.host, running: st.running, cameras: st.cameras.length, mode: st.mode, available: st.available };
-    out.cameras = await post({ action: "cameras" });
-    out.pick = await post({ action: "mode", mode: "ego" });
+    out.state = { kind: st.kind, running: st.running, mode: st.mode, screenPictures: st.screenPictures };
+    // The phone's cameras, listed before they start (a new one ticked by itself).
+    await post({ action: "scan" });
+    let a = null;
+    for (let i = 0; i < 60 && !(a && a.at && !a.scanning); i++) {
+      await sleep(200);
+      a = (await state()).available;
+    }
+    // (Listed by name: Android gives cameras new ids every start, so picks and roles kept by id would be lost.)
+    out.available = (a.cameras || []).map((c) => ({ present: c.present, use: c.use, byName: c.id.startsWith("cam:") }));
+    out.mode = await post({ action: "mode", mode: "freeform" });
     out.refused = await post({ action: "record" });
     await post({ action: "details", details: { contributor: "Sam Smith", location: "Lab 2", task: "Pick up cup" } });
+    // Start recording starts the cameras picked first.
     out.record = await post({ action: "record" });
-    await js(PAGE_SIMULATION);
-    const rec = await state();
-    out.recording = { recording: rec.recording, locked: rec.detailsLocked, hands: rec.cameras[0].hands };
+    let rec = null;
+    for (let i = 0; i < 100 && !(rec && rec.recording && rec.cameras.length && rec.cameras.every((c) => c.fps > 0)); i++) {
+      await sleep(200);
+      rec = await state();
+    }
+    out.recording = { recording: rec.recording, locked: rec.detailsLocked, cameras: rec.cameras.length, fps: rec.cameras.map((c) => c.fps) };
+    // Hands in each camera's tile (the test camera shows none).
+    await js(`Promise.all([...document.querySelectorAll("#multiCamGrid iframe")].map((f) => f.contentWindow.eval(${JSON.stringify(PAGE_SIMULATION)})))`);
     let pic = null;
     for (let i = 0; i < 30 && !(pic && pic.status === 200); i++) {
       pic = await get("/api/preview?i=0");
@@ -670,17 +684,22 @@ async function checkPhoneAsRig(win, js) {
     const after = await state();
     out.take = after.lastTake;
     out.saved = await js(`[...window.__fakeCapacitor.files.keys()].filter((k) => /Sam-Smith_Lab-2_Pick-up-cup_/.test(k))`);
+    out.close = await post({ action: "close" });
+    await sleep(500);
+    out.closed = !(await state()).running;
   } catch (err) {
     out.error = String((err && err.stack) || err);
   }
   out.off = await js(`(async () => { document.getElementById("remoteToggle").click(); await new Promise((r) => setTimeout(r, 300)); return !(await mobile.remote.status()).on; })()`);
   const t = out.take || {};
-  check("Remote recording on the phone: another device starts and stops its motion capture (the same page, one camera, no modes, the take details needed and locked), sees its camera (bigger full screen), and the take is saved on the phone, named after its details",
+  check("Remote recording on the phone: another device lists the phone's cameras (new ones ticked), picks the mode, starts them and recording (the take details needed and locked), sees each camera (bigger full screen), and the take is saved on the phone, named after its details",
     !out.error && out.on.card && out.on.on && out.on.pair && out.on.pasteable && !out.on.folderBtn && out.page && out.noKey === 401 &&
-      out.state.kind === "phone" && out.state.running && out.state.cameras === 1 && out.state.mode === null && out.state.available === null &&
-      out.cameras.ok && out.pick.ok === false && out.refused.ok === false && (out.refused.missing || []).length === 3 &&
-      out.record.ok && out.recording.recording && out.recording.locked && out.preview.status === 200 && out.preview.full === 200 && out.preview.big > out.preview.small &&
-      out.stop.ok && t.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_/.test((t.files || [])[0] || "") && out.saved.length >= 1 && out.off,
+      out.state.kind === "rig" && !out.state.running && out.state.screenPictures === undefined &&
+      out.available.length >= 1 && out.available.every((c) => c.present && c.use && c.byName) &&
+      out.mode.ok && out.refused.ok === false && (out.refused.missing || []).length === 3 &&
+      out.record.ok && out.recording.recording && out.recording.locked && out.recording.cameras === out.available.length &&
+      out.preview.status === 200 && out.preview.full === 200 && out.preview.big > out.preview.small &&
+      out.stop.ok && t.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_/.test((t.files || [])[0] || "") && out.saved.length >= 1 && out.close.ok && out.closed && out.off,
     JSON.stringify(out));
 }
 
@@ -738,6 +757,27 @@ async function checkRemoteFromPhone(win, js) {
         rows: [...document.querySelectorAll("#camRows .camrow label")].map((r) => r.textContent.trim()), before, after: pressed(), back: !document.getElementById("back").hidden,
         calls: window.__fakeCapacitor.calls.filter((c) => c[0] === "remote.rigRequest").length, fits: document.documentElement.scrollWidth <= innerWidth + 1 };
     })()`);
+    // One camera running, held upright (a phone's): it takes the whole grid, in its own tall
+    // shape (no black bars), and the roles with no camera are listed under it.
+    state.running = true;
+    state.cameras = [{ index: 0, name: "Cam 1", roleId: "head", role: "Head", label: "camera 0, facing back", rotation: 0, mirror: true, fps: 30, hands: [], error: "" }];
+    server.setState(state);
+    const { nativeImage } = require("electron");
+    const portrait = nativeImage.createFromBitmap(Buffer.alloc(180 * 320 * 4, 120), { width: 180, height: 320 }).toJPEG(70);
+    const feed = setInterval(() => server.setPreview(0, portrait), 150);
+    try {
+      out.one = await js(`(async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const img = () => document.querySelector("#cam0 img");
+        for (let i = 0; i < 100 && !(img() && !img().hidden && img().naturalWidth); i++) await sleep(150);
+        await sleep(300);
+        const pic = document.querySelector("#cam0 .pic"), r = pic.getBoundingClientRect();
+        return { one: document.getElementById("grid").classList.contains("one"), missing: document.getElementById("missing").textContent,
+          ratio: pic.style.aspectRatio, w: Math.round(r.width), h: Math.round(r.height), boxes: document.querySelectorAll("#grid .cam").length };
+      })()`);
+    } finally {
+      clearInterval(feed);
+    }
   } catch (err) {
     out.error = String((err && err.stack) || err);
   } finally {
@@ -745,10 +785,11 @@ async function checkRemoteFromPhone(win, js) {
   }
   out.asked = [...new Set(asked)];
   const c = out.client || {};
-  check("Remote recording from the app: its page opens in place, and a computer's page opens right here, reaching the computer through the app (its cameras, a mode changed)",
+  check("Remote recording from the app: its page opens in place, and a computer's page opens right here, reaching the computer through the app (its cameras, a mode changed); one camera fills the grid in its own shape, the roles with none listed",
     !out.error && out.launcher.path === "/remote.html" && out.launcher.back && /opens here/.test(out.launcher.where) &&
       c.path === "/remote-client.html" && c.hash === "" && c.title === "Hand Tracker on rig-test" && /Cameras off/.test(c.status) && c.rows.length === 1 &&
-      c.before === "Stereo" && c.after === "Ego" && c.back && c.calls > 2 && c.fits && out.asked.includes("mode"),
+      c.before === "Stereo" && c.after === "Ego" && c.back && c.calls > 2 && c.fits && out.asked.includes("mode") &&
+      out.one && out.one.one && out.one.boxes === 1 && out.one.missing === "Not connected: Chest, Left wrist, Right wrist" && out.one.ratio === "180 / 320" && out.one.h > out.one.w * 1.5,
     JSON.stringify(out));
 }
 

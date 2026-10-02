@@ -89,8 +89,9 @@
   const ROLES = [["head", "Head"], ["chest", "Chest"], ["wrist_left", "Left wrist"], ["wrist_right", "Right wrist"]];
   const roleLabel = (id) => (ROLES.find((r) => r[0] === id) || [])[1] || "";
   const roleOptions = (selected) => `<option value=""${selected ? "" : " selected"}>No role</option>` + ROLES.map(([id, label]) => `<option value="${id}"${id === selected ? " selected" : ""}>${label}</option>`).join("");
-  // The 2 × 2 grid by role, as in Hand Tracker: head top left, chest top right, left wrist bottom
-  // left, right wrist bottom right; a camera with no role takes the first free block.
+  // The grid by role, as in Hand Tracker: head, chest, left wrist, right wrist (two to a row; a
+  // single camera takes the whole grid); a camera with no role takes the first free role's place.
+  // The roles with no camera are listed under it.
   function blocks(roles) {
     const ids = ROLES.map((r) => r[0]);
     const slots = roles.map((r) => ids.indexOf(r));
@@ -133,8 +134,6 @@
     const a = s.available || {};
     const list = a.cameras || [];
     // Shown while the cameras run too (which ones they are), to change once they're stopped.
-    $("camPanel").hidden = s.kind === "phone";
-    if (s.kind === "phone") return;
     const busy = !!(s.running || s.recording || s.pending);
     // Rebuilt only when something changed (so a select being used isn't swapped under a finger).
     const sig = JSON.stringify(list) + busy;
@@ -333,16 +332,10 @@
     document.title = s.recording ? `● ${clock(s.elapsed_s)} · Hand Tracker` : "Hand Tracker remote";
     const cams = s.cameras || [];
     const running = cams.filter((c) => c.fps > 0).length;
-    // A phone recording with its own camera (the Android app): no modes, no list of cameras,
-    // and its camera is always on.
-    const phone = s.kind === "phone";
-    $("modePanel").hidden = phone;
-    $("grid").classList.toggle("phone", phone);
     const status = $("status");
     status.className = s.recording ? "rec" : "";
     if (s.recording) status.innerHTML = `<span class="dot"></span>Recording ${clock(s.elapsed_s)}`;
     else if (s.pending) status.textContent = s.pending;
-    else if (phone) status.textContent = "The phone's camera is on.";
     else if (!s.running) status.textContent = "Cameras off.";
     else if (running < cams.length) status.textContent = `Starting cameras… ${running} of ${cams.length} running`;
     else status.textContent = `${cams.length} camera${cams.length === 1 ? "" : "s"} running`;
@@ -357,9 +350,9 @@
     $("modeNote").textContent = need.ok ? MODE_NOTES[mode] : need.message;
     $("modeNote").className = need.ok ? "" : "err";
 
-    $("camsBtn").hidden = phone || !!(s.running || s.recording);
+    $("camsBtn").hidden = !!(s.running || s.recording);
     $("camsBtn").disabled = sending || !!s.pending || !need.ok;
-    $("offBtn").hidden = phone || !s.running || !!s.recording;
+    $("offBtn").hidden = !s.running || !!s.recording;
     $("offBtn").disabled = sending || !!s.pending;
     const rec = $("recBtn");
     rec.textContent = s.recording ? "Stop recording" : "Start recording";
@@ -368,7 +361,7 @@
 
     renderCameras(s);
     renderWifi(s);
-    $("screenPanel").hidden = phone || typeof s.screenPictures !== "boolean";
+    $("screenPanel").hidden = typeof s.screenPictures !== "boolean";
     if (typeof s.screenPictures === "boolean") {
       screenOn = s.screenPictures;
       const where = s.host || "the computer";
@@ -401,10 +394,8 @@
       flip.classList.toggle("on", !!c.mirror);
       flip.setAttribute("aria-pressed", String(!!c.mirror));
     });
-    ROLES.forEach((r, b) => {
-      const el = $(`empty${b}`);
-      if (el) el.hidden = !empty.includes(b);
-    });
+    $("grid").classList.toggle("one", cams.length === 1);
+    $("missing").textContent = cams.length && empty.length ? `Not connected: ${empty.map((b) => ROLES[b][1]).join(", ")}` : "";
 
     required = s.detailsRequired !== false;
     $("requiredBtn").textContent = required ? "On" : "Off";
@@ -429,8 +420,7 @@
 
   // A box per running camera (only those: Hand Tracker starts only the cameras plugged in),
   // each with its own preview loop (a few pictures a second, only while this page is visible:
-  // the computer makes previews only while they're asked for), its role, turn and flip. The
-  // blocks no camera has say so.
+  // the computer makes previews only while they're asked for), its role, turn and flip.
   function buildGrid(n) {
     shownCams = n;
     loops.forEach((l) => (l.stop = true));
@@ -440,8 +430,7 @@
       `<div class="cap"><div class="tools"><select data-i="${i}" aria-label="Role">${roleOptions("")}</select>` +
       `<button type="button" class="rot" data-i="${i}" aria-label="Turn 90 degrees clockwise"></button>` +
       `<button type="button" class="flip" data-i="${i}" aria-pressed="false">Flip</button></div><div class="what"></div></div></div>`);
-    const holes = n ? ROLES.map(([, label], b) => `<div class="cam empty" id="empty${b}" style="order:${b}" hidden><div class="pic"><span>${label}: no camera</span></div></div>`) : [];
-    $("grid").innerHTML = cams.join("") + holes.join("");
+    $("grid").innerHTML = cams.join("");
     for (let i = 0; i < n; i++) {
       const loop = { stop: false };
       loops.push(loop);
@@ -453,7 +442,7 @@
     if (e.target.matches("select")) command("camera", { camera: { index: Number(e.target.dataset.i), role: e.target.value } });
   });
   $("grid").addEventListener("click", (e) => {
-    const pic = e.target.closest(".cam:not(.empty) .pic");
+    const pic = e.target.closest(".cam .pic");
     if (pic) return openFull(Number(pic.parentElement.id.slice(3)));
     const b = e.target.closest("button");
     const c = b && state && (state.cameras || [])[Number(b.dataset.i)];
@@ -461,6 +450,16 @@
     if (b.matches(".rot")) command("camera", { camera: { index: c.index, rotation: ((c.rotation || 0) + 90) % 360 } });
     else if (b.matches(".flip")) command("camera", { camera: { index: c.index, mirror: !c.mirror } });
   });
+  // A preview's box in its camera's shape (a phone held upright: tall, not wide with black
+  // bars), no taller than most of the screen.
+  function shape(img) {
+    const w = img.naturalWidth, h = img.naturalHeight, pic = img.parentElement;
+    if (!w || !h || pic.dataset.ratio === `${w}/${h}`) return;
+    pic.dataset.ratio = `${w}/${h}`;
+    pic.style.aspectRatio = `${w} / ${h}`;
+    pic.style.maxWidth = `calc(75vh * ${(w / h).toFixed(4)})`;
+  }
+
   async function previewLoop(i, loop) {
     const img = document.querySelector(`#cam${i} img`), note = document.querySelector(`#cam${i} .pic span`);
     let url = null;
@@ -478,6 +477,7 @@
           url = next;
           img.hidden = false;
           note.hidden = true;
+          shape(img);
           await sleep(200);
         } else {
           await sleep(700);
