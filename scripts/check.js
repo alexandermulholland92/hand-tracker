@@ -418,6 +418,7 @@ async function run(win) {
   await checkOakTileRetry(js);
   await checkRemoteRecording(js);
   await checkRemoteLauncher(js);
+  await checkRemoteHotspotWifi();
 
   // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
   // in go through the same tracking, with the camera's confidence and measured distance.
@@ -701,7 +702,8 @@ async function checkPhoneLink(js) {
   const png = await js(`document.getElementById("linkQr").toDataURL("image/png")`);
   const qrFile = path.join(outDir, "phone-link-qr.png");
   fs.writeFileSync(qrFile, Buffer.from(png.split(",")[1], "base64"));
-  const read = spawnSync("python", ["-c", "import sys, cv2; t, _, _ = cv2.QRCodeDetector().detectAndDecode(cv2.imread(sys.argv[1])); print(t)", qrFile], { encoding: "utf8" });
+  // (OpenCV's reader misses some codes at their drawn size: it tries them twice as big too.)
+  const read = spawnSync("python", ["-c", "import sys, cv2; d = cv2.QRCodeDetector(); i = cv2.imread(sys.argv[1]); print(d.detectAndDecode(i)[0] or d.detectAndDecode(cv2.resize(i, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST))[0])", qrFile], { encoding: "utf8" });
   out.qr = read.status === 0 ? (read.stdout.trim() === on.code ? "reads back" : `reads "${read.stdout.trim()}"`) : "not read (no OpenCV)";
   const pair = P.parsePairing(on.code.replace(/:[0-9.,]+$/, ":127.0.0.1"));
   const sock = dgram.createSocket("udp4");
@@ -971,15 +973,51 @@ async function checkRemoteRecording(js) {
   }))()`);
   const state = async () => (await get("/api/state")).json();
   try {
-    out.page = (await (await fetch(base + "/")).text()).includes("Hand Tracker remote");
+    // The page and its script (nothing inline), as the apps show it too.
+    const pageRes = await fetch(base + "/");
+    out.page = (await pageRes.text()).includes('src="remote-client.js"') && /script-src 'self'/.test(pageRes.headers.get("content-security-policy") || "");
+    const scriptRes = await fetch(base + "/remote-client.js");
+    out.script = scriptRes.status === 200 && /javascript/.test(scriptRes.headers.get("content-type") || "") && (await scriptRes.text()).includes("rigRequest");
     out.noKey = (await get("/api/state", "")).status;
     out.wrongKey = (await get("/api/state", key.slice(0, -2) + "xx")).status;
     // A command only from the page itself: JSON, from its own address (not another website's form).
     const sneak = (headers) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, ...headers }, body: '{"action":"record"}' }).then((r) => r.status);
     out.textPlain = await sneak({ "Content-Type": "text/plain" });
     out.otherSite = await sneak({ "Content-Type": "application/json", Origin: "http://evil.example" });
+    // The cameras it can start, before they do: both OAK cameras and the test webcam, and the
+    // one picked in Several cameras that isn't plugged in any more.
+    out.scan = (await (await post("scan")).json()).ok;
+    let a = null;
+    for (let i = 0; i < 100 && !(a && a.at && !a.scanning); i++) {
+      await sleep(200);
+      a = (await state()).available;
+    }
     const before = await state();
-    out.before = { running: before.running, savedCameras: before.savedCameras };
+    out.before = { running: before.running, mode: before.mode };
+    out.available = a.cameras.map((c) => ({ id: c.id.startsWith("oak:") ? c.id : "webcam", present: c.present, use: c.use, role: c.role }));
+    // Any camera can be picked: the webcam gets a free role (a wrist's), is given the other wrist, then left out again.
+    const webcam = a.cameras.find((c) => !c.id.startsWith("oak:"));
+    out.pickWebcam = (await (await post("pick", { pick: { id: webcam.id, use: true } })).json()).ok;
+    const withWebcam = (await state()).available.cameras.find((c) => c.id === webcam.id);
+    const otherWrist = withWebcam.role === "wrist_left" ? "wrist_right" : "wrist_left";
+    await post("pick", { pick: { id: webcam.id, role: otherWrist } });
+    out.webcam = { use: withWebcam.use, role: withWebcam.role, asked: otherWrist, given: (await state()).available.cameras.find((c) => c.id === webcam.id).role };
+    await post("pick", { pick: { id: webcam.id, use: false } });
+    out.webcamOut = !(await state()).available.cameras.find((c) => c.id === webcam.id).use;
+    // Ego needs all four roles (only head and chest are picked): neither Start cameras nor
+    // Start recording go. The take details come first; with them made optional (the page's
+    // hidden switch), it's the mode that says what's missing. Stereo needs only a head camera.
+    await post("mode", { mode: "ego" });
+    const ego = await state();
+    out.ego = { mode: ego.mode, need: ego.requirement, start: await (await post("cameras")).json() };
+    out.egoRecord = await (await post("record")).json();
+    out.optional = await (await post("settings", { settings: { detailsRequired: false } })).json();
+    out.optionalState = (await state()).detailsRequired;
+    out.egoRecordOptional = await (await post("record")).json();
+    await post("settings", { settings: { detailsRequired: true } });
+    await post("mode", { mode: "stereo" });
+    const stereo = await state();
+    out.stereo = { mode: stereo.mode, need: stereo.requirement, running: stereo.running };
     // Recording needs all three take details (nothing starts without them), then starts.
     out.refused = await (await post("record", { details: { contributor: "Sam Smith", location: " ", task: "" } })).json();
     await sleep(300);
@@ -995,6 +1033,8 @@ async function checkRemoteRecording(js) {
     }
     out.recording = { recording: s.recording, cameras: s.cameras.map((c) => ({ fps: c.fps, hands: c.hands.length, error: c.error, role: c.roleId, mirror: c.mirror, rotation: c.rotation })) };
     out.gridBefore = await grid();
+    // The cameras' card is where the main view was (which is hidden meanwhile).
+    out.inPlace = await js(`(() => { const card = document.getElementById("multiCamCard"), wrap = document.getElementById("wrap"); return { inPlace: card.classList.contains("in-place"), beforeView: card.nextElementSibling === wrap, viewShown: getComputedStyle(wrap).display !== "none" }; })()`);
     // The first camera to the right wrist's block; the second turned and flipped.
     out.moved = await (await post("camera", { camera: { index: 0, role: "wrist_right" } })).json();
     out.turned = await (await post("camera", { camera: { index: 1, rotation: 90, mirror: true } })).json();
@@ -1017,6 +1057,22 @@ async function checkRemoteRecording(js) {
     }
     const bytes = Buffer.from(await pic.arrayBuffer());
     out.preview = { status: pic.status, type: pic.headers.get("content-type"), jpeg: bytes[0] === 0xff && bytes[1] === 0xd8, kb: Math.round(bytes.length / 1024) };
+    // One camera full screen: bigger, and more often (each request waits for its next picture).
+    const jpegSize = (b) => {
+      for (let k = 2; k < b.length - 9; ) {
+        if (b[k] !== 0xff) { k++; continue; }
+        if (b[k + 1] >= 0xc0 && b[k + 1] <= 0xc3) return { w: b.readUInt16BE(k + 7), h: b.readUInt16BE(k + 5) };
+        k += 2 + b.readUInt16BE(k + 2);
+      }
+      return null;
+    };
+    const fulls = [];
+    const fullFrom = Date.now();
+    for (let n = 0; n < 15; n++) {
+      const r = await get("/api/preview?i=1&full=1");
+      if (r.status === 200) fulls.push(Buffer.from(await r.arrayBuffer()));
+    }
+    out.full = { frames: fulls.length, small: jpegSize(bytes), size: fulls.length ? jpegSize(fulls[fulls.length - 1]) : null, fps: Math.round((fulls.length * 1000) / (Date.now() - fullFrom)) };
     await sleep(1500);
     out.stop = await (await post("stop")).json();
     const after = await state();
@@ -1032,6 +1088,8 @@ async function checkRemoteRecording(js) {
     out.close = await (await post("close")).json();
     await sleep(300);
     out.closed = !(await state()).running;
+    out.backAfterClose = await js(`(() => { const card = document.getElementById("multiCamCard"), wrap = document.getElementById("wrap"); return !card.classList.contains("in-place") && card.nextElementSibling !== wrap && getComputedStyle(wrap).display !== "none"; })()`);
+    await post("mode", { mode: "freeform" });
     out.unknown = (await post("explode")).status;
   } catch (err) {
     out.error = String((err && err.message) || err);
@@ -1047,9 +1105,17 @@ async function checkRemoteRecording(js) {
   out.tailnet = [tailnetPeer("100.104.1.2", "::ffff:100.90.3.4"), tailnetPeer("192.168.1.5", "100.90.3.4"), tailnetPeer("100.104.1.2", "192.168.1.9")];
   const probe = new RemoteRecordServer({ keyStore: null, page: () => "", ask: async () => ({}) });
   out.ownHost = [probe.ownHost({ headers: { host: "localhost:47821" } }), probe.ownHost({ headers: { host: "evil.example:47821" } })];
-  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); Start recording needs all three take details (then locked until the take is saved), then starts the cameras plugged in (nothing runs before; OAK cameras not mirrored), previews come through, a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself, Stop cameras stops them",
+  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so) and picked, with roles; Ego needs all four roles, Stereo a head camera; Start recording needs all three take details (unless the hidden switch makes them optional; then locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras not mirrored), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself, Stop cameras stops them",
     out.setup.on && out.setup.card && !out.setup.runningBefore && key.length > 10 && out.page && out.noKey === 401 && out.wrongKey === 401 &&
-      out.before.running === false && out.before.savedCameras === 3 &&
+      out.before.running === false && out.script && out.scan &&
+      out.available.filter((c) => c.id.startsWith("oak:SIMULATED-OAK-") && c.present && c.use).length === 2 &&
+      out.available.some((c) => c.id === "oak:SIMULATED-OAK-UNPLUGGED" && !c.present && c.use) && out.available.some((c) => c.id === "webcam" && c.present && !c.use) &&
+      out.pickWebcam && out.webcam.use && /^wrist_/.test(out.webcam.role) && out.webcam.given === out.webcam.asked && out.webcamOut &&
+      out.ego.mode === "ego" && !out.ego.need.ok && out.ego.need.missing.join() === "wrist_left,wrist_right" && out.ego.start.ok === false &&
+      /Ego needs the Left wrist and Right wrist cameras/.test(out.ego.start.message) && (out.egoRecord.missing || []).length === 3 &&
+      out.optional.ok && out.optionalState === false && out.egoRecordOptional.ok === false && /Ego needs/.test(out.egoRecordOptional.message) &&
+      out.stereo.mode === "stereo" && out.stereo.need.ok && !out.stereo.running &&
+      out.inPlace.inPlace && out.inPlace.beforeView && !out.inPlace.viewShown && out.backAfterClose &&
       out.refused.ok === false && (out.refused.missing || []).join() === "location,task" && /Fill in Location and Task first/.test(out.refused.message) && out.refusedStarted === false &&
       out.record.ok && out.changedDetails.ok === false && out.changedDetails.locked && out.lockedDetails.locked === true &&
       out.lockedDetails.details.location === "Lab 2" && out.lockedDetails.details.task === "Pick up cup" && out.unlocked.locked === false && out.unlocked.cleared && /^Sam-Smith_Lab-2_Pick-up-cup_/.test(out.nameLocked) &&
@@ -1059,6 +1125,7 @@ async function checkRemoteRecording(js) {
       out.gridAfter.orders.join() === "3,1" && out.gridAfter.empty.filter(Boolean).join() === "Head: no camera,Left wrist: no camera" && out.gridAfter.shapes.join() === "wide,tall" &&
       out.badCamera === 400 && out.details.ok && out.detailsKept.contributor === "Sam Smith" && out.detailsKept.task === "Pick up cup" &&
       out.preview.status === 200 && out.preview.type === "image/jpeg" && out.preview.jpeg && out.preview.kb > 1 &&
+      out.full.frames >= 12 && out.full.size && out.full.small && out.full.size.w > out.full.small.w && out.full.fps >= 6 &&
       out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
       /^0:\d\d$/.test(out.metadata.length) && out.metadata.length_s > 1 &&
@@ -1078,7 +1145,19 @@ async function checkRemoteLauncher(js) {
   };
   const before = new Set(BrowserWindow.getAllWindows().map((w) => w.id));
   const out = {};
+  let port = 0;
   try {
+    // This computer's own remote recording, reached the way another computer's would be: by
+    // the address under its QR code (with its code).
+    const s = await js(`(async () => {
+      document.getElementById("remoteToggle").click();
+      let s = null;
+      for (let i = 0; i < 50 && !(s && s.on); i++) { await new Promise((r) => setTimeout(r, 100)); s = await desktop.remote.status(); }
+      return s;
+    })()`);
+    port = s.port;
+    const keyed = (s.urls || []).find((u) => u.keyed);
+    const address = `http://127.0.0.1:${port}/${new URL(keyed.url).hash}`;
     out.link = await js(`(() => { const a = document.getElementById("remoteLink"); a.click(); return { shown: !a.hidden, target: a.target, text: a.textContent }; })()`);
     let win = null;
     for (let i = 0; i < 50 && !win; i++) {
@@ -1087,32 +1166,90 @@ async function checkRemoteLauncher(js) {
     }
     if (win) {
       await new Promise((r) => (win.webContents.isLoading() ? win.webContents.once("did-finish-load", r) : r()));
-      out.page = await withLimit(win.webContents.executeJavaScript(`(async () => {
-        const host = document.getElementById("host");
-        const connect = document.querySelector("#connectForm button[type=submit]");
-        host.value = "not a name!";
-        connect.click();
-        const error = document.getElementById("error").textContent;
-        host.value = "rig-pi";
-        connect.click();
-        await new Promise((r) => setTimeout(r, 300));
-        return { url: location.href, backHidden: document.getElementById("back").hidden, error, opened: document.getElementById("opened").textContent,
-          saved: [...document.querySelectorAll("#saved .name")].map((e) => e.textContent) };
-      })()`, true), "remote.html");
-      await sleep(300);
-      out.stillOpen = !win.isDestroyed() && win.webContents.getURL();
+      const wjs = (code) => withLimit(win.webContents.executeJavaScript(code, true), "the Remote recording window");
+      out.launcher = await wjs(`(() => {
+        document.getElementById("host").value = "not a name!";
+        document.querySelector("#connectForm button[type=submit]").click();
+        return { error: document.getElementById("error").textContent, backHidden: document.getElementById("back").hidden, where: document.getElementById("whereNote").textContent };
+      })()`);
+      const loaded = new Promise((r) => win.webContents.once("did-finish-load", r));
+      await wjs(`(() => { document.getElementById("host").value = ${JSON.stringify(address)}; document.querySelector("#connectForm button[type=submit]").click(); return true; })()`);
+      await loaded;
+      // The remote recording page, here in the app, reaching the computer through it.
+      out.client = await wjs(`(async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        for (let i = 0; i < 150 && !(/Hand Tracker on/.test(document.getElementById("title").textContent) && document.querySelectorAll("#camRows .camrow").length); i++) await sleep(200);
+        return {
+          path: location.pathname, rig: new URLSearchParams(location.search).get("rig"), hash: location.hash,
+          title: document.getElementById("title").textContent, status: document.getElementById("status").textContent,
+          cameras: document.querySelectorAll("#camRows .camrow").length, rows: [...document.querySelectorAll("#camRows .camrow label")].map((r) => r.textContent.trim()), modes: [...document.querySelectorAll("#modes button")].map((b) => b.textContent).join(),
+          back: !document.getElementById("back").hidden, saved: JSON.parse(localStorage.getItem("hand-tracker-remote-computers") || "[]"),
+          wifiHidden: document.getElementById("wifiPanel").hidden,
+        };
+      })()`);
+      out.stillOpen = !win.isDestroyed() && win.webContents.getURL().replace(/[?#].*/, "");
       win.close();
     }
     out.mainPage = await js("location.pathname");
+    await js(`(async () => { document.getElementById("remoteToggle").click(); await new Promise((r) => setTimeout(r, 300)); return true; })()`);
   } finally {
     shell.openExternal = realOpen;
   }
   out.browser = opened;
-  const p = out.page || {};
-  check("The Remote recording page (as on the website) opens from the header in a window of its own; Connect remembers the computer and opens its page in the browser, not in the app",
-    out.link.shown && out.link.target === "_blank" && p.url === "app://hand-tracker/remote.html" && p.backHidden && /doesn't look like/.test(p.error) &&
-      opened.join() === "http://rig-pi:47821/" && /rig-pi/.test(p.opened) && p.saved && p.saved[0] === "rig-pi" &&
-      out.stillOpen === "app://hand-tracker/remote.html" && out.mainPage === "/index.html",
+  const l = out.launcher || {}, c = out.client || {};
+  check("The Remote recording page (as on the website) opens from the header in a window of its own, and the computer's page opens right there (the app reaching it, its code from the pasted address): its cameras and modes, never a browser",
+    out.link.shown && out.link.target === "_blank" && l.backHidden && /doesn't look like/.test(l.error) && /opens here/.test(l.where) &&
+      c.path === "/remote-client.html" && c.rig === `127.0.0.1:${port}` && c.hash === "" && /^Hand Tracker on /.test(c.title) && /Cameras off/.test(c.status) &&
+      c.cameras >= 2 && c.modes === "Ego,Stereo,Freeform" && c.back && c.saved[0] === (port === 47821 ? "127.0.0.1" : `127.0.0.1:${port}`) && c.wifiHidden &&
+      out.stillOpen === "app://hand-tracker/remote-client.html" && out.mainPage === "/index.html" && opened.length === 0,
+    JSON.stringify(out));
+}
+
+// A phone on the computer's own hotspot needs no code, and there (as over Tailscale: both are
+// encrypted) the page lists the Wi-Fi networks and has the computer join one; with only the
+// code (the local network), the Wi-Fi can't be changed.
+async function checkRemoteHotspotWifi() {
+  const { RemoteRecordServer } = require("../electron/remote-record.js");
+  const joined = [];
+  const wifi = {
+    available: () => true,
+    status: () => ({ connecting: null, last: null }),
+    list: async () => ({ device: "wlan0", current: { ssid: "Lab", signal: 70 }, networks: [{ ssid: "Lab", signal: 70, secure: true, saved: true, dfs: false }, { ssid: "Field", signal: 40, secure: true, saved: false, dfs: false }] }),
+    connect: (ssid, password) => {
+      joined.push([ssid, password]);
+      return { ok: true, message: `Joining ${ssid}…` };
+    },
+  };
+  const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : "remote-client.html"), "utf8");
+  const ask = async () => ({ ok: true, message: "" });
+  const postTo = (base, body, key) => fetch(base + "/api/command", { method: "POST", headers: { "Content-Type": "application/json", ...(key ? { "X-Key": key } : {}) }, body: JSON.stringify(body) });
+  const out = {};
+  // This computer's hotspot, played by its loopback address; and a computer reached by its code.
+  const hot = new RemoteRecordServer({ keyStore: null, page, ask, wifi, hotspot: () => "127.0.0.1" });
+  const plain = new RemoteRecordServer({ keyStore: null, page, ask, wifi, hotspot: () => null });
+  const hb = `http://127.0.0.1:${(await hot.start()).port}`;
+  const pb = `http://127.0.0.1:${(await plain.start()).port}`;
+  try {
+    const st = await fetch(hb + "/api/state");
+    out.hotspot = { status: st.status, wifi: st.status === 200 ? (await st.json()).wifi : null };
+    out.list = (await (await fetch(hb + "/api/wifi")).json()).networks.map((n) => n.ssid);
+    out.badPassword = (await postTo(hb, { action: "wifi", wifi: { ssid: "Field", password: "short" } })).status;
+    out.join = await (await postTo(hb, { action: "wifi", wifi: { ssid: "Field", password: "long enough" } })).json();
+    out.plainNoKey = (await fetch(pb + "/api/state")).status;
+    out.plainWifi = (await (await fetch(pb + "/api/state", { headers: { "X-Key": plain.key } })).json()).wifi;
+    out.plainList = (await fetch(pb + "/api/wifi", { headers: { "X-Key": plain.key } })).status;
+    out.plainJoin = (await postTo(pb, { action: "wifi", wifi: { ssid: "Field", password: "long enough" } }, plain.key)).status;
+  } catch (err) {
+    out.error = String((err && err.message) || err);
+  } finally {
+    hot.stop();
+    plain.stop();
+  }
+  out.joined = joined;
+  check("Remote recording on the computer's own hotspot needs no code, and there (as over Tailscale) the page lists the Wi-Fi networks and has the computer join one; with only the code, the Wi-Fi can't be changed",
+    !out.error && out.hotspot.status === 200 && out.hotspot.wifi && out.hotspot.wifi.allowed && out.list.join() === "Lab,Field" &&
+      out.badPassword === 400 && out.join.ok && joined.length === 1 && joined[0].join() === "Field,long enough" &&
+      out.plainNoKey === 401 && out.plainWifi === null && out.plainList === 403 && out.plainJoin === 403,
     JSON.stringify(out));
 }
 

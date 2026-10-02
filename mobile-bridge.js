@@ -579,7 +579,59 @@
     };
   }
 
+  // Remote recording on the phone itself (the desktop app's desktop.remote, same shape): while
+  // it's on, the PC's Hand Tracker (or any browser) starts and stops motion capture with this
+  // phone's camera. The RigServer plugin (RigServerPlugin.java) is the web server; its key is
+  // kept in the Android Keystore; remote-record-ui.js carries out what it's asked.
+  function createRigServer() {
+    const Rig = plugin("RigServer");
+    const Remote = plugin("Remote");
+    if (!Rig || !Remote) return null;
+    const listeners = { status: new Set(), wantPreviews: new Set(), command: new Set() };
+    for (const name of Object.keys(listeners)) {
+      Rig.addListener(name, (data) => {
+        for (const cb of listeners[name]) {
+          try {
+            cb(data);
+          } catch (err) {
+            console.error(err);
+          }
+        }
+      });
+    }
+    const on = (name) => (cb) => (listeners[name].add(cb), () => listeners[name].delete(cb));
+    const newKey = () => toBase64(crypto.getRandomValues(new Uint8Array(16))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    async function key(fresh) {
+      let k = fresh ? null : (await Remote.secretGet({ key: "remote-rig" }).catch(() => ({}))).value;
+      if (!k) {
+        k = newKey();
+        await Remote.secretSet({ key: "remote-rig", value: k });
+      }
+      return k;
+    }
+    const bytes64 = (b) => toBase64(b instanceof Uint8Array ? b : new Uint8Array(b));
+    return {
+      status: () => Rig.status(),
+      start: async () => Rig.start({ key: await key(false) }),
+      stop: () => Rig.stop(),
+      newKey: async () => Rig.setKey({ key: await key(true) }),
+      settings: async () => ({ standby: false, phone: true, folder: `Documents/${FOLDER}`, autostart: { available: false, on: false } }),
+      setAutostart: async () => false,
+      chooseFolder: async () => `Documents/${FOLDER}`,
+      saveTake: ({ baseName, files }) => saveFiles({ baseName, files }),
+      onStatus: on("status"),
+      setState: (state) => Rig.setState({ state: JSON.stringify(state) }).catch(() => {}),
+      sendPreviews: (list) => {
+        for (const p of list) Rig.setPreview({ i: p.i, jpeg: bytes64(p.jpeg) }).catch(() => {});
+      },
+      onWantPreviews: on("wantPreviews"),
+      onCommand: on("command"),
+      result: (id, result) => Rig.result({ id, result: JSON.stringify(result || {}) }).catch(() => {}),
+    };
+  }
+
   const api = { platform: cap.getPlatform(), saveFiles, share, chunkBytes: CHUNK_BYTES };
+  api.remote = createRigServer();
   api.natnet = createNatNet();
   Object.assign(api, createRemote(), createLink());
   api.phoneControl = createPhoneControl();

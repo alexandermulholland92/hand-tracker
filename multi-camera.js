@@ -1,7 +1,8 @@
 /**
  * multi-camera.js — several live cameras at once. Each camera runs in a tile of its own
  * (camera-tile.html: its own hand tracker, so each has its own left and right hand), side
- * by side in the "Several cameras" card. Each camera has a role, where it's worn (head,
+ * by side in the "Several cameras" card, which takes the main view's place while they run (the
+ * main camera is paused meanwhile) and goes back when they close. Each camera has a role, where it's worn (head,
  * chest, left or right wrist: camera-roles.js), remembered for that camera. Motion capture
  * records every camera together; stopping merges them into one recording on a shared clock,
  * with each hand named after its camera's role ("Head Left", "Chest Right"…, or "Cam 1 Left"
@@ -40,6 +41,7 @@
   let oakOff = []; // the OAK stream listeners, while OAK tiles run
   let restoreOak = false; // the main window's OAK camera was in use: back to it when the tiles close
   let oakPorts = {}; // OAK camera id -> its USB port, from the last listing
+  let home = null; // where the card goes back to when the cameras close: { parent, next }
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -105,8 +107,27 @@
   }
 
   // ---------- the tiles ----------
+  // The card in the main view's place (before any tile's page loads: moving one reloads it),
+  // or back where it was.
+  function inPlace(on) {
+    const wrap = $("wrap");
+    if (!wrap || !els.card) return;
+    if (on && !home) {
+      home = { parent: els.card.parentNode, next: els.card.nextSibling };
+      wrap.parentNode.insertBefore(els.card, wrap);
+      els.card.classList.add("in-place");
+      wrap.hidden = true;
+    } else if (!on && home) {
+      home.parent.insertBefore(els.card, home.next);
+      home = null;
+      els.card.classList.remove("in-place");
+      wrap.hidden = false;
+    }
+  }
+
   async function start(deviceIds) {
     close(true);
+    inPlace(true);
     const cams = await HandTracker.listCameras();
     const labelOf = (id) => (isOak(id) ? oakLabel(id.slice(4)) : (cams.find((c) => c.deviceId === id) || {}).label || "Camera");
     // An OAK camera the main window is using can't be a tile too.
@@ -303,6 +324,7 @@
     oakOff = [];
     if (els.card) els.card.hidden = true;
     if (els.grid) els.grid.innerHTML = "";
+    inPlace(false);
     HandTracker.setPaused(false);
     if (restoreOak && keepOak !== true) {
       restoreOak = false;

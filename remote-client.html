@@ -1,0 +1,155 @@
+<!doctype html>
+<!-- The remote recording page (remote-client.js): start and stop motion capture on a computer
+     running Hand Tracker with Remote recording on, pick its cameras and mode, fill in the take
+     details and watch each camera. The computer serves it to any browser (electron/remote-record.js);
+     the Android app and the Windows and Linux app open it themselves, from remote.html. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark light" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'" />
+<title>Hand Tracker remote</title>
+<style>
+  :root { --bg: #111216; --card: #1b1c22; --line: #2c2e36; --text: #e9ecef; --muted: #a3a9b1; --red: #e03131; --green: #2b8a3e; --err: #ff8787; --accent: #74c0fc; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f5f7; --card: #ffffff; --line: #dde0e4; --text: #1d1f23; --muted: #5f6670; --err: #c92a2a; --accent: #1971c2; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 14px 16px 40px; }
+  a { color: var(--accent); }
+  #back { margin: 0 0 6px; font-size: 14px; }
+  h1 { font-size: 18px; margin: 2px 0 4px; }
+  #status { color: var(--muted); min-height: 1.45em; }
+  #status.rec { color: var(--text); font-weight: 600; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--red); margin-right: 7px; vertical-align: 1px; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: 0.25; } }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
+  button { font: inherit; border: 0; border-radius: 12px; color: #fff; background: var(--green); cursor: pointer; }
+  .controls button { flex: 1 1 150px; font-size: 17px; font-weight: 600; padding: 15px 16px; }
+  button.record { background: var(--red); }
+  button.stop { background: #495057; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button.small { font-size: 13px; font-weight: 500; padding: 5px 10px; border-radius: 8px; background: #495057; }
+  #message { color: var(--muted); font-size: 14px; min-height: 1.4em; margin-bottom: 8px; }
+  #message.err { color: var(--err); }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 12px; }
+  .panel h2 { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--muted); margin: 0 0 8px; }
+  .panel h2 .grow { flex: 1 1 auto; }
+  .modes { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .modes button { flex: 1 1 0; padding: 10px 6px; font-size: 15px; font-weight: 600; border-radius: 0; background: transparent; color: var(--text); }
+  .modes button + button { border-left: 1px solid var(--line); }
+  .modes button[aria-pressed="true"] { background: var(--green); color: #fff; }
+  #modeNote, #camNote, #detailsNote { font-size: 13px; color: var(--muted); min-height: 1.3em; margin-top: 6px; }
+  #modeNote.err, #camNote.err { color: var(--err); }
+  .camrow { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); }
+  .camrow:first-child { border-top: 0; }
+  .camrow label { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+  .camrow input[type="checkbox"] { width: 20px; height: 20px; flex: none; }
+  .camrow .gone { color: var(--err); font-size: 13px; }
+  .camrow select, .tools select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 6px; }
+  .camrow select { flex: none; max-width: 45%; }
+  .details label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 9px; }
+  .details input { display: block; width: 100%; margin-top: 3px; font: inherit; font-size: 16px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; }
+  .details input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+  .details input:disabled { opacity: 0.6; }
+  .details input.missing { border-color: var(--err); }
+  .details input.missing:focus { outline-color: var(--err); }
+  #detailsTitle { user-select: none; -webkit-user-select: none; }
+  #requiredRow { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 9px; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  @media (max-width: 340px) { .grid { grid-template-columns: 1fr; } }
+  .cam { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .pic { position: relative; aspect-ratio: 16 / 9; background: #000; }
+  .pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .pic span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #adb5bd; font-size: 13px; padding: 8px; text-align: center; }
+  .cap { padding: 7px 10px 9px; font-size: 13px; }
+  .tools { display: flex; gap: 6px; margin-bottom: 5px; }
+  .tools select { flex: 1 1 auto; min-width: 0; }
+  .tools button { flex: none; font-size: 13px; font-weight: 500; padding: 6px 10px; border-radius: 8px; background: #495057; }
+  .tools button.on { background: var(--green); }
+  .cam:not(.empty) .pic { cursor: zoom-in; }
+  #full { position: fixed; inset: 0; z-index: 20; background: #000; display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+  #full img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .fullbar { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: linear-gradient(rgba(0, 0, 0, 0.65), transparent); color: #fff; font-size: 14px; }
+  #fullName { flex: 1 1 auto; font-weight: 600; }
+  #fullRate { opacity: 0.8; }
+  .fullbar button { font-size: 18px; line-height: 1; padding: 8px 12px; border-radius: 8px; background: rgba(255, 255, 255, 0.18); }
+  .cam.empty { background: transparent; border-style: dashed; }
+  /* A phone recording with its own camera: one camera, as wide as the page. */
+  .grid.phone { grid-template-columns: 1fr; }
+  .grid.phone .tools, .grid.phone .cam.empty { display: none; }
+  .cam.empty .pic { background: transparent; }
+  #wifiNow, #wifiNote { font-size: 14px; }
+  #wifiNote { color: var(--muted); min-height: 1.3em; margin-top: 6px; }
+  .net { border-top: 1px solid var(--line); padding: 6px 0; }
+  .net:first-child { border-top: 0; }
+  .net .pick { display: flex; width: 100%; align-items: baseline; gap: 8px; padding: 6px 2px; font-size: 15px; text-align: left; background: transparent; color: var(--text); border-radius: 6px; }
+  .net .pick b { flex: 1 1 auto; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+  .net .pick span { flex: none; font-size: 13px; color: var(--muted); }
+  .join { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 4px; }
+  .join input { flex: 1 1 180px; min-width: 0; font: inherit; font-size: 16px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; }
+  .join button { padding: 9px 14px; font-weight: 600; }
+  .join .quiet { background: #495057; }
+  .muted { color: var(--muted); }
+  .err { color: var(--err); }
+  #take { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 14px; font-size: 14px; word-break: break-word; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <p id="back" hidden><a href="remote.html">← Computers</a></p>
+  <h1 id="title">Hand Tracker</h1>
+  <div id="status">Connecting…</div>
+
+  <section class="panel" id="modePanel" aria-labelledby="modeTitle">
+    <h2 id="modeTitle">Mode</h2>
+    <div class="modes" id="modes" role="group" aria-labelledby="modeTitle">
+      <button type="button" data-mode="ego" aria-pressed="false">Ego</button>
+      <button type="button" data-mode="stereo" aria-pressed="false">Stereo</button>
+      <button type="button" data-mode="freeform" aria-pressed="false">Freeform</button>
+    </div>
+    <div id="modeNote"></div>
+  </section>
+
+  <section class="panel" id="camPanel" aria-labelledby="camTitle" hidden>
+    <h2><span id="camTitle" class="grow">Cameras</span><button type="button" id="scanBtn" class="small">Refresh</button></h2>
+    <div id="camRows"></div>
+    <div id="camNote"></div>
+  </section>
+
+  <section class="panel details" aria-labelledby="detailsTitle">
+    <h2 id="detailsTitle">Take details</h2>
+    <div id="requiredRow" hidden><span>Needed before recording:</span><button type="button" id="requiredBtn" class="small" aria-pressed="true">On</button></div>
+    <label>Contributor <input id="contributor" type="text" maxlength="200" autocomplete="off" enterkeyhint="next" /></label>
+    <label>Location <input id="location" type="text" maxlength="200" autocomplete="off" enterkeyhint="next" /></label>
+    <label>Task <input id="task" type="text" maxlength="200" autocomplete="off" enterkeyhint="done" /></label>
+    <div id="detailsNote"></div>
+  </section>
+
+  <div class="controls">
+    <button type="button" id="camsBtn" hidden>Start cameras</button>
+    <button type="button" id="recBtn" class="record" disabled>Start recording</button>
+    <button type="button" id="offBtn" class="stop" hidden>Stop cameras</button>
+  </div>
+  <div id="message"></div>
+  <div id="grid" class="grid"></div>
+  <div id="take" hidden></div>
+
+  <div id="full" role="dialog" aria-label="One camera, full screen" hidden>
+    <img id="fullImg" alt="" />
+    <div class="fullbar"><span id="fullName"></span><span id="fullRate"></span><button type="button" id="fullClose" aria-label="Back to every camera">✕</button></div>
+  </div>
+
+  <section class="panel" id="wifiPanel" aria-labelledby="wifiTitle" hidden>
+    <h2><span id="wifiTitle" class="grow">Wi-Fi</span><button type="button" id="wifiBtn" class="small">Change</button></h2>
+    <div id="wifiNow" class="muted"></div>
+    <div id="wifiList" hidden></div>
+    <div id="wifiNote"></div>
+  </section>
+</main>
+<script src="remote-client.js"></script>
+</body>
+</html>

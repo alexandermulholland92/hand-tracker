@@ -9,6 +9,7 @@
 
 const { app, BrowserWindow, protocol, session, ipcMain, dialog, shell, Menu, desktopCapturer, screen, globalShortcut, net, safeStorage, nativeImage } = require("electron");
 const fs = require("fs");
+const http = require("http");
 const os = require("os");
 const path = require("path");
 const { Readable } = require("stream");
@@ -21,6 +22,7 @@ const { OpsClient } = require("./ops");
 const { FleetClient } = require("./fleet");
 const { PhoneLinkServer } = require("./phone-link");
 const { RemoteRecordServer } = require("./remote-record");
+const { createWifi } = require("./wifi");
 
 const APP_ROOT = path.join(__dirname, "..");
 const SCHEME = "app";
@@ -628,6 +630,40 @@ const autostart = {
   },
 };
 
+// One request from this app's remote recording page to another computer's Hand Tracker
+// (a page can't reach a device on the network itself). Only that page's own requests, to a
+// name and port: its state, a command (JSON), a camera's preview and the Wi-Fi networks.
+const RIG_HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*):(\d{1,5})$/i;
+const RIG_PATH = /^\/api\/(state|command|wifi|preview\?i=[0-3](&full=1)?)$/;
+const RIG_ANSWER_BYTES = 4 << 20;
+function rigRequest({ rig, path: where, method = "GET", body = null, key = "" } = {}) {
+  const m = RIG_HOST.exec(String(rig || ""));
+  const port = m ? Number(m[5]) : 0;
+  if (!m || port < 1 || port > 65535) throw new Error("That isn't a computer's name and port.");
+  if (!RIG_PATH.test(String(where || "")) || (method === "POST") !== (where === "/api/command") || !["GET", "POST"].includes(method)) throw new Error("Not a remote recording request.");
+  if (body != null && (typeof body !== "string" || body.length > 8192)) throw new Error("Too long.");
+  const headers = {};
+  if (/^[A-Za-z0-9_-]{8,64}$/.test(String(key || ""))) headers["X-Key"] = key;
+  if (body) Object.assign(headers, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: m[1].replace(/^\[|\]$/g, ""), port, path: where, method, headers, timeout: 10000 }, (res) => {
+      const chunks = [];
+      let size = 0;
+      res.on("data", (c) => {
+        size += c.length;
+        if (size > RIG_ANSWER_BYTES) req.destroy(new Error("The answer was too big."));
+        else chunks.push(c);
+      });
+      res.on("end", () => resolve({ status: res.statusCode, type: String(res.headers["content-type"] || ""), body: new Uint8Array(Buffer.concat(chunks)) }));
+      res.on("error", reject);
+    });
+    req.on("timeout", () => req.destroy(new Error("No answer.")));
+    req.on("error", reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
 function registerRemoteIpc() {
   const file = path.join(app.getPath("userData"), "remote-record.json");
   const keyStore = {
@@ -667,9 +703,10 @@ function registerRemoteIpc() {
     });
   remoteRecord = new RemoteRecordServer({
     keyStore,
-    page: () => fs.readFileSync(path.join(__dirname, "remote-page.html"), "utf8"),
+    page: (name) => fs.readFileSync(path.join(APP_ROOT, name === "js" ? "remote-client.js" : "remote-client.html"), "utf8"),
     ask,
     onWantPreviews: (on) => toWindow("remote:want-previews", on),
+    wifi: createWifi(), // a phone on the hotspot (or over Tailscale) can change the Wi-Fi
   });
   remoteRecord.on("status", (s) => toWindow("remote:status", s));
   const fromApp = (event) => event.senderFrame && isAppUrl(event.senderFrame.url);
@@ -679,6 +716,9 @@ function registerRemoteIpc() {
   handle("remote:new-key", () => remoteRecord.newKey());
   handle("remote:settings", () => ({ standby: remoteStandby, folder: remoteFolder(), autostart: { available: autostart.available(), on: autostart.get() } }));
   handle("remote:set-autostart", (event, on) => autostart.set(!!on));
+  // The remote recording page in this app (remote-client.html?rig=…, opened from remote.html)
+  // reaches another computer's Hand Tracker through here.
+  handle("rig:request", (event, opts) => rigRequest(opts));
   ipcMain.on("remote:state", (event, state) => fromApp(event) && remoteRecord.setState(state));
   ipcMain.on("remote:previews", (event, list) => {
     if (!fromApp(event) || !Array.isArray(list)) return;

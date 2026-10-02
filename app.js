@@ -379,8 +379,9 @@
       const wrist = HandTracker.toCanvasPoint(hand.imageLandmarks[0]);
       const color = SIDE_COLORS[hand.handedness] || "#adb5bd";
       // Normal size up close (a little bigger on a phone's small screen), bigger as the hand
-      // goes further away so it can still be read, never more than TAG_MAX_SCALE.
-      const k = unit * Math.min(TAG_MAX_SCALE, (onPhone ? 1.3 : 1) * labelScale(hand));
+      // goes further away so it can still be read, never more than TAG_MAX_SCALE (less on a
+      // phone, where the picture is small).
+      const k = unit * Math.min(onPhone ? TAG_MAX_SCALE_PHONE : TAG_MAX_SCALE, (onPhone ? 1.3 : 1) * labelScale(hand));
       const h = 30 * k;
       const padX = 12 * k;
       ctx.font = `600 ${Math.round(17 * k)}px "Segoe UI", system-ui, sans-serif`;
@@ -408,6 +409,7 @@
   // grows as the hand shrinks (twice as far, twice as big, up to TAG_MAX_SCALE), so it stays
   // readable from across the room. Smoothed per side so it doesn't flicker with small movements.
   const TAG_MAX_SCALE = 2;
+  const TAG_MAX_SCALE_PHONE = 1.6;
   const labelScales = {};
   function labelScale(hand) {
     const a = HandTracker.toCanvasPoint(hand.imageLandmarks[0]), b = HandTracker.toCanvasPoint(hand.imageLandmarks[9]);
@@ -1065,6 +1067,7 @@
   // Set while trackWholeVideo waits for a Capture Whole Video run: gets the motion data
   // instead of the export panel.
   let captureWaiter = null;
+  let lastHandNames = []; // the hands seen in the last frame (for remote recording's page)
 
   // Before a new motion capture: an unexported one is only dropped if you say so.
   function readyForNewMotion() {
@@ -1085,6 +1088,18 @@
       updateMotionStatus();
       return;
     }
+    if (captureWaiter) {
+      const done = captureWaiter;
+      captureWaiter = null;
+      done(stopMotionData());
+      return;
+    }
+    return stopMotionNow();
+  }
+  motionBtn.addEventListener("click", toggleMotion);
+
+  // The capture stopped, as its data.
+  function stopMotionData() {
     const data = RobotMotion.stop();
     data.display_mirrored = mirrorOn; // lets the viewer draw paths the way they looked on screen
     data.image_size = [stage.width, stage.height]; // landmark x/y are normalized separately; exporters need the aspect
@@ -1094,25 +1109,27 @@
     motionBtn.firstChild.textContent = "Start Motion Capture";
     motionBtn.classList.remove("recording");
     setCaptureControlsLocked(false);
-    if (captureWaiter) {
-      const done = captureWaiter;
-      captureWaiter = null;
-      done(data);
-      return;
-    }
-    const motiveFrames = motiveRecording ? natnetApi.recordStop() : Promise.resolve(null);
-    motiveRecording = false;
-    return motiveFrames.then((frames) => {
-      const motive = frames && frames.length > 1 ? motiveMarkerData(frames, "Motive") : null;
-      if (!data.hands.length && !motive) {
-        motionStatus.textContent = "No frames captured (no hand was visible).";
-        return;
-      }
-      motionStatus.textContent = "";
-      showMotionExport(data, motive);
-    });
+    return data;
   }
-  motionBtn.addEventListener("click", toggleMotion);
+
+  // Stop Motion Capture: the export card (with Motive's markers, if it recorded too). extra is
+  // added to the capture (remote recording's take details). -> the capture (null if no hand
+  // was seen and Motive had nothing).
+  async function stopMotionNow(extra = null) {
+    if (!RobotMotion.isRecording()) return null;
+    const data = stopMotionData();
+    if (extra) Object.assign(data, extra);
+    const frames = motiveRecording ? await natnetApi.recordStop() : null;
+    motiveRecording = false;
+    const motive = frames && frames.length > 1 ? motiveMarkerData(frames, "Motive") : null;
+    if (!data.hands.length && !motive) {
+      motionStatus.textContent = "No frames captured (no hand was visible).";
+      return null;
+    }
+    motionStatus.textContent = "";
+    showMotionExport(data, motive);
+    return data;
+  }
 
   function showMotionExport(data, motive = null) {
     motion = { data, motive, exported: false };
@@ -1206,7 +1223,7 @@
     if (baseName) motionName.value = baseName;
     try {
       const { baseName, files } = motionFiles();
-      const res = await desktop.remote.saveTake({ baseName, files });
+      const res = await (desktop || mobile).remote.saveTake({ baseName, files });
       renderResults(motionResults, res.results);
       const saved = res.results.filter((r) => r.ok);
       if (saved.length) {
@@ -1888,6 +1905,7 @@
     HandTracker.onHandLandmarks(({ hands, timestamp }) => {
       syncStageAspect();
       updateGestures(hands);
+      lastHandNames = hands.map((h) => h.handedness);
       // Un-flip text in the camera picture, or only times with Readable text off (not with a
       // crop: OCR reads the whole picture).
       if (!HandTracker.getCamera().crop) ReadableText.process(HandTracker.getFrameImage(), stage, mirrorOn, hands, !readableOn);
@@ -1918,6 +1936,16 @@
     showMotionExport: (data) => showMotionExport(data),
     readyForNewMotion: () => readyForNewMotion(),
     hasUnsavedMotion: () => !!(motion && !motion.exported),
+    // Remote recording on the phone (remote-record-ui.js): its own camera's motion capture.
+    startMotionCapture: () => {
+      if (RobotMotion.isRecording()) return { ok: true, message: "Already recording." };
+      if (motion && !motion.exported) return { ok: false, message: "The last motion capture hasn't been saved." };
+      toggleMotion();
+      return RobotMotion.isRecording() ? { ok: true, message: "" } : { ok: false, message: "Motion capture didn't start." };
+    },
+    stopMotionCapture: (extra) => stopMotionNow(extra),
+    handsNow: () => lastHandNames.slice(),
+    isMirrored: () => mirrorOn,
     saveMotionNow: (baseName) => saveMotionNow(baseName),
     useOak: () => useOak(),
   };

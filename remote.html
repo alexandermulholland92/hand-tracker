@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<!-- The way to a camera rig's remote recording page from the website, the Android app and the
+<!-- The way to a camera rig's remote recording from the website, the Android app and the
      Windows and Linux app (remote-launcher.js): type the computer's name once, then one tap
-     opens its page. The page itself comes from that computer (Hand Tracker's
-     electron/remote-page.html): browsers don't let a website talk to a device on your own
-     network directly, but they do let it open that device's own page. -->
+     opens its page (remote-client.html): right here in the apps, which reach the computer for
+     it; on the website, the computer's own copy, since browsers don't let a website talk to a
+     device on your own network directly. -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -25,8 +25,6 @@
   button { font: inherit; font-weight: 600; border: 0; border-radius: 9px; padding: 10px 16px; color: #fff; background: #2b8a3e; cursor: pointer; }
   button.quiet { background: #343a40; font-weight: 500; }
   #error { color: #ff8787; font-size: 14px; min-height: 1.4em; margin-top: 6px; }
-  #opened { font-size: 14px; color: #8ce99a; }
-  #opened:empty { display: none; }
   ul { list-style: none; margin: 0; padding: 0; }
   li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid #2a2c33; }
   li:first-child { border-top: 0; }
@@ -41,7 +39,7 @@
 <main>
   <p id="back"><a href="./">← Hand Tracker</a></p>
   <h1>Remote recording</h1>
-  <p class="lead">Start and stop recording on a computer running Hand Tracker with <b>Remote recording</b> on (a camera rig on a Raspberry Pi, say), with a live preview of each camera.</p>
+  <p class="lead">Start and stop recording on a computer running Hand Tracker with <b>Remote recording</b> on (a camera rig on a Raspberry Pi, say): pick its cameras and mode, fill in the take details and watch each camera live.</p>
 
   <div class="card">
     <form id="connectForm" novalidate>
@@ -51,7 +49,6 @@
         <button type="submit">Connect</button>
       </div>
       <div id="error" role="alert"></div>
-      <div id="opened" role="status"></div>
     </form>
   </div>
 
@@ -62,8 +59,8 @@
 
   <div class="note">
     <p><b>Over Tailscale</b> (from anywhere, with Tailscale on this device): its Tailscale name, such as <code>pi</code> or <code>pi.your-tailnet.ts.net</code>, or its 100.x address. No code is needed: only your own devices can reach it there.</p>
-    <p><b>On the same Wi-Fi without Tailscale</b>: scan the QR code under Remote recording in Hand Tracker instead. It carries the code that page needs.</p>
-    <p>This opens the computer's own page (on port 47821) in the browser, since browsers don't let a website or app control a device on your network directly.</p>
+    <p><b>On the same Wi-Fi without Tailscale</b>: paste the address under the QR code in Hand Tracker's Remote recording (it ends in <code>#k=</code> and a code), or scan the QR code with a phone's camera. The code is what that page needs.</p>
+    <p id="whereNote"></p>
   </div>
 </main>
 <script src="remote-launcher.js"></script>

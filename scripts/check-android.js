@@ -171,11 +171,11 @@ async function run() {
     await js("`page ${document.documentElement.scrollWidth}px wide, screen ${window.innerWidth}px`"));
 
   // The Left/Right tag starts a little bigger on a phone (1.3x), then grows with distance
-  // as on a PC, up to the same 3x.
+  // as on a PC, but only up to 1.6x (a PC's goes to 2x).
   const tags = await js(TAG_HEIGHTS);
   const near = (v, want) => Math.abs(v - want) <= Math.max(4, want * 0.12);
-  check("Left/Right tag: a little bigger on a phone up close, bigger as the hand goes further away (up to 2x)",
-    near(tags.veryClose, 32 * 1.3) && near(tags.armsLength, 32 * 1.3) && near(tags.further, 32 * 2) && near(tags.far, 32 * 2) && near(tags.veryFar, 32 * 2),
+  check("Left/Right tag: a little bigger on a phone up close, bigger as the hand goes further away (up to 1.6x on a phone)",
+    near(tags.veryClose, 32 * 1.3) && near(tags.armsLength, 32 * 1.3) && near(tags.further, 32 * 1.6) && near(tags.far, 32 * 1.6) && near(tags.veryFar, 32 * 1.6),
     JSON.stringify(tags));
 
   // 2. Record while two hands are simulated
@@ -607,6 +607,146 @@ async function run() {
     return { video: !!v() && v().videoWidth, error: (document.querySelector("#results .error") || {}).textContent || "", accepts: /\.mp4/.test(input.accept) && /\.csv/.test(input.accept) };
   })()`);
   check("A video picked with Choose Recording opens as a video (no motion-data error)", routed.video === 640 && !routed.error && routed.accepts, JSON.stringify(routed));
+
+  await checkRemoteFromPhone(win, js);
+  await checkPhoneAsRig(win, js);
+}
+
+// The phone recording with its own camera, started and stopped from another device (the PC's
+// Hand Tracker, played here by plain requests): Remote recording in the phone's Record card,
+// then the same page and requests as a computer's, with one camera and no modes; the take is
+// saved on the phone, named after its details.
+async function checkPhoneAsRig(win, js) {
+  const wc = win.webContents;
+  await wc.loadURL(`app://${HOST}/index.html`);
+  for (let i = 0; i < 60 && !(await js("!!(window.HandTracker && HandTracker.getCamera().width > 0)")); i++) await sleep(250);
+  const out = {};
+  const on = await js(`(async () => {
+    const card = document.getElementById("remoteRec");
+    document.getElementById("remoteToggle").click();
+    let s = null;
+    for (let i = 0; i < 50 && !(s && s.on); i++) { await new Promise((r) => setTimeout(r, 100)); s = await mobile.remote.status(); }
+    await new Promise((r) => setTimeout(r, 300));
+    return { card: !card.hidden, status: s, pair: !document.getElementById("remotePair").hidden, urls: document.getElementById("remoteUrls").textContent, folderBtn: !document.getElementById("remoteFolderBtn").hidden };
+  })()`);
+  out.on = { card: on.card, on: on.status && on.status.on, pair: on.pair, pasteable: /paste this address/.test(on.urls), folderBtn: on.folderBtn };
+  const keyed = ((on.status && on.status.urls) || []).find((u) => u.keyed);
+  const key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
+  const base = `http://127.0.0.1:${on.status && on.status.port}`;
+  const get = (p) => fetch(base + p, { headers: { "X-Key": key } });
+  const post = async (body) => (await fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+  const state = async () => (await get("/api/state")).json();
+  try {
+    out.page = (await (await fetch(base + "/")).text()).includes('src="remote-client.js"');
+    out.noKey = (await fetch(base + "/api/state")).status;
+    const st = await state();
+    out.state = { kind: st.kind, host: st.host, running: st.running, cameras: st.cameras.length, mode: st.mode, available: st.available };
+    out.cameras = await post({ action: "cameras" });
+    out.pick = await post({ action: "mode", mode: "ego" });
+    out.refused = await post({ action: "record" });
+    await post({ action: "details", details: { contributor: "Sam Smith", location: "Lab 2", task: "Pick up cup" } });
+    out.record = await post({ action: "record" });
+    await js(PAGE_SIMULATION);
+    const rec = await state();
+    out.recording = { recording: rec.recording, locked: rec.detailsLocked, hands: rec.cameras[0].hands };
+    let pic = null;
+    for (let i = 0; i < 30 && !(pic && pic.status === 200); i++) {
+      pic = await get("/api/preview?i=0");
+      if (pic.status !== 200) await sleep(150);
+    }
+    const small = Buffer.from(await pic.arrayBuffer());
+    const fullRes = await get("/api/preview?i=0&full=1");
+    const big = Buffer.from(await fullRes.arrayBuffer());
+    const width = (b) => {
+      for (let k = 2; k < b.length - 9; ) {
+        if (b[k] !== 0xff) { k++; continue; }
+        if (b[k + 1] >= 0xc0 && b[k + 1] <= 0xc3) return b.readUInt16BE(k + 7);
+        k += 2 + b.readUInt16BE(k + 2);
+      }
+      return 0;
+    };
+    out.preview = { status: pic.status, small: width(small), full: fullRes.status, big: width(big) };
+    out.stop = await post({ action: "stop" });
+    const after = await state();
+    out.take = after.lastTake;
+    out.saved = await js(`[...window.__fakeCapacitor.files.keys()].filter((k) => /Sam-Smith_Lab-2_Pick-up-cup_/.test(k))`);
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  }
+  out.off = await js(`(async () => { document.getElementById("remoteToggle").click(); await new Promise((r) => setTimeout(r, 300)); return !(await mobile.remote.status()).on; })()`);
+  const t = out.take || {};
+  check("Remote recording on the phone: another device starts and stops its motion capture (the same page, one camera, no modes, the take details needed and locked), sees its camera (bigger full screen), and the take is saved on the phone, named after its details",
+    !out.error && out.on.card && out.on.on && out.on.pair && out.on.pasteable && !out.on.folderBtn && out.page && out.noKey === 401 &&
+      out.state.kind === "phone" && out.state.running && out.state.cameras === 1 && out.state.mode === null && out.state.available === null &&
+      out.cameras.ok && out.pick.ok === false && out.refused.ok === false && (out.refused.missing || []).length === 3 &&
+      out.record.ok && out.recording.recording && out.recording.locked && out.preview.status === 200 && out.preview.full === 200 && out.preview.big > out.preview.small &&
+      out.stop.ok && t.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_/.test((t.files || [])[0] || "") && out.saved.length >= 1 && out.off,
+    JSON.stringify(out));
+}
+
+// Remote recording from the Android app: Remote recording at the top opens remote.html in
+// place, and a computer's address (pasted with its code) opens that computer's page right here
+// (remote-client.html), the app reaching it (Remote.rigRequest). The computer is played by a
+// remote recording server here, with a stand-in for its main window.
+async function checkRemoteFromPhone(win, js) {
+  const { RemoteRecordServer } = require("../electron/remote-record.js");
+  const wc = win.webContents;
+  const state = {
+    running: false, recording: false, mode: "stereo", requirement: { ok: true, missing: [], message: "" }, detailsRequired: true,
+    details: { contributor: "", location: "", task: "" }, cameras: [],
+    available: { at: 1, scanning: false, note: "", cameras: [{ id: "oak:PHONE-TEST", label: "Luxonis OAK-D …E-TEST", present: true, use: true, role: "head" }] },
+  };
+  const asked = [];
+  const server = new RemoteRecordServer({
+    keyStore: null, host: "rig-test", hotspot: () => null,
+    page: (name) => fs.readFileSync(path.join(ROOT, name === "js" ? "remote-client.js" : "remote-client.html"), "utf8"),
+    ask: async (action, extra) => {
+      asked.push(action);
+      if (action === "mode") state.mode = extra.mode;
+      server.setState(state);
+      return { ok: true, message: "" };
+    },
+  });
+  server.setState(state);
+  const { port } = await server.start();
+  const out = {};
+  // A step that leaves the page (its own answer may never come: the page goes first).
+  const navigated = (step) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`No page loaded (still at ${wc.getURL()})`)), 20000);
+    wc.once("did-finish-load", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    Promise.resolve(step()).catch(() => {});
+  });
+  try {
+    await navigated(() => js("document.getElementById('remoteLink').click(); true"));
+    out.launcher = await js(`({ path: location.pathname, back: !document.getElementById("back").hidden, where: document.getElementById("whereNote").textContent })`);
+    const address = `http://127.0.0.1:${port}/#k=${server.key}`;
+    await navigated(() => js(`document.getElementById("host").value = ${JSON.stringify(address)}; document.querySelector("#connectForm button[type=submit]").click(); true`));
+    out.client = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      for (let i = 0; i < 100 && !/rig-test/.test(document.getElementById("title").textContent); i++) await sleep(150);
+      const pressed = () => [...document.querySelectorAll("#modes button")].find((b) => b.getAttribute("aria-pressed") === "true").textContent;
+      const before = pressed();
+      document.querySelector('#modes button[data-mode="ego"]').click();
+      for (let i = 0; i < 40 && pressed() !== "Ego"; i++) await sleep(150);
+      return { path: location.pathname, hash: location.hash, title: document.getElementById("title").textContent, status: document.getElementById("status").textContent,
+        rows: [...document.querySelectorAll("#camRows .camrow label")].map((r) => r.textContent.trim()), before, after: pressed(), back: !document.getElementById("back").hidden,
+        calls: window.__fakeCapacitor.calls.filter((c) => c[0] === "remote.rigRequest").length, fits: document.documentElement.scrollWidth <= innerWidth + 1 };
+    })()`);
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    server.stop();
+  }
+  out.asked = [...new Set(asked)];
+  const c = out.client || {};
+  check("Remote recording from the app: its page opens in place, and a computer's page opens right here, reaching the computer through the app (its cameras, a mode changed)",
+    !out.error && out.launcher.path === "/remote.html" && out.launcher.back && /opens here/.test(out.launcher.where) &&
+      c.path === "/remote-client.html" && c.hash === "" && c.title === "Hand Tracker on rig-test" && /Cameras off/.test(c.status) && c.rows.length === 1 &&
+      c.before === "Stereo" && c.after === "Ego" && c.back && c.calls > 2 && c.fits && out.asked.includes("mode"),
+    JSON.stringify(out));
 }
 
 app.whenReady().then(() =>

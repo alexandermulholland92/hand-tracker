@@ -29,6 +29,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
@@ -66,6 +68,10 @@ import javax.crypto.spec.GCMParameterSpec;
  *       the page for a fresh link
  *   fleetConfigure({ site })
  *       /__fleet/<rig>/<camera>?kind=keyframe|jpeg[&full=1]: that camera's latest picture
+ *   rigRequest({ rig: "pi:47821", path, method, body, key }) -> { status, type, body (base64) }
+ *       the app's remote recording page (remote-client.js) asking a computer running Hand
+ *       Tracker on the network: plain HTTP (which the app's other requests can't use), and only
+ *       that page's own requests
  */
 @CapacitorPlugin(name = "Remote")
 public class RemotePlugin extends Plugin {
@@ -194,6 +200,101 @@ public class RemotePlugin extends Plugin {
             if (maxBytes >= 0 && out.size() > maxBytes) throw new IOException("The answer was too big");
         }
         return out.toByteArray();
+    }
+
+    // ---------- remote recording on another computer ----------
+    private static final Pattern RIG = Pattern.compile("^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*):(\\d{1,5})$");
+    private static final Pattern RIG_PATH = Pattern.compile("^/api/(state|command|wifi|preview\\?i=[0-3](&full=1)?)$");
+    private static final Pattern RIG_KEY = Pattern.compile("^[A-Za-z0-9_-]{8,64}$");
+    private static final int RIG_TIMEOUT_MS = 10000;
+    private static final int RIG_MAX_BYTES = 4 * 1024 * 1024;
+
+    @PluginMethod
+    public void rigRequest(PluginCall call) {
+        pool.execute(() -> {
+            try {
+                Matcher m = RIG.matcher(call.getString("rig", ""));
+                int port = m.matches() ? Integer.parseInt(m.group(5)) : 0;
+                if (port < 1 || port > 65535) throw new IOException("That isn't a computer's name and port.");
+                String host = m.group(1).replaceAll("^\\[|\\]$", "");
+                String path = call.getString("path", "");
+                String method = call.getString("method", "GET");
+                boolean post = "POST".equals(method);
+                if (!RIG_PATH.matcher(path).matches() || !(post || "GET".equals(method)) || post != "/api/command".equals(path)) throw new IOException("Not a remote recording request.");
+                String body = call.getString("body", "");
+                if (body.length() > 8192) throw new IOException("Too long.");
+                byte[] b = body.getBytes(StandardCharsets.UTF_8);
+                StringBuilder head = new StringBuilder();
+                head.append(method).append(' ').append(path).append(" HTTP/1.1\r\n")
+                        .append("Host: ").append(m.group(1)).append(':').append(port).append("\r\n")
+                        .append("Connection: close\r\n");
+                String key = call.getString("key", "");
+                if (RIG_KEY.matcher(key).matches()) head.append("X-Key: ").append(key).append("\r\n");
+                if (post) head.append("Content-Type: application/json\r\nContent-Length: ").append(b.length).append("\r\n");
+                head.append("\r\n");
+                byte[] all;
+                try (Socket socket = new Socket()) {
+                    socket.connect(new InetSocketAddress(host, port), RIG_TIMEOUT_MS);
+                    socket.setSoTimeout(RIG_TIMEOUT_MS);
+                    OutputStream os = socket.getOutputStream();
+                    os.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
+                    if (post) os.write(b);
+                    os.flush();
+                    all = readAll(socket.getInputStream(), RIG_MAX_BYTES);
+                }
+                int split = indexOf(all, new byte[] {'\r', '\n', '\r', '\n'}, 0);
+                if (split < 0) throw new IOException("Not an answer from Hand Tracker.");
+                String[] lines = new String(all, 0, split, StandardCharsets.ISO_8859_1).split("\r\n");
+                String[] first = lines[0].split(" ");
+                if (first.length < 2 || !first[0].startsWith("HTTP/")) throw new IOException("Not an answer from Hand Tracker.");
+                String type = "";
+                boolean chunked = false;
+                int length = -1;
+                for (int i = 1; i < lines.length; i++) {
+                    int c = lines[i].indexOf(':');
+                    if (c < 0) continue;
+                    String name = lines[i].substring(0, c).trim().toLowerCase();
+                    String value = lines[i].substring(c + 1).trim();
+                    if (name.equals("content-type")) type = value;
+                    else if (name.equals("content-length")) length = Integer.parseInt(value);
+                    else if (name.equals("transfer-encoding")) chunked = value.toLowerCase().contains("chunked");
+                }
+                byte[] rest = java.util.Arrays.copyOfRange(all, split + 4, all.length);
+                byte[] out = chunked ? dechunk(rest) : length >= 0 && length < rest.length ? java.util.Arrays.copyOf(rest, length) : rest;
+                JSObject ret = new JSObject();
+                ret.put("status", Integer.parseInt(first[1]));
+                ret.put("type", type);
+                ret.put("body", Base64.encodeToString(out, Base64.NO_WRAP));
+                call.resolve(ret);
+            } catch (Exception e) {
+                call.reject(e.getMessage() == null ? e.toString() : e.getMessage());
+            }
+        });
+    }
+
+    private static int indexOf(byte[] data, byte[] what, int from) {
+        outer:
+        for (int i = from; i <= data.length - what.length; i++) {
+            for (int j = 0; j < what.length; j++) if (data[i + j] != what[j]) continue outer;
+            return i;
+        }
+        return -1;
+    }
+
+    // A "Transfer-Encoding: chunked" body, put back together.
+    private static byte[] dechunk(byte[] data) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(data.length);
+        int at = 0;
+        while (true) {
+            int eol = indexOf(data, new byte[] {'\r', '\n'}, at);
+            if (eol < 0) throw new IOException("A broken answer from Hand Tracker.");
+            String size = new String(data, at, eol - at, StandardCharsets.ISO_8859_1).split(";")[0].trim();
+            int n = Integer.parseInt(size, 16);
+            if (n == 0) return out.toByteArray();
+            if (eol + 2 + n > data.length) throw new IOException("A broken answer from Hand Tracker.");
+            out.write(data, eol + 2, n);
+            at = eol + 2 + n + 2;
+        }
     }
 
     // ---------- signing in on the dashboard's own page ----------

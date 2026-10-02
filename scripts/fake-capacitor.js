@@ -191,6 +191,26 @@
         calls.push(["remote.request", opts.url, !!opts.cookies]);
         return request(opts);
       },
+      // The remote recording page's requests to a computer: plain HTTP to name:port, only its own.
+      async rigRequest({ rig, path, method = "GET", body = "", key = "" }) {
+        calls.push(["remote.rigRequest", rig, path, method]);
+        const m = /^(\[[0-9a-f:.]+\]|[a-z0-9.-]+):(\d{1,5})$/i.exec(rig || "");
+        if (!m || !/^\/api\/(state|command|wifi|preview\?i=[0-3](&full=1)?)$/.test(path) || (method === "POST") !== (path === "/api/command")) throw new Error("Not a remote recording request.");
+        return new Promise((resolve, reject) => {
+          const headers = {};
+          if (/^[A-Za-z0-9_-]{8,64}$/.test(key)) headers["X-Key"] = key;
+          if (method === "POST") Object.assign(headers, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+          const req = http.request({ host: m[1].replace(/^\[|\]$/g, ""), port: Number(m[2]), path, method, headers, timeout: 10000 }, (res) => {
+            const chunks = [];
+            res.on("data", (c) => chunks.push(c));
+            res.on("end", () => resolve({ status: res.statusCode, type: String(res.headers["content-type"] || ""), body: Buffer.concat(chunks).toString("base64") }));
+          });
+          req.on("timeout", () => req.destroy(new Error("No answer.")));
+          req.on("error", reject);
+          if (method === "POST") req.write(body);
+          req.end();
+        });
+      },
       async signIn({ url, mode, checkUrl }) {
         calls.push(["remote.signIn", url, mode]);
         await request({ url, cookies: true });
@@ -305,11 +325,67 @@
   }
 
   // As Capacitor's own bridge on a phone has them: Capacitor.Plugins.<name>, and no
+  // RigServer (RigServerPlugin.java): remote recording on the phone itself. Played by the
+  // desktop app's own server (electron/remote-record.js: the same rules), whose requests go to
+  // the page as "command" events, answered with result().
+  const RigServer = (() => {
+    const fs = require("fs"), path = require("path");
+    const { RemoteRecordServer } = require("../electron/remote-record.js");
+    const ev = events();
+    const pending = new Map();
+    let server = null, asked = 0;
+    const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : "remote-client.html"), "utf8");
+    const ask = (action, extra) => new Promise((resolve) => {
+      const id = ++asked;
+      pending.set(id, resolve);
+      ev.emit("command", { ...extra, id, action });
+      setTimeout(() => pending.delete(id) && resolve({ ok: false, message: "Hand Tracker didn't answer." }), 30000);
+    });
+    const off = { on: false, port: null, addresses: [], urls: [], viewer: null };
+    return {
+      addListener: ev.addListener,
+      async start({ key }) {
+        calls.push(["rig.start"]);
+        if (!server) {
+          server = new RemoteRecordServer({ keyStore: { load: () => key, save: () => {} }, host: "Test phone", hotspot: () => null, page, ask, onWantPreviews: (w) => ev.emit("wantPreviews", w) });
+          server.on("status", (st) => ev.emit("status", st));
+          await server.start();
+        }
+        return server.status();
+      },
+      async stop() {
+        if (server) server.stop();
+        server = null;
+        return off;
+      },
+      async status() {
+        return server ? server.status() : off;
+      },
+      async setKey({ key }) {
+        server.key = key;
+        return server.status();
+      },
+      async setState({ state }) {
+        if (server) server.setState(JSON.parse(state));
+      },
+      async setPreview({ i, jpeg }) {
+        if (server) server.setPreview(i, Buffer.from(jpeg, "base64"));
+      },
+      async result({ id, result }) {
+        const done = pending.get(id);
+        if (done) {
+          pending.delete(id);
+          done(JSON.parse(result));
+        }
+      },
+    };
+  })();
+
   // registerPlugin (that's @capacitor/core's, which the app doesn't load).
   window.Capacitor = {
     isNativePlatform: () => true,
     getPlatform: () => "android",
-    Plugins: { Filesystem, Share, NatNet, Remote, Udp, PhoneControl },
+    Plugins: { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer },
   };
   window.__fakeCapacitor = { files, calls, shared, stopPhoneControl: () => PhoneControl._stoppedOutside() };
 })();

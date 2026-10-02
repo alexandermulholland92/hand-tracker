@@ -64,6 +64,7 @@
       "phone-control.html",
       "keyboard.html",
       "remote.html",
+      "remote-client.html",
       "*.js",
       "*.css",
       "!scripts/**",

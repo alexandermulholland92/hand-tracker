@@ -164,6 +164,9 @@
   #motiveStatus { font-size: 12px; opacity: 0.75; line-height: 1.5; margin-bottom: 8px; }
   #motiveCard { max-width: 1180px; margin: 14px auto 0; }
   #multiCamCard { max-width: 1180px; margin: 14px auto 0; }
+  /* While several cameras run, their card is where the main view was (which is hidden). */
+  #multiCamCard.in-place { max-width: none; margin: 0 0 10px; }
+  #wrap[hidden] { display: none; }
   /* A 2 x 2 grid by role (head, chest / left wrist, right wrist), one column at a phone's width. */
   .multi-cam-grid { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
   @media (max-width: 440px) { .multi-cam-grid { grid-template-columns: 1fr; } }

@@ -245,4 +245,10 @@ contextBridge.exposeInMainWorld("desktop", {
     },
     result: (id, result) => ipcRenderer.send("remote:result", { id, result }),
   },
+
+  // Another computer's remote recording, from this app's remote recording page
+  // (remote-client.js): { rig: "pi:47821", path, method, body, key } -> { status, type, body }.
+  rig: {
+    request: (opts) => ipcRenderer.invoke("rig:request", opts),
+  },
 });
