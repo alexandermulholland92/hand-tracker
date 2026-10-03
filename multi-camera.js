@@ -25,7 +25,10 @@
  * computer like a Raspberry Pi does with four cameras, and the hands don't need them. They're
  * then only drawn as often as remote recording's previews need them.
  *
- *   MultiCamera.init({ prefs, setPref, app: HandTrackerApp, modelOf: () => 0 | 1 });
+ *   MultiCamera.init({ prefs, setPref, app: HandTrackerApp, modelOf: () => 0 | 1, phone });
+ *   MultiCamera.setOptions({ display, overlay, square, far, gloves, paused })   // the main window's
+ *     More settings, any of them, for every tile now and every tile started later (Tile.setOptions;
+ *     an OAK camera is started again with a new far-away setting, which runs on the camera)
  *   await MultiCamera.openPicker();          // choose cameras, then start
  *   await MultiCamera.start(ids);            // (the picker's Start; ids may repeat, for checks)
  *   MultiCamera.keyOf(camera)                // a webcam's id for remembering it (see keyOf)
@@ -41,7 +44,8 @@
   const MAX_CAMERAS = 4;
   const STATUS_MS = 500;
 
-  let prefs = {}, setPref = () => {}, app = null, modelOf = () => 1;
+  let prefs = {}, setPref = () => {}, app = null, modelOf = () => 1, phone = false, onClose = () => {};
+  let tileOptions = {}; // the main window's More settings, for every tile (setOptions)
   let els = {};
   let tiles = []; // { name, deviceId, role, view: { rotation, mirror }, label, frame, el, oak (its id, for an OAK camera), oakState }
   let statusTimer = null;
@@ -192,7 +196,7 @@
         `<button type="button" class="flip" data-i="${i}" aria-pressed="false" title="Show this camera's picture mirrored (only the look: the left hand stays the left)">Flip</button> ` +
         `<span class="lbl">${esc(labelOf(id))}</span> <span class="st"></span> <button type="button" class="retry" data-i="${i}" hidden>Try again</button></div>`;
       const frame = el.querySelector("iframe");
-      const look = `mirror=${view.mirror ? 1 : 0}&rot=${view.rotation}`;
+      const look = `mirror=${view.mirror ? 1 : 0}&rot=${view.rotation}${phone ? "&phone=1" : ""}`;
       frame.src = isOak(id)
         ? `camera-tile.html?oak=${encodeURIComponent(id.slice(4))}&${look}&name=${encodeURIComponent(name)}`
         : `camera-tile.html?device=${encodeURIComponent(deviceOf(id))}&label=${encodeURIComponent(labelOf(id))}&${look}&model=${model}&name=${encodeURIComponent(name)}`;
@@ -200,6 +204,7 @@
       return { name, deviceId: id, role: roles[i], view, label: labelOf(id), frame, el, oak: isOak(id) ? id.slice(4) : null, oakState: "" };
     });
     tiles.forEach(showView);
+    tiles.forEach(applyOptions);
     layout();
     showPictures();
     if (tiles.some((t) => t.oak)) startOakTiles(tiles.filter((t) => t.oak));
@@ -269,6 +274,39 @@
     flip.setAttribute("aria-pressed", String(t.view.mirror));
   }
 
+  // ---------- More settings in every tile ----------
+  // A tile gets the main window's settings once its page is up (Pause only when on: a tile
+  // starts tracking), and every change after that.
+  async function applyOptions(t) {
+    let api = null;
+    for (let i = 0; i < 100 && tiles.includes(t) && !(api = tileApi(t)); i++) await sleep(100);
+    if (!api || !api.setOptions || !tiles.includes(t)) return;
+    await api.ready.catch(() => {});
+    if (!tiles.includes(t)) return;
+    const { paused, ...rest } = tileOptions;
+    api.setOptions(paused ? tileOptions : rest);
+  }
+  function setOptions(o = {}) {
+    const farChanged = o.far && JSON.stringify(oakFar(o.far)) !== JSON.stringify(oakFar(tileOptions.far));
+    tileOptions = { ...tileOptions, ...o };
+    for (const t of tiles) {
+      const api = tileApi(t);
+      if (api && api.setOptions) api.setOptions(o);
+    }
+    // An OAK camera's far-away mode is its own: started again with the new one.
+    if (farChanged) for (const t of tiles.filter((x) => x.oak && x.oakState !== "starting")) restartOak(t);
+  }
+  // Far-away hands as an OAK camera's helper takes it.
+  const oakFar = (far) => (far && far.enabled ? { far: far.focus || "both", allHands: far.raisedOnly === false } : { far: null, allHands: false });
+  async function restartOak(t) {
+    t.oakState = "starting";
+    const api = tileApi(t);
+    if (api && api.oakStatus) api.oakStatus({ status: "starting", message: "Starting the OAK camera again with the new far-away setting…" });
+    await desktop.oak.streamStop(t.oak).catch(() => {});
+    await sleep(2500); // until the camera is let go
+    if (tiles.includes(t)) startOakTiles([t]);
+  }
+
   const tileApi = (t) => {
     try {
       return t.frame.contentWindow && t.frame.contentWindow.Tile;
@@ -310,7 +348,7 @@
       if (!tiles.includes(t)) return;
       t.oakState = "starting";
       try {
-        await desktop.oak.streamStart(t.oak, { lm: model === 1 ? "full" : "lite", twoHands: true, xyz: true });
+        await desktop.oak.streamStart(t.oak, { lm: model === 1 ? "full" : "lite", twoHands: true, xyz: true, ...oakFar(tileOptions.far) });
       } catch (err) {
         t.oakState = "error";
         api.oakStatus({ status: "error", message: errText(err) });
@@ -406,6 +444,8 @@
     if (els.grid) els.grid.innerHTML = "";
     inPlace(false);
     HandTracker.setPaused(false);
+    tileOptions.paused = false; // the next tiles start tracking
+    onClose();
     if (restoreOak && keepOak !== true) {
       restoreOak = false;
       if (app && app.useOak) setTimeout(() => app.useOak(), hadOak ? 2500 : 0); // once the cameras are let go
@@ -536,6 +576,8 @@
     setPref = opts.setPref;
     app = opts.app;
     modelOf = opts.modelOf || modelOf;
+    phone = !!opts.phone;
+    onClose = opts.onClose || onClose;
     els = {
       dialog: $("multiCamDialog"), pickList: $("multiCamPicks"), pickNote: $("multiCamPickNote"), start: $("multiCamStart"), cancel: $("multiCamCancel"),
       card: $("multiCamCard"), grid: $("multiCamGrid"), record: $("multiCamRecord"), closeBtn: $("multiCamClose"), note: $("multiCamNote"),
@@ -585,7 +627,7 @@
   }
 
   global.MultiCamera = {
-    init, openPicker, start, close, keyOf, startRecording, stopRecording, remoteState, previewSources, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
+    init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, previewSources, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
     isActive: () => tiles.length > 0, isRecording: () => recording,
     _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null })),
   };

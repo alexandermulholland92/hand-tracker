@@ -426,7 +426,9 @@ async function run(win) {
   await checkOpsStreaming();
   await checkLiveRigs(js);
   await checkSeveralCameras(js);
+  await checkSeveralCamerasSettings(js);
   await checkSeveralOakCameras(js);
+  await checkOakTilesFar(js);
   await checkOakPicturesOff(js);
   await checkOakTileRetry(js);
   await checkRemoteRecording(js);
@@ -896,6 +898,106 @@ async function checkSeveralCameras(js) {
     guessed.guesses.join() === "head,chest,wrist_left,wrist_right,wrist_left,wrist_right,," && guessed.assigned.join() === "chest,wrist_left,head" &&
       guessed.savedNone.join() === ",head" && guessed.savedTwice.join() === "chest,head",
     JSON.stringify(guessed));
+}
+
+// More settings while several cameras run: the buttons reach every camera's tile (Square
+// crop, Far-away hands and what it looks for, Black gloves, Readable text, the Show buttons,
+// Overlay), Pause pauses the tiles (not the main camera under them), and the tiles draw the
+// main window's tags (stage-overlay.js), sized by distance.
+async function checkSeveralCamerasSettings(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const $ = (id) => document.getElementById(id);
+    const cams = await HandTracker.listCameras();
+    await MultiCamera.start([cams[0].deviceId, cams[0].deviceId]);
+    for (let i = 0; i < 120; i++) {
+      const t = MultiCamera._tiles();
+      if (t.length === 2 && t.every((x) => x.status && x.status.fps > 0)) break;
+      await sleep(250);
+    }
+    await sleep(500);
+    const wins = () => [...document.querySelectorAll("#multiCamGrid iframe")].map((f) => f.contentWindow);
+    const opts = () => wins().map((w) => w.Tile.options());
+    const show = (k) => document.querySelector('[data-show="' + k + '"]');
+    const out = { before: opts().map((o) => [o.square, o.farMode.enabled, o.gloves, o.readable, o.display.box, o.overlay, o.paused].join()) };
+    $("squareToggle").click(); $("farToggle").click(); $("glovesToggle").click(); $("readableToggle").click(); show("box").click();
+    $("farFocus").value = "left"; $("farFocus").dispatchEvent(new Event("change"));
+    await sleep(200);
+    out.on = opts().map((o) => [o.square, o.farMode.enabled, o.farMode.focus, o.gloves, o.readable, o.display.box].join());
+    $("squareToggle").click(); $("farToggle").click(); $("glovesToggle").click(); $("readableToggle").click(); show("box").click();
+    $("farFocus").value = "both"; $("farFocus").dispatchEvent(new Event("change"));
+    $("overlayToggle").click();
+    await sleep(200);
+    out.off = opts().map((o) => [o.square, o.farMode.enabled, o.gloves, o.readable, o.display.box, o.overlay].join());
+    $("overlayToggle").click();
+    // Pause: the tiles stop; the main camera stays paused under them either way.
+    $("pauseToggle").click();
+    await sleep(200);
+    out.paused = { tiles: opts().map((o) => o.paused), main: HandTracker.isPaused(), button: $("pauseToggle").textContent.trim(), badge: !$("pauseBadge").hidden };
+    $("pauseToggle").click();
+    await sleep(200);
+    out.resumed = { tiles: opts().map((o) => o.paused), main: HandTracker.isPaused(), button: $("pauseToggle").textContent.trim() };
+    // The tile's tag, as the main window draws it: skeleton off (so its tag is the only orange).
+    show("skeleton").click();
+    await sleep(200);
+    out.tags = await wins()[0].eval(${JSON.stringify(TAG_HEIGHTS)});
+    show("skeleton").click();
+    MultiCamera.close();
+    await sleep(300);
+    out.afterClose = { main: HandTracker.isPaused(), button: $("pauseToggle").textContent.trim() };
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  const near = (v, want) => Math.abs(v - want) <= Math.max(4, want * 0.12);
+  check("Several cameras: More settings reach every camera (Square crop, Far-away hands and Look for, Black gloves, Readable text, Show, Overlay)",
+    r.before && r.before.every((x) => x === "false,false,false,false,false,true,false") &&
+      r.on.every((x) => x === "true,true,left,true,true,true") && r.off.every((x) => x === "false,false,false,false,false,false"),
+    JSON.stringify(r));
+  check("Several cameras: Pause pauses every camera's tracking (not the main camera under them), and Resume carries on",
+    r.paused && r.paused.tiles.every(Boolean) && r.paused.main && /Resume/.test(r.paused.button) && r.paused.badge &&
+      r.resumed.tiles.every((p) => !p) && r.resumed.main && /Pause/.test(r.resumed.button) && !r.afterClose.main && /Pause/.test(r.afterClose.button),
+    JSON.stringify({ paused: r.paused, resumed: r.resumed, afterClose: r.afterClose }));
+  const t = r.tags || {};
+  check("Several cameras: each camera draws the main window's tags, normal size up close and bigger further away",
+    near(t.veryClose, 32) && near(t.armsLength, 32) && near(t.further, 32 * 1.6) && near(t.far, 32 * 2) && near(t.veryFar, 32 * 2),
+    JSON.stringify(t));
+}
+
+// Far-away hands with OAK cameras in tiles: it runs on the camera, so turning it on (or off)
+// starts each OAK camera again in that mode; their hands carry on afterwards.
+async function checkOakTilesFar(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const $ = (id) => document.getElementById(id);
+    await MultiCamera.start(["oak:SIMULATED-OAK-A", "oak:SIMULATED-OAK-B"]);
+    const running = async () => {
+      for (let i = 0; i < 150; i++) {
+        const t = MultiCamera._tiles();
+        if (t.length === 2 && t.every((x) => x.status && x.status.fps > 0 && x.status.hands.length && !x.status.error)) return true;
+        await sleep(200);
+      }
+      return false;
+    };
+    const out = { first: await running() };
+    const seen = [];
+    const off = desktop.oak.onStreamStatus((s) => s.status === "running" && seen.push(s.id + ":" + s.far));
+    const restarted = async (far) => {
+      for (let i = 0; i < 100 && seen.filter((x) => x.endsWith(":" + far)).length < 2; i++) await sleep(200);
+      return seen.filter((x) => x.endsWith(":" + far)).sort();
+    };
+    $("farToggle").click();
+    out.on = await restarted("both");
+    out.handsOn = await running();
+    $("farToggle").click();
+    out.off = await restarted("null");
+    out.handsOff = await running();
+    off();
+    MultiCamera.close();
+    await sleep(500);
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  check("Several cameras with OAK cameras: Far-away hands starts each OAK camera again in far mode (and off again); their hands carry on",
+    r.first && r.on && r.on.join() === "SIMULATED-OAK-A:both,SIMULATED-OAK-B:both" && r.handsOn && r.off.join() === "SIMULATED-OAK-A:null,SIMULATED-OAK-B:null" && r.handsOff,
+    JSON.stringify(r));
 }
 
 // Several cameras with Luxonis OAK cameras among them, against two stand-in OAK cameras

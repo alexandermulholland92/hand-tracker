@@ -19,42 +19,30 @@
  *   Tile.setView({ rotation, mirror })        turn the picture (and its tracking) clockwise by 0, 90, 180
  *                                             or 270 degrees, and show it mirrored or not (just the look:
  *                                             Left stays the person's left)
+ *   Tile.setOptions({ display, overlay, square, far, gloves, readable, paused })
+ *                                             the main window's More settings, any of them: what's drawn
+ *                                             (the Show buttons, Overlay), Square crop, Far-away hands
+ *                                             ({ enabled, focus, raisedOnly }), Black gloves, Readable text,
+ *                                             Pause. An OAK camera finds its own hands, so Square crop,
+ *                                             Black gloves and Readable text don't apply to it, and its
+ *                                             far-away mode is the camera's (multi-camera.js starts it so).
  */
 
 (function (global) {
   const params = new URLSearchParams(location.search);
-  const SIDE_COLORS = { Left: "#4dabf7", Right: "#ff922b" };
   const video = document.getElementById("video"), stage = document.getElementById("stage"), message = document.getElementById("message");
   let latest = [], error = "";
   const oak = params.get("oak");
   let lastBitmap = null;
   let pictures = 0; // pictures drawn (an OAK camera's hands can come without theirs)
 
-  // A small tag at each wrist: which hand (the main window's labels, without gestures).
+  // What's drawn over the picture: the main window's tags, boxes and far-away search area,
+  // as its Show buttons say (setOptions); until they arrive, which hand each is.
+  const overlay = StageOverlay.create(stage, { phone: params.get("phone") === "1" });
+  const gestures = HandGestures.create();
+  const options = { display: { side: true, skeleton: true }, overlay: true, far: false, readable: false };
   function drawTags(hands) {
-    const ctx = stage.getContext("2d");
-    const unit = Math.max(1, stage.width / 640);
-    ctx.save();
-    ctx.textBaseline = "middle";
-    ctx.font = `600 ${Math.round(15 * unit)}px "Segoe UI", system-ui, sans-serif`;
-    for (const hand of hands) {
-      const wrist = HandTracker.toCanvasPoint(hand.imageLandmarks[0]);
-      const text = hand.handedness;
-      const color = SIDE_COLORS[hand.handedness] || "#adb5bd";
-      const h = 26 * unit, w = ctx.measureText(text).width + 20 * unit;
-      const x = Math.min(Math.max(wrist.x - w / 2, 4), stage.width - w - 4), y = Math.min(Math.max(wrist.y + 14 * unit, 4), stage.height - h - 4);
-      ctx.beginPath();
-      if (ctx.roundRect) ctx.roundRect(x, y, w, h, h / 2);
-      else ctx.rect(x, y, w, h);
-      ctx.fillStyle = "rgba(14, 15, 18, 0.8)";
-      ctx.fill();
-      ctx.lineWidth = 2 * unit;
-      ctx.strokeStyle = color;
-      ctx.stroke();
-      ctx.fillStyle = color;
-      ctx.fillText(text, x + 10 * unit, y + h / 2);
-    }
-    ctx.restore();
+    if (options.overlay) overlay.draw(hands, { display: options.display, far: options.far && !oak, gestureOf: (h) => gestures.of(h) });
   }
 
   // The tile's camera. Its id from the page showing the tile works on a computer, but Android's
@@ -85,6 +73,7 @@
       message.textContent = "Starting the OAK camera…";
       HandTracker.onHandLandmarks(({ hands, timestamp, noPicture }) => {
         latest = hands;
+        gestures.update(hands);
         if (!noPicture) drawTags(hands);
         if (RobotMotion.isRecording()) RobotMotion.feed(hands, timestamp);
       });
@@ -107,6 +96,10 @@
       message.hidden = true;
       HandTracker.onHandLandmarks(({ hands, timestamp }) => {
         latest = hands;
+        gestures.update(hands);
+        // Readable text (only when it's on: one text reader per camera would be a lot for a
+        // small computer): text in a mirrored picture shown the right way round.
+        if (options.readable && !HandTracker.getCamera().crop) ReadableText.process(HandTracker.getFrameImage(), stage, HandTracker.isMirrored(), hands, false);
         drawTags(hands);
         if (RobotMotion.isRecording()) RobotMotion.feed(hands, timestamp);
       });
@@ -157,6 +150,22 @@
         error = "";
       }
     },
+    setOptions: (o = {}) => {
+      if (o.display) options.display = { ...o.display };
+      if (o.overlay !== undefined) options.overlay = !!o.overlay;
+      if (o.readable !== undefined) options.readable = !!o.readable && !oak;
+      HandTracker.setOverlay(options.overlay && options.display.skeleton !== false);
+      if (!oak) {
+        if (o.square !== undefined) HandTracker.setSquareCrop(!!o.square);
+        if (o.gloves !== undefined) HandTracker.setGloves(!!o.gloves);
+        if (o.far) {
+          options.far = !!o.far.enabled;
+          HandTracker.setFarMode({ enabled: !!o.far.enabled, focus: o.far.focus || "both", raisedOnly: o.far.raisedOnly !== false });
+        }
+      }
+      if (o.paused !== undefined && !!o.paused !== HandTracker.isPaused()) HandTracker.setPaused(!!o.paused);
+    },
+    options: () => ({ ...options, display: { ...options.display }, square: !oak && HandTracker.isSquareCrop(), gloves: !oak && HandTracker.getGloves(), farMode: HandTracker.getFarMode(), paused: HandTracker.isPaused() }),
     setView: ({ rotation, mirror } = {}) => {
       if (rotation !== undefined) HandTracker.setRotation(rotation);
       if (mirror !== undefined) HandTracker.setMirror(!!mirror);
