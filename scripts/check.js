@@ -429,6 +429,7 @@ async function run(win) {
   await checkSeveralCamerasSettings(js);
   await checkSeveralOakCameras(js);
   await checkOakTilesFar(js);
+  await checkOakOptions(js);
   await checkOakPicturesOff(js);
   await checkOakTileRetry(js);
   await checkRemoteRecording(js);
@@ -998,6 +999,63 @@ async function checkOakTilesFar(js) {
   check("Several cameras with OAK cameras: Far-away hands starts each OAK camera again in far mode (and off again); their hands carry on",
     r.first && r.on && r.on.join() === "SIMULATED-OAK-A:both,SIMULATED-OAK-B:both" && r.handsOn && r.off.join() === "SIMULATED-OAK-A:null,SIMULATED-OAK-B:null" && r.handsOff,
     JSON.stringify(r));
+}
+
+// OAK camera options (More settings → OAK camera), against the stand-in OAK camera: Find
+// objects draws each object's box and name, the depth picture replaces the colour one, the
+// note says so; OAK cameras in tiles are started with the same options.
+async function checkOakOptions(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const $ = (id) => document.getElementById(id);
+    const out = { shown: !$("oakOptions").hidden };
+    $("oakDetect").click();
+    $("oakPicture").value = "depth";
+    $("oakPicture").dispatchEvent(new Event("change"));
+    out.saved = JSON.parse(localStorage.getItem("hand-tracker:prefs")).oakOptions;
+    await HandTrackerApp.useOak();
+    for (let i = 0; i < 100 && !(OakSource.isActive() && (OakSource.objects() || []).length); i++) await sleep(100);
+    await sleep(600);
+    out.objects = (OakSource.objects() || []).map((o) => o.label + (o.xyz ? " " + (o.xyz[2] / 1000).toFixed(1) + "m" : ""));
+    out.note = $("sourceNote").textContent;
+    const stage = $("stage"), d = stage.getContext("2d").getImageData(0, 0, stage.width, stage.height).data;
+    let yellow = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] > 220 && d[i + 1] > 160 && d[i + 1] < 230 && d[i + 2] < 90) yellow++;
+    const mid = ((stage.height >> 1) * stage.width + (stage.width >> 1)) * 4;
+    out.stage = { yellow, centre: [d[mid], d[mid + 1], d[mid + 2]] };
+    // Objects off in Show: no boxes.
+    document.querySelector('[data-show="objects"]').click();
+    await sleep(400);
+    const d2 = stage.getContext("2d").getImageData(0, 0, stage.width, stage.height).data;
+    let yellow2 = 0;
+    for (let i = 0; i < d2.length; i += 4) if (d2[i] > 220 && d2[i + 1] > 160 && d2[i + 1] < 230 && d2[i + 2] < 90) yellow2++;
+    out.hidden = yellow2;
+    document.querySelector('[data-show="objects"]').click();
+    // OAK cameras in tiles get the same options.
+    const seen = [];
+    const off = desktop.oak.onStreamStatus((s) => s.status === "running" && seen.push(s.id + ":" + s.detect + ":" + s.picture));
+    await MultiCamera.start(["oak:SIMULATED-OAK-A"]);
+    for (let i = 0; i < 100 && !(MultiCamera._tiles()[0] && MultiCamera._tiles()[0].status && MultiCamera._tiles()[0].status.hands.length); i++) await sleep(200);
+    await sleep(400);
+    const tile = document.querySelector("#multiCamGrid iframe").contentWindow.Tile;
+    out.tile = { started: seen, objects: (tile.objects() || []).map((o) => o.label) };
+    off();
+    MultiCamera.close();
+    await sleep(2800);
+    $("oakDetect").click();
+    $("oakPicture").value = "color";
+    $("oakPicture").dispatchEvent(new Event("change"));
+    await HandTrackerApp.backToCamera();
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  check("OAK camera options: Find objects draws each object found on the camera (what, how far), Show → Objects hides them; the depth picture replaces the colour one; the note says so; remembered",
+    r.shown && r.saved && r.saved.detect === true && r.saved.picture === "depth" &&
+      r.objects && r.objects.includes("person 3.5m") && r.stage.yellow > 200 && r.hidden < 20 &&
+      r.stage.centre[0] > 150 && r.stage.centre[1] < 90 && /objects found on the camera/.test(r.note) && /depth picture/.test(r.note),
+    JSON.stringify({ ...r, tile: undefined }));
+  check("OAK camera options reach OAK cameras in tiles (started with them; their objects found)",
+    r.tile && r.tile.started.includes("SIMULATED-OAK-A:true:depth") && r.tile.objects.includes("person"),
+    JSON.stringify(r.tile || r));
 }
 
 // Several cameras with Luxonis OAK cameras among them, against two stand-in OAK cameras

@@ -9,8 +9,9 @@ adapted from, the following work under other licences, whose notices are kept he
 
 - `oak/`: the Luxonis OAK camera tracking code (`HandTrackerEdge.py`, `HandTrackerBpfEdge.py`,
   `mediapipe_utils.py`, `FPS.py`, `template_manager_script_*.py`), copied from that repository
-  (one unused import removed from `HandTrackerEdge.py` for NumPy 2). The camera models it uses
-  are downloaded from the same repository during the OAK setup.
+  (one unused import removed from `HandTrackerEdge.py` for NumPy 2, and a call added at the end
+  of each pipeline for Hand Tracker's own additions). The camera models it uses are downloaded
+  from the same repository during the OAK setup.
 - Adapted from it: far-away hands (`far-hands.js`, after its Body Pre Focusing), the hand
   mouse's jitter filter and gesture actions (`pc-control.js`, after its `HandController` and
   mouse example), finger counting (Two, Three, Four), averaging handedness over a hand's
@@ -39,6 +40,15 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## MobileNet-SSD (OAK cameras' Find objects)
+
+The object finder an OAK camera runs with *Find objects* on: MobileNet-SSD, trained on PASCAL
+VOC, from the OpenVINO Open Model Zoo (`mobilenet-ssd`), compiled for OAK cameras by Luxonis
+(`mobilenet-ssd_openvino_2021.4_5shave.blob`, as listed in depthai-python's examples). It isn't
+part of Hand Tracker: the desktop app downloads it from Luxonis, checked against its published
+checksum, the first time *Find objects* is turned on. Apache License 2.0
+(<https://raw.githubusercontent.com/openvinotoolkit/open_model_zoo/master/LICENSE>).
 
 ## MediaPipe
 

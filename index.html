@@ -403,6 +403,16 @@
       </label>
       <label id="farRaisedLabel" hidden title="Only look for a hand raised above its elbow, as when making a gesture: a hand hanging down isn't picked up. Once a hand is found, it stays tracked wherever it goes."><input type="checkbox" id="farRaised" checked /> Raised hands only</label>
     </div>
+    <div class="toolbar options-bar" id="oakOptions" hidden title="Luxonis OAK cameras: what each one does on its own processor, alongside finding the hands">
+      <span class="bar-label">OAK camera</span>
+      <button id="oakDetect" aria-pressed="false" title="Also find objects on the camera (people, cats, dogs and 17 other kinds), with how far away each is on an OAK-D or OAK-D Lite. Downloads the object finder (15 MB) the first time. If a camera can't run it alongside finding the hands, it says so and carries on without.">Find objects: OFF</button>
+      <label title="Which picture is shown: the colour camera's, or the depth picture (OAK-D and OAK-D Lite: near is red, far is blue, black is unknown), lined up with it. The hands are found in colour either way.">Picture
+        <select id="oakPicture"><option value="color">Colour</option><option value="depth">Depth</option></select>
+      </label>
+      <label title="How many frames a second the camera takes. Automatic suits the hand models (about 30); 60 is smoother where the camera and computer keep up.">Frame rate
+        <select id="oakFps"><option value="">Automatic</option><option value="60">60</option></select>
+      </label>
+    </div>
     <div class="toolbar show-bar" id="showBar" title="What's drawn on the picture (and in recorded video)">
       <span class="bar-label">Show</span>
       <button data-show="box" title="A box around each hand, turned with it (1)">Hand box<kbd>1</kbd></button>
@@ -412,6 +422,7 @@
       <button data-show="gesture" title="The gesture each hand is making (5)">Gesture<kbd>5</kbd></button>
       <button data-show="distance" title="Each hand's distance from the camera, measured by an OAK-D depth camera (6)">Distance<kbd>6</kbd></button>
       <button data-show="focus" title="With far-away hands on: the body found and the area searched for hands (7)">Body &amp; search area<kbd>7</kbd></button>
+      <button data-show="objects" title="Objects an OAK camera found, with Find objects on: a box each, what it is and (OAK-D) how far away (8)">Objects<kbd>8</kbd></button>
       <button data-show="fps" title="The frames-per-second counter (F)">FPS<kbd>F</kbd></button>
     </div>
     </details>

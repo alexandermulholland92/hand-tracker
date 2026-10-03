@@ -392,6 +392,11 @@ class HandTracker:
         pre_lm_manip.out.link(lm_nn.input)
         lm_nn.out.link(manager_script.inputs['from_lm_nn'])
             
+        # Hand Tracker (oak_bridge.py): more from the same camera alongside the hands (objects
+        # found on the camera, a depth picture, a small grey picture for motion).
+        if hasattr(self, "extend_pipeline"):
+            self.extend_pipeline(pipeline, cam, stereo if self.xyz else None)
+
         print("Pipeline created.")
         return pipeline        
     

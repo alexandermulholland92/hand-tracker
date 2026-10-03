@@ -36,6 +36,7 @@
  *   HandTracker.setConfidence({ detection, tracking }); // MediaPipe's cut-offs (0-1) for finding a
  *                                         // hand and for keeping it
  *   HandTracker.getFeatures("Left" | "Right"); // single hand's features
+ *   HandTracker.sourceToCanvas({ x, y });  // a point in an external source's own picture, on the stage
  *   HandTracker.getFrameImage();          // the picture being tracked (the video, or a flipped/cropped copy)
  *   HandTracker.setSquareCrop(true/false); // track only the centre square of the picture
  *   HandTracker.setGloves(true/false);    // hands in black or dark gloves (see "Black gloves")
@@ -1667,6 +1668,17 @@
     return { x: (mirror ? 1 - p.x : p.x) * w, y: p.y * h };
   }
 
+  // A point (0-1) in an external source's own picture, as it was found there (objects an OAK
+  // camera found), on the stage canvas: turned with the picture and mirrored with it, as its
+  // hands are.
+  function sourceToCanvas(p) {
+    if (source === "external" && rotation) {
+      const [x, y] = turnPoint(p.x, p.y);
+      return toCanvasPoint({ x, y });
+    }
+    return toCanvasPoint(p);
+  }
+
   // Pass "Left" or "Right" to get that hand's features; omit for a map of both.
   // Hands that haven't been seen recently report null.
   function getFeatures(label) {
@@ -1704,6 +1716,7 @@
     setConfidence,
     getConfidence: () => ({ ...confidence }),
     toCanvasPoint,
+    sourceToCanvas,
     getFeatures,
     getFrameImage: () => lastFrame || videoEl,
     setSquareCrop,

@@ -140,7 +140,7 @@
   // Far-away hands (see far-hands.js): off by default; which hands to look for.
   const farPrefs = { enabled: false, raisedOnly: true, focus: "both", ...(prefs.far && typeof prefs.far === "object" ? prefs.far : {}) };
   // What's drawn on the picture (the Show buttons and keys 1-7, F).
-  const DISPLAY_DEFAULTS = { box: false, skeleton: true, side: true, scores: false, gesture: true, distance: true, focus: true, fps: true };
+  const DISPLAY_DEFAULTS = { box: false, skeleton: true, side: true, scores: false, gesture: true, distance: true, focus: true, objects: true, fps: true };
   const display = { ...DISPLAY_DEFAULTS, ...(prefs.display && typeof prefs.display === "object" ? prefs.display : {}) };
 
   // ---------- Small helpers ----------
@@ -295,7 +295,7 @@
   const stageOverlay = StageOverlay.create(stage, { phone: onPhone });
   function drawStageLabels(hands) {
     if (!overlayOn) return;
-    stageOverlay.draw(hands, { display, far: farPrefs.enabled, gestureOf });
+    stageOverlay.draw(hands, { display, far: farPrefs.enabled, gestureOf, objects: OakSource.objects() });
   }
 
   // Keep the stage box the same shape as the camera image.
@@ -502,7 +502,35 @@
   });
 
   // ---------- A Luxonis OAK camera as the source (Windows and Linux app) ----------
-  const oakSettings = () => ({ model: Number(modelSelect.value), hands: Number(handsSelect.value), far: { ...farPrefs } });
+  // OAK cameras' own options (More settings → OAK camera): find objects, the depth picture,
+  // the frame rate. Remembered; a camera running is started again with them.
+  const oakPrefs = { detect: false, picture: "color", fps: 0, ...(prefs.oakOptions && typeof prefs.oakOptions === "object" ? prefs.oakOptions : {}) };
+  const oakOptions = () => ({ ...oakPrefs, motion: !!(window.Sentry && Sentry.wantsMotion()) });
+  const oakSettings = () => ({ model: Number(modelSelect.value), hands: Number(handsSelect.value), far: { ...farPrefs }, oak: oakOptions() });
+  function applyOakOptions() {
+    $("oakOptions").hidden = !OakSource.available();
+    setToggle($("oakDetect"), oakPrefs.detect, "Find objects");
+    $("oakPicture").value = oakPrefs.picture;
+    $("oakFps").value = oakPrefs.fps ? String(oakPrefs.fps) : "";
+  }
+  function saveOakOptions() {
+    setPref("oakOptions", oakPrefs);
+    applyOakOptions();
+    restartOak();
+    syncTiles();
+  }
+  $("oakDetect").addEventListener("click", () => {
+    oakPrefs.detect = !oakPrefs.detect;
+    saveOakOptions();
+  });
+  $("oakPicture").addEventListener("change", () => {
+    oakPrefs.picture = $("oakPicture").value === "depth" ? "depth" : "color";
+    saveOakOptions();
+  });
+  $("oakFps").addEventListener("change", () => {
+    oakPrefs.fps = Number($("oakFps").value) || 0;
+    saveOakOptions();
+  });
   async function useOak() {
     stageMessage.hidden = false;
     stageMessage.className = "";
@@ -523,8 +551,10 @@
   OakSource.onStatus((s) => {
     if (s.status === "running") {
       stageMessage.hidden = true;
-      showSourceNote(`${s.camera || "OAK camera"}: hands found on the camera${s.depth ? ", with each hand's distance (Show → Distance)" : ""}.` +
-        (s.usb === "HIGH" ? " It's connected over USB 2, so pictures come a little slower: if it's a USB 3 camera, another cable or port may help." : ""));
+      const also = [s.detect ? "objects found on the camera too (Show → Objects)" : "", s.picture === "depth" ? "showing the depth picture" : ""].filter(Boolean);
+      showSourceNote(`${s.camera || "OAK camera"}: hands found on the camera${s.depth ? ", with each hand's distance (Show → Distance)" : ""}${also.length ? `; ${also.join("; ")}` : ""}.` +
+        (s.usb === "HIGH" ? " It's connected over USB 2, so pictures come a little slower: if it's a USB 3 camera, another cable or port may help." : "") +
+        (s.warning ? ` ${s.warning}` : ""));
     } else if (s.status === "error") {
       showStageError(new Error(s.message));
     } else if (s.status === "stopped" && OakSource.isActive() && s.code) {
@@ -579,7 +609,7 @@
   }
 
   // Several cameras: every camera's tile follows the Overlay button and More settings too.
-  const tileSettings = () => ({ display: { ...display }, overlay: overlayOn, square: squareOn, far: { ...farPrefs }, gloves: glovesOn, readable: readableOn });
+  const tileSettings = () => ({ display: { ...display }, overlay: overlayOn, square: squareOn, far: { ...farPrefs }, gloves: glovesOn, readable: readableOn, oak: oakOptions() });
   function syncTiles() {
     if (window.MultiCamera && MultiCamera.setOptions) MultiCamera.setOptions(tileSettings());
   }
@@ -1646,7 +1676,7 @@
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
     if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
     const key = e.key.toLowerCase();
-    const SHOW_KEYS = { 1: "box", 2: "skeleton", 3: "side", 4: "scores", 5: "gesture", 6: "distance", 7: "focus", f: "fps" };
+    const SHOW_KEYS = { 1: "box", 2: "skeleton", 3: "side", 4: "scores", 5: "gesture", 6: "distance", 7: "focus", 8: "objects", f: "fps" };
     if (key === "r") toggleVideo();
     else if (key === "m") toggleMotion();
     else if (key === "o") toggleOverlay();
@@ -1676,6 +1706,7 @@
     setToggle(readableToggle, readableOn, "Readable text");
     setToggle(squareToggle, squareOn, "Square crop");
     applyGloves(); // (before the camera starts, so a video opened after a camera error has it too)
+    applyOakOptions();
     renderPanels([]);
     if (!VideoRecorder.isSupported()) {
       videoBtn.disabled = true;

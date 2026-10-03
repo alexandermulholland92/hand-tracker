@@ -26,9 +26,10 @@
  * then only drawn as often as remote recording's previews need them.
  *
  *   MultiCamera.init({ prefs, setPref, app: HandTrackerApp, modelOf: () => 0 | 1, phone });
- *   MultiCamera.setOptions({ display, overlay, square, far, gloves, paused })   // the main window's
+ *   MultiCamera.setOptions({ display, overlay, square, far, gloves, paused, oak })   // the main window's
  *     More settings, any of them, for every tile now and every tile started later (Tile.setOptions;
- *     an OAK camera is started again with a new far-away setting, which runs on the camera)
+ *     an OAK camera is started again with a new far-away setting or new OAK camera options, oak:
+ *     { detect, picture, motion, fps } (OakSource.cameraOptions), which run on the camera)
  *   await MultiCamera.openPicker();          // choose cameras, then start
  *   await MultiCamera.start(ids);            // (the picker's Start; ids may repeat, for checks)
  *   MultiCamera.keyOf(camera)                // a webcam's id for remembering it (see keyOf)
@@ -287,13 +288,14 @@
     api.setOptions(paused ? tileOptions : rest);
   }
   function setOptions(o = {}) {
-    const farChanged = o.far && JSON.stringify(oakFar(o.far)) !== JSON.stringify(oakFar(tileOptions.far));
+    const farChanged = (o.far && JSON.stringify(oakFar(o.far)) !== JSON.stringify(oakFar(tileOptions.far))) ||
+      (o.oak && JSON.stringify(OakSource.cameraOptions(o.oak)) !== JSON.stringify(OakSource.cameraOptions(tileOptions.oak)));
     tileOptions = { ...tileOptions, ...o };
     for (const t of tiles) {
       const api = tileApi(t);
       if (api && api.setOptions) api.setOptions(o);
     }
-    // An OAK camera's far-away mode is its own: started again with the new one.
+    // An OAK camera's far-away mode and options are its own: started again with the new ones.
     if (farChanged) for (const t of tiles.filter((x) => x.oak && x.oakState !== "starting")) restartOak(t);
   }
   // Far-away hands as an OAK camera's helper takes it.
@@ -301,7 +303,7 @@
   async function restartOak(t) {
     t.oakState = "starting";
     const api = tileApi(t);
-    if (api && api.oakStatus) api.oakStatus({ status: "starting", message: "Starting the OAK camera again with the new far-away setting…" });
+    if (api && api.oakStatus) api.oakStatus({ status: "starting", message: "Starting the OAK camera again with the new settings…" });
     await desktop.oak.streamStop(t.oak).catch(() => {});
     await sleep(2500); // until the camera is let go
     if (tiles.includes(t)) startOakTiles([t]);
@@ -348,7 +350,7 @@
       if (!tiles.includes(t)) return;
       t.oakState = "starting";
       try {
-        await desktop.oak.streamStart(t.oak, { lm: model === 1 ? "full" : "lite", twoHands: true, xyz: true, ...oakFar(tileOptions.far) });
+        await desktop.oak.streamStart(t.oak, { lm: model === 1 ? "full" : "lite", twoHands: true, xyz: true, ...oakFar(tileOptions.far), ...OakSource.cameraOptions(tileOptions.oak) });
       } catch (err) {
         t.oakState = "error";
         api.oakStatus({ status: "error", message: errText(err) });
@@ -380,7 +382,7 @@
     if (!api || !api.oakHands) return desktop.oak.streamShown(id);
     let hands = null;
     try {
-      hands = api.oakHands(header.w, header.h, OakSource.toResults(header), header.t);
+      hands = api.oakHands(header.w, header.h, OakSource.toResults(header), header.t, { motion: header.motion });
     } catch {
       // its page going away meanwhile
     }

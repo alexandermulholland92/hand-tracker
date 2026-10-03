@@ -10,6 +10,11 @@
  *   OakSource.isActive()
  *   await OakSource.ensureReady()         // the one-time setup if it's needed (asks); false if canceled
  *   OakSource.toResults(header)           // a helper frame's hands, shaped as HandTracker takes them
+ *                                         // (and its objects, as results.objects)
+ *   OakSource.objects() / OakSource.motion()  // the last frame's objects found and motion (each ninth
+ *                                         // of the picture, 0-1), with Find objects / Sentry mode on
+ *   OakSource.onFrameInfo(cb)             // cb({ objects, motion, t }) each frame
+ *   OakSource.cameraOptions(settings.oak) // { detect, picture, motion, fps } as the helper takes them
  *   OakSource.silentNote(ports)           // what to say of OAK cameras plugged in that didn't answer
  *                                         // (also for "Several cameras", multi-camera.js)
  */
@@ -21,6 +26,8 @@
   let lastBitmap = null;
   let onChange = () => {};
   let info = { camera: "", depth: false, fps: 0 };
+  let lastObjects = null, lastMotion = null;
+  let frameInfo = () => {};
 
   const $ = (id) => document.getElementById(id);
   const errText = (err) => (err && err.message ? err.message : String(err)).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
@@ -71,6 +78,17 @@
       multiHandedness: hands.map((h) => ({ label: h.anatomical ? swap(h.label) : h.label, score: h.score })),
       multiHandWorldLandmarks: hands.map((h) => (Array.isArray(h.world) && h.world.length === 21 ? h.world.map(([x, y, z]) => ({ x, y, z })) : [])),
       extras: hands.map((h) => ({ score: h.lm_score, xyz: h.xyz })),
+      objects: Array.isArray(header.objects) ? header.objects : null,
+    };
+  }
+  // The OAK camera's own options (More settings → OAK camera): find objects, the depth
+  // picture, its frame rate; and motion for each ninth of the picture while Sentry mode watches.
+  function cameraOptions(oak = {}) {
+    return {
+      detect: !!oak.detect,
+      picture: oak.picture === "depth" ? "depth" : "color",
+      motion: !!oak.motion,
+      fps: Number(oak.fps) > 0 ? Number(oak.fps) : undefined,
     };
   }
 
@@ -79,7 +97,10 @@
       if (!active || !jpeg) return;
       const bitmap = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }));
       if (!active) return bitmap.close();
+      lastObjects = Array.isArray(header.objects) ? header.objects : null;
+      lastMotion = Array.isArray(header.motion) ? header.motion : null;
       HandTracker.pushExternalFrame(bitmap, toResults(header), header.t);
+      frameInfo({ objects: lastObjects, motion: lastMotion, t: header.t });
       if (lastBitmap) lastBitmap.close();
       lastBitmap = bitmap;
       info.fps = header.fps;
@@ -118,6 +139,7 @@
       xyz: true, // measured on depth cameras (OAK-D); ignored on others
       far: settings.far && settings.far.enabled ? settings.far.focus : null,
       allHands: settings.far && settings.far.enabled && !settings.far.raisedOnly,
+      ...cameraOptions(settings.oak),
     });
   }
 
@@ -126,6 +148,7 @@
     active = false;
     for (const off of unsubscribe) off();
     unsubscribe = [];
+    lastObjects = lastMotion = null;
     desktop.oak.stop().catch(() => {});
     if (lastBitmap) lastBitmap.close();
     lastBitmap = null;
@@ -154,6 +177,10 @@
     isActive: () => active,
     ensureReady,
     toResults,
+    cameraOptions,
+    objects: () => (active ? lastObjects : null),
+    motion: () => (active ? lastMotion : null),
+    onFrameInfo: (cb) => (frameInfo = cb || (() => {})),
     info: () => ({ ...info }),
     onStatus: (cb) => (onChange = cb),
   };

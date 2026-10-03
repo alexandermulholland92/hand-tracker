@@ -41,6 +41,13 @@ const MODELS = [
   ["models/movenet_singlepose_lightning_U8_transpose.blob", "43c097b7610fc0441c3038c3de0edafe57689c87f7bf6b4f20a5ffd6c74f67c2"],
   ["custom_models/PDPostProcessing_top2_sh1.blob", "ef4c2db0bd6b4d3209abcc90fefc54e6d23b614c5165774ac1b706a7652c6516"],
 ];
+// The object finder (MobileNet-SSD, Apache 2.0, from Luxonis's model zoo as depthai's examples
+// list it): downloaded the first time Find objects is turned on, not with the setup.
+const DETECT_MODEL = {
+  name: "mobilenet-ssd_openvino_2021.4_5shave.blob",
+  url: "https://artifacts.luxonis.com/artifactory/luxonis-depthai-data-local/network/mobilenet-ssd_openvino_2021.4_5shave.blob",
+  sha256: "782d80902c5ce7da01f8fc83894b68da33216edc93d94afb16dd7576a25e50e2",
+};
 // Python reads the bridge from disk, so in the packaged app it's outside app.asar.
 const BRIDGE = path.join(__dirname, "..", "oak", "oak_bridge.py").replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
 
@@ -182,10 +189,35 @@ class OakCamera {
     return s;
   }
 
-  // options: { lm: "lite" | "full", twoHands, xyz, far: null | "both" | "higher" | "left" | "right", allHands, device, simulate }
+  // The object finder's model, downloaded once (and checked) the first time it's wanted.
+  async detectModel(onMessage) {
+    const file = path.join(this.paths.models, DETECT_MODEL.name);
+    if (fs.existsSync(file)) return true;
+    onMessage({ status: "starting", message: "Downloading the object finder for the OAK camera (15 MB, only the first time)…" });
+    try {
+      await this.download(DETECT_MODEL.url, file, () => {}, { sha256: DETECT_MODEL.sha256 });
+      return true;
+    } catch (err) {
+      onMessage({ status: "starting", message: `The object finder couldn't be downloaded (${err.message.replace(/\.$/, "")}), so the camera starts without it.` });
+      return false;
+    }
+  }
+
+  // options: { lm: "lite" | "full", twoHands, xyz, far: null | "both" | "higher" | "left" | "right", allHands, device, simulate,
+  //   detect (find objects too), picture: "color" | "depth", motion (each ninth's movement, for Sentry mode), fps }
   // (device: which OAK camera, by its id; the first one found otherwise)
   start(options, onMessage) {
     this.stop();
+    const started = (this.started = {});
+    if (options.detect && !options.simulate) {
+      // (Its model first; this.stop() meanwhile cancels the start.)
+      this.detectModel(onMessage).then((ok) => this.started === started && this.spawn({ ...options, detect: ok }, onMessage));
+      return;
+    }
+    this.spawn(options, onMessage);
+  }
+
+  spawn(options, onMessage) {
     const args = ["-u", BRIDGE, "--models", this.paths.models, "--lm", options.lm === "full" ? "full" : "lite"];
     if (options.simulate) args.push("--simulate");
     if (options.twoHands) args.push("--two-hands");
@@ -193,6 +225,10 @@ class OakCamera {
     if (["both", "higher", "left", "right"].includes(options.far)) args.push("--far", options.far);
     if (options.allHands) args.push("--all-hands");
     if (options.device && /^[A-Za-z0-9._-]+$/.test(options.device)) args.push("--device", options.device);
+    if (options.detect) args.push("--detect");
+    if (options.picture === "depth") args.push("--picture", "depth");
+    if (options.motion) args.push("--motion");
+    if (Number.isInteger(options.fps) && options.fps >= 10 && options.fps <= 60) args.push("--fps", String(options.fps));
     const proc = spawn(this.paths.python, args, { windowsHide: true });
     this.proc = proc;
     let buf = Buffer.alloc(0), err = "";
@@ -211,6 +247,7 @@ class OakCamera {
   }
 
   stop() {
+    this.started = null; // (a start waiting for its model is called off)
     if (this.proc) {
       const proc = this.proc;
       this.proc = null;

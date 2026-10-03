@@ -12,8 +12,9 @@
  *   Tile.status()                             { fps, width, height, hands, recording, error }
  *   Tile.startRecording() / Tile.stopRecording() -> the recording (RobotMotion), with
  *     clock_origin_ms: when its first frame was, in ms since 1970 (to line cameras up)
- *   Tile.oakHands(w, h, results, t)           an OAK camera's frame's hands (results as HandTracker takes
- *                                             them; its picture, w x h, isn't drawn) -> the hands
+ *   Tile.oakHands(w, h, results, t, { motion }) an OAK camera's frame's hands (results as HandTracker takes
+ *                                             them, with its objects; its picture, w x h, isn't drawn) -> the
+ *                                             hands; Tile.objects() / Tile.motion() its last objects and motion
  *   await Tile.oakPicture(jpeg, hands)        then its picture, drawn with those hands
  *   Tile.oakStatus(status)                    its helper's status ("starting", "running", "error"…)
  *   Tile.setView({ rotation, mirror })        turn the picture (and its tracking) clockwise by 0, 90, 180
@@ -32,6 +33,7 @@
   const params = new URLSearchParams(location.search);
   const video = document.getElementById("video"), stage = document.getElementById("stage"), message = document.getElementById("message");
   let latest = [], error = "";
+  let objects = null, motion = null; // an OAK camera's last objects found and motion (each ninth of the picture)
   const oak = params.get("oak");
   let lastBitmap = null;
   let pictures = 0; // pictures drawn (an OAK camera's hands can come without theirs)
@@ -42,7 +44,7 @@
   const gestures = HandGestures.create();
   const options = { display: { side: true, skeleton: true }, overlay: true, far: false, readable: false };
   function drawTags(hands) {
-    if (options.overlay) overlay.draw(hands, { display: options.display, far: options.far && !oak, gestureOf: (h) => gestures.of(h) });
+    if (options.overlay) overlay.draw(hands, { display: options.display, far: options.far && !oak, gestureOf: (h) => gestures.of(h), objects });
   }
 
   // The tile's camera. Its id from the page showing the tile works on a computer, but Android's
@@ -117,12 +119,16 @@
     ready,
     name: params.get("name") || "Camera",
     hands: () => latest,
+    objects: () => objects,
+    motion: () => motion,
     status: () => {
       const cam = error ? { width: 0, height: 0 } : HandTracker.getCamera();
       return { fps: error ? 0 : HandTracker.getFPS(), width: cam.width, height: cam.height, hands: latest.map((h) => h.handedness), recording: RobotMotion.isRecording(), error, pictures };
     },
-    oakHands: (w, h, results, t) => {
+    oakHands: (w, h, results, t, extra = {}) => {
       if (!oak) return null;
+      objects = results && Array.isArray(results.objects) ? results.objects : null;
+      motion = Array.isArray(extra.motion) ? extra.motion : null;
       HandTracker.pushExternalHands(w, h, results, t);
       if (!error) message.hidden = true;
       return latest;

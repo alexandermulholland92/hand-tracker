@@ -514,18 +514,30 @@ class SimulatedOak {
     }
     const w = 640, h = 360;
     const pixels = Buffer.alloc(w * h * 4, 60);
+    // The depth picture: reddish (BGRA), so the checks can tell it from the colour one.
+    if (options.picture === "depth") for (let i = 0; i < pixels.length; i += 4) pixels.set([40, 40, 200, 255], i);
     const jpeg = nativeImage.createFromBitmap(pixels, { width: w, height: h }).toJPEG(70);
     const T = [[0, 0], [-0.04, -0.03], [-0.08, -0.07], [-0.11, -0.1], [-0.13, -0.13], [-0.035, -0.12], [-0.04, -0.17], [-0.043, -0.2], [-0.045, -0.23],
       [0, -0.125], [0, -0.18], [0, -0.215], [0, -0.245], [0.03, -0.115], [0.035, -0.165], [0.038, -0.195], [0.04, -0.22], [0.055, -0.1], [0.065, -0.135], [0.07, -0.16], [0.075, -0.18]];
     const t0 = Date.now();
     this.onMessage = onMessage;
     onMessage({ status: "running", camera: options.device ? `Simulated OAK ${options.device}` : "Simulated OAK", width: w, height: h, depth: true, id: options.device || "SIMULATED-OAK", usb: "SUPER",
-      far: options.far || null }); // (the checks see which far-away mode it was started in)
+      far: options.far || null, // (the checks see which far-away mode it was started in)
+      detect: !!options.detect, picture: options.picture === "depth" ? "depth" : "color", motion: !!options.motion, fps: options.fps || null });
     this.timer = setInterval(() => {
       const t = (Date.now() - t0) / 1000;
       const cx = 0.5 + 0.2 * Math.sin(t), cy = 0.75;
       const hand = { lm: T.map(([x, y]) => [cx + x, cy + y, 0]), world: T.map(([x, y]) => [x * 0.75, y * 0.75, 0]), label: "Left", anatomical: false, score: 0.97, lm_score: 0.95, xyz: [120, -40, 850] };
-      onMessage({ frame: { t: Math.round(t * 1000), w, h, fps: 30, hands: [hand] }, jpeg });
+      const frame = { t: Math.round(t * 1000), w, h, fps: 30, hands: [hand] };
+      // As oak_bridge.py --simulate: a cat walking along the bottom (moving its ninth of the
+      // picture) and a person standing at the left.
+      const catX = ((t * 0.25) % 1.2) - 0.1;
+      if (options.detect) {
+        frame.objects = [{ label: "person", score: 0.85, box: [0.05, 0.1, 0.3, 0.98], xyz: [-1400, 0, 3500] }];
+        if (catX > -0.06 && catX < 1.06) frame.objects.unshift({ label: "cat", score: 0.9, box: [Math.max(0, catX - 0.08), 0.72, Math.min(1, catX + 0.08), 0.95], xyz: [Math.round((catX - 0.5) * 3000), 600, 3000] });
+      }
+      if (options.motion) frame.motion = [0, 0, 0, 0, 0, 0, 0, 1, 2].map((_, i) => (i >= 6 && catX >= 0 && catX < 1 && Math.floor(catX * 3) === i - 6 ? 0.3 : 0));
+      onMessage({ frame, jpeg });
     }, 33);
   }
 

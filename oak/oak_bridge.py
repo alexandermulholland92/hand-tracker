@@ -10,11 +10,18 @@ far from the camera, and, on depth cameras, each hand's distance.
 Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
     python oak_bridge.py --models DIR [--lm lite|full] [--two-hands] [--xyz]
                          [--far both|higher|left|right] [--all-hands] [--fps N] [--device ID]
-                         [--mjpeg auto|on|off]
+                         [--mjpeg auto|on|off] [--detect] [--picture color|depth] [--motion]
     (--device: which OAK camera, by its id from --list; the first one found otherwise.
      --mjpeg: the camera sends its pictures as JPEG from its own encoder, about a tenth of the
      data; auto: over USB 2, where the raw pictures of one camera nearly fill the link, and on
-     ARM boards such as a Raspberry Pi, where it also saves the processor encoding them.)
+     ARM boards such as a Raspberry Pi, where it also saves the processor encoding them.
+     --detect: also find objects on the camera (MobileNet-SSD's 20 kinds: person, cat, dog...),
+     each with its distance on a depth camera; needs mobilenet-ssd_openvino_2021.4_5shave.blob
+     in the models folder. If the camera can't run it alongside the hands, it starts without.
+     --picture depth: send the depth picture (coloured: near is red, far is blue) instead of the
+     colour one, lined up with it; depth cameras only.
+     --motion: the camera also makes a small grey picture (64 x 36) each frame, and each frame
+     says how much of each ninth of the picture changed (for Sentry mode).)
     python oak_bridge.py --check        prints the versions it would use
     python oak_bridge.py --list         prints the OAK cameras found
     python oak_bridge.py --simulate     no camera: a moving synthetic hand, for testing
@@ -26,7 +33,10 @@ none). The JSON is
 picture, z in picture widths, like MediaPipe), "world": [[x, y, z]] (metres), "label":
 "Left"/"Right", "anatomical": true when that's the person's own side (always, on the
 camera) rather than MediaPipe's mirrored convention, "score", "lm_score", "xyz": [x, y, z] mm from the
-camera (x right, y down, z forward) or null, "gesture"}]}.
+camera (x right, y down, z forward) or null, "gesture"}]}, and with --detect "objects": [{"label",
+"score", "box": [x0, y0, x1, y1] (0-1 of the picture), "xyz": [x, y, z] mm or absent}], with
+--motion "motion": [9 numbers, row by row from the top left: the share of that ninth of the
+picture that changed since the last frame, 0-1].
 Anything else the tracker prints goes to stderr.
 """
 
@@ -56,6 +66,123 @@ def send(header, jpeg=b""):
 
 def status(state, **extra):
     send({"status": state, **extra})
+
+
+DETECT_MODEL = "mobilenet-ssd_openvino_2021.4_5shave.blob"
+# MobileNet-SSD's kinds of object (PASCAL VOC), by its label number.
+VOC = ["background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
+       "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
+MOTION_SIZE = (64, 36)  # the small grey picture motion is measured on (made on the camera)
+GRID = 3  # motion in each ninth of the picture, 3 x 3
+
+
+class Motion:
+    """How much of each ninth of the picture (3 x 3, row by row) changed since the last small
+    grey picture: the share of its pixels whose brightness changed by more than CHANGE (out of
+    255), after a light blur, so sensor noise and compression don't count, 0 (still) to 1."""
+
+    CHANGE = 18
+
+    def __init__(self):
+        self.prev = None
+
+    def update(self, grey):
+        import numpy as np
+
+        g = grey.astype(np.int16)
+        if g.ndim == 3:
+            g = g[:, :, 0]
+        # A light blur (a 3 x 3 average): one-pixel flicker isn't movement.
+        p = np.pad(g, 1, mode="edge")
+        g = sum(p[dy:dy + g.shape[0], dx:dx + g.shape[1]] for dy in range(3) for dx in range(3)) // 9
+        if self.prev is None or self.prev.shape != g.shape:
+            self.prev = g
+            return [0.0] * (GRID * GRID)
+        changed = np.abs(g - self.prev) > self.CHANGE
+        self.prev = g
+        h, w = changed.shape
+        return [round(float(changed[r * h // GRID:(r + 1) * h // GRID, c * w // GRID:(c + 1) * w // GRID].mean()), 3)
+                for r in range(GRID) for c in range(GRID)]
+
+
+def object_of(det):
+    """A detection as sent: its kind, how sure, its box (0-1 of the picture) and, from a depth
+    camera, where it is (mm: x right, y down, z forward)."""
+    label = VOC[det.label] if 0 <= det.label < len(VOC) else str(det.label)
+    box = [min(1.0, max(0.0, float(v))) for v in (det.xmin, det.ymin, det.xmax, det.ymax)]
+    o = {"label": label, "score": round(float(det.confidence), 3), "box": [round(v, 4) for v in box]}
+    sc = getattr(det, "spatialCoordinates", None)
+    if sc is not None and sc.z > 0:
+        o["xyz"] = [round(float(sc.x)), round(-float(sc.y)), round(float(sc.z))]  # depthai's y points up
+    return o
+
+
+def depth_picture(disparity, max_disparity, w, h):
+    """The depth picture as a colour picture the size of the colour one: near is red, far is
+    blue, unknown (too near, too far, or seen by one camera only) is black."""
+    import cv2
+    import numpy as np
+
+    d = disparity.astype(np.float32)
+    v = (d * (255.0 / max(1.0, float(max_disparity)))).clip(0, 255).astype(np.uint8)
+    img = cv2.applyColorMap(v, cv2.COLORMAP_TURBO)
+    img[disparity == 0] = 0
+    if img.shape[1] != w or img.shape[0] != h:
+        img = cv2.resize(img, (w, h), interpolation=cv2.INTER_NEAREST)
+    return img
+
+
+def add_extras(dai, pipeline, cam, stereo, extras, tracker):
+    """More from the same camera alongside the hands, each only when asked for: objects found
+    on the camera (with their distance on a depth camera), the depth picture, and a small grey
+    picture to measure motion on. Their streams are listed in tracker.extra_streams."""
+
+    def out(name, source):
+        x = pipeline.create(dai.node.XLinkOut)
+        x.setStreamName(name)
+        x.input.setBlocking(False)
+        x.input.setQueueSize(1)
+        source.link(x.input)
+        tracker.extra_streams.append(name)
+
+    tracker.extra_streams = []
+    if extras.get("detect"):
+        manip = pipeline.create(dai.node.ImageManip)
+        manip.initialConfig.setResize(300, 300)  # stretched: its boxes are then fractions of the picture as they are
+        manip.initialConfig.setFrameType(dai.ImgFrame.Type.BGR888p)
+        manip.setMaxOutputFrameSize(300 * 300 * 3)
+        manip.inputImage.setQueueSize(1)
+        manip.inputImage.setBlocking(False)
+        cam.preview.link(manip.inputImage)
+        if stereo is not None:
+            nn = pipeline.create(dai.node.MobileNetSpatialDetectionNetwork)
+            nn.setBoundingBoxScaleFactor(0.4)  # the middle of each box: its distance, not the background's
+            nn.setDepthLowerThreshold(100)
+            nn.setDepthUpperThreshold(15000)
+            nn.inputDepth.setBlocking(False)
+            nn.inputDepth.setQueueSize(1)
+            stereo.depth.link(nn.inputDepth)
+        else:
+            nn = pipeline.create(dai.node.MobileNetDetectionNetwork)
+        nn.setBlobPath(extras["detect"])
+        nn.setConfidenceThreshold(0.5)
+        nn.setNumInferenceThreads(1)  # the hands' models need the camera's processor too
+        nn.input.setBlocking(False)
+        nn.input.setQueueSize(1)
+        manip.out.link(nn.input)
+        out("det_out", nn.out)
+    if extras.get("picture") == "depth" and stereo is not None:
+        tracker.max_disparity = stereo.initialConfig.getMaxDisparity()
+        out("pic_out", stereo.disparity)
+    if extras.get("motion"):
+        small = pipeline.create(dai.node.ImageManip)
+        small.initialConfig.setResize(*MOTION_SIZE)
+        small.initialConfig.setFrameType(dai.ImgFrame.Type.GRAY8)
+        small.setMaxOutputFrameSize(MOTION_SIZE[0] * MOTION_SIZE[1])
+        small.inputImage.setQueueSize(1)
+        small.inputImage.setBlocking(False)
+        cam.preview.link(small.inputImage)
+        out("motion_out", small.out)
 
 
 def encode(frame, quality=75):
@@ -113,10 +240,11 @@ def simulate(args):
     w, h = 1152, 648
     base = [(0, 0), (-.04, -.03), (-.08, -.07), (-.11, -.10), (-.13, -.13), (-.035, -.12), (-.04, -.17), (-.043, -.20), (-.045, -.23),
             (0, -.125), (0, -.18), (0, -.215), (0, -.245), (.03, -.115), (.035, -.165), (.038, -.195), (.04, -.22), (.055, -.10), (.065, -.135), (.07, -.16), (.075, -.18)]
-    status("running", camera="Simulated OAK camera", width=w, height=h, depth=True)
+    status("running", camera="Simulated OAK camera", width=w, height=h, depth=True, detect=bool(args.detect), picture=args.picture, motion=bool(args.motion))
     t0 = time.time()
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     frame[:, :] = (60, 45, 30)
+    meter = Motion() if args.motion else None
     n = 0
     while True:
         t = time.time() - t0
@@ -124,18 +252,37 @@ def simulate(args):
         lm = [[cx + x, cy + y, 0.0] for x, y in base]
         world = [[x * 0.75, y * 0.75, 0.0] for x, y in base]
         img = frame.copy()
+        # With --detect: a cat walking along the bottom, and a person standing at the left.
+        cat_x = (t * 0.3) % 1.2 - 0.1
+        objects = [{"label": "person", "score": 0.85, "box": [0.05, 0.1, 0.3, 0.98], "xyz": [-1400, 0, 3500]}]
+        if -0.06 < cat_x < 1.06:  # (in the picture)
+            objects.insert(0, {"label": "cat", "score": 0.9, "box": [round(max(0.0, cat_x - 0.08), 4), 0.72, round(min(1.0, cat_x + 0.08), 4), 0.95],
+                               "xyz": [round((cat_x - 0.5) * 3000), 600, 3000]})
+        header = {"t": round(t * 1000, 1), "w": w, "h": h, "fps": 30, "hands": []}
         try:
             import cv2
 
             cv2.putText(img, f"simulated {n}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (200, 200, 200), 2)
             for x, y, _ in lm:
                 cv2.circle(img, (int(x * w), int(y * h)), 4, (80, 200, 255), -1)
-            jpeg = encode(img)
+            if args.detect and objects[0]["label"] == "cat":
+                x0, y0, x1, y1 = objects[0]["box"]
+                cv2.rectangle(img, (int(x0 * w), int(y0 * h)), (int(x1 * w), int(y1 * h)), (150, 150, 150), -1)
+            if meter:
+                header["motion"] = meter.update(cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), MOTION_SIZE))
+            if args.picture == "depth":
+                # Nearer towards the bottom, as a floor seen from a camera on a wall.
+                disparity = np.tile(np.linspace(10, 90, h, dtype=np.float32)[:, None], (1, w)).astype(np.uint8)
+                jpeg = encode(depth_picture(disparity, 95, w, h))
+            else:
+                jpeg = encode(img)
         except ImportError:
             jpeg = b""
+        if args.detect:
+            header["objects"] = objects
         # The synthetic hand is a right hand as MediaPipe labels it for a camera facing you.
-        send({"t": round(t * 1000, 1), "w": w, "h": h, "fps": 30, "hands": [
-            {"lm": lm, "world": world, "label": "Left", "anatomical": False, "score": 0.97, "lm_score": 0.95, "xyz": [120.0, -40.0, 850.0], "gesture": "FIVE"}]}, jpeg)
+        header["hands"] = [{"lm": lm, "world": world, "label": "Left", "anatomical": False, "score": 0.97, "lm_score": 0.95, "xyz": [120.0, -40.0, 850.0], "gesture": "FIVE"}]
+        send(header, jpeg)
         n += 1
         time.sleep(1 / 30)
         if args.frames and n >= args.frames:
@@ -196,6 +343,12 @@ def run(args):
     if missing:
         status("error", message="The OAK models are missing (" + ", ".join(missing) + "). Run the OAK setup again.")
         return 2
+    warnings = []
+    detect = os.path.join(models, DETECT_MODEL) if args.detect else None
+    if detect and not os.path.isfile(detect):
+        warnings.append("The object finder's model isn't downloaded, so objects aren't found.")
+        detect = None
+    extras = {"detect": detect, "picture": args.picture, "motion": args.motion}
 
     import depthai as dai
 
@@ -227,6 +380,10 @@ def run(args):
     import numpy as np
 
     class Tracker(Base):
+        # Objects, the depth picture and the motion picture, alongside the hands (add_extras).
+        def extend_pipeline(self, pipeline, cam, stereo):
+            add_extras(dai, pipeline, cam, stereo, extras, self)
+
         # Landmarks with their fractions of a pixel kept (the original rounds them).
         def extract_hand_data(self, res, hand_idx):
             hand = super().extract_hand_data(res, hand_idx)
@@ -242,11 +399,30 @@ def run(args):
         last = time.time()
         frames = 0
         fps = 0.0
+        queues = {name: tracker.device.getOutputQueue(name=name, maxSize=1, blocking=False) for name in getattr(tracker, "extra_streams", [])}
+        objects, objects_at = [], 0.0
+        meter = Motion() if "motion_out" in queues else None
+        motion = [0.0] * (GRID * GRID)
+        picture = None
         while True:
             frame, hands, _ = tracker.next_frame()
             if frame is None:
                 break
-            h, w = frame.shape[:2]
+            h, w = tracker.img_h, tracker.img_w
+            if "det_out" in queues:
+                found = queues["det_out"].tryGet()
+                if found is not None:
+                    objects, objects_at = [object_of(d) for d in found.detections], time.time()
+                elif time.time() - objects_at > 1:
+                    objects = []  # (none for a second: they're gone)
+            if meter:
+                small = queues["motion_out"].tryGet()
+                if small is not None:
+                    motion = meter.update(small.getFrame())
+            if "pic_out" in queues:
+                disparity = queues["pic_out"].tryGet()
+                if disparity is not None:
+                    picture = encode(depth_picture(disparity.getFrame(), tracker.max_disparity, w, h))
             out = []
             for hand in hands:
                 lm = hand.landmarks_f
@@ -278,7 +454,13 @@ def run(args):
                 fps = frames / (now - last)
                 frames = 0
                 last = now
-            send({"t": round((now - t0) * 1000, 1), "w": w, "h": h, "fps": round(fps, 1), "hands": out}, tracker.jpeg if mjpeg else encode(frame))
+            header = {"t": round((now - t0) * 1000, 1), "w": w, "h": h, "fps": round(fps, 1), "hands": out}
+            if "det_out" in queues:
+                header["objects"] = objects
+            if meter:
+                header["motion"] = motion
+            jpeg = picture if "pic_out" in queues and picture else tracker.jpeg if mjpeg else encode(frame)
+            send(header, jpeg)
 
     usb2 = Usb2Cameras(models)
     wanted, retried = args.device, False
@@ -310,6 +492,14 @@ def run(args):
                 except Exception:
                     pass
             text = str(err)
+            if extras["detect"]:
+                # Finding objects as well may be more than the camera's processor can take with the
+                # hands' models (or its model may not load): started again without it.
+                extras["detect"] = None
+                warnings.append(f"Finding objects couldn't run alongside the hand tracking on this camera ({text.splitlines()[0][:160] if text else 'no reason given'}).")
+                status("starting", message="Starting the OAK camera again without finding objects…")
+                time.sleep(2)  # until the camera is let go
+                continue
             permission = sys.platform.startswith("linux") and any(k in text.lower() for k in ("permission", "udev"))
             if not high and not permission:
                 # Whatever went wrong in USB 3 mode, USB 2 mode is tried once (see Usb2Cameras).
@@ -331,8 +521,13 @@ def run(args):
             status("error", message=f"The OAK camera couldn't be started: {text}")
             return 4
 
+        streams = getattr(tracker, "extra_streams", [])
+        if args.picture == "depth" and "pic_out" not in streams:
+            warnings.append("This camera has no depth cameras, so its colour picture is shown.")
         status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h,
-               depth=bool(getattr(tracker, "xyz", False)), id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer")
+               depth=bool(getattr(tracker, "xyz", False)), id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
+               detect="det_out" in streams, picture="depth" if "pic_out" in streams else "color", motion="motion_out" in streams,
+               warning=" ".join(dict.fromkeys(warnings)) or None)
         if retried:
             usb2.add(wanted)
         try:
@@ -365,6 +560,9 @@ def main():
     ap.add_argument("--fps", type=int, default=None)
     ap.add_argument("--device", default=None, help="which OAK camera, by its id (from --list)")
     ap.add_argument("--mjpeg", choices=["auto", "on", "off"], default="auto", help="pictures as JPEG from the camera's encoder")
+    ap.add_argument("--detect", action="store_true", help="also find objects (person, cat, dog...) on the camera")
+    ap.add_argument("--picture", choices=["color", "depth"], default="color", help="the picture sent: colour, or depth (depth cameras)")
+    ap.add_argument("--motion", action="store_true", help="how much each ninth of the picture changed, each frame (Sentry mode)")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--simulate", action="store_true")

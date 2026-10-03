@@ -7,10 +7,12 @@
  * cameras" (camera-tile.js), so More settings' Show buttons work the same in both.
  *
  *   const overlay = StageOverlay.create(stageCanvas, { phone });
- *   overlay.draw(hands, { display, far, gestureOf });
- *     display: the Show buttons ({ box, side, scores, gesture, distance, focus });
+ *   overlay.draw(hands, { display, far, gestureOf, objects });
+ *     display: the Show buttons ({ box, side, scores, gesture, distance, focus, objects });
  *     far: far-away hands is on (the search area is drawn with display.focus);
- *     gestureOf(hand) -> { label } (gestures.js).
+ *     gestureOf(hand) -> { label } (gestures.js);
+ *     objects: what an OAK camera found ([{ label, score, box: [x0, y0, x1, y1] (0-1 of its own
+ *       picture), xyz: [x, y, z] mm }]), drawn with display.objects.
  */
 
 (function (global) {
@@ -96,6 +98,36 @@
     }
   }
 
+  // Objects an OAK camera found: a box each, with what it is (how sure, with Scores) and how
+  // far away (with Distance, from a depth camera). People yellow, animals purple, the rest grey.
+  const OBJECT_NAMES = { diningtable: "table", pottedplant: "plant", tvmonitor: "screen", motorbike: "motorbike", aeroplane: "plane" };
+  const objectColor = (label) => (label === "person" ? "#fcc419" : ["cat", "dog", "bird", "horse", "sheep", "cow"].includes(label) ? "#da77f2" : "#adb5bd");
+  function drawObjects(ctx, objects, display, unit) {
+    for (const o of objects) {
+      if (!o || !Array.isArray(o.box)) continue;
+      const [x0, y0, x1, y1] = o.box;
+      const pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(([x, y]) => HandTracker.sourceToCanvas({ x, y }));
+      const left = Math.min(...pts.map((p) => p.x)), right = Math.max(...pts.map((p) => p.x));
+      const top = Math.min(...pts.map((p) => p.y)), bottom = Math.max(...pts.map((p) => p.y));
+      const color = objectColor(o.label);
+      ctx.lineWidth = 2 * unit;
+      ctx.strokeStyle = color;
+      ctx.strokeRect(left, top, right - left, bottom - top);
+      const parts = [OBJECT_NAMES[o.label] || o.label];
+      if (display.scores && typeof o.score === "number") parts.push(pct(o.score));
+      if (display.distance && Array.isArray(o.xyz) && o.xyz[2] > 0) parts.push(`${(o.xyz[2] / 1000).toFixed(1)} m`);
+      const text = parts.join(" · ");
+      ctx.font = `600 ${Math.round(14 * unit)}px "Segoe UI", system-ui, sans-serif`;
+      const tw = ctx.measureText(text).width + 12 * unit, th = 22 * unit;
+      const ty = top - th >= 0 ? top - th : top;
+      ctx.fillStyle = "rgba(14, 15, 18, 0.8)";
+      ctx.fillRect(left, ty, tw, th);
+      ctx.fillStyle = color;
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, left + 6 * unit, ty + th / 2);
+    }
+  }
+
   function create(stage, { phone = false } = {}) {
     const labelScales = {}; // smoothed per side, so a tag doesn't flicker with small movements
     function labelScale(hand) {
@@ -108,10 +140,11 @@
       return k;
     }
 
-    function draw(hands, { display, far = false, gestureOf = null }) {
+    function draw(hands, { display, far = false, gestureOf = null, objects = null }) {
       const ctx = stage.getContext("2d");
       const unit = Math.max(1, stage.width / 640);
       ctx.save();
+      if (objects && objects.length && display.objects !== false) drawObjects(ctx, objects, display, unit);
       if (display.focus && far) drawFocus(ctx, unit);
       if (display.box) for (const hand of hands) drawHandBox(ctx, hand, unit);
       ctx.textBaseline = "middle";
