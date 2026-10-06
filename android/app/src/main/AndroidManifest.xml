@@ -45,6 +45,17 @@
                 android:resource="@xml/hand_control" />
         </service>
 
+        <!-- Sentry mode's alerts on this phone: a foreground service that asks the computers in
+             remote recording's list for new alerts and shows them (SentryWatchService.java). -->
+        <service
+            android:name=".SentryWatchService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Watching your own computers for Sentry mode alerts while the app is in the background" />
+        </service>
+
         <!-- A dashboard's own sign-in page (Capture Sessions, Live Rigs). -->
         <activity
             android:name=".SignInActivity"
@@ -76,6 +87,10 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Sound with remote recording's videos and Sentry mode's (the phone as a camera rig). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Hand tracking uses the camera (the web page asks via getUserMedia). -->
     <uses-permission android:name="android.permission.CAMERA" />

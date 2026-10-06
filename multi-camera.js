@@ -36,6 +36,7 @@
  *   MultiCamera.close();
  *   await MultiCamera.startRecording() / MultiCamera.stopRecording(show, extra)   // -> { ok, message } / the take (or null; extra: added to it)
  *   MultiCamera.remoteState(); MultiCamera.previewSources();           // for remote recording (remote-record-ui.js)
+ *   MultiCamera.sentryViews()                                          // each camera, for Sentry mode (sentry.js)
  *   MultiCamera.setRole(i, role); MultiCamera.setView(i, { rotation, mirror })
  *   MultiCamera.setScreenPictures(on); MultiCamera.screenPictures()   // OAK pictures on this screen (remembered)
  *   MultiCamera.setPreviewWant({ on, focus, ms, focusMs })             // remote recording's previews: how often each is made
@@ -370,6 +371,7 @@
   const screenShows = () => screenPictures() && document.visibilityState !== "hidden";
   function pictureDue(t, i) {
     if (!t.lastPicture || screenShows()) return true; // (the first one: the tile shows something)
+    if (t.wants > 0 && performance.now() - t.lastPicture >= 60) return true; // its video's being recorded
     const w = previewWant;
     const every = !w.on ? Infinity : w.focus !== null ? (w.focus === i ? w.focusMs : Infinity) : w.ms;
     return performance.now() - t.lastPicture >= every - 15;
@@ -382,11 +384,14 @@
     if (!api || !api.oakHands) return desktop.oak.streamShown(id);
     let hands = null;
     try {
-      hands = api.oakHands(header.w, header.h, OakSource.toResults(header), header.t, { motion: header.motion });
+      hands = api.oakHands(header.w, header.h, OakSource.toResults(header), header.t);
     } catch {
       // its page going away meanwhile
     }
     desktop.oak.streamShown(id);
+    // For Sentry mode: the camera's small grey picture, and what it found.
+    if (header.grey) t.grey = OakSource.decodeGrey(header.grey) || t.grey;
+    t.objects = Array.isArray(header.objects) ? header.objects : null;
     if (!hands || !jpeg || t.drawing || !pictureDue(t, i)) return;
     t.drawing = true;
     t.lastPicture = performance.now();
@@ -525,6 +530,24 @@
     };
   }
 
+  // For Sentry mode (sentry.js): each tile's camera, where its picture is and what it tracks.
+  function sentryViews() {
+    return tiles.map((t) => ({
+      key: t.deviceId,
+      name: nameOf(t),
+      container: t.el,
+      picture: t.frame,
+      canvas: () => t.frame.contentDocument && t.frame.contentDocument.getElementById("stage"),
+      frame: () => t.frame.contentWindow.HandTracker.getFrameImage(),
+      mirrored: () => !!t.view.mirror,
+      rotation: () => t.view.rotation || 0,
+      grey: t.oak ? () => t.grey || null : null,
+      objects: t.oak ? () => t.objects || null : null,
+      oak: !!t.oak,
+      want: (on) => (t.wants = Math.max(0, (t.wants || 0) + (on ? 1 : -1))),
+    }));
+  }
+
   // Each tile's picture, with its hands drawn (its tracker's canvas).
   function previewSources() {
     return tiles.map((t, i) => {
@@ -629,7 +652,7 @@
   }
 
   global.MultiCamera = {
-    init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, previewSources, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
+    init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
     isActive: () => tiles.length > 0, isRecording: () => recording,
     _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null })),
   };

@@ -28,6 +28,8 @@ const UV = {
   "win32-x64": { file: "uv-x86_64-pc-windows-msvc.zip", size: 17955780, exe: "uv.exe" },
   "linux-x64": { file: "uv-x86_64-unknown-linux-gnu.tar.gz", size: 19831732, exe: "uv-x86_64-unknown-linux-gnu/uv" },
   "linux-arm64": { file: "uv-aarch64-unknown-linux-gnu.tar.gz", size: 18916891, exe: "uv-aarch64-unknown-linux-gnu/uv" },
+  "darwin-arm64": { file: "uv-aarch64-apple-darwin.tar.gz", size: 16988553, exe: "uv-aarch64-apple-darwin/uv" },
+  "darwin-x64": { file: "uv-x86_64-apple-darwin.tar.gz", size: 20718482, exe: "uv-x86_64-apple-darwin/uv" },
 };
 const uvHere = () => UV[`${process.platform}-${process.arch}`];
 const PYTHON = "3.12";
@@ -75,7 +77,7 @@ class OakCamera {
   }
 
   async status() {
-    if (!uvHere()) return { ready: false, reason: "OAK cameras work in the Windows and Linux apps (64-bit PCs, and 64-bit ARM boards like the Raspberry Pi)." };
+    if (!uvHere()) return { ready: false, reason: "OAK cameras work in the Windows, Mac and Linux apps (64-bit PCs, Macs, and 64-bit ARM boards like the Raspberry Pi)." };
     const p = this.paths;
     const models = MODELS.every(([rel]) => fs.existsSync(path.join(p.models, path.basename(rel))));
     const python = fs.existsSync(p.python);
@@ -148,7 +150,7 @@ class OakCamera {
 
   async doSetup(progress) {
     const plat = uvHere();
-    if (!plat) throw new Error("OAK cameras work in the Windows and Linux apps (64-bit PCs, and 64-bit ARM boards like the Raspberry Pi).");
+    if (!plat) throw new Error("OAK cameras work in the Windows, Mac and Linux apps (64-bit PCs, Macs, and 64-bit ARM boards like the Raspberry Pi).");
     const p = this.paths;
     fs.mkdirSync(this.dir, { recursive: true });
 

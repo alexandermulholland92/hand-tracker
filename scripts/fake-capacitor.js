@@ -194,13 +194,15 @@
       // The remote recording page's requests to a computer: plain HTTP to name:port, only its own.
       async rigRequest({ rig, path, method = "GET", body = "", key = "" }) {
         calls.push(["remote.rigRequest", rig, path, method]);
-        const m = /^(\[[0-9a-f:.]+\]|[a-z0-9.-]+):(\d{1,5})$/i.exec(rig || "");
-        if (!m || !/^\/api\/(state|command|wifi|takes|preview\?i=[0-3](&full=1)?|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/.test(path) || (method === "POST") !== (path === "/api/command")) throw new Error("Not a remote recording request.");
+        // The same rules as the app (remote-record.js's list, which RemotePlugin.java copies).
+        const { RIG_HOST, RIG_PATH } = require("../electron/remote-record.js");
+        const m = RIG_HOST.exec(rig || "");
+        if (!m || !RIG_PATH.test(path) || (method === "POST") !== (path === "/api/command")) throw new Error("Not a remote recording request.");
         return new Promise((resolve, reject) => {
           const headers = {};
           if (/^[A-Za-z0-9_-]{8,64}$/.test(key)) headers["X-Key"] = key;
           if (method === "POST") Object.assign(headers, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
-          const req = http.request({ host: m[1].replace(/^\[|\]$/g, ""), port: Number(m[2]), path, method, headers, timeout: 10000 }, (res) => {
+          const req = http.request({ host: m[1].replace(/^\[|\]$/g, ""), port: Number(m[5]), path, method, headers, timeout: 10000 }, (res) => {
             const chunks = [];
             res.on("data", (c) => chunks.push(c));
             res.on("end", () => resolve({ status: res.statusCode, type: String(res.headers["content-type"] || ""), body: Buffer.concat(chunks).toString("base64") }));
@@ -332,6 +334,23 @@
   }
 
   // As Capacitor's own bridge on a phone has them: Capacitor.Plugins.<name>, and no
+  // SentryWatch (SentryWatchPlugin.java): Sentry mode's alerts on this phone; here it only
+  // remembers what it was asked (the service itself is the phone's).
+  const SentryWatch = (() => {
+    let state = { on: false, rigs: [] };
+    return {
+      start: async ({ rigs }) => {
+        const list = (rigs || []).filter((r) => /^[A-Za-z0-9.\[\]:-]{1,200}:\d{1,5}$/.test(r.rig));
+        if (!list.length) throw new Error("No computers to watch: open one in Remote recording first.");
+        state = { on: true, rigs: list.map((r) => r.rig), keys: list.map((r) => r.key || "") };
+        return { on: true, rigs: state.rigs };
+      },
+      stop: async () => ((state = { on: false, rigs: state.rigs }), { on: false, rigs: state.rigs }),
+      status: async () => ({ on: state.on, rigs: state.rigs }),
+      _state: () => state,
+    };
+  })();
+
   // RigServer (RigServerPlugin.java): remote recording on the phone itself. Played by the
   // desktop app's own server (electron/remote-record.js: the same rules), whose requests go to
   // the page as "command" events, answered with result().
@@ -392,7 +411,7 @@
   window.Capacitor = {
     isNativePlatform: () => true,
     getPlatform: () => "android",
-    Plugins: { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer },
+    Plugins: { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch },
   };
   window.__fakeCapacitor = { files, calls, shared, stopPhoneControl: () => PhoneControl._stoppedOutside(), setAccessibility: (on) => PhoneControl._setAccessibility(on) };
 })();

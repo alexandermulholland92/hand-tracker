@@ -81,11 +81,23 @@ function check(name, ok, detail = "") {
     });
   });
   const labels = new Set(extra.flatMap((f) => (f.frame.objects || []).map((o) => o.label)));
-  const moved = extra.some((f) => Array.isArray(f.frame.motion) && f.frame.motion.length === 9 && f.frame.motion.slice(6).some((v) => v > 0));
-  check("The OAK helper also sends the objects it found, each ninth's motion and the depth picture (simulated camera)",
-    extra.running && extra.running.detect && extra.running.motion && extra.running.picture === "depth" && labels.has("cat") && labels.has("person") && moved &&
-      extra.every((f) => f.jpeg && f.jpeg[0] === 0xff),
-    `${extra.length} frames, objects: ${[...labels].join(", ")}, motion in the bottom row: ${moved}`);
+  // Its small grey pictures, measured as Sentry mode does (sentry.js): the cat moves in the
+  // bottom row of a 3 x 3 grid, and nothing moves in the top one.
+  global.window = undefined;
+  require("../sentry.js");
+  const S = globalThis.Sentry._test;
+  const greys = extra.map((f) => f.frame.grey).filter(Boolean).map((g) => ({ w: g.w, h: g.h, data: new Uint8Array(Buffer.from(g.data, "base64")) }));
+  let bottom = 0, top = 0;
+  for (let i = 1; i < greys.length; i++) {
+    const lv = S.levels(S.moved(S.blur(greys[i - 1]), S.blur(greys[i])), 3, 3);
+    bottom = Math.max(bottom, ...lv.slice(6));
+    top = Math.max(top, ...lv.slice(0, 3));
+  }
+  const sized = greys.length > 0 && greys.every((g) => g.w === 64 && g.h === 36 && g.data.length === 64 * 36);
+  check("The OAK helper also sends the objects it found, a small grey picture for Sentry mode (the cat moving is seen in the bottom row only) and the depth picture (simulated camera)",
+    extra.running && extra.running.detect && extra.running.motion && extra.running.picture === "depth" && labels.has("cat") && labels.has("person") &&
+      sized && bottom > 0.02 && top === 0 && extra.every((f) => f.jpeg && f.jpeg[0] === 0xff),
+    `${extra.length} frames, objects: ${[...labels].join(", ")}, ${greys.length} grey pictures (64x36: ${sized}), moved most: bottom row ${bottom.toFixed(3)}, top row ${top.toFixed(3)}`);
 
   if (!process.argv[2]) fs.rmSync(dir, { recursive: true, force: true });
   const failed = results.filter((r) => !r.ok).length;

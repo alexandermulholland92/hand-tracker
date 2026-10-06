@@ -252,4 +252,22 @@ contextBridge.exposeInMainWorld("desktop", {
   rig: {
     request: (opts) => ipcRenderer.invoke("rig:request", opts),
   },
+
+  // The Hand Tracker website's hand mouse moving this computer's pointer (electron/web-link.js).
+  webLink: {
+    status: () => ipcRenderer.invoke("weblink:status"),
+    start: () => ipcRenderer.invoke("weblink:start"),
+    stop: () => ipcRenderer.invoke("weblink:stop"),
+    onStatus: (cb) => {
+      const listener = (_event, s) => cb(s);
+      ipcRenderer.on("weblink:status", listener);
+      return () => ipcRenderer.removeListener("weblink:status", listener);
+    },
+  },
+
+  // Sentry mode's alerts through ntfy (electron/ntfy.js): { server, topic, title, message,
+  // tags, priority, click, photo?, filename? } -> { ok }.
+  sentry: {
+    ntfy: (req) => ipcRenderer.invoke("sentry:ntfy", req),
+  },
 });

@@ -54,3 +54,8 @@ checksum, the first time *Find objects* is turned on. Apache License 2.0
 
 MediaPipe Hands and MediaPipe Pose (`@mediapipe/hands`, `@mediapipe/pose`, installed from npm),
 by Google, under the Apache License 2.0 (see each package's own licence file).
+
+Sentry mode's "Ignore pets and animals" uses MediaPipe Tasks Vision (`@mediapipe/tasks-vision`,
+installed from npm) and its EfficientDet-Lite0 object detector trained on COCO
+(`models/efficientdet_lite0.tflite`, as published by Google for MediaPipe's object detector), both
+by Google under the Apache License 2.0.

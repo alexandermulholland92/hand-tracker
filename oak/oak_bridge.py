@@ -20,8 +20,8 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
      in the models folder. If the camera can't run it alongside the hands, it starts without.
      --picture depth: send the depth picture (coloured: near is red, far is blue) instead of the
      colour one, lined up with it; depth cameras only.
-     --motion: the camera also makes a small grey picture (64 x 36) each frame, and each frame
-     says how much of each ninth of the picture changed (for Sentry mode).)
+     --motion: the camera also makes a small grey picture (64 x 36) each frame, sent along for
+     Sentry mode to measure movement on.)
     python oak_bridge.py --check        prints the versions it would use
     python oak_bridge.py --list         prints the OAK cameras found
     python oak_bridge.py --simulate     no camera: a moving synthetic hand, for testing
@@ -35,12 +35,13 @@ picture, z in picture widths, like MediaPipe), "world": [[x, y, z]] (metres), "l
 camera) rather than MediaPipe's mirrored convention, "score", "lm_score", "xyz": [x, y, z] mm from the
 camera (x right, y down, z forward) or null, "gesture"}]}, and with --detect "objects": [{"label",
 "score", "box": [x0, y0, x1, y1] (0-1 of the picture), "xyz": [x, y, z] mm or absent}], with
---motion "motion": [9 numbers, row by row from the top left: the share of that ninth of the
-picture that changed since the last frame, 0-1].
+--motion "grey": {"w": 64, "h": 36, "data": base64 of a byte a pixel, rows top to bottom} when
+the camera made a new one.
 Anything else the tracker prints goes to stderr.
 """
 
 import argparse
+import base64
 import json
 import math
 import os
@@ -72,37 +73,19 @@ DETECT_MODEL = "mobilenet-ssd_openvino_2021.4_5shave.blob"
 # MobileNet-SSD's kinds of object (PASCAL VOC), by its label number.
 VOC = ["background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
        "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
-MOTION_SIZE = (64, 36)  # the small grey picture motion is measured on (made on the camera)
-GRID = 3  # motion in each ninth of the picture, 3 x 3
+MOTION_SIZE = (64, 36)  # the small grey picture Sentry mode measures movement on (made on the camera)
 
 
-class Motion:
-    """How much of each ninth of the picture (3 x 3, row by row) changed since the last small
-    grey picture: the share of its pixels whose brightness changed by more than CHANGE (out of
-    255), after a light blur, so sensor noise and compression don't count, 0 (still) to 1."""
+def grey_text(grey):
+    """The small grey picture (64 x 36, a byte a pixel, its rows top to bottom) as base64:
+    Sentry mode measures movement on it, as it does on any camera's picture."""
+    import numpy as np
 
-    CHANGE = 18
-
-    def __init__(self):
-        self.prev = None
-
-    def update(self, grey):
-        import numpy as np
-
-        g = grey.astype(np.int16)
-        if g.ndim == 3:
-            g = g[:, :, 0]
-        # A light blur (a 3 x 3 average): one-pixel flicker isn't movement.
-        p = np.pad(g, 1, mode="edge")
-        g = sum(p[dy:dy + g.shape[0], dx:dx + g.shape[1]] for dy in range(3) for dx in range(3)) // 9
-        if self.prev is None or self.prev.shape != g.shape:
-            self.prev = g
-            return [0.0] * (GRID * GRID)
-        changed = np.abs(g - self.prev) > self.CHANGE
-        self.prev = g
-        h, w = changed.shape
-        return [round(float(changed[r * h // GRID:(r + 1) * h // GRID, c * w // GRID:(c + 1) * w // GRID].mean()), 3)
-                for r in range(GRID) for c in range(GRID)]
+    g = np.asarray(grey)
+    if g.ndim == 3:
+        g = g[:, :, 0]
+    h, w = g.shape[:2]
+    return {"w": int(w), "h": int(h), "data": base64.b64encode(np.ascontiguousarray(g, dtype=np.uint8).tobytes()).decode("ascii")}
 
 
 def object_of(det):
@@ -244,7 +227,6 @@ def simulate(args):
     t0 = time.time()
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     frame[:, :] = (60, 45, 30)
-    meter = Motion() if args.motion else None
     n = 0
     while True:
         t = time.time() - t0
@@ -268,8 +250,8 @@ def simulate(args):
             if args.detect and objects[0]["label"] == "cat":
                 x0, y0, x1, y1 = objects[0]["box"]
                 cv2.rectangle(img, (int(x0 * w), int(y0 * h)), (int(x1 * w), int(y1 * h)), (150, 150, 150), -1)
-            if meter:
-                header["motion"] = meter.update(cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), MOTION_SIZE))
+            if args.motion:
+                header["grey"] = grey_text(cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), MOTION_SIZE))
             if args.picture == "depth":
                 # Nearer towards the bottom, as a floor seen from a camera on a wall.
                 disparity = np.tile(np.linspace(10, 90, h, dtype=np.float32)[:, None], (1, w)).astype(np.uint8)
@@ -401,8 +383,6 @@ def run(args):
         fps = 0.0
         queues = {name: tracker.device.getOutputQueue(name=name, maxSize=1, blocking=False) for name in getattr(tracker, "extra_streams", [])}
         objects, objects_at = [], 0.0
-        meter = Motion() if "motion_out" in queues else None
-        motion = [0.0] * (GRID * GRID)
         picture = None
         while True:
             frame, hands, _ = tracker.next_frame()
@@ -415,10 +395,11 @@ def run(args):
                     objects, objects_at = [object_of(d) for d in found.detections], time.time()
                 elif time.time() - objects_at > 1:
                     objects = []  # (none for a second: they're gone)
-            if meter:
+            grey = None
+            if "motion_out" in queues:
                 small = queues["motion_out"].tryGet()
                 if small is not None:
-                    motion = meter.update(small.getFrame())
+                    grey = grey_text(small.getFrame())
             if "pic_out" in queues:
                 disparity = queues["pic_out"].tryGet()
                 if disparity is not None:
@@ -457,8 +438,8 @@ def run(args):
             header = {"t": round((now - t0) * 1000, 1), "w": w, "h": h, "fps": round(fps, 1), "hands": out}
             if "det_out" in queues:
                 header["objects"] = objects
-            if meter:
-                header["motion"] = motion
+            if grey:
+                header["grey"] = grey  # (only when the camera made a new one)
             jpeg = picture if "pic_out" in queues and picture else tracker.jpeg if mjpeg else encode(frame)
             send(header, jpeg)
 
@@ -562,7 +543,7 @@ def main():
     ap.add_argument("--mjpeg", choices=["auto", "on", "off"], default="auto", help="pictures as JPEG from the camera's encoder")
     ap.add_argument("--detect", action="store_true", help="also find objects (person, cat, dog...) on the camera")
     ap.add_argument("--picture", choices=["color", "depth"], default="color", help="the picture sent: colour, or depth (depth cameras)")
-    ap.add_argument("--motion", action="store_true", help="how much each ninth of the picture changed, each frame (Sentry mode)")
+    ap.add_argument("--motion", action="store_true", help="a small grey picture (64 x 36) with each frame, for Sentry mode")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--simulate", action="store_true")

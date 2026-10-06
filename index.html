@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' data: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'" />
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' data: blob: https://ntfy.sh http://127.0.0.1:47823; worker-src 'self' blob:; object-src 'none'; base-uri 'none'" />
 <title>Hand Tracker</title>
 <style>
   * { box-sizing: border-box; }
@@ -177,6 +177,29 @@
   #multiCamMissing:empty { display: none; }
   .multi-cam-caption { font-size: 12px; opacity: 0.85; margin-top: 4px; }
   .multi-cam-tile.no-picture iframe { opacity: 0.35; }
+  /* Sentry mode's boxes over each picture (sentry.js), each covering its part of the picture:
+     tinted as it moves, red past the sensitivity; a left-out one is dark and dashed, with a slash. */
+  .sentry-bubbles { position: absolute; display: grid; gap: 3px; padding: 3px; box-sizing: border-box; pointer-events: none; z-index: 3; }
+  .sentry-bubbles button {
+    pointer-events: auto; width: 100%; height: 100%; min-width: 0; min-height: 0; padding: 0; cursor: pointer;
+    border-radius: min(14px, calc(var(--bubble) * 0.18)); border: 1.5px solid rgba(255, 255, 255, 0.55);
+    background: rgba(255, 146, 43, calc(0.06 + 0.5 * var(--level, 0))); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+  }
+  .sentry-bubbles button:hover { border-color: rgba(255, 255, 255, 0.9); }
+  .sentry-bubbles button.hot { background: rgba(250, 82, 82, 0.55); border-color: #ffc9c9; }
+  .sentry-bubbles button.off { background-color: rgba(0, 0, 0, 0.45); border-style: dashed; border-color: rgba(255, 255, 255, 0.35);
+    background-image: linear-gradient(to top right, transparent calc(50% - 1px), rgba(255, 255, 255, 0.45) 50%, transparent calc(50% + 1px)); }
+  #sentryRows, #sentryCols { width: 3.5em; }
+  /* The website's hand mouse pointer over the page (web-pc.js). */
+  #handPointer { position: fixed; left: -11px; top: -11px; width: 22px; height: 22px; border-radius: 50%; z-index: 2147483647; pointer-events: none;
+    border: 2px solid #fff; background: rgba(77, 171, 247, 0.45); box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45); transition: background 0.1s; }
+  #handPointer.down { background: rgba(255, 146, 43, 0.85); }
+  .sentry-ntfy { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px; }
+  .sentry-ntfy canvas { background: #fff; border-radius: 6px; width: 160px; height: 160px; image-rendering: pixelated; }
+  .sentry-ntfy > div { flex: 1 1 260px; }
+  .sentry-events { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; max-height: 12em; overflow: auto; }
+  .sentry-events li { padding: 3px 0; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+  .sentry-events .muted { opacity: 0.6; }
   .multi-cam-caption .lbl { opacity: 0.6; }
   .multi-cam-caption select.role, .multi-table select.role { font-size: 12px; padding: 2px 4px; }
   .multi-cam-caption button.retry, .multi-cam-caption button.rot, .multi-cam-caption button.flip { font-size: 12px; padding: 1px 8px; margin-left: 2px; }
@@ -452,7 +475,7 @@
         <button id="motionBtn" title="Start / stop motion capture of both hands (M)">Start Motion Capture<kbd>M</kbd></button>
         <span id="motionStatus" class="status"></span>
       </div>
-      <!-- Windows and Linux app: a phone's browser starts and stops recording here (remote-record-ui.js). -->
+      <!-- Windows, Mac and Linux app: a phone's browser starts and stops recording here (remote-record-ui.js). -->
       <div id="remoteRec" hidden>
         <div class="toolbar">
           <button id="remoteToggle" aria-pressed="false" title="A page for your phone's browser that starts and stops motion capture with Several cameras, with a live preview of each camera. The cameras only start when the phone asks.">Remote recording: OFF</button>
@@ -464,6 +487,8 @@
           <div class="note">
             <div id="remoteUrls"></div>
             <div class="remote-row">Takes are saved by themselves, in the export card's formats, in <code id="remoteFolder"></code> <button id="remoteFolderBtn">Change…</button></div>
+            <div class="remote-row"><label title="Each camera's video (its picture with the hands drawn) is saved with the take, beside its motion capture"><input type="checkbox" id="remoteVideo" checked /> Each camera's video too</label>
+              <label title="Sound from this computer's microphone, in each camera's video"><input type="checkbox" id="remoteSound" checked /> with sound</label></div>
             <label class="remote-row" id="remoteAutostartRow" hidden><input type="checkbox" id="remoteAutostart" /> Open Hand Tracker when this computer starts, waiting for the phone (for a computer with no screen)</label>
           </div>
         </div>
@@ -510,6 +535,16 @@
         <label>Screen <select id="mouseScreen"><option value="primary">main screen</option><option value="all">all screens</option></select></label>
         <button id="keyboardToggle" aria-pressed="false" title="A keyboard that floats on top of every window. Type into any app by clicking its keys with the hand mouse (or a mouse). Ctrl+Alt+K shows and hides it from anywhere.">Floating keyboard: OFF<kbd>Ctrl+Alt+K</kbd></button>
       </div>
+      <!-- The website: which pointer the hand mouse moves (web-pc.js). -->
+      <div id="webMouseRow" hidden>
+        <div class="toolbar">
+          <label title="This page's own pointer, or this computer's real one in any window (through the Hand Tracker app)">Moves
+            <select id="webMouseTarget"><option value="page">this page's pointer</option><option value="computer">this computer's pointer (Hand Tracker app)</option></select>
+          </label>
+          <a class="header-link" href="https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build" target="_blank" rel="noopener">Get the app ↗</a>
+        </div>
+        <div id="webMouseNote" class="note"></div>
+      </div>
       <div id="mouseStatus" class="note">Hand mouse off</div>
       <div class="section-label">Gesture actions</div>
       <div class="toolbar">
@@ -521,6 +556,14 @@
       </div>
       <div id="actionList"></div>
       <div id="actionLog" class="note"></div>
+      <!-- On the PC: letting the Hand Tracker website's hand mouse move this computer's pointer (web-pc.js). -->
+      <div id="webLinkPc" hidden>
+        <div class="section-label">Control from the website</div>
+        <div class="toolbar">
+          <button id="webLinkToggle" aria-pressed="false" title="The Hand Tracker website (hand-tracker.pages.dev), open in a browser on this computer, can move this computer's pointer and type with its hand mouse. Only from this computer itself, and only that website.">Let the website control this computer: OFF</button>
+          <span id="webLinkStatus" class="note"></span>
+        </div>
+      </div>
       <!-- On the PC: letting a phone (the Android app) control it over Wi-Fi (phone-link-ui.js). -->
       <div id="linkPc" hidden>
         <div class="section-label">Control from your phone</div>
@@ -711,7 +754,56 @@
   </div>
 </div>
 
-<!-- OptiTrack Motive's live data (Windows and Linux app): as big as the 3D view. -->
+<!-- Sentry mode (sentry.js): hidden until Ctrl+Alt+S, or the title tapped five times. -->
+<div id="sentryCard" class="card" hidden>
+  <div class="section-label">Sentry mode</div>
+  <div class="toolbar">
+    <button id="sentryArm" class="primary" aria-pressed="false" title="Watch the cameras for movement in the boxes that aren't left out">Turn Sentry on</button>
+    <label title="How many rows of boxes each camera's picture is split into">Rows <input type="number" id="sentryRows" min="1" max="9" step="1" value="3" /></label>
+    <label title="How many columns of boxes each camera's picture is split into">Columns <input type="number" id="sentryCols" min="1" max="16" step="1" value="4" /></label>
+    <label title="How much of a box has to move: Low ignores small things, High catches a hand">Sensitivity
+      <select id="sentrySensitivity"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>
+    </label>
+    <button id="sentryAnimals" aria-pressed="false" title="Movement where a cat, dog, bird or other animal is (and no person) doesn't count. OAK cameras find animals themselves; other cameras with an object finder that comes with the app.">Ignore pets and animals</button>
+    <button id="sentryBubbles" aria-pressed="true" title="Show the boxes over each camera's picture (tap one to leave it out)">Show boxes</button>
+  </div>
+  <div class="note">Each camera's picture is split into boxes. Every box is watched except the ones you tap (tap again to watch it again), for each camera. Movement in a watched box is an alert.</div>
+  <div class="toolbar">
+    <span class="bar-label">On movement</span>
+    <button id="sentryPhoto" aria-pressed="true" title="Save a photo of the moment">Photo</button>
+    <button id="sentryVideo" aria-pressed="true" title="Record that camera until it's been still for 10 seconds">Video</button>
+    <button id="sentrySound" aria-pressed="true" title="Record sound with the video, from this computer's microphone">Sound</button>
+    <button id="sentryRemote" aria-pressed="true" title="Show the alert on remote recording's page">Remote page</button>
+    <button id="sentryPushApp" aria-pressed="false" title="A notification on a phone with the Hand Tracker app that has this computer in its remote recording list (turn on Sentry alerts in the app)">Push: Hand Tracker app</button>
+    <button id="sentryNtfy" aria-pressed="false" title="A notification through ntfy (ntfy.sh, or your own server) to the ntfy app on your phone">Push: ntfy</button>
+  </div>
+  <div id="sentryNtfyBox" class="sentry-ntfy" hidden>
+    <canvas id="sentryNtfyQr" width="160" height="160" title="Scan with your phone to subscribe in the ntfy app"></canvas>
+    <div>
+      <div class="note">In the ntfy app (Play Store or F-Droid), subscribe to this topic: scan the code, or add <b id="sentryNtfyTopic"></b>. Anyone who knows the topic can read its alerts, so keep it to yourself. ntfy's server keeps alerts for about 12 hours (photos a few hours).</div>
+      <div class="note"><a id="sentryNtfyLink" target="_blank" rel="noopener"></a></div>
+      <div class="toolbar">
+        <label title="ntfy.sh, or your own ntfy server (the website can only use ntfy.sh)">Server <input type="text" id="sentryNtfyServer" spellcheck="false" autocomplete="off" /></label>
+        <button id="sentryNtfyPhoto" aria-pressed="false" title="Send the photo with the alert (it then passes through the ntfy server too)">Include the photo</button>
+        <button id="sentryNtfyTest">Send a test</button>
+        <button id="sentryNtfyNew" title="A new secret topic (phones must subscribe again)">New topic</button>
+      </div>
+      <div id="sentryNtfyNote" class="note"></div>
+    </div>
+  </div>
+  <div id="sentryWatchRow" class="toolbar" hidden>
+    <button id="sentryWatch" aria-pressed="false" title="Notifications on this phone for the alerts of the computers in Remote recording's list (each needs Remote recording on, and Push: Hand Tracker app in its Sentry mode). Over Tailscale they're seen from anywhere.">Alerts on this phone</button>
+    <span id="sentryWatchNote" class="status"></span>
+  </div>
+  <div id="sentryFolderRow" class="toolbar">
+    <button id="sentryFolder" title="Save Sentry's photos and videos into a folder on this computer, without asking each time">Choose a folder…</button>
+    <span id="sentryFolderNote" class="status">Photos and videos download as they're made.</span>
+  </div>
+  <div id="sentryStatus" class="note"></div>
+  <ul id="sentryEvents" class="sentry-events"></ul>
+</div>
+
+<!-- OptiTrack Motive's live data (Windows, Mac and Linux app): as big as the 3D view. -->
 <div id="motiveCard" class="card" hidden>
   <div class="section-label">OptiTrack Motive</div>
   <div class="motive-row">
@@ -748,6 +840,7 @@
 <script src="mcap.js"></script>
 <script src="motion-export.js"></script>
 <script src="pc-control.js"></script>
+<script src="web-pc.js"></script>
 <script src="qr-code.js"></script>
 <script src="phone-link-ui.js"></script>
 <script src="remote-record-ui.js"></script>
@@ -761,6 +854,9 @@
 <script src="multi-video.js"></script>
 <script src="gestures.js"></script>
 <script src="stage-overlay.js"></script>
+<script src="camera-video.js"></script>
+<script src="object-finder.js"></script>
+<script src="sentry.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -6,18 +6,17 @@
  *   const wifi = createWifi();   // null where there's no NetworkManager
  *   wifi.available()             // nmcli answered
  *   wifi.status()                // { connecting: ssid | null, last: { ssid, ok, message, at } | null }
- *   await wifi.list()            // { device, current: { ssid, signal } | null, networks: [{ ssid, signal, secure, saved, dfs }] }
+ *   await wifi.list()            // { device, current: { ssid, signal } | null, networks: [{ ssid, signal, secure, saved }] }
  *   wifi.connect(ssid, password) // -> { ok, message } now; joining goes on in the background
  *
- * The hotspot's own network (pi/hotspot-setup.sh) isn't listed. A network joined here joins on
- * the normal Wi-Fi only (not the hotspot's interface); one that couldn't be joined (a wrong
- * password, say) isn't kept.
+ * The hotspot's own network (pi/hotspot-setup.sh) isn't listed. The hotspot is the Wi-Fi itself
+ * when that isn't on a network, so joining one turns it off (and it comes back if the network
+ * can't be joined). A network that couldn't be joined (a wrong password, say) isn't kept.
  */
 
 const { execFile } = require("child_process");
 
 const HOTSPOT = "Hand Tracker hotspot";
-const HOTSPOT_IF = "htap0";
 
 function nmcli(args, timeout = 20000) {
   return new Promise((resolve, reject) => {
@@ -59,11 +58,11 @@ function createWifi() {
   let last = null;
   nmcli(["--version"], 5000).then(() => (ok = true), () => (ok = false));
 
-  // The Wi-Fi device (wlan0 on a Pi), not the hotspot's.
+  // The Wi-Fi device (wlan0 on a Pi).
   async function device() {
     for (const line of (await nmcli(["-t", "-f", "DEVICE,TYPE", "device"])).split("\n")) {
       const [dev, type] = fields(line);
-      if (type === "wifi" && dev !== HOTSPOT_IF) return dev;
+      if (type === "wifi") return dev;
     }
     throw new Error("No Wi-Fi here.");
   }
@@ -84,14 +83,13 @@ function createWifi() {
     const dev = await device();
     const known = await saved();
     const hotspotSsid = (await nmcli(["-g", "802-11-wireless.ssid", "connection", "show", HOTSPOT]).catch(() => "")).trim();
-    const out = await nmcli(["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY,FREQ", "device", "wifi", "list", "ifname", dev, "--rescan", "auto"], 30000);
+    const out = await nmcli(["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "ifname", dev, "--rescan", "auto"], 30000);
     const bySsid = new Map();
     let current = null;
     for (const line of out.split("\n")) {
-      const [inUse, ssid, signal, security, freq] = fields(line);
+      const [inUse, ssid, signal, security] = fields(line);
       if (!ssid || ssid === hotspotSsid) continue;
-      const mhz = parseInt(freq, 10) || 0;
-      const n = { ssid, signal: Number(signal) || 0, secure: !!security && security !== "--", saved: known.has(ssid), dfs: mhz >= 5260 && mhz <= 5720 };
+      const n = { ssid, signal: Number(signal) || 0, secure: !!security && security !== "--", saved: known.has(ssid) };
       if (inUse.trim() === "*") current = { ssid, signal: n.signal };
       const had = bySsid.get(ssid);
       if (!had || had.signal < n.signal) bySsid.set(ssid, n);
@@ -129,7 +127,7 @@ function createWifi() {
         connecting = null;
       }
     })();
-    return { ok: true, message: `Joining ${ssid}… The hotspot moves to its channel, so this phone may drop off the hotspot for a moment.` };
+    return { ok: true, message: `Joining ${ssid}… The hotspot goes off while this computer is on it: to keep reaching it, join ${ssid} on this phone too (or use Tailscale). If it can't be joined, the hotspot comes back within a minute.` };
   }
 
   return { available: () => ok, status: () => ({ connecting, last }), list, connect };

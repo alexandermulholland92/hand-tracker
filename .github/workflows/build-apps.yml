@@ -1,5 +1,6 @@
-# Builds the Windows app (.exe), the Linux app (.deb) and the Android app (.apk) whenever
-# main changes, and publishes them on the "Latest build" release, replacing the previous build:
+# Builds the Windows app (.exe), the Mac app (.dmg), the Linux app (.deb) and the Android app
+# (.apk) whenever main changes, and publishes them on the "Latest build" release, replacing the
+# previous build (a Mac build that fails doesn't hold up the others):
 # https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build
 # Run it by hand from the Actions tab (Build apps → Run workflow) too.
 name: Build apps
@@ -77,6 +78,49 @@ jobs:
           path: dist/*.deb
           if-no-files-found: error
 
+  # The Mac app is built on a Mac, for Apple silicon and for Intel Macs, signed ad hoc (there's
+  # no Apple Developer ID), so macOS asks before opening it the first time (see the README).
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # With install scripts: Electron and ffmpeg download their Mac (Apple silicon) binaries.
+      - run: npm ci
+
+      # Apple silicon, then Intel (Intel Electron, and Intel ffmpeg swapped in: scripts/dist.js).
+      - run: npm run dist:mac
+      - run: npm run dist:mac-x64
+
+      # Each app is signed whole, says why it wants the camera and microphone, and carries the
+      # input helper (both processors; it starts and answers) and ffmpeg for its own processor.
+      - name: Check the apps
+        run: |
+          for dir in mac-arm64:arm64 mac:x86_64; do
+            app="dist/${dir%%:*}/Hand Tracker.app"; arch="${dir##*:}"
+            codesign --verify --deep --strict "$app"
+            /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$app/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$app/Contents/Info.plist"
+            unpacked="$app/Contents/Resources/app.asar.unpacked"
+            helper="$unpacked/electron/input-helper-mac"
+            archs=$(lipo -archs "$helper"); [[ "$archs" == *x86_64* && "$archs" == *arm64* ]]
+            printf 'ping\npos\n' | "$helper" | tr '\n' ' ' | grep -E "^ready pong pos -?[0-9]+ -?[0-9]+ $"
+            lipo -archs "$unpacked/node_modules/ffmpeg-static/ffmpeg" | grep -qx "$arch"
+            test -f "$unpacked/oak/oak_bridge.py"
+          done
+          echo "Both Mac apps are signed, with the input helper and the right ffmpeg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: dist/*.dmg
+          if-no-files-found: error
+
   android:
     runs-on: ubuntu-latest
     env:
@@ -140,7 +184,9 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [windows, linux, android]
+    needs: [windows, linux, android, mac]
+    # Published without the Mac app if only its build failed.
+    if: ${{ !cancelled() && needs.windows.result == 'success' && needs.linux.result == 'success' && needs.android.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -157,4 +203,4 @@ jobs:
         run: |
           gh release delete latest-build --yes --cleanup-tag || true
           gh release create latest-build dist/* --target "$GITHUB_SHA" --prerelease --title "Latest build" \
-            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk."
+            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk."

@@ -1,6 +1,7 @@
 /**
  * serve.js — run the tracker in a normal browser (no desktop app).
  *   npm run web          -> http://localhost:8080
+ *   node scripts/serve.js www 8081   -> the built website (scripts/build-web.js) on its own port
  * Browsers only allow camera access on https or localhost, so opening
  * index.html straight from disk won't work; this tiny server fixes that.
  */
@@ -9,8 +10,8 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-const ROOT = path.join(__dirname, "..");
-const PORT = Number(process.env.PORT) || 8080;
+const ROOT = process.argv[2] ? path.resolve(path.join(__dirname, ".."), process.argv[2]) : path.join(__dirname, "..");
+const PORT = Number(process.argv[3]) || Number(process.env.PORT) || 8080;
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",

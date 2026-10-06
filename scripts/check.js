@@ -99,6 +99,76 @@ function withLimit(promise, what) {
   ]).finally(() => clearTimeout(timer));
 }
 
+// The checks, in the order a full run makes them: [name, what it needs first, check]. A check's
+// needs are ones whose results it uses (the viewer opens the files the capture saved, say).
+//   npm run check                       every check
+//   npm run check -- --only takes,viewer   those (any part of a name) and what they need
+//   npm run check -- --list             the names
+const STEPS = [
+  ["camera", [], checkCamera],
+  ["capture", [], checkCaptureAndMotionFiles],
+  ["video-export", ["capture"], checkVideoExport],
+  ["gestures", [], checkSimulatedGestures],
+  ["photos", [], checkRealHandPhotos],
+  ["readable-text", [], checkReadableText],
+  ["tag-size", [], ({ js }) => checkTagSize(js)],
+  ["views", [], checkViewsAndKeys],
+  ["rotate", [], checkRotate],
+  ["pc-control", [], ({ js }) => checkPcControl(js)],
+  ["phone-link", [], ({ js }) => checkPhoneLink(js)],
+  ["capture-sessions", [], ({ js }) => checkCaptureSessions(js)],
+  ["ops-streaming", [], () => checkOpsStreaming()],
+  ["live-rigs", [], ({ js }) => checkLiveRigs(js)],
+  ["several-cameras", [], ({ js }) => checkSeveralCameras(js)],
+  ["several-cameras-settings", [], ({ js }) => checkSeveralCamerasSettings(js)],
+  ["several-oak-cameras", [], ({ js }) => checkSeveralOakCameras(js)],
+  ["oak-tiles-far", [], ({ js }) => checkOakTilesFar(js)],
+  ["oak-options", [], ({ js }) => checkOakOptions(js)],
+  ["oak-pictures-off", [], ({ js }) => checkOakPicturesOff(js)],
+  ["oak-tile-retry", [], ({ js }) => checkOakTileRetry(js)],
+  ["remote-recording", [], ({ js }) => checkRemoteRecording(js)],
+  ["remote-launcher", ["remote-recording"], ({ js }) => checkRemoteLauncher(js)], // downloads the take it saved
+  ["remote-hotspot-wifi", [], () => checkRemoteHotspotWifi()],
+  ["remote-takes", [], () => checkRemoteTakes()],
+  ["sentry-math", [], () => checkSentryMath()],
+  ["ntfy", [], () => checkNtfy()],
+  ["sentry", [], ({ js }) => checkSentry(js)],
+  ["web-link", [], () => checkWebLink()],
+  ["web-mouse", [], ({ js }) => checkWebMouse(js)],
+  ["mac-app", [], () => checkMacApp()],
+  ["external-source", [], checkExternalSource],
+  ["duplicate-hands", [], checkDuplicateHands],
+  ["minimized", [], checkMinimized],
+  ["webgl-loss", [], checkWebGLLoss],
+  ["console", [], checkConsole], // what the page logged as errors in the checks before
+  ["video-files", [], checkVideoFilesStep],
+  ["several-videos", [], ({ win, js }) => checkSeveralVideos(win, js)],
+  ["black-gloves", [], ({ js }) => checkBlackGloves(js)],
+  ["mirror-defaults", [], ({ js }) => checkMirrorDefaults(js)],
+  ["optitrack", [], ({ js }) => checkOptiTrack(js)],
+  ["viewer", ["capture", "optitrack"], checkViewerStep], // the capture's files, and Motive's markers
+  ["viewer-video", [], () => checkViewerVideo()],
+];
+if (process.argv.includes("--list")) {
+  console.log(STEPS.map(([name, needs]) => (needs.length ? `${name} (needs ${needs.join(", ")})` : name)).join("\n"));
+  process.exit(0);
+}
+
+// The steps --only asks for (any part of a name, comma separated), with what they need, in order.
+function chosenSteps(argv) {
+  const at = argv.indexOf("--only");
+  if (at < 0) return STEPS;
+  const words = String(argv[at + 1] || "").toLowerCase().split(",").map((w) => w.trim()).filter(Boolean);
+  const wanted = new Set();
+  const add = (name) => {
+    if (wanted.has(name)) return;
+    wanted.add(name);
+    for (const need of STEPS.find((s) => s[0] === name)[1]) add(need);
+  };
+  for (const w of words) for (const [name] of STEPS) if (name.includes(w)) add(name);
+  return STEPS.filter((s) => wanted.has(s[0]));
+}
+
 async function run(win) {
   const wc = win.webContents;
   const js = (code) => withLimit(wc.executeJavaScript(code, true), code.replace(/\s+/g, " ").slice(0, 120));
@@ -112,8 +182,7 @@ async function run(win) {
 
   await new Promise((r) => wc.once("did-finish-load", r));
 
-  // 1. MediaPipe + camera pipeline
-  // Wait for tracking to warm up to a steady rate.
+  // MediaPipe and the camera: every check starts once tracking has warmed up to a steady rate.
   let fps = 0;
   for (let i = 0; i < 120 && fps < 15; i++) {
     await new Promise((r) => setTimeout(r, 500));
@@ -127,13 +196,32 @@ async function run(win) {
     const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
     return (!tr || tr.readyState === "ended") && cams.length === 0;
   })()`));
+
+  // Tracking frames counted for ms (the minimized and WebGL checks).
+  const framesIn = async (ms) => {
+    await js("window.__frames = 0; if (!window.__countFrames) { window.__countFrames = true; HandTracker.onHandLandmarks(() => window.__frames++); } true");
+    await new Promise((r) => setTimeout(r, ms));
+    return js("window.__frames");
+  };
+  const ctx = { win, wc, js, consoleErrors, fps, cam, testCameraCrashed, framesIn, motion: null };
+  const steps = chosenSteps(process.argv);
+  if (steps !== STEPS) console.log(`Only: ${steps.map((s) => s[0]).join(", ")}\n`);
+  for (const [, , step] of steps) await step(ctx);
+}
+
+// 1. MediaPipe + camera pipeline
+async function checkCamera({ js, fps, cam, testCameraCrashed }) {
   check("MediaPipe loads offline and tracks at the camera's frame rate", fps >= 15,
     testCameraCrashed ? "Chromium's fake test camera crashed during this run (track ended, no cameras listed). Rerun the check." : `${fps} fps, ${cam.width}x${cam.height}`);
   check("Camera picker lists the camera", await js("[...document.getElementById('cameraSelect').options].some((o) => o.value)"));
   check("Stage message cleared (no startup error)", await js("document.getElementById('stageMessage').hidden"),
     await js("document.getElementById('stageMessage').hidden ? '' : document.getElementById('stageMessage').textContent"));
+}
 
-  // 2-3. Start recordings, simulate two hands, stop
+// 2-3. Motion capture and a video recorded together while two simulated hands move; the motion
+// capture exported to every format, each file checked with an independent reader.
+async function checkCaptureAndMotionFiles(ctx) {
+  const { js, win } = ctx;
   await js("document.getElementById('layoutSelect').value = 'camera+3d'; document.getElementById('layoutSelect').dispatchEvent(new Event('change'));");
   await js("document.getElementById('motionBtn').click(); document.getElementById('videoBtn').click();");
   await js(PAGE_SIMULATION);
@@ -163,6 +251,7 @@ async function run(win) {
   };
 
   const jsonPath = mfile(".json");
+  ctx.motion = { jsonPath, mfile };
   if (jsonPath) {
     const data = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
     const labels = (data.hands || []).map((h) => h.handedness).join("+");
@@ -222,8 +311,10 @@ async function run(win) {
     check("GLB: loads in three.js, animation matches TRC", g.tracks === 2 * (1 + 21 + 21 * 3) && g.joints === 42 && probeFrames.length > 0 && worst < 0.5,
       `${g.joints} joints, ${g.tracks} animation tracks, ${g.duration.toFixed(2)} s; max difference from TRC ${worst.toFixed(3)} mm`);
   }
+}
 
-  // 4. Export every format
+// 4-5. The video recorded with it, exported to every format, each decoding as what it claims.
+async function checkVideoExport({ js }) {
   check("Export panel appears after recording", await js("!document.getElementById('exportCard').hidden"));
   const videoBase = await js("document.getElementById('exportName').value");
   await js(`document.querySelectorAll('#formatGrid input').forEach((i) => { i.checked = !i.disabled; }); document.getElementById('exportBtn').click();`);
@@ -239,8 +330,10 @@ async function run(win) {
   // 5. Each video decodes as the format it claims to be
   const exported = verifyExports(outDir, videoBase, exporter.FORMATS.map((f) => f.id), false);
   check("Every exported video decodes as the right format", exported.ok, exported.summary);
+}
 
-  // Gestures from simulated hand poses, through the real tracking pipeline.
+// Gestures from simulated hand poses, through the real tracking pipeline.
+async function checkSimulatedGestures({ js }) {
   const curls = (thumb, index, middle, ring, pinky) => ({ thumb, index, middle, ring, pinky });
   const bird = curls(0.5, 1, 0, 1, 1);
   const g = await js(gesturePoses({
@@ -271,12 +364,16 @@ async function run(win) {
   check("Fist, Point, Rock On, Call Me, Thumbs Up and Thumbs Down read as themselves (a thumb out to the side is neither)",
     g.fist === "Fist" && g.point === "Point" && g.rockOn === "Rock On" && g.callMe === "Call Me" && g.thumbsUp === "Thumbs Up" && g.thumbsDown === "Thumbs Down" &&
       !/Thumbs/.test(g.thumbSideways), JSON.stringify(g));
+}
 
   // The same on real hands: landmarks measured from photos (upright, phone-portrait crops
   // and turned sideways), each fed through the tracker as if from a camera that size, as a
   // hand newly appearing (so smoothing starts fresh). The frames carry their own times (a
   // camera's 30 a second, and a second between photos, longer than the tracker keeps a lost
   // hand), so they needn't wait for the clock: only the hand card's redraw is waited for.
+async function checkRealHandPhotos({ js }) {
+  // Only these hands: the camera's own frames stop reaching MediaPipe meanwhile ("views" lets them back).
+  await js("if (!window.__realSend) window.__realSend = Hands.prototype.send; Hands.prototype.send = async function () {}; true");
   const real = await js(`(async () => {
     const cases = ${fs.readFileSync(path.join(__dirname, "fixtures", "gesture-hands.json"), "utf8")}.cases;
     const cameraOf = HandTracker.getCamera;
@@ -313,9 +410,11 @@ async function run(win) {
   })()`);
   check("Real hands from photos: The Bird, Thumbs Down, Live Long and Prosper, Peace (any tilt) and OK Sign recognised, no other hand taken for them", real.wrong.length === 0,
     real.wrong.length ? real.wrong.join(" | ") : Object.entries(real.tally).map(([k, [ok, n]]) => `${k}: ${ok}/${n}`).join(", "));
+}
 
   // Readable text: OCR also reads hand shapes as letters; those must never become flipped
   // boxes (they stayed on screen after the hand moved away). Same readings, three scans.
+async function checkReadableText({ js }) {
   const ocr = await js(`(() => {
     const word = (text, x0, y0, x1, y1) => ({ text, confidence: 90, bbox: { x0, y0, x1, y1 } });
     const scanOf = (...w) => ({ blocks: [{ paragraphs: [{ lines: [{ words: w }] }] }] });
@@ -335,11 +434,11 @@ async function run(win) {
   check("Readable text off: a time (with its AM/PM) is still flipped back, other text isn't",
     ocr.onlyTimes.length === 1 && ocr.onlyTimes[0].x < 60 && ocr.onlyTimes[0].x + ocr.onlyTimes[0].w > 210 && ocr.onlyTimes[0].y + ocr.onlyTimes[0].h < 500,
     JSON.stringify(ocr.onlyTimes));
-
-  await checkTagSize(js);
+}
 
   // Square crop, the pause key and the Show keys. From here on the camera's own frames are
   // tracked again (the gesture checks above had stopped them).
+async function checkViewsAndKeys({ js }) {
   await js("if (window.__realSend) Hands.prototype.send = window.__realSend; true");
   await new Promise((r) => setTimeout(r, 1500));
   const views = await js(`(async () => {
@@ -379,9 +478,11 @@ async function run(win) {
     views.square.cam.split("x")[0] === views.square.cam.split("x")[1] && views.square.cam === views.square.stage && views.square.flag && views.unsquare &&
       views.paused.frames === 0 && views.paused.flag && views.paused.badge && views.resumed.frames > 5 && !views.resumed.flag &&
       views.boxToggled && views.fpsHidden && views.fpsBack, JSON.stringify(views));
+}
 
   // Rotate: the picture is turned before tracking; T steps 90° right; an external source's
   // hands are turned with its picture.
+async function checkRotate({ js }) {
   const rot = await js(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const before = HandTracker.getCamera();
@@ -419,26 +520,335 @@ async function run(win) {
     rot.r90 === `${bh}x${bw}` && rot.stage90 === rot.r90 && rot.afterT === `180 ${bw}x${bh}` && rot.remembered === 180 &&
       rot.ext.size === "360x640" && rot.ext.wrist && rot.ext.wrist[0] === 0.8 && rot.ext.wrist[1] === 0.1 && JSON.stringify(rot.ext.xyz) === "[-50,100,800]" &&
       rot.back.startsWith("0 ") && rot.back.endsWith(rot.before), JSON.stringify(rot));
+}
 
-  await checkPcControl(js);
-  await checkPhoneLink(js);
-  await checkCaptureSessions(js);
-  await checkOpsStreaming();
-  await checkLiveRigs(js);
-  await checkSeveralCameras(js);
-  await checkSeveralCamerasSettings(js);
-  await checkSeveralOakCameras(js);
-  await checkOakTilesFar(js);
-  await checkOakOptions(js);
-  await checkOakPicturesOff(js);
-  await checkOakTileRetry(js);
-  await checkRemoteRecording(js);
-  await checkRemoteLauncher(js);
-  await checkRemoteHotspotWifi();
-  await checkRemoteTakes();
+// Sentry mode's measuring (sentry.js), on made-up grey pictures: what moved, box by box;
+// the whole picture changing at once (the light) isn't movement; a turned camera's grey picture
+// turns with it; movement where an animal is (and no person) is left out.
+function checkSentryMath() {
+  global.window = undefined;
+  require("../sentry.js");
+  const S = globalThis.Sentry._test;
+  const pic = (w, h, f) => ({ w, h, data: Uint8Array.from({ length: w * h }, (_, i) => f(i % w, Math.floor(i / w))) });
+  const still = pic(64, 36, () => 100);
+  const corner = pic(64, 36, (x, y) => (x >= 52 && y >= 27 ? 200 : 100)); // the bottom-right corner lit
+  const lv = S.levels(S.moved(S.blur(still), S.blur(corner)), 3, 4).map((v) => +v.toFixed(3));
+  const light = S.moved(S.blur(still), S.blur(pic(64, 36, () => 170)));
+  const t = S.turn(pic(4, 2, (x, y) => y * 4 + x), 90); // rows 0 1 2 3 / 4 5 6 7, turned clockwise
+  const mask = S.moved(still, pic(64, 36, (x, y) => (x < 16 ? 200 : 100))); // movement in the left quarter
+  const cat = [{ label: "cat", score: 0.8, box: [0, 0, 0.25, 1] }];
+  const catAndPerson = [...cat, { label: "person", score: 0.9, box: [0, 0, 0.3, 1] }];
+  const left = (objects) => +S.levels(S.withoutAnimals(mask, objects).mask, 1, 4)[0].toFixed(3);
+  const out = {
+    corner: lv, light, turned: t && `${t.w}x${t.h}:${Array.from(t.data).join(",")}`,
+    animals: { none: left([]), cat: left(cat), catAndPerson: left(catAndPerson) },
+    mirrored: [S.toCamera(0, true, 16), S.toCamera(17, true, 16), S.toCamera(5, false, 16)],
+  };
+  check("Sentry mode measures movement box by box (only the corner that changed), not the light changing everywhere at once; an OAK camera's turned grey picture turns with it; movement where an animal is (and no person) is left out",
+    out.corner.slice(0, 11).every((v) => v === 0) && out.corner[11] > 0.5 && out.light === null &&
+      out.turned === "2x4:4,0,5,1,6,2,7,3" && out.animals.none === 1 && out.animals.cat === 0 && out.animals.catAndPerson === 1 &&
+      out.mirrored.join() === "15,30,5",
+    JSON.stringify(out));
+}
+
+// Sentry mode's alerts through ntfy (electron/ntfy.js), to a stand-in server: what the page asks
+// is checked (topic, server, link), the text goes in the address (any language's letters), and
+// a photo is sent as the body.
+async function checkNtfy() {
+  const { cleanNtfy, sendNtfy } = require("../electron/ntfy.js");
+  const sent = [];
+  const fake = async (url, opts) => {
+    sent.push({ url, method: opts.method, bytes: Buffer.from(opts.body).length });
+    return { ok: true, json: async () => ({}) };
+  };
+  const refuse = (r) => {
+    try {
+      cleanNtfy(r);
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  const base = { server: "https://ntfy.sh", topic: "handtracker-abc123", title: "Sentry: Tête", message: "Movement at 14:32:05.", tags: "rotating_light", priority: 4, click: "http://pi.tail1234.ts.net:47821" };
+  await sendNtfy(cleanNtfy(base), fake);
+  await sendNtfy(cleanNtfy({ ...base, photo: new Uint8Array([0xff, 0xd8, 1, 2, 3]), filename: "Sentry_Head.jpg", click: "javascript:alert(1)" }), fake);
+  const [text, photo] = sent;
+  const q = (u) => new URL(u).searchParams;
+  const out = {
+    text: { method: text.method, path: new URL(text.url).pathname, title: q(text.url).get("title"), click: q(text.url).get("click"), priority: q(text.url).get("priority") },
+    photo: { method: photo.method, bytes: photo.bytes, message: q(photo.url).get("message"), filename: q(photo.url).get("filename"), click: q(photo.url).get("click") },
+    refused: [refuse({ ...base, topic: "a/b" }), refuse({ ...base, topic: "" }), refuse({ ...base, server: "file:///etc" }), refuse({ ...base, server: "https://ntfy.sh/../x" })],
+  };
+  check("Sentry mode's ntfy alerts: the topic, server and link are checked; the title (in any language) goes in the address, a photo as the body, and a link that isn't a web address is dropped",
+    out.text.method === "POST" && out.text.path === "/handtracker-abc123" && out.text.title === "Sentry: Tête" && out.text.click === base.click && out.text.priority === "4" &&
+      out.photo.method === "PUT" && out.photo.bytes === 5 && out.photo.message === base.message && out.photo.filename === "Sentry_Head.jpg" && out.photo.click === null &&
+      out.refused.every(Boolean),
+    JSON.stringify(out));
+}
+
+// Sentry mode in the app: hidden until Ctrl+Alt+S (or the title tapped five times); boxes over
+// the camera's picture, rows by columns; a tapped box is left out (the box shown top-left is
+// the camera's top-right, mirrored); with every box that moves left out, nothing happens; with
+// them watched, movement (the test camera's clock) is an alert: a photo, then a video when it's
+// turned off, both in the remote recording folder; the remote page sees it and can turn it off.
+async function checkSentry(js) {
+  const dir = process.env.HAND_TRACKER_REMOTE_DIR;
+  const before = new Set(fs.readdirSync(dir));
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const $ = (id) => document.getElementById(id);
+    const key = () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, altKey: true, bubbles: true }));
+    const set = (id, v) => { $(id).value = String(v); $(id).dispatchEvent(new Event("change")); };
+    const cfg = () => Sentry._test.config();
+    // Sentry watches cameras: the test camera, whatever an earlier check left showing.
+    const source = HandTracker.getCamera().source;
+    if (source !== "camera") await HandTrackerApp.backToCamera();
+    for (let i = 0; i < 40 && HandTracker.getCamera().source !== "camera"; i++) await sleep(250);
+    await sleep(500);
+    const out = { source, hiddenAtStart: $("sentryCard").hidden && !document.querySelector(".sentry-bubbles") };
+    key();
+    await sleep(300);
+    out.shown = !$("sentryCard").hidden && Sentry.isShown() && !Sentry.isArmed();
+    // The camera's video, recorded on its own (camera-video.js): 2 s and a moment.
+    for (const ms of [2000, 400]) {
+      const rec = CameraVideo.start({ canvas: $("stage"), fps: 15, audio: false });
+      await sleep(ms);
+      const clip = await rec.stop();
+      (out.direct = out.direct || []).push({ ms, kb: Math.round(clip.blob.size / 1024), type: clip.mimeType });
+    }
+    // Quiet for the check: no sound (no microphone here), no ntfy.
+    if (cfg().sound) $("sentrySound").click();
+    set("sentryRows", 9);
+    set("sentryCols", 16);
+    set("sentrySensitivity", "high");
+    await sleep(600);
+    const bubbles = () => [...document.querySelectorAll("#wrap .sentry-bubbles button")];
+    out.bubbles = bubbles().length;
+    // Boxes, each filling its part of the picture (not round).
+    const gridEl = document.querySelector("#wrap .sentry-bubbles");
+    if (!gridEl) {
+      const rect = (id) => { const r = $(id) && $(id).getBoundingClientRect(); return r ? [Math.round(r.width), Math.round(r.height)] : null; };
+      return { ...out, noBoxes: { layout: $("layoutSelect").value, wrap: rect("wrap"), stage: rect("stage"), views: Sentry._test.per.size, multi: document.querySelectorAll("#multiCamGrid .multi-cam-tile").length } };
+    }
+    const grid = gridEl.getBoundingClientRect(), b0 = bubbles()[0].getBoundingClientRect();
+    out.box = { w: Math.round(b0.width), h: Math.round(b0.height), cellW: Math.round(grid.width / 16), cellH: Math.round(grid.height / 9), radius: getComputedStyle(bubbles()[0]).borderTopLeftRadius };
+    const camKey = [...Sentry._test.per.keys()][0];
+    // Tapping the bubble shown top-left (the picture's mirrored): the camera's top-right is left out.
+    bubbles()[0].click();
+    await sleep(300);
+    out.tapped = ((cfg().excluded[camKey] || {})["9x16"] || []).slice();
+    out.tappedShown = bubbles()[0].classList.contains("off");
+    bubbles()[0].click(); // watched again
+    // Which bubbles the test camera's clock moves.
+    const most = new Array(9 * 16).fill(0);
+    for (let i = 0; i < 24; i++) {
+      await sleep(125);
+      const st = Sentry._test.per.get(camKey);
+      (st && st.levels || []).forEach((l, j) => (most[j] = Math.max(most[j], l)));
+    }
+    const moving = most.map((l, j) => (l >= 0.03 ? j : -1)).filter((j) => j >= 0);
+    out.moving = moving.length;
+    // Every bubble that moves left out: on, nothing happens.
+    const all = new Set(Array.from({ length: 9 * 16 }, (_, j) => j));
+    const exc = { ...cfg().excluded, [camKey]: { "9x16": [...all] } };
+    Object.assign(cfg(), { excluded: exc });
+    $("sentryArm").click();
+    await sleep(2500);
+    const st0 = Sentry._test.per.get(camKey);
+    out.leftOut = { armed: Sentry.isArmed(), events: Sentry._test.events.length, session: !!(st0 && st0.session) };
+    // Watched: an alert.
+    Object.assign(cfg(), { excluded: { ...cfg().excluded, [camKey]: { "9x16": [] } } });
+    let ev = null;
+    for (let i = 0; i < 80 && !(ev = Sentry._test.events[0]); i++) await sleep(125);
+    for (let i = 0; i < 40 && ev && !ev.photo && !ev.photoError; i++) await sleep(125);
+    out.alert = ev ? { camera: ev.camera, photo: ev.photo && ev.photo.name, photoError: ev.photoError || "" } : null;
+    out.listed = $("sentryEvents").textContent.includes(ev ? ev.camera : "?");
+    // The remote page's view of it, and turning it off from there.
+    const rs = Sentry.remoteState();
+    out.remote = rs && { armed: rs.armed, events: rs.events.length, photo: rs.events[0] && rs.events[0].photo };
+    out.offFromPage = await RemoteRecordUI._carryOut("sentry", { sentry: { armed: false } });
+    // Turned off: the video so far is saved.
+    for (let i = 0; i < 60 && ev && !ev.video && !ev.videoError; i++) await sleep(125);
+    out.video = ev ? { name: ev.video && ev.video.name, error: ev.videoError || "", seconds: ev.seconds } : null;
+    out.offNow = !Sentry.isArmed();
+    // Hidden again by tapping the title five times; no bubbles left behind.
+    for (let i = 0; i < 5; i++) document.querySelector("header h1").click();
+    await sleep(300);
+    out.hiddenAgain = $("sentryCard").hidden && !document.querySelector(".sentry-bubbles") && !Sentry.remoteState();
+    // The object finder for "ignore animals" loads (it ships with the app) and runs.
+    try {
+      const pic = Object.assign(document.createElement("canvas"), { width: 320, height: 180 });
+      pic.getContext("2d").drawImage(HandTracker.getFrameImage(), 0, 0, 320, 180);
+      const t0 = performance.now();
+      const found = await ObjectFinder.find(pic);
+      out.finder = { ok: Array.isArray(found), ms: Math.round(performance.now() - t0), labels: found.map((o) => o.label) };
+    } catch (err) {
+      out.finder = { error: String(err && err.message || err) };
+    }
+    return out;
+  })()`);
+  const added = fs.readdirSync(dir).filter((f) => !before.has(f));
+  const file = (re) => {
+    const f = added.find((n) => re.test(n));
+    if (!f) return null;
+    const b = fs.readFileSync(path.join(dir, f));
+    return { f, kb: Math.round(b.length / 1024), head: b.subarray(0, 4).toString("hex") };
+  };
+  r.files = { photo: file(/^Sentry_.+\.jpg$/), video: file(/^Sentry_.+-video\.(webm|mp4)$/) };
+  const what = "Sentry mode: hidden until Ctrl+Alt+S (and the title tapped five times hides it); boxes over the picture, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored); with every moving box left out nothing happens; watched, movement is an alert with a photo, then a video when it's turned off (from the remote page), both in the remote recording folder; a camera's video stopped at once is still a video; the object finder for ignoring animals loads and runs";
+  if (r.noBoxes) return check(what, false, `No boxes over the camera's picture: ${JSON.stringify(r)}`);
+  check("Sentry mode: hidden until Ctrl+Alt+S (and the title tapped five times hides it); boxes over the picture, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored); with every moving box left out nothing happens; watched, movement is an alert with a photo, then a video when it's turned off (from the remote page), both in the remote recording folder; a camera's video stopped at once is still a video; the object finder for ignoring animals loads and runs",
+    r.hiddenAtStart && r.shown && r.direct.every((d) => d.kb > 3) && r.bubbles === 144 &&
+      r.box.w >= r.box.cellW * 0.7 && r.box.h >= r.box.cellH * 0.6 && parseFloat(r.box.radius) < Math.min(r.box.w, r.box.h) / 2 && r.tapped.join() === "15" && r.tappedShown && r.moving > 0 &&
+      r.leftOut.armed && r.leftOut.events === 0 && !r.leftOut.session &&
+      r.alert && r.alert.photo && r.listed && r.remote && r.remote.armed && r.remote.events === 1 && r.remote.photo === r.alert.photo &&
+      r.offFromPage.ok && r.offNow && r.video && r.video.name && r.hiddenAgain &&
+      r.files.photo && r.files.photo.head.startsWith("ffd8") && r.files.photo.kb > 5 &&
+      r.files.video && r.files.video.kb > 5 && (r.files.video.head === "1a45dfa3" || r.files.video.f.endsWith(".mp4")) &&
+      r.finder && r.finder.ok,
+    JSON.stringify(r));
+}
+
+// The Mac app, built on GitHub's Macs (not here): every key the hand mouse, floating keyboard
+// and gesture actions know has its Mac key, or is said to have none (Win and Cmd are Command);
+// the Mac helper takes the Windows helper's commands; the app says why it wants the camera and
+// microphone, is signed ad hoc, and carries the helper outside app.asar; the OAK setup has uv
+// for both kinds of Mac; and the Mac app isn't built anywhere but on a Mac.
+function checkMacApp() {
+  const root = path.join(__dirname, "..");
+  const { KEYS, MAC_KEYS, parseCombo, InputDriver } = require("../electron/input.js");
+  const helperSrc = fs.readFileSync(path.join(root, "electron", "input-helper-mac.m"), "utf8");
+  const windowsSrc = fs.readFileSync(path.join(root, "electron", "input-helper.ps1"), "utf8");
+  const oakSrc = fs.readFileSync(path.join(root, "electron", "oak.js"), "utf8");
+  const build = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).build;
+  const mac = build.mac || {};
+  const windowsCommands = [...windowsSrc.matchAll(/case "([a-z]+)":/g)].map((m) => m[1]);
+  const out = {
+    missing: Object.keys(KEYS).filter((k) => !(k in MAC_KEYS)),
+    none: Object.keys(MAC_KEYS).filter((k) => MAC_KEYS[k] === null),
+    combo: parseCombo("cmd+shift+s").map((k) => MAC_KEYS[k]).concat(parseCombo("win+c").map((k) => MAC_KEYS[k])),
+    media: ["playpause", "volumeup"].map((k) => MAC_KEYS[k]),
+    commandsMissing: windowsCommands.filter((c) => !helperSrc.includes(`strcmp(cmd, "${c}")`)),
+    info: Object.keys(mac.extendInfo || {}),
+    signed: mac.identity,
+    hardened: mac.hardenedRuntime,
+    unpacked: build.asarUnpack.includes("electron/input-helper-mac"),
+    sourceLeftOut: build.files.includes("!electron/*.m"),
+    uv: ["darwin-arm64", "darwin-x64"].filter((k) => oakSrc.split("\n").some((l) => l.includes(`"${k}": { file: "uv-`) && l.includes("-apple-darwin.tar.gz") && /size: [1-9]\d{6,}/.test(l))),
+    driverHere: !!new InputDriver().driver,
+  };
+  const dist = spawnSync(process.execPath, [path.join(root, "scripts", "dist.js"), "mac"], { encoding: "utf8", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+  out.distElsewhere = process.platform === "darwin" ? "skipped" : { status: dist.status, says: (dist.stderr || "").trim().slice(0, 80) };
+  check("The Mac app: every key has its Mac key (Win and Cmd are Command; none only where a Mac has none), the Mac helper takes the Windows helper's commands, the app says why it wants the camera and microphone, is signed ad hoc with its helper outside app.asar, the OAK setup has uv for both Macs, and it's only built on a Mac",
+    out.missing.length === 0 && out.none.every((k) => ["menu", "stop", "f21", "f22", "f23", "f24"].includes(k)) &&
+      out.combo.join() === "55,56,1,55,8" && out.media.join() === "media 16,media 0" && windowsCommands.length >= 10 && out.commandsMissing.length === 0 &&
+      ["NSCameraUsageDescription", "NSMicrophoneUsageDescription"].every((k) => out.info.includes(k)) && out.signed === "-" && out.hardened === false &&
+      out.unpacked && out.sourceLeftOut && out.uv.length === 2 && out.driverHere &&
+      (out.distElsewhere === "skipped" || (out.distElsewhere.status === 1 && /on a Mac/.test(out.distElsewhere.says))),
+    JSON.stringify(out));
+}
+
+// The website's hand mouse moving this computer's pointer through the app (electron/web-link.js),
+// on a spare port with a stand-in for the mouse (the real pointer isn't touched): only from the
+// website's own pages, addressed to this computer itself, and only what the hand mouse does.
+async function checkWebLink() {
+  const { WebLink, cleanInput } = require("../electron/web-link.js");
+  const done = [];
+  const link = new WebLink({ port: 47893, handle: async (type, data) => done.push({ type, data }) });
+  await link.start();
+  const ask = (method, pathName, { origin = "https://hand-tracker.pages.dev", host = "127.0.0.1:47893", body = null, headers = {} } = {}) =>
+    new Promise((resolve) => {
+      const req = require("http").request({ host: "127.0.0.1", port: 47893, method, path: pathName, headers: { Host: host, ...(origin ? { Origin: origin } : {}), ...(body ? { "Content-Type": "application/json" } : {}), ...headers } }, (res) => {
+        let text = "";
+        res.on("data", (c) => (text += c));
+        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text }));
+      });
+      req.on("error", (err) => resolve({ status: 0, text: String(err) }));
+      if (body) req.write(JSON.stringify(body));
+      req.end();
+    });
+  const out = {};
+  out.preflight = await ask("OPTIONS", "/input", { headers: { "Access-Control-Request-Method": "POST", "Access-Control-Request-Private-Network": "true" } });
+  out.preflight = { status: out.preflight.status, allowOrigin: out.preflight.headers["access-control-allow-origin"], privateNetwork: out.preflight.headers["access-control-allow-private-network"] };
+  out.status = (await ask("GET", "/status")).status;
+  out.move = (await ask("POST", "/input", { body: { type: "pointer", data: { nx: 0.25, ny: 0.75, screen: "primary" } } })).status;
+  out.click = (await ask("POST", "/input", { body: { type: "button", data: { which: "left", action: "click" } } })).status;
+  out.otherSite = (await ask("POST", "/input", { origin: "https://evil.example", body: { type: "button", data: { which: "left", action: "click" } } })).status;
+  out.noOrigin = (await ask("POST", "/input", { origin: null, body: { type: "text", data: { text: "x" } } })).status;
+  out.otherHost = (await ask("POST", "/input", { host: "evil.example:47893", body: { type: "text", data: { text: "x" } } })).status;
+  out.nonsense = (await ask("POST", "/input", { body: { type: "shell", data: { cmd: "rm" } } })).status;
+  out.badKey = (await ask("POST", "/input", { body: { type: "key", data: { combo: "ctrl+alt+$(x)" } } })).status;
+  link.stop();
+  out.done = done.map((d) => `${d.type}:${JSON.stringify(d.data)}`);
+  out.clean = [cleanInput({ type: "pointer", data: { nx: 2, ny: 0 } }), cleanInput({ type: "wheel", data: { notches: 99 } })];
+  check("The website's hand mouse reaches this computer's pointer only through the app's switch: from the website's own pages, addressed to this computer, only pointer, buttons, wheel, keys and text (a browser's preflight answered, with Chrome's private-network header)",
+    out.preflight.status === 204 && out.preflight.allowOrigin === "https://hand-tracker.pages.dev" && out.preflight.privateNetwork === "true" &&
+      out.status === 200 && out.move === 200 && out.click === 200 && out.otherSite === 403 && out.noOrigin === 403 && out.otherHost === 403 &&
+      out.nonsense === 400 && out.badKey === 400 && out.clean.every((c) => c === null) &&
+      out.done.join(" | ") === 'pointer:{"nx":0.25,"ny":0.75,"screen":"primary"} | button:{"which":"left","action":"click"}',
+    JSON.stringify(out));
+}
+
+// The website's own hand mouse pointer (web-pc.js) on this page: it clicks a button, types into a
+// box and scrolls a list where it's pointing; and the app's switch for the website turns on (and
+// says no to anything but the website).
+async function checkWebMouse(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const box = document.createElement("div");
+    box.style.cssText = "position:fixed;left:0;top:0;width:400px;height:300px;z-index:99999;background:#222";
+    box.innerHTML = '<button id="wpBtn" style="position:absolute;left:20px;top:20px;width:100px;height:40px">Press</button>' +
+      '<input id="wpText" style="position:absolute;left:20px;top:100px;width:200px;height:30px" />' +
+      '<div id="wpList" style="position:absolute;left:20px;top:160px;width:200px;height:100px;overflow:auto"><div style="height:1000px"></div></div>';
+    document.body.appendChild(box);
+    const at = (el) => { const r = el.getBoundingClientRect(); return [(r.left + r.width / 2) / innerWidth, (r.top + r.height / 2) / innerHeight]; };
+    const p = WebPc._pagePointer();
+    await p.start();
+    let pressed = 0;
+    document.getElementById("wpBtn").addEventListener("click", () => pressed++);
+    p.pointer(...at(document.getElementById("wpBtn")));
+    await p.button("left", "click");
+    p.pointer(...at(document.getElementById("wpText")));
+    await p.button("left", "click");
+    await p.text("hello");
+    await p.key("backspace");
+    p.pointer(...at(document.getElementById("wpList")));
+    await p.wheel(-3);
+    await sleep(600);
+    const out = { pressed, typed: document.getElementById("wpText").value, focused: document.activeElement && document.activeElement.id, scrolled: document.getElementById("wpList").scrollTop, pointer: !!document.getElementById("handPointer") };
+    p.stop();
+    box.remove();
+    out.pointerGone = !document.getElementById("handPointer");
+    // The desktop app's side: the switch, and the app's own page refused (it isn't the website).
+    const btn = document.getElementById("webLinkToggle");
+    out.desktopShown = !document.getElementById("webLinkPc").hidden;
+    btn.click();
+    await sleep(500);
+    out.on = (await desktop.webLink.status()).on && btn.textContent.endsWith("ON");
+    return out;
+  })()`);
+  // Asked as the app's own page would (from here, so the refusal isn't an error in its console).
+  r.fromAppPage = await new Promise((resolve) => {
+    const req = require("http").get({ host: "127.0.0.1", port: 47823, path: "/status", headers: { Origin: "app://hand-tracker" } }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200 && res.headers["access-control-allow-origin"] ? 200 : res.statusCode);
+    });
+    req.on("error", () => resolve("refused"));
+  });
+  r.off = await js(`(async () => {
+    document.getElementById("webLinkToggle").click();
+    await new Promise((r) => setTimeout(r, 300));
+    return !(await desktop.webLink.status()).on;
+  })()`);
+  check("The website's hand mouse pointer clicks a button, types into a box and scrolls a list on the page where it points; the app's switch for the website turns on and off, and refuses anything but the website",
+    r.pressed === 1 && r.typed === "hell" && r.focused === "wpText" && r.scrolled > 50 && r.pointer && r.pointerGone &&
+      r.desktopShown && r.on && r.fromAppPage !== 200 && r.off,
+    JSON.stringify(r));
+}
 
   // An external source (a Luxonis OAK camera): pictures and MediaPipe-shaped hands pushed
   // in go through the same tracking, with the camera's confidence and measured distance.
+async function checkExternalSource({ js }) {
   const ext = await js(`(async () => {
     const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],
       [0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]];
@@ -468,9 +878,11 @@ async function run(win) {
   check("External source (OAK camera path): pictures and hands pushed in are tracked, with the camera's confidence and distance",
     ext.source === "external" && ext.size === "1152x648" && ext.stage === "1152x648" && ext.side === "Right" && ext.score === 0.9 &&
       JSON.stringify(ext.distance) === "[100,-50,850]" && ext.world === 21 && ext.back === "camera", JSON.stringify(ext));
+}
 
   // One hand reported twice (two overlapping detections) counts once; a hand lost for a
   // moment is still shown (held) for up to 150 ms, then goes.
+async function checkDuplicateHands({ js }) {
   const dup = await js(`(async () => {
     const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],
       [0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]];
@@ -496,13 +908,10 @@ async function run(win) {
   })()`);
   check("A hand MediaPipe reports twice counts once; a hand lost for a moment is held on screen briefly, then goes",
     dup.twice === "1 Right" && dup.two === 2 && dup.heldNow === "1 true" && dup.gone === 0, JSON.stringify(dup));
+}
 
-  // Tracking carries on with the window minimized (for the hand mouse).
-  const framesIn = async (ms) => {
-    await js("window.__frames = 0; if (!window.__countFrames) { window.__countFrames = true; HandTracker.onHandLandmarks(() => window.__frames++); } true");
-    await new Promise((r) => setTimeout(r, ms));
-    return js("window.__frames");
-  };
+// Tracking carries on with the window minimized (for the hand mouse).
+async function checkMinimized({ win, framesIn }) {
   const shownFrames = await framesIn(3000);
   win.minimize();
   await new Promise((r) => setTimeout(r, 800));
@@ -511,9 +920,11 @@ async function run(win) {
   await new Promise((r) => setTimeout(r, 800));
   check("Tracking keeps going with the window minimized (at least half the usual rate)", shownFrames > 20 && minimizedFrames >= shownFrames / 2,
     `${shownFrames} frames in 3 s shown, ${minimizedFrames} minimized`);
+}
 
   // MediaPipe losing its graphics (WebGL) context, as in a graphics crash or driver reset:
   // it used to find nothing from then on, and abort for good on its next reset.
+async function checkWebGLLoss({ js, consoleErrors, framesIn }) {
   const mediaPipe = () => js("HandTracker._mediaPipe()");
   const mpBefore = await mediaPipe();
   const errorsBefore = consoleErrors.length;
@@ -530,21 +941,26 @@ async function run(win) {
   check("MediaPipe whose graphics (WebGL) context is lost is started again, and tracking carries on (also after a reset)",
     mpBefore.contexts > 0 && !mpBefore.lost && mpAfter.rebuilds === mpBefore.rebuilds + 1 && !mpAfter.lost && lossFrames > 20 && resetFrames > 20,
     JSON.stringify({ before: mpBefore, after: mpAfter, framesAfterLoss: lossFrames, framesAfterReset: resetFrames }));
+}
 
+// The page logged no errors in the checks before (ones a lost WebGL context makes are expected).
+async function checkConsole({ consoleErrors }) {
   const relevantErrors = consoleErrors.filter((m) => !/DevTools|Autofill/i.test(m));
   check("No errors in the page console", relevantErrors.length === 0, relevantErrors.slice(0, 3).join(" | "));
+}
 
   // 6. Video files as the tracking source: formats the page plays itself and ones
   //    ffmpeg converts; every frame tracked on the video's own clock.
-  await js("Hands.prototype.send = window.__realSend; document.getElementById('discardBtn').click();");
+async function checkVideoFilesStep({ win, js }) {
+  await js("if (window.__realSend) Hands.prototype.send = window.__realSend; document.getElementById('discardBtn').click(); true");
   await checkVideoFiles(win, js);
-  await checkSeveralVideos(win, js);
-  await checkBlackGloves(js);
-  await checkMirrorDefaults(js);
-  await checkOptiTrack(js);
+}
 
-  if (jsonPath) await checkViewer(jsonPath, { csv: mfile(".csv"), c3d: mfile(".c3d"), trc: mfile(".trc"), glb: mfile(".glb"), npz: mfile(".npz"), bvh: mfile("-left.bvh"), json: jsonPath, markers: path.join(outDir, "motive-take-motive.c3d") });
-  await checkViewerVideo();
+// The Recording Viewer: the capture's own files (and Motive's markers from the OptiTrack check).
+async function checkViewerStep({ motion }) {
+  const { jsonPath, mfile } = motion || {};
+  if (!jsonPath) return check("The Recording Viewer's checks have the capture's files", false, "no JSON was saved");
+  await checkViewer(jsonPath, { csv: mfile(".csv"), c3d: mfile(".c3d"), trc: mfile(".trc"), glb: mfile(".glb"), npz: mfile(".npz"), bvh: mfile("-left.bvh"), json: jsonPath, markers: path.join(outDir, "motive-take-motive.c3d") });
 }
 
 // The Left/Right tag: its normal size with a hand at arm's length or closer, bigger as the
@@ -1332,6 +1748,11 @@ async function checkRemoteRecording(js) {
     const saved = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
     out.savedHands = saved ? saved.hands.map((h) => h.handedness) : null;
     out.metadata = saved ? saved.metadata : null;
+    // Each camera's video, saved beside the take (named after the role it started with).
+    out.videos = ((after.lastTake && after.lastTake.files) || []).filter((f) => /-video-[a-z-]+\.(webm|mp4)$/.test(f)).map((f) => {
+      const b = fs.readFileSync(path.join(process.env.HAND_TRACKER_REMOTE_DIR, f));
+      return { f: f.replace(/^.*(-video-[a-z-]+\.\w+)$/, "$1"), kb: Math.round(b.length / 1024), webm: b.subarray(0, 4).toString("hex") === "1a45dfa3" };
+    });
     // Its name is final at the computer too (other formats exported there keep it).
     out.nameLocked = await js(`document.getElementById("motionName").readOnly && document.getElementById("motionName").value`);
     // Saved: the next take's details can be filled in.
@@ -1356,7 +1777,7 @@ async function checkRemoteRecording(js) {
   out.tailnet = [tailnetPeer("100.104.1.2", "::ffff:100.90.3.4"), tailnetPeer("192.168.1.5", "100.90.3.4"), tailnetPeer("100.104.1.2", "192.168.1.9")];
   const probe = new RemoteRecordServer({ keyStore: null, page: () => "", ask: async () => ({}) });
   out.ownHost = [probe.ownHost({ headers: { host: "localhost:47821" } }), probe.ownHost({ headers: { host: "evil.example:47821" } })];
-  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so) and picked, with roles; Ego needs all four roles, Stereo a head camera; Start recording needs all three take details (unless the hidden switch makes them optional; then locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras mirrored like webcams; every camera found is ticked unless unticked before), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself, Stop cameras stops them",
+  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so) and picked, with roles; Ego needs all four roles, Stereo a head camera; Start recording needs all three take details (unless the hidden switch makes them optional; then locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras mirrored like webcams; every camera found is ticked unless unticked before), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself (with each camera's video, named after its role), Stop cameras stops them",
     out.setup.on && out.setup.card && !out.setup.runningBefore && key.length > 10 && out.page && out.noKey === 401 && out.wrongKey === 401 &&
       ["oak:SIMULATED-OAK-A", "oak:SIMULATED-OAK-B"].every((id) => (out.setup.ticked || []).includes(id)) &&
       out.before.running === false && out.script && out.scan &&
@@ -1379,6 +1800,7 @@ async function checkRemoteRecording(js) {
       out.preview.status === 200 && out.preview.type === "image/jpeg" && out.preview.jpeg && out.preview.kb > 1 &&
       out.full.frames >= 12 && out.full.size && out.full.small && out.full.size.w > out.full.small.w && out.full.fps >= 6 &&
       out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
+      out.videos.map((v) => v.f).sort().join() === "-video-chest.webm,-video-head.webm" && out.videos.every((v) => v.webm && v.kb > 5) &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
       /^0:\d\d$/.test(out.metadata.length) && out.metadata.length_s > 1 &&
       out.savedHands && out.savedHands.length === 2 && out.savedHands.some((h) => /^Head /.test(h)) && out.savedHands.some((h) => /^Chest /.test(h)) &&
@@ -1585,7 +2007,7 @@ async function checkRemoteHotspotWifi() {
   const wifi = {
     available: () => true,
     status: () => ({ connecting: null, last: null }),
-    list: async () => ({ device: "wlan0", current: { ssid: "Lab", signal: 70 }, networks: [{ ssid: "Lab", signal: 70, secure: true, saved: true, dfs: false }, { ssid: "Field", signal: 40, secure: true, saved: false, dfs: false }] }),
+    list: async () => ({ device: "wlan0", current: { ssid: "Lab", signal: 70 }, networks: [{ ssid: "Lab", signal: 70, secure: true, saved: true }, { ssid: "Field", signal: 40, secure: true, saved: false }] }),
     connect: (ssid, password) => {
       joined.push([ssid, password]);
       return { ok: true, message: `Joining ${ssid}…` };

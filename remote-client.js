@@ -10,9 +10,9 @@
  *   - served by the computer itself (electron/remote-record.js), in any browser: plain requests
  *     to its own address, with the key from the QR code (#k=…, kept in this browser) unless
  *     it's opened over Tailscale;
- *   - in the Android app and the Windows and Linux app, as remote-client.html?rig=<name>:<port>
+ *   - in the Android app and the Windows, Mac and Linux app, as remote-client.html?rig=<name>:<port>
  *     (from remote.html): the app makes the requests (Remote.rigRequest on Android,
- *     desktop.rig.request on Windows and Linux), since a page can't reach a device on your
+ *     desktop.rig.request on Windows, Mac and Linux), since a page can't reach a device on your
  *     network by itself; a key comes with the address the same way and is kept per computer.
  */
 
@@ -241,12 +241,62 @@
   let screenOn = true;
   $("screenBtn").addEventListener("click", () => command("settings", { settings: { screenPictures: !screenOn } }));
 
+  // Each camera's video saved with the take (beside its motion capture), with sound or not.
+  let videoOn = true, soundOn = true;
+  $("videoBtn").addEventListener("click", () => command("settings", { settings: { video: !videoOn } }));
+  $("soundBtn").addEventListener("click", () => command("settings", { settings: { sound: !soundOn } }));
+
+  // Sentry mode on the computer (shown only while it isn't hidden there, or it's on): on or
+  // off, and its alerts, each with its photo (a slice of the takes folder, as the takes come).
+  let sentryOn = false;
+  const sentryPhotos = new Map(); // photo's file name -> its picture here (or "" while it comes)
+  $("sentryBtn").addEventListener("click", () => command("sentry", { sentry: { armed: !sentryOn } }));
+  async function sentryPhoto(name) {
+    sentryPhotos.set(name, "");
+    try {
+      const r = await api(`/api/take?f=${encodeURIComponent(name)}&at=0`);
+      if (r.status === 200 && r.bytes && r.bytes.length) sentryPhotos.set(name, URL.createObjectURL(new Blob([r.bytes], { type: "image/jpeg" })));
+    } catch {
+      sentryPhotos.delete(name); // tried again next time
+    }
+    if (state) renderSentry(state);
+  }
+  function renderSentry(s) {
+    const st = s.sentry;
+    $("sentryPanel").hidden = !st;
+    if (!st) return;
+    sentryOn = !!st.armed;
+    const btn = $("sentryBtn");
+    btn.textContent = sentryOn ? "On" : "Off";
+    btn.classList.toggle("on", sentryOn);
+    btn.setAttribute("aria-pressed", String(sentryOn));
+    btn.disabled = sending;
+    const where = s.host || "the computer";
+    $("sentryNote").textContent = sentryOn
+      ? `Watching ${where}'s cameras for movement.`
+      : `Off: ${where}'s cameras aren't being watched.`;
+    const events = st.events || [];
+    for (const e of events) if (e.photo && !sentryPhotos.has(e.photo)) sentryPhoto(e.photo);
+    const p = (n) => String(n).padStart(2, "0");
+    $("sentryAlerts").innerHTML = events.length
+      ? events
+          .map((e) => {
+            const t = new Date(e.at);
+            const when = `${t.toLocaleDateString()} ${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}`;
+            const img = e.photo && sentryPhotos.get(e.photo) ? `<img src="${esc(sentryPhotos.get(e.photo))}" alt="" />` : "";
+            const video = e.video ? `<br />Video: ${esc(e.video)}${e.seconds ? ` (${e.seconds} s)` : ""}` : "";
+            return `<div class="alert">${img}<div><b>${esc(e.camera)}</b><div class="meta">${esc(when)}${video}</div></div></div>`;
+          })
+          .join("")
+      : st.alerts ? '<div class="muted">No alerts yet.</div>' : "";
+  }
+
   // ---------- the takes on the computer: download them, then delete them from it ----------
   // Hand Tracker lists the takes in its remote recording folder (Hand Tracker on a phone keeps
   // its own, so none are listed there). The ones ticked come to this device a slice at a time
   // (as the apps can carry them too), each file checked by its length and a CRC32: in a browser
   // as one .zip in its downloads; in the Android app into Documents/Hand Tracker/Takes from
-  // <computer>; in the Windows and Linux app into a folder picked for them. Only then can they
+  // <computer>; in the Windows, Mac and Linux app into a folder picked for them. Only then can they
   // be deleted from the computer (two taps), which first checks every file against the same
   // CRC32s: one that didn't arrive whole, or changed since, stays.
   let takes = [], takesHere = false, takesAsked = false, takesBusy = false, takesArmed = 0, lastTakeAt = null;
@@ -585,8 +635,8 @@
 
   // ---------- the computer's Wi-Fi (from its own hotspot, or over Tailscale) ----------
   // Hand Tracker lists the networks around it; one tapped asks for its password (a saved one
-  // doesn't need it), and the computer joins it. Its hotspot moves to that network's channel,
-  // so a phone on the hotspot drops off for a moment and comes back.
+  // doesn't need it), and the computer joins it. Its hotspot goes off while it's on a network,
+  // so a phone on the hotspot then reaches it on that network (or over Tailscale).
   let networks = [], wifiOpen = false, lastWifiAt = null, wifiNow = "";
   async function loadWifi() {
     $("wifiNote").textContent = "Looking for networks…";
@@ -597,9 +647,9 @@
       networks = w.networks || [];
       wifiNow = w.current ? `On ${w.current.ssid} (signal ${w.current.signal}%).` : "Not on a Wi-Fi network.";
       $("wifiList").innerHTML = networks.length
-        ? networks.map((n, i) => `<div class="net" data-i="${i}"><button type="button" class="pick" data-i="${i}"><b>${esc(n.ssid)}</b><span>${n.signal}%${n.secure ? " · locked" : ""}${n.saved ? " · saved" : ""}${n.dfs ? " · no hotspot beside it" : ""}</span></button></div>`).join("")
+        ? networks.map((n, i) => `<div class="net" data-i="${i}"><button type="button" class="pick" data-i="${i}"><b>${esc(n.ssid)}</b><span>${n.signal}%${n.secure ? " · locked" : ""}${n.saved ? " · saved" : ""}</span></button></div>`).join("")
         : '<div class="muted">No networks found.</div>';
-      $("wifiNote").textContent = networks.some((n) => n.dfs) ? "A network marked “no hotspot beside it” is on a radar channel: the hotspot is off while the computer's on it." : "";
+      $("wifiNote").textContent = "";
       if (state) render();
     } catch (err) {
       $("wifiNote").textContent = err.auth ? needsKey() : (err && err.message) || unreachable();
@@ -703,6 +753,22 @@
 
     renderCameras(s);
     renderWifi(s);
+    renderSentry(s);
+    $("videoPanel").hidden = typeof s.video !== "boolean";
+    if (typeof s.video === "boolean") {
+      videoOn = s.video;
+      soundOn = s.sound !== false;
+      for (const [id, on] of [["videoBtn", videoOn], ["soundBtn", soundOn]]) {
+        $(id).textContent = on ? "On" : "Off";
+        $(id).classList.toggle("on", on);
+        $(id).setAttribute("aria-pressed", String(on));
+        $(id).disabled = sending || !!s.recording;
+      }
+      $("soundBtn").disabled = $("soundBtn").disabled || !videoOn;
+      $("videoNote").textContent = !videoOn
+        ? "Takes are motion capture only."
+        : `Each camera's video is saved with the take, in the Takes list below${soundOn ? ", with sound from the computer's microphone" : ""}.`;
+    }
     $("screenPanel").hidden = typeof s.screenPictures !== "boolean";
     if (typeof s.screenPictures === "boolean") {
       screenOn = s.screenPictures;

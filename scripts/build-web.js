@@ -22,6 +22,7 @@ const APP_FILES = [
   "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js", "ops-sessions.js", "rig-live.js", "motion-video.js",
   "natnet-parse.js", "stage-overlay.js", "remote-core.js", "phone-link-protocol.js", "phone-link-ui.js", "remote-record-ui.js", "remote.html", "remote-launcher.js", "remote-client.html", "remote-client.js", "gestures.js", "phone-control.html", "phone-control.js", "qr-code.js", "video-native.js",
   "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
+  "sentry.js", "camera-video.js", "object-finder.js", "object-finder-worker.js", "web-pc.js",
 ];
 
 const LIBRARY_FILES = [
@@ -36,6 +37,12 @@ const LIBRARY_FILES = [
     .filter((f) => /\.(js|wasm|data|binarypb)$/.test(f) || f === "pose_landmark_lite.tflite")
     .map((f) => `node_modules/@mediapipe/pose/${f}`),
   "node_modules/@mediapipe/drawing_utils/drawing_utils.js",
+  // MediaPipe's object finder, for Sentry mode's "ignore animals" (loaded only when that's on):
+  // the SIMD build only (every browser and Android WebView of the last few years has SIMD).
+  "node_modules/@mediapipe/tasks-vision/vision_bundle.js",
+  "node_modules/@mediapipe/tasks-vision/wasm/vision_wasm_internal.js",
+  "node_modules/@mediapipe/tasks-vision/wasm/vision_wasm_internal.wasm",
+  "models/efficientdet_lite0.tflite",
   "node_modules/fzstd/umd/index.js",
   "node_modules/three/build/three.min.js",
   "node_modules/three/examples/js/controls/OrbitControls.js",

@@ -72,7 +72,7 @@ public class RigServerPlugin extends Plugin {
     private static final int HEAD_BYTES = 16 * 1024;
     private static final int BODY_BYTES = 8192;
     private static final Set<String> ACTIONS = new HashSet<>(java.util.Arrays.asList(
-            "cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings"));
+            "cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry"));
     private static final Set<String> ROLES = new HashSet<>(java.util.Arrays.asList("", "head", "chest", "wrist_left", "wrist_right"));
     private static final Set<String> MODES = new HashSet<>(java.util.Arrays.asList("ego", "stereo", "freeform"));
     private static final String CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
@@ -547,11 +547,21 @@ public class RigServerPlugin extends Plugin {
                 for (String k : new String[] { "contributor", "location", "task" }) details.put(k, clean(d.opt(k), 200));
                 cmd.put("details", details);
             }
+            // Settings: whether the take details are needed, and each camera's video (and its
+            // sound) with the take; Sentry mode on or off. Only those, as booleans.
             JSONObject st = msg.optJSONObject("settings");
-            if (st != null && st.opt("detailsRequired") instanceof Boolean) {
+            if (st != null) {
                 JSObject settings = new JSObject();
-                settings.put("detailsRequired", st.optBoolean("detailsRequired"));
-                cmd.put("settings", settings);
+                for (String k : new String[] { "detailsRequired", "video", "sound" }) {
+                    if (st.opt(k) instanceof Boolean) settings.put(k, st.optBoolean(k));
+                }
+                if (settings.length() > 0) cmd.put("settings", settings);
+            }
+            JSONObject sn = msg.optJSONObject("sentry");
+            if (sn != null && sn.opt("armed") instanceof Boolean) {
+                JSObject sentry = new JSObject();
+                sentry.put("armed", sn.optBoolean("armed"));
+                cmd.put("sentry", sentry);
             }
             // The cameras to start (picked, with a role), the mode, and a running camera's role,
             // turn and flip: checked as the computer checks them (electron/remote-record.js).
@@ -576,7 +586,8 @@ public class RigServerPlugin extends Plugin {
             String missingPart = action.equals("pick") && !cmd.has("pick") ? "Which camera?"
                     : action.equals("camera") && !cmd.has("camera") ? "Which camera?"
                     : action.equals("mode") && !cmd.has("mode") ? "Which mode?"
-                    : action.equals("settings") && !cmd.has("settings") ? "Which setting?" : null;
+                    : action.equals("settings") && !cmd.has("settings") ? "Which setting?"
+                    : action.equals("sentry") && !cmd.has("sentry") ? "On or off?" : null;
             if (missingPart != null) {
                 json(out, 400, error(missingPart));
                 return;

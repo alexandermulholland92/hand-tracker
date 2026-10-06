@@ -93,7 +93,32 @@ async function pullFiles(js) {
   return written;
 }
 
+// The phone app's own copy of what it may ask another computer's Hand Tracker for
+// (RemotePlugin.java's RIG and RIG_PATH: Java can't load remote-record.js) is the same as the
+// list the desktop app and these checks use: the same paths, word for word, and the same
+// answer for every address and path tried. (Java and JavaScript read these patterns alike.)
+function checkRigRulesMatch() {
+  const { RIG_HOST, RIG_PATH } = require("../electron/remote-record.js");
+  const java = fs.readFileSync(path.join(ROOT, "android/app/src/main/java/com/handtracker/app/RemotePlugin.java"), "utf8");
+  const pattern = (name) => {
+    const m = new RegExp(`Pattern ${name} = Pattern\\.compile\\("((?:[^"\\\\]|\\\\.)*)"\\)`).exec(java);
+    return m ? m[1].replace(/\\\\/g, "\\") : null; // the Java string's \\ is one backslash
+  };
+  const out = { host: pattern("RIG"), path: pattern("RIG_PATH") };
+  if (!out.host || !out.path) return check("The Android app's rules for reaching a computer match the desktop app's", false, JSON.stringify(out));
+  const javaHost = new RegExp(out.host), javaPath = new RegExp(out.path);
+  const hosts = ["pi:47821", "PI.tail1234.ts.net:47821", "100.101.2.3:47821", "[fd7a::1]:47821", "[FD7A::1]:1", "pi", "pi:", "pi:123456", "-pi:1", "pi-:1", "a..b:1", "pi :1", "pi:1/x"];
+  const paths = ["/api/state", "/api/command", "/api/wifi", "/api/takes", "/api/preview?i=0", "/api/preview?i=3&full=1", "/api/preview?i=4", "/api/preview?i=0&full=2",
+    "/api/take?f=Sam-Smith_2s.json&at=0", "/api/take?f=a%20b%2Fc.mcap&at=2097152", "/api/take?f=a/b.json&at=0", "/api/take?f=a.json", "/api/take?f=a.json&at=-1", "/api/take?f=&at=0",
+    "/api/takes/x", "/api/state?x", "/api/../state", "/", "/remote-client.js"];
+  out.differ = [...hosts.filter((h) => javaHost.test(h) !== RIG_HOST.test(h)), ...paths.filter((p) => javaPath.test(p) !== RIG_PATH.test(p))];
+  out.samePathText = out.path === RIG_PATH.source.replace(/\\\//g, "/");
+  check("The Android app's rules for reaching a computer (RemotePlugin.java) match the desktop app's (remote-record.js): the same paths, and the same answer for every address and path tried",
+    out.samePathText && !out.differ.length, JSON.stringify({ differ: out.differ, samePathText: out.samePathText }));
+}
+
 async function run() {
+  checkRigRulesMatch();
   execSync("node scripts/build-web.js", { cwd: ROOT, stdio: "inherit" });
   // The phone's /__fleet/<rig>/<camera> (RemotePlugin.java serveFleet): the fake Remote
   // plugin (fake-capacitor.js) says which dashboard and which cookie, as the WebView's would be.

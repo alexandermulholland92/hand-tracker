@@ -1,5 +1,5 @@
 /**
- * pc-control.js — controlling this computer with your hands (Windows and Linux app):
+ * pc-control.js — controlling this computer with your hands (Windows, Mac and Linux app):
  *
  *  - Hand mouse: the pointer follows your palm; a quick curl of the index finger is a left
  *    click (curl and hold to drag), a quick curl of the middle finger a right click. Curl

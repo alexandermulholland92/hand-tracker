@@ -1,5 +1,5 @@
 /**
- * remote-record-ui.js — the Record card's "Remote recording" (Windows and Linux app): a
+ * remote-record-ui.js — the Record card's "Remote recording" (Windows, Mac and Linux app): a
  * phone's browser starts and stops motion capture here, with a live preview of each camera
  * (made for a camera rig, a Raspberry Pi say, with nobody at its screen). The web server is
  * electron/remote-record.js, the phone's page remote-client.html (and .js); this turns it on,
@@ -12,7 +12,7 @@
  *             any others picked run too) or Freeform (any): Start cameras and Start recording
  *             need the cameras the mode does;
  *   settings — whether the take details are needed before recording (a hidden switch on the
- *             page);
+ *             page), and whether each camera's video (and sound) is recorded with the take;
  *   cameras — start Several cameras with the cameras picked that are plugged in;
  *   record  — start motion capture (starting the cameras first, if need be);
  *   stop    — stop it, and save the take into the remote recording folder by itself, in the
@@ -24,7 +24,11 @@
  *             take is stopped, its name ("Sam_Lab-2_Pick-up-cup_2026-10-01_16-30-00") and
  *             its metadata;
  *   camera  — one running camera's role (which moves it to that block of the grid), its turn
- *             (0, 90, 180 or 270 degrees) or its flip.
+ *             (0, 90, 180 or 270 degrees) or its flip;
+ *   sentry  — Sentry mode on or off (sentry.js; only while it isn't hidden or it's on).
+ * With each take, each camera's video is recorded too (with sound from this computer's
+ * microphone), saved beside the take's motion capture as <take>-video-<role>.webm (.mp4 on a
+ * phone): the phone's Takes list has them too.
  * Only cameras that are plugged in get a tile. Nothing starts by itself: the cameras only run once the phone (or someone here) asks.
  * While the phone's page is open, each camera's picture with its hands drawn goes to it a few
  * times a second.
@@ -50,12 +54,17 @@
   // phone's own cameras, front and back, and any plugged into it).
   let onPhone = false;
   const cams = () => global.MultiCamera;
-  let on = false, pending = "", lastTake = null, settings = {};
+  let on = false, pending = "", lastTake = null, settings = {}, lastStatus = null;
+  let videos = []; // each camera's video while a take records: { role, rec, view }
+  let host = null; // desktop or mobile: saving the videos
+  const remoteVideo = () => prefs.remoteVideo !== false;
+  const remoteSound = () => prefs.remoteSound !== false;
   let stateTimer = null, previewTimer = null, shownQr = "";
 
   // ---------- the card ----------
   function show(s) {
     on = s.on;
+    lastStatus = s;
     const toggle = $("remoteToggle");
     toggle.classList.toggle("active", s.on);
     toggle.setAttribute("aria-pressed", String(s.on));
@@ -87,6 +96,11 @@
     const auto = settings.autostart || {};
     $("remoteAutostartRow").hidden = !auto.available;
     $("remoteAutostart").checked = !!auto.on;
+    if ($("remoteVideo")) {
+      $("remoteVideo").checked = remoteVideo();
+      $("remoteSound").checked = remoteSound();
+      $("remoteSound").disabled = !remoteVideo();
+    }
   }
 
   // ---------- the take details ----------
@@ -137,7 +151,8 @@
     const locked = detailsLocked();
     const common = { ...st, pending, lastTake, notice, details: takeDetails || details(), detailsLocked: locked, detailsRequired: detailsRequired() };
     return {
-      ...common, kind: "rig",
+      ...common, kind: "rig", video: remoteVideo(), sound: remoteSound(),
+      sentry: global.Sentry ? global.Sentry.remoteState() : null,
       // (Pictures on its own screen: OAK cameras only, which a phone doesn't have.)
       mode: modeNow(), requirement: requirement(), screenPictures: onPhone ? undefined : cams().screenPictures(),
       available: { at: scanned.at, scanning: scanned.scanning, note: scanned.note, cameras: available() },
@@ -362,7 +377,63 @@
       const saved = await app.saveMotionNow();
       if (saved && !saved.ok) return { ok: false, message: `The last take couldn't be saved, so a new one wasn't started: ${saved.message}` };
     }
-    return cams().startRecording();
+    const r = await cams().startRecording();
+    if (r.ok) startVideos();
+    return r;
+  }
+
+  // Each camera's video, while a take records (its picture as drawn, with the hands).
+  function startVideos() {
+    stopVideos(false);
+    if (!remoteVideo() || !global.CameraVideo || !global.CameraVideo.supported()) return;
+    const state = cams().remoteState().cameras;
+    const views = cams().sentryViews ? cams().sentryViews() : [];
+    for (const src of cams().previewSources()) {
+      const cam = state.find((c) => c.index === src.i);
+      if (!src.canvas || !cam || cam.error) continue;
+      const view = views[src.i];
+      try {
+        if (view && view.want) view.want(true);
+        const rec = global.CameraVideo.start({ canvas: src.canvas, fps: 15, audio: remoteSound(), preferMp4: onPhone });
+        videos.push({ role: cam.role || cam.name, rec, view });
+      } catch (err) {
+        if (view && view.want) view.want(false);
+        notice = { at: Date.now(), message: `${cam.role || cam.name}'s video didn't start: ${errText(err)}` };
+      }
+    }
+  }
+  // -> [{ role, clip }] (clip null if it failed); keep false: they're thrown away.
+  async function stopVideos(keep = true) {
+    const list = videos;
+    videos = [];
+    const out = [];
+    for (const v of list) {
+      if (v.view && v.view.want) v.view.want(false);
+      try {
+        const clip = await v.rec.stop();
+        if (keep) out.push({ role: v.role, clip });
+      } catch {
+        if (keep) out.push({ role: v.role, clip: null });
+      }
+    }
+    return out;
+  }
+  // Saved beside the take: <take>-video-<role>. -> the files' names
+  async function saveVideos(baseName, list) {
+    const saved = [];
+    for (const { role, clip } of list) {
+      if (!clip || !clip.blob.size || !host) continue;
+      const slug = String(role).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "camera";
+      try {
+        const data = new Uint8Array(await clip.blob.arrayBuffer());
+        const res = await host.remote.saveTake({ baseName, files: [{ format: clip.ext, suffix: `-video-${slug}`.slice(0, 24), ext: clip.ext, data }] });
+        const r = (res.results || [])[0];
+        if (r && r.ok) saved.push(r.path.split(/[\\/]/).pop());
+      } catch {
+        // (the take's result says what was saved)
+      }
+    }
+    return saved;
   }
 
   // The take gets the details it started with (they can't change meanwhile) and its length,
@@ -370,18 +441,25 @@
   async function stopAndSave() {
     const d = takeDetails || details();
     const seconds = Math.round(cams().remoteState().elapsed_s * 100) / 100;
+    const startedAt = Date.now() - seconds * 1000;
     const take = await cams().stopRecording(true, { metadata: { ...d, length: lengthText(seconds), length_s: seconds } });
+    const clips = await stopVideos(true);
     const at = new Date().toISOString();
+    const name = takeName(d, (take && take.recorded_at) || startedAt, seconds);
+    const videoFiles = await saveVideos(name, clips);
     if (!take) {
-      lastTake = { ok: false, at, message: "No hands were recorded, so nothing was saved." };
-      return { ok: false, message: lastTake.message };
+      takeDetails = null;
+      lastTake = videoFiles.length
+        ? { ok: true, at, files: videoFiles, duration: seconds, hands: 0, details: d }
+        : { ok: false, at, message: "No hands were recorded, so nothing was saved." };
+      return { ok: lastTake.ok, message: videoFiles.length ? `No hands were recorded; saved the video: ${videoFiles.join(", ")}` : lastTake.message };
     }
-    const saved = await app.saveMotionNow(takeName(d, take.recorded_at || Date.now(), seconds));
+    const saved = await app.saveMotionNow(name);
     takeDetails = null; // saved: the next take can have others
     lastTake = saved && saved.ok
-      ? { ok: true, at, files: saved.files, dir: saved.dir, duration: seconds, hands: take.hands.length, details: d }
-      : { ok: false, at, message: `Recorded, but not saved: ${(saved && saved.message) || "export it on the computer"}` };
-    return { ok: lastTake.ok, message: lastTake.ok ? `Saved ${saved.files.join(", ")}` : lastTake.message };
+      ? { ok: true, at, files: [...saved.files, ...videoFiles], dir: saved.dir, duration: seconds, hands: take.hands.length, details: d }
+      : { ok: false, at, message: `Recorded, but not saved: ${(saved && saved.message) || "export it on the computer"}${videoFiles.length ? ` (the video was: ${videoFiles.join(", ")})` : ""}` };
+    return { ok: lastTake.ok, message: lastTake.ok ? `Saved ${lastTake.files.join(", ")}` : lastTake.message };
   }
 
   // Runs a step in the background (starting cameras takes a while), showing what's going on.
@@ -422,8 +500,20 @@
       setPref("remoteMode", data.mode);
       return { ok: true, message: "" };
     }
+    if (action === "sentry") {
+      if (!global.Sentry || !global.Sentry.remoteState()) return { ok: false, message: "Sentry mode isn't on this computer." };
+      return global.Sentry.command(data.sentry || {});
+    }
     if (action === "settings") {
       const st = data.settings || {};
+      // Each camera's video with the take, and its sound (from the next take).
+      if (typeof st.video === "boolean" || typeof st.sound === "boolean") {
+        if (recording) return { ok: false, message: "Stop recording first." };
+        if (typeof st.video === "boolean") setPref("remoteVideo", st.video);
+        if (typeof st.sound === "boolean") setPref("remoteSound", st.sound);
+        showSettings();
+        return { ok: true, message: !remoteVideo() ? "Takes are motion capture only." : remoteSound() ? "Each camera's video is recorded with the take, with sound." : "Each camera's video is recorded with the take, without sound." };
+      }
       // The OAK cameras' pictures on this computer's screen (any time: recording doesn't mind).
       if (typeof st.screenPictures === "boolean" && !onPhone) {
         cams().setScreenPictures(st.screenPictures);
@@ -481,6 +571,7 @@
     }
     if (action === "close") {
       if (recording) return { ok: false, message: "Stop recording first." };
+      await stopVideos(false);
       cams().close();
       scan(); // the cameras let go are listed again
       return { ok: true, message: "Cameras stopped." };
@@ -490,7 +581,7 @@
 
   function init(opts) {
     // A link to the page for opening a rig's remote page (remote.html): in place on the website
-    // and in the Android app (it has a way back), a window of its own in the Windows and Linux app.
+    // and in the Android app (it has a way back), a window of its own in the Windows, Mac and Linux app.
     const link = $("remoteLink");
     if (link) {
       link.hidden = false;
@@ -501,6 +592,7 @@
       }
     }
     remote = (opts.desktop && opts.desktop.remote) || (opts.mobile && opts.mobile.remote) || null;
+    host = opts.desktop || opts.mobile || null;
     if (!remote || !$("remoteRec")) return;
     onPhone = !opts.desktop;
     // On a phone takes always go to Documents/Hand Tracker, and it doesn't open by itself.
@@ -514,10 +606,10 @@
     $("remoteRec").hidden = false;
     remote.onStatus(show);
     remote.onWantPreviews(setPreviews);
-    remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st }) => {
+    remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st, sentry }) => {
       let result;
       try {
-        result = await carryOut(action, { details: d, camera, pick: p, mode, settings: st });
+        result = await carryOut(action, { details: d, camera, pick: p, mode, settings: st, sentry });
       } catch (err) {
         result = { ok: false, message: errText(err) };
       }
@@ -539,6 +631,17 @@
       settings.folder = await remote.chooseFolder();
       showSettings();
     });
+    for (const [id, key] of [["remoteVideo", "remoteVideo"], ["remoteSound", "remoteSound"]]) {
+      $(id).addEventListener("change", (e) => {
+        if (cams().isRecording()) {
+          showSettings(); // (from the next take: not halfway through one)
+          return;
+        }
+        setPref(key, e.target.checked);
+        showSettings();
+        push();
+      });
+    }
     $("remoteAutostart").addEventListener("change", async (e) => {
       try {
         const turnedOn = await remote.setAutostart(e.target.checked);
@@ -559,5 +662,12 @@
     });
   }
 
-  global.RemoteRecordUI = { init, _carryOut: carryOut, _takeName: takeName };
+  // This computer's remote recording page over Tailscale (no key in it: only your own devices
+  // reach it), for a Sentry alert to link to; "" if it has none.
+  function tailnetLink() {
+    const u = ((lastStatus && lastStatus.urls) || []).find((x) => !x.keyed && x.kind === "Tailscale");
+    return u ? u.url : "";
+  }
+
+  global.RemoteRecordUI = { init, tailnetLink, _carryOut: carryOut, _takeName: takeName };
 })(window);

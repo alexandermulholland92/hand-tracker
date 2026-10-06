@@ -874,11 +874,41 @@
     for (const cb of statusCallbacks) cb(stalled ? "stalled" : "ok");
   }
 
+  // A timer that isn't slowed down while the page is hidden. A browser slows a hidden page's own
+  // timers to one a second (and later one a minute); a worker's timers it leaves be, so while
+  // the page is hidden the wait happens in a tiny worker, which then says when. (The desktop
+  // app doesn't slow its timers at all.)
+  const steadyTimer = (() => {
+    let worker = null, next = 0;
+    const waiting = new Map();
+    return (fn, ms) => {
+      if (!document.hidden || typeof Worker === "undefined" || worker === false) return setTimeout(fn, ms);
+      if (!worker) {
+        try {
+          const src = "onmessage = (e) => setTimeout(() => postMessage(e.data.id), e.data.ms);";
+          worker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+          worker.onmessage = (e) => {
+            const f = waiting.get(e.data);
+            waiting.delete(e.data);
+            if (f) f();
+          };
+        } catch {
+          worker = false; // (not allowed here: the page's own timers, then)
+          return setTimeout(fn, ms);
+        }
+      }
+      const id = ++next;
+      waiting.set(id, fn);
+      worker.postMessage({ id, ms });
+      return id;
+    };
+  })();
+
   // The capture loop runs on animation frames, which nearly stop while the window is
   // minimized (about one a second, and the page isn't even told it's hidden). So each tick
   // also has a timer as a backup, which runs it when no animation frame has come in time
-  // (the desktop app doesn't slow background timers): tracking — and whatever it drives,
-  // like the hand mouse — carries on at the camera's pace.
+  // (steadyTimer: not slowed down while hidden): tracking — and whatever it drives, like the
+  // hand mouse — carries on at the camera's pace.
   function startLoop() {
     const id = ++loopId;
     let lastTime = -1;
@@ -901,7 +931,7 @@
       // straight away rather than 40 ms after this one: with the Full model a frame takes
       // about as long again, which would have halved the rate.
       const stopped = document.hidden || performance.now() - lastAnimationFrame > 250;
-      setTimeout(run, stopped ? 8 : 40);
+      steadyTimer(run, stopped ? 8 : 40);
     };
     loopKick = () => {
       if (id === loopId && !busy) schedule();

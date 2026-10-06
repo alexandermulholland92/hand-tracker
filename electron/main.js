@@ -21,7 +21,7 @@ const { OakCamera } = require("./oak");
 const { OpsClient } = require("./ops");
 const { FleetClient } = require("./fleet");
 const { PhoneLinkServer } = require("./phone-link");
-const { RemoteRecordServer } = require("./remote-record");
+const { RemoteRecordServer, RIG_HOST, RIG_PATH } = require("./remote-record");
 const { createWifi } = require("./wifi");
 
 const APP_ROOT = path.join(__dirname, "..");
@@ -36,7 +36,8 @@ const PAGES = new Map([
 // Keys that work even while the app is minimized: the hand mouse and the floating keyboard on/off.
 const SHORTCUTS = { mouse: "CommandOrControl+Alt+M", keyboard: "CommandOrControl+Alt+K" };
 const ALLOWED_PERMISSIONS = new Set(["media", "fullscreen", "clipboard-sanitized-write"]);
-const SAVE_EXTENSIONS = new Set(["json", "csv", "bvh", "glb", "c3d", "trc", "npz", "mcap"]); // motion capture exports
+// Motion capture exports, and remote recording's and Sentry mode's videos and photos.
+const SAVE_EXTENSIONS = new Set(["json", "csv", "bvh", "glb", "c3d", "trc", "npz", "mcap", "webm", "mp4", "jpg"]);
 const readFile = promisify(fs.readFile); // callback fs is asar-aware in packaged builds
 
 const MIME = {
@@ -248,6 +249,9 @@ function buildMenu() {
       ],
     },
   ];
+  // A Mac's menu bar starts with the app's own menu, and copy and paste in text boxes
+  // (Cmd+C, Cmd+V) only work through an Edit menu.
+  if (process.platform === "darwin") template.splice(0, 0, { role: "appMenu" }), template.splice(2, 0, { role: "editMenu" });
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
@@ -574,6 +578,7 @@ function registerOpsIpc() {
 // Only while "Let a phone control this PC" is on; the pairing key is kept encrypted by the
 // operating system (or for this run only, where it can't be).
 let phoneLink = null;
+let webLink = null;
 function registerLinkIpc() {
   const file = path.join(app.getPath("userData"), "phone-link.json");
   const keyStore = {
@@ -616,6 +621,17 @@ function registerLinkIpc() {
   handle("link:start", () => phoneLink.start());
   handle("link:stop", () => phoneLink.stop());
   handle("link:new-key", () => phoneLink.newKey());
+
+  // The Hand Tracker website's hand mouse, through this app (electron/web-link.js): only while
+  // "Let the website control this computer" is on, from this computer only.
+  const { WebLink } = require("./web-link");
+  webLink = new WebLink({ handle: (type, d) => handlePhone(type, d) });
+  webLink.on("status", (st) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("weblink:status", st);
+  });
+  handle("weblink:status", () => webLink.status());
+  handle("weblink:start", () => webLink.start());
+  handle("weblink:stop", () => webLink.stop());
 }
 
 // ---------- Remote recording: a phone starts and stops motion capture (remote-record.js) ----------
@@ -624,19 +640,37 @@ function remoteFolder() {
 }
 
 // Opening Hand Tracker at login, waiting for the phone (--remote-standby): the desktop's
-// autostart entry on Linux, a login item on Windows. Only for the installed app.
+// autostart entry on Linux, a login item on Windows, a launch agent on a Mac (a login item
+// there can't be given --remote-standby). Only for the installed app.
 const autostart = {
-  file: () => path.join(os.homedir(), ".config", "autostart", "hand-tracker.desktop"),
-  available: () => app.isPackaged && (process.platform === "linux" || process.platform === "win32"),
+  file: () =>
+    process.platform === "darwin"
+      ? path.join(os.homedir(), "Library", "LaunchAgents", "com.handtracker.app.standby.plist")
+      : path.join(os.homedir(), ".config", "autostart", "hand-tracker.desktop"),
+  available: () => app.isPackaged && ["linux", "win32", "darwin"].includes(process.platform),
   get() {
     if (!this.available()) return false;
-    if (process.platform === "linux") return fs.existsSync(this.file());
+    if (process.platform !== "win32") return fs.existsSync(this.file());
     return app.getLoginItemSettings({ args: ["--remote-standby"] }).openAtLogin;
   },
   set(on) {
     if (!this.available()) throw new Error("Only the installed app can open at login.");
     if (process.platform === "win32") {
       app.setLoginItemSettings({ openAtLogin: !!on, args: ["--remote-standby"] });
+    } else if (process.platform === "darwin" && on) {
+      const xml = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const plist = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0"><dict>',
+        "<key>Label</key><string>com.handtracker.app.standby</string>",
+        `<key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>--remote-standby</string></array>`,
+        "<key>RunAtLoad</key><true/>",
+        "<key>ProcessType</key><string>Interactive</string>",
+        "</dict></plist>",
+      ];
+      fs.mkdirSync(path.dirname(this.file()), { recursive: true });
+      fs.writeFileSync(this.file(), plist.join("\n") + "\n");
     } else if (on) {
       const exe = process.env.APPIMAGE || process.execPath;
       fs.mkdirSync(path.dirname(this.file()), { recursive: true });
@@ -652,10 +686,8 @@ const autostart = {
 };
 
 // One request from this app's remote recording page to another computer's Hand Tracker
-// (a page can't reach a device on the network itself). Only that page's own requests, to a
-// name and port: its state, a command (JSON), a camera's preview and the Wi-Fi networks.
-const RIG_HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*):(\d{1,5})$/i;
-const RIG_PATH = /^\/api\/(state|command|wifi|takes|preview\?i=[0-3](&full=1)?|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/;
+// (a page can't reach a device on the network itself): only what RIG_HOST and RIG_PATH allow
+// (remote-record.js).
 const RIG_ANSWER_BYTES = 4 << 20;
 function rigRequest({ rig, path: where, method = "GET", body = null, key = "" } = {}) {
   const m = RIG_HOST.exec(String(rig || ""));
@@ -900,6 +932,11 @@ function registerIpc() {
     await fs.promises.mkdir(dir, { recursive: true });
     return { dir, results: await writeFiles(dir, baseName, files) };
   });
+  // Sentry mode's alerts through ntfy (checked in electron/ntfy.js first).
+  handle("sentry:ntfy", async (event, req) => {
+    const { cleanNtfy, sendNtfy } = require("./ntfy");
+    return sendNtfy(cleanNtfy(req));
+  });
   handle("remote:choose-folder", async (event) => {
     const dir = await chooseFolder(event, "Choose a folder for remote recordings");
     if (dir) writeSettings({ remoteDir: dir });
@@ -1113,6 +1150,7 @@ app.on("will-quit", () => {
   for (const id of [...oakStreams.keys()]) stopOakStream(id);
   if (natnet.client) natnet.client.stop();
   if (phoneLink) phoneLink.stop();
+  if (webLink) webLink.stop();
   if (remoteRecord) remoteRecord.stop();
   if (mediaDir) fs.rmSync(mediaDir, { recursive: true, force: true });
 });

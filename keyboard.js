@@ -2,7 +2,8 @@
  * keyboard.js — the floating keyboard (keyboard.html), a window that stays on top and never
  * takes the keyboard focus, so each key goes to the app you're using. Click keys with the
  * hand mouse (a quick index-finger curl) or an ordinary mouse. Letters and symbols are
- * typed as characters; Ctrl, Alt and Win apply to the next key (Ctrl then C copies).
+ * typed as characters; Ctrl, Alt and Win (Cmd and Option on a Mac) apply to the next key
+ * (Ctrl then C copies).
  */
 
 (function () {
@@ -11,13 +12,15 @@
   const statusEl = document.getElementById("status");
   const mouseBtn = document.getElementById("mouseBtn");
 
+  // On a Mac, Win is the Command key and Alt is Option (Cmd then C copies there).
+  const MAC = /Macintosh/.test(navigator.userAgent);
   // [label, key name, shifted label, width]; a single character's key name is itself.
   const ROWS = [
     [["`", "`", "~"], ["1", "1", "!"], ["2", "2", "@"], ["3", "3", "#"], ["4", "4", "$"], ["5", "5", "%"], ["6", "6", "^"], ["7", "7", "&"], ["8", "8", "*"], ["9", "9", "("], ["0", "0", ")"], ["-", "-", "_"], ["=", "=", "+"], ["⌫", "backspace", null, 1.8]],
     [["Tab", "tab", null, 1.4], ..."qwertyuiop".split("").map((c) => [c, c]), ["[", "[", "{"], ["]", "]", "}"], ["\\", "\\", "|", 1.3]],
     [["Caps", "capslock", null, 1.7], ..."asdfghjkl".split("").map((c) => [c, c]), [";", ";", ":"], ["'", "'", '"'], ["Enter", "enter", null, 2]],
     [["Shift", "shift", null, 2.2], ..."zxcvbnm".split("").map((c) => [c, c]), [",", ",", "<"], [".", ".", ">"], ["/", "/", "?"], ["↑", "up"], ["Del", "delete", null, 1.2]],
-    [["Ctrl", "ctrl", null, 1.3], ["Win", "win", null, 1.2], ["Alt", "alt", null, 1.2], ["Esc", "esc", null, 1.2], ["Space", "space", null, 6], ["←", "left"], ["↓", "down"], ["→", "right"]],
+    [["Ctrl", "ctrl", null, 1.3], [MAC ? "⌘ Cmd" : "Win", "win", null, 1.2], [MAC ? "⌥ Opt" : "Alt", "alt", null, 1.2], ["Esc", "esc", null, 1.2], ["Space", "space", null, 6], ["←", "left"], ["↓", "down"], ["→", "right"]],
   ];
   const MODIFIERS = new Set(["shift", "ctrl", "alt", "win"]);
   const held = { shift: false, ctrl: false, alt: false, win: false }; // apply to the next key

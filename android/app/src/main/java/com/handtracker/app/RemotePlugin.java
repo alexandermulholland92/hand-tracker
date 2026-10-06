@@ -209,62 +209,79 @@ public class RemotePlugin extends Plugin {
     private static final int RIG_TIMEOUT_MS = 10000;
     private static final int RIG_MAX_BYTES = 4 * 1024 * 1024;
 
+    // A computer's answer: its status, Content-Type and body.
+    static final class RigAnswer {
+        final int status;
+        final String type;
+        final byte[] body;
+
+        RigAnswer(int status, String type, byte[] body) {
+            this.status = status;
+            this.type = type;
+            this.body = body;
+        }
+    }
+
+    // One request to another computer's Hand Tracker (rig: "name:port"), only the paths remote
+    // recording has (RIG_PATH): also for SentryWatchService, which looks for Sentry mode's alerts.
+    static RigAnswer fetchRig(String rig, String path, String method, String body, String key) throws IOException {
+        Matcher m = RIG.matcher(rig == null ? "" : rig);
+        int port = m.matches() ? Integer.parseInt(m.group(5)) : 0;
+        if (port < 1 || port > 65535) throw new IOException("That isn't a computer's name and port.");
+        String host = m.group(1).replaceAll("^\\[|\\]$", "");
+        boolean post = "POST".equals(method);
+        if (path == null || !RIG_PATH.matcher(path).matches() || !(post || "GET".equals(method)) || post != "/api/command".equals(path)) throw new IOException("Not a remote recording request.");
+        if (body == null) body = "";
+        if (body.length() > 8192) throw new IOException("Too long.");
+        byte[] b = body.getBytes(StandardCharsets.UTF_8);
+        StringBuilder head = new StringBuilder();
+        head.append(method).append(' ').append(path).append(" HTTP/1.1\r\n")
+                .append("Host: ").append(m.group(1)).append(':').append(port).append("\r\n")
+                .append("Connection: close\r\n");
+        if (key != null && RIG_KEY.matcher(key).matches()) head.append("X-Key: ").append(key).append("\r\n");
+        if (post) head.append("Content-Type: application/json\r\nContent-Length: ").append(b.length).append("\r\n");
+        head.append("\r\n");
+        byte[] all;
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), RIG_TIMEOUT_MS);
+            socket.setSoTimeout(RIG_TIMEOUT_MS);
+            OutputStream os = socket.getOutputStream();
+            os.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
+            if (post) os.write(b);
+            os.flush();
+            all = readAll(socket.getInputStream(), RIG_MAX_BYTES);
+        }
+        int split = indexOf(all, new byte[] {'\r', '\n', '\r', '\n'}, 0);
+        if (split < 0) throw new IOException("Not an answer from Hand Tracker.");
+        String[] lines = new String(all, 0, split, StandardCharsets.ISO_8859_1).split("\r\n");
+        String[] first = lines[0].split(" ");
+        if (first.length < 2 || !first[0].startsWith("HTTP/")) throw new IOException("Not an answer from Hand Tracker.");
+        String type = "";
+        boolean chunked = false;
+        int length = -1;
+        for (int i = 1; i < lines.length; i++) {
+            int c = lines[i].indexOf(':');
+            if (c < 0) continue;
+            String name = lines[i].substring(0, c).trim().toLowerCase();
+            String value = lines[i].substring(c + 1).trim();
+            if (name.equals("content-type")) type = value;
+            else if (name.equals("content-length")) length = Integer.parseInt(value);
+            else if (name.equals("transfer-encoding")) chunked = value.toLowerCase().contains("chunked");
+        }
+        byte[] rest = java.util.Arrays.copyOfRange(all, split + 4, all.length);
+        byte[] out = chunked ? dechunk(rest) : length >= 0 && length < rest.length ? java.util.Arrays.copyOf(rest, length) : rest;
+        return new RigAnswer(Integer.parseInt(first[1]), type, out);
+    }
+
     @PluginMethod
     public void rigRequest(PluginCall call) {
         pool.execute(() -> {
             try {
-                Matcher m = RIG.matcher(call.getString("rig", ""));
-                int port = m.matches() ? Integer.parseInt(m.group(5)) : 0;
-                if (port < 1 || port > 65535) throw new IOException("That isn't a computer's name and port.");
-                String host = m.group(1).replaceAll("^\\[|\\]$", "");
-                String path = call.getString("path", "");
-                String method = call.getString("method", "GET");
-                boolean post = "POST".equals(method);
-                if (!RIG_PATH.matcher(path).matches() || !(post || "GET".equals(method)) || post != "/api/command".equals(path)) throw new IOException("Not a remote recording request.");
-                String body = call.getString("body", "");
-                if (body.length() > 8192) throw new IOException("Too long.");
-                byte[] b = body.getBytes(StandardCharsets.UTF_8);
-                StringBuilder head = new StringBuilder();
-                head.append(method).append(' ').append(path).append(" HTTP/1.1\r\n")
-                        .append("Host: ").append(m.group(1)).append(':').append(port).append("\r\n")
-                        .append("Connection: close\r\n");
-                String key = call.getString("key", "");
-                if (RIG_KEY.matcher(key).matches()) head.append("X-Key: ").append(key).append("\r\n");
-                if (post) head.append("Content-Type: application/json\r\nContent-Length: ").append(b.length).append("\r\n");
-                head.append("\r\n");
-                byte[] all;
-                try (Socket socket = new Socket()) {
-                    socket.connect(new InetSocketAddress(host, port), RIG_TIMEOUT_MS);
-                    socket.setSoTimeout(RIG_TIMEOUT_MS);
-                    OutputStream os = socket.getOutputStream();
-                    os.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
-                    if (post) os.write(b);
-                    os.flush();
-                    all = readAll(socket.getInputStream(), RIG_MAX_BYTES);
-                }
-                int split = indexOf(all, new byte[] {'\r', '\n', '\r', '\n'}, 0);
-                if (split < 0) throw new IOException("Not an answer from Hand Tracker.");
-                String[] lines = new String(all, 0, split, StandardCharsets.ISO_8859_1).split("\r\n");
-                String[] first = lines[0].split(" ");
-                if (first.length < 2 || !first[0].startsWith("HTTP/")) throw new IOException("Not an answer from Hand Tracker.");
-                String type = "";
-                boolean chunked = false;
-                int length = -1;
-                for (int i = 1; i < lines.length; i++) {
-                    int c = lines[i].indexOf(':');
-                    if (c < 0) continue;
-                    String name = lines[i].substring(0, c).trim().toLowerCase();
-                    String value = lines[i].substring(c + 1).trim();
-                    if (name.equals("content-type")) type = value;
-                    else if (name.equals("content-length")) length = Integer.parseInt(value);
-                    else if (name.equals("transfer-encoding")) chunked = value.toLowerCase().contains("chunked");
-                }
-                byte[] rest = java.util.Arrays.copyOfRange(all, split + 4, all.length);
-                byte[] out = chunked ? dechunk(rest) : length >= 0 && length < rest.length ? java.util.Arrays.copyOf(rest, length) : rest;
+                RigAnswer a = fetchRig(call.getString("rig", ""), call.getString("path", ""), call.getString("method", "GET"), call.getString("body", ""), call.getString("key", ""));
                 JSObject ret = new JSObject();
-                ret.put("status", Integer.parseInt(first[1]));
-                ret.put("type", type);
-                ret.put("body", Base64.encodeToString(out, Base64.NO_WRAP));
+                ret.put("status", a.status);
+                ret.put("type", a.type);
+                ret.put("body", Base64.encodeToString(a.body, Base64.NO_WRAP));
                 call.resolve(ret);
             } catch (Exception e) {
                 call.reject(e.getMessage() == null ? e.toString() : e.getMessage());

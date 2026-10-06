@@ -13,8 +13,8 @@
  * random key (shown here as a QR code), and every request must carry it, so only a phone that
  * has read the code can see the cameras or start anything. That page is plain HTTP, like most
  * devices' own pages on a home network: the key and the previews aren't encrypted on the way.
- * A phone on this computer's own hotspot (a Raspberry Pi's, pi/hotspot-setup.sh: interface
- * htap0) needs no code either: the hotspot's password is what keeps others out. Phones there
+ * A phone on this computer's own hotspot (a Raspberry Pi's, pi/hotspot-setup.sh: the computer
+ * is 10.42.0.1 on it) needs no code either: the hotspot's password is what keeps others out. Phones there
  * and over Tailscale (both encrypted on the way) can also see the Wi-Fi networks around and
  * have this computer join one (wifi, from main.js: NetworkManager's), password and all.
  * Without the key, a request must be addressed to this computer by its own name or address (so
@@ -65,12 +65,20 @@ const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it t
 const FULL_WAIT_MS = 400; // a full-screen request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
-const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "sentry"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
 const ROLES = ["", "head", "chest", "wrist_left", "wrist_right"];
 const MODES = ["ego", "stereo", "freeform"];
 // The page's script and style are its own (nothing inline); pictures come as blobs.
+// What the apps may ask another computer's Hand Tracker for, for its remote recording page
+// (a page can't reach a device on the network itself): a computer by name or address and port,
+// and only the page's own requests (its state, a command, a camera's preview, the Wi-Fi
+// networks, the takes and a slice of one). The one list: main.js and the Android checks' stand-in
+// use it, and the checks compare RemotePlugin.java's copy (Java can't load this) with it.
+const RIG_HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*):(\d{1,5})$/i;
+const RIG_PATH = /^\/api\/(state|command|wifi|takes|preview\?i=[0-3](&full=1)?|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/;
+
 const PAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
 // The take details from a request: those three, as short single-line text.
@@ -110,18 +118,24 @@ function cleanWifi(w) {
 function cleanSettings(s) {
   if (!s || typeof s !== "object") return null;
   const out = {};
-  for (const k of ["detailsRequired", "screenPictures"]) if (typeof s[k] === "boolean") out[k] = s[k];
+  for (const k of ["detailsRequired", "screenPictures", "video", "sound"]) if (typeof s[k] === "boolean") out[k] = s[k];
   return Object.keys(out).length ? out : null;
+}
+
+// Sentry mode from the phone: only on or off.
+function cleanSentry(s) {
+  return s && typeof s === "object" && typeof s.armed === "boolean" ? { armed: s.armed } : null;
 }
 
 // Tailscale's addresses: 100.64.0.0/10.
 // ---------- the takes in the remote recording folder ----------
 // A take is the files saved for it: its name, then "-left"/"-right" (BVH), "-motive" (Motive's
-// markers), and " (2)" if the name was taken; the formats Hand Tracker saves.
-const TAKE_FILE = /^[^/\\:*?"<>|\u0000-\u001f]{1,240}\.(json|csv|bvh|glb|c3d|trc|npz|mcap)$/i;
+// markers), "-video-<role>" (a camera's video), and " (2)" if the name was taken; the formats
+// Hand Tracker saves. Sentry mode's photo and video of a moment are a take too.
+const TAKE_FILE = /^[^/\\:*?"<>|\u0000-\u001f]{1,240}\.(json|csv|bvh|glb|c3d|trc|npz|mcap|webm|mp4|jpg)$/i;
 const TAKE_SLICE = 2 << 20; // bytes per download request (the apps carry up to 4 MB an answer)
 const MAX_TAKES = 500;
-const takeOf = (file) => file.replace(/\.[a-z0-9]+$/i, "").replace(/ \(\d+\)$/, "").replace(/(-motive)?(-left|-right)?$/, "");
+const takeOf = (file) => file.replace(/\.[a-z0-9]+$/i, "").replace(/ \(\d+\)$/, "").replace(/-video(-[a-z0-9-]+)?$/i, "").replace(/(-motive)?(-left|-right)?$/, "");
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -255,12 +269,15 @@ function isTailscale(address) {
 // A request that came in over Tailscale, from another device on it (needs no key).
 const tailnetPeer = (localAddress, remoteAddress) => isTailscale(localAddress) && isTailscale(remoteAddress);
 
-// This computer's hotspot (pi/hotspot-setup.sh makes it): its interface, and its address now.
-const HOTSPOT_IF = "htap0";
+// This computer's hotspot (pi/hotspot-setup.sh makes it, on the Wi-Fi when that isn't on a
+// network): its address while it's on, else null.
+const HOTSPOT_ADDR = "10.42.0.1";
 function hotspotAddress() {
-  const a = (os.networkInterfaces()[HOTSPOT_IF] || []).find((x) => x.family === "IPv4" || x.family === 4);
-  return a ? a.address : null;
+  const on = Object.values(os.networkInterfaces()).some((list) => (list || []).some((a) => (a.family === "IPv4" || a.family === 4) && a.address === HOTSPOT_ADDR));
+  return on ? HOTSPOT_ADDR : null;
 }
+// The same /24 (a phone on the hotspot, by the address it came from).
+const sameNet = (a, b) => String(a).split(".").slice(0, 3).join(".") === String(b).split(".").slice(0, 3).join(".");
 
 // This computer's addresses a phone could use: the local network's first, then Tailscale's,
 // which works from anywhere the phone has Tailscale on.
@@ -272,7 +289,7 @@ function addresses() {
       const [p, q] = a.address.split(".").map(Number);
       const local = p === 10 || (p === 172 && q >= 16 && q <= 31) || (p === 192 && q === 168);
       if (!isTailscale(a.address) && !local) continue;
-      const kind = name === HOTSPOT_IF ? "Hotspot" : isTailscale(a.address) ? "Tailscale" : /^(wl|wi-?fi|wlan)/i.test(name) ? "Wi-Fi" : "local network";
+      const kind = a.address === HOTSPOT_ADDR ? "Hotspot" : isTailscale(a.address) ? "Tailscale" : /^(wl|wi-?fi|wlan)/i.test(name) ? "Wi-Fi" : "local network";
       out.push({ address: a.address, kind });
     }
   }
@@ -451,11 +468,12 @@ class RemoteRecordServer extends EventEmitter {
   }
 
   // Over Tailscale, or on this computer's own hotspot: trusted without the key (addressed to
-  // this computer by its own name or address).
+  // this computer by its own name or address). On the hotspot: to its address, from a phone on it.
   trusted(req) {
     const local = String(req.socket.localAddress || "").replace(/^::ffff:/, "");
+    const remote = String(req.socket.remoteAddress || "").replace(/^::ffff:/, "");
     const hotspot = this.hotspot();
-    return (tailnetPeer(req.socket.localAddress, req.socket.remoteAddress) || (!!hotspot && local === hotspot)) && this.ownHost(req);
+    return (tailnetPeer(req.socket.localAddress, req.socket.remoteAddress) || (!!hotspot && local === hotspot && sameNet(remote, hotspot))) && this.ownHost(req);
   }
 
   authorized(req) {
@@ -543,7 +561,7 @@ class RemoteRecordServer extends EventEmitter {
         body += chunk;
         if (body.length > 8192) return this.send(res, 413, { error: "Too long" });
       }
-      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null;
+      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null, sentry = null;
       try {
         const msg = JSON.parse(body);
         action = String(msg.action || "");
@@ -554,6 +572,7 @@ class RemoteRecordServer extends EventEmitter {
         settings = cleanSettings(msg.settings);
         wifi = cleanWifi(msg.wifi);
         takes = cleanTakes(msg.takes);
+        sentry = cleanSentry(msg.sentry);
       } catch {
         return this.send(res, 400, { error: "Not JSON" });
       }
@@ -562,6 +581,7 @@ class RemoteRecordServer extends EventEmitter {
       if (action === "pick" && !pick) return this.send(res, 400, { error: "Which camera?" });
       if (action === "mode" && !mode) return this.send(res, 400, { error: "Which mode?" });
       if (action === "settings" && !settings) return this.send(res, 400, { error: "Which setting?" });
+      if (action === "sentry" && !sentry) return this.send(res, 400, { error: "On or off?" });
       // Takes this page has safely: deleted here (checked file by file).
       if (action === "deleteTakes") {
         if (!this.takes) return this.send(res, 404, { error: "No takes here." });
@@ -579,6 +599,7 @@ class RemoteRecordServer extends EventEmitter {
       if (pick) extra.pick = pick;
       if (mode) extra.mode = mode;
       if (settings) extra.settings = settings;
+      if (sentry) extra.sentry = sentry;
       const result = await this.ask(action, extra);
       return this.send(res, 200, result || { ok: true });
     }
@@ -586,4 +607,4 @@ class RemoteRecordServer extends EventEmitter {
   }
 }
 
-module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_IF, cleanDetails, cleanCamera, cleanPick, cleanWifi, crc32 };
+module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_ADDR, cleanDetails, cleanCamera, cleanPick, cleanWifi, crc32, RIG_HOST, RIG_PATH };

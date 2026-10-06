@@ -2,7 +2,7 @@
 <!-- The remote recording page (remote-client.js): start and stop motion capture on a computer
      running Hand Tracker with Remote recording on, pick its cameras and mode, fill in the take
      details and watch each camera. The computer serves it to any browser (electron/remote-record.js);
-     the Android app and the Windows and Linux app open it themselves, from remote.html. -->
+     the Android app and the Windows, Mac and Linux app open it themselves, from remote.html. -->
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -103,6 +103,12 @@
   .join button { padding: 9px 14px; font-weight: 600; }
   .join .quiet { background: #495057; }
   .muted { color: var(--muted); }
+  #videoPanel .row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin: 0 0 6px; }
+  #videoPanel .row .grow { flex: 1 1 auto; }
+  .alert { display: flex; gap: 10px; align-items: flex-start; border-top: 1px solid var(--line); padding: 7px 0; font-size: 14px; }
+  .alert img { width: 112px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #0e0f12; flex: none; }
+  .alert .meta { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  #sentryBtn.on { background: var(--red, #e03131); }
   .err { color: var(--err); }
   #take { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 14px; font-size: 14px; word-break: break-word; }
   [hidden] { display: none !important; }
@@ -163,6 +169,18 @@
       <button type="button" id="takesDel" class="record" hidden>Delete</button>
     </div>
     <div id="takesNote"></div>
+  </section>
+
+  <section class="panel" id="sentryPanel" aria-labelledby="sentryTitle" hidden>
+    <h2><span id="sentryTitle" class="grow">Sentry mode</span><button type="button" id="sentryBtn" class="small" aria-pressed="false">Off</button></h2>
+    <div id="sentryNote" class="muted"></div>
+    <div id="sentryAlerts"></div>
+  </section>
+
+  <section class="panel" id="videoPanel" aria-labelledby="videoTitle" hidden>
+    <h2><span id="videoTitle" class="grow">Video with each take</span><button type="button" id="videoBtn" class="small on" aria-pressed="true">On</button></h2>
+    <div class="row"><span class="grow">Sound</span><button type="button" id="soundBtn" class="small on" aria-pressed="true">On</button></div>
+    <div id="videoNote" class="muted"></div>
   </section>
 
   <section class="panel" id="screenPanel" aria-labelledby="screenTitle" hidden>

@@ -501,11 +501,16 @@
     if (e.target === captureDialog) closeCapturePicker();
   });
 
-  // ---------- A Luxonis OAK camera as the source (Windows and Linux app) ----------
+  // ---------- A Luxonis OAK camera as the source (Windows, Mac and Linux app) ----------
   // OAK cameras' own options (More settings → OAK camera): find objects, the depth picture,
-  // the frame rate. Remembered; a camera running is started again with them.
+  // the frame rate. Remembered; a camera running is started again with them. Sentry mode also
+  // has them send a small grey picture, and find objects for "ignore pets and animals".
   const oakPrefs = { detect: false, picture: "color", fps: 0, ...(prefs.oakOptions && typeof prefs.oakOptions === "object" ? prefs.oakOptions : {}) };
-  const oakOptions = () => ({ ...oakPrefs, motion: !!(window.Sentry && Sentry.wantsMotion()) });
+  const oakOptions = () => ({
+    ...oakPrefs,
+    detect: oakPrefs.detect || !!(window.Sentry && Sentry.wantsObjects()),
+    motion: !!(window.Sentry && Sentry.wantsMotion()),
+  });
   const oakSettings = () => ({ model: Number(modelSelect.value), hands: Number(handsSelect.value), far: { ...farPrefs }, oak: oakOptions() });
   function applyOakOptions() {
     $("oakOptions").hidden = !OakSource.available();
@@ -798,7 +803,9 @@
     const messages = {
       NotAllowedError: mobile
         ? "Camera access was denied. Open Android Settings › Apps › Hand Tracker › Permissions, allow the camera, then press Retry."
-        : "Camera access was blocked. In Windows, open Settings › Privacy › Camera and turn on camera access for desktop apps, then press Retry.",
+        : /Macintosh/.test(navigator.userAgent)
+          ? "Camera access was blocked. Open System Settings › Privacy & Security › Camera, turn on Hand Tracker, then open Hand Tracker again."
+          : "Camera access was blocked. In Windows, open Settings › Privacy › Camera and turn on camera access for desktop apps, then press Retry.",
       NotFoundError: OakSource.available()
         ? "No webcam was found. For a Luxonis OAK camera, pick it in the camera list (or Several cameras at once…); for a webcam, plug it in and press Retry."
         : "No camera was found. Plug in a webcam and press Retry.",
@@ -1722,9 +1729,12 @@
       exportBtn.firstChild.textContent = "Save";
       motionExportBtn.firstChild.textContent = "Save";
     }
-    // Hand mouse, floating keyboard and gesture actions: this computer (Windows and Linux app),
+    // Hand mouse, floating keyboard and gesture actions: this computer (Windows, Mac and Linux app),
     // or from the Android app, a PC it's paired with over Wi-Fi.
-    PcControl.init({ desktop: desktop || (mobile && mobile.pc ? mobile : null), prefs, setPref, gestureLabels: GESTURE_LABELS });
+    // The website's hand mouse: this page's pointer, or this computer's through the app (web-pc.js).
+    const webPc = !desktop && !mobile ? { pc: WebPc.create({ prefs, setPref }) } : null;
+    PcControl.init({ desktop: desktop || (mobile && mobile.pc ? mobile : null) || webPc, prefs, setPref, gestureLabels: GESTURE_LABELS });
+    if (desktop) WebPc.initDesktop({ desktop, prefs, setPref });
     // A phone controlling a PC over Wi-Fi: pairing it (the phone's side, and the PC's).
     PhoneLinkUI.init({ desktop, mobile, prefs, setPref });
     // Several videos at once: tracked in turn, synced from the hand movement, or queued.
@@ -1735,8 +1745,42 @@
       onClose: () => showPaused(HandTracker.isPaused()), // (Pause was the tiles' while they ran)
     });
     syncTiles();
-    // A phone's browser starting and stopping recording with those cameras (Windows and Linux app).
+    // A phone's browser starting and stopping recording with those cameras (Windows, Mac and Linux app).
     RemoteRecordUI.init({ desktop, mobile, prefs, setPref, app: window.HandTrackerApp });
+    // Sentry mode (hidden: Ctrl+Alt+S, or the title tapped five times): the cameras it watches,
+    // the main one or each of Several cameras. (Not a video file or a window: nothing to guard.)
+    const mainSentryView = () => {
+      const cam = HandTracker.getCamera();
+      const oak = OakSource.isActive();
+      if (!oak && cam.source !== "camera") return null;
+      return {
+        key: oak ? `oak:${OakSource.info().camera || "camera"}` : MultiCamera.keyOf({ deviceId: cam.deviceId || "camera", label: cam.name || "" }),
+        name: oak ? OakSource.info().camera || "OAK camera" : cam.name || "Camera",
+        container: wrap,
+        picture: stage,
+        canvas: () => stage,
+        frame: () => HandTracker.getFrameImage(),
+        mirrored: () => mirrorOn,
+        rotation: () => HandTracker.getRotation(),
+        grey: oak ? () => OakSource.grey() : null,
+        objects: oak ? () => OakSource.objects() : null,
+        oak,
+      };
+    };
+    Sentry.init({
+      prefs, setPref,
+      host: desktop || mobile || null,
+      views: () => (MultiCamera.isActive() ? MultiCamera.sentryViews() : [mainSentryView()].filter(Boolean)),
+      onWantsChange: () => {
+        restartOak();
+        syncTiles();
+      },
+      link: () => RemoteRecordUI.tailnetLink(),
+      hostName: () => {
+        const link = RemoteRecordUI.tailnetLink();
+        return link ? new URL(link).hostname.split(".")[0] : "";
+      },
+    });
     // Capture sessions from a capture-operations dashboard: hidden until Ctrl+Alt+P (on a
     // phone: tapping the version under the title 7 times). So is watching a capture rig live,
     // from a capture-fleet dashboard. (The phone's bridge has the same ops/fleet/saving calls.)

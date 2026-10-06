@@ -1,6 +1,6 @@
 /**
  * oak-source.js — a Luxonis OAK camera (OAK-D, OAK-D Lite, OAK-1...) as the tracking source,
- * in the Windows and Linux app. The hands are found on the camera itself (electron/oak.js,
+ * in the Windows, Mac and Linux app. The hands are found on the camera itself (electron/oak.js,
  * oak/oak_bridge.py); its frames and hands arrive here and go through HandTracker like any
  * camera's (smoothing, gestures, recording), and an OAK-D adds each hand's distance.
  *
@@ -11,9 +11,10 @@
  *   await OakSource.ensureReady()         // the one-time setup if it's needed (asks); false if canceled
  *   OakSource.toResults(header)           // a helper frame's hands, shaped as HandTracker takes them
  *                                         // (and its objects, as results.objects)
- *   OakSource.objects() / OakSource.motion()  // the last frame's objects found and motion (each ninth
- *                                         // of the picture, 0-1), with Find objects / Sentry mode on
- *   OakSource.onFrameInfo(cb)             // cb({ objects, motion, t }) each frame
+ *   OakSource.objects() / OakSource.grey()   // the last objects found (Find objects) and the camera's
+ *                                         // last small grey picture { w, h, data } (Sentry mode)
+ *   OakSource.decodeGrey(header.grey)     // a frame's grey picture as { w, h, data: Uint8Array }
+ *   OakSource.onFrameInfo(cb)             // cb({ objects, grey, t }) each frame
  *   OakSource.cameraOptions(settings.oak) // { detect, picture, motion, fps } as the helper takes them
  *   OakSource.silentNote(ports)           // what to say of OAK cameras plugged in that didn't answer
  *                                         // (also for "Several cameras", multi-camera.js)
@@ -26,7 +27,7 @@
   let lastBitmap = null;
   let onChange = () => {};
   let info = { camera: "", depth: false, fps: 0 };
-  let lastObjects = null, lastMotion = null;
+  let lastObjects = null, lastGrey = null;
   let frameInfo = () => {};
 
   const $ = (id) => document.getElementById(id);
@@ -82,7 +83,7 @@
     };
   }
   // The OAK camera's own options (More settings → OAK camera): find objects, the depth
-  // picture, its frame rate; and motion for each ninth of the picture while Sentry mode watches.
+  // picture, its frame rate; and a small grey picture with each frame while Sentry mode watches.
   function cameraOptions(oak = {}) {
     return {
       detect: !!oak.detect,
@@ -98,9 +99,9 @@
       const bitmap = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }));
       if (!active) return bitmap.close();
       lastObjects = Array.isArray(header.objects) ? header.objects : null;
-      lastMotion = Array.isArray(header.motion) ? header.motion : null;
+      if (header.grey) lastGrey = decodeGrey(header.grey) || lastGrey;
       HandTracker.pushExternalFrame(bitmap, toResults(header), header.t);
-      frameInfo({ objects: lastObjects, motion: lastMotion, t: header.t });
+      frameInfo({ objects: lastObjects, grey: lastGrey, t: header.t });
       if (lastBitmap) lastBitmap.close();
       lastBitmap = bitmap;
       info.fps = header.fps;
@@ -148,7 +149,7 @@
     active = false;
     for (const off of unsubscribe) off();
     unsubscribe = [];
-    lastObjects = lastMotion = null;
+    lastObjects = lastGrey = null;
     desktop.oak.stop().catch(() => {});
     if (lastBitmap) lastBitmap.close();
     lastBitmap = null;
@@ -159,6 +160,16 @@
     HandTracker.onSourceChange((camera) => {
       if (camera.source !== "external") stop();
     });
+  }
+
+  // The camera's small grey picture (oak_bridge.py's grey_text): { w, h, data: Uint8Array } or null.
+  function decodeGrey(g) {
+    if (!g || typeof g.data !== "string" || !(g.w > 0) || !(g.h > 0)) return null;
+    const bin = atob(g.data);
+    if (bin.length !== g.w * g.h) return null;
+    const data = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+    return { w: g.w, h: g.h, data };
   }
 
   // OAK cameras plugged in that didn't answer when listed (USB ports, from desktop.oak.list's
@@ -179,7 +190,8 @@
     toResults,
     cameraOptions,
     objects: () => (active ? lastObjects : null),
-    motion: () => (active ? lastMotion : null),
+    grey: () => (active ? lastGrey : null),
+    decodeGrey,
     onFrameInfo: (cb) => (frameInfo = cb || (() => {})),
     info: () => ({ ...info }),
     onStatus: (cb) => (onChange = cb),

@@ -3,12 +3,14 @@
  * floating keyboard and gesture actions.
  *
  * Windows: input-helper.ps1, a small PowerShell process using Windows' own SendInput
- * (nothing to install). Linux: xdotool (sudo apt install xdotool), which works with X11
- * desktops; Wayland desktops don't let apps move the pointer or type into other apps.
+ * (nothing to install). macOS: input-helper-mac (built from input-helper-mac.m with the app),
+ * once Hand Tracker is allowed under Privacy & Security → Accessibility. Linux: xdotool
+ * (sudo apt install xdotool), which works with X11 desktops; Wayland desktops don't let apps
+ * move the pointer or type into other apps.
  *
  *   const input = new InputDriver();
  *   await input.start();                 // resolves when ready; rejects with a readable reason
- *   input.move(x, y);                    // physical screen pixels
+ *   input.move(x, y);                    // physical screen pixels (points on a Mac)
  *   input.button("left" | "right" | "middle", "down" | "up" | "click" | "double");
  *   input.wheel(notches);                // positive = up
  *   input.key("ctrl+shift+s", "tap" | "down" | "up");
@@ -17,10 +19,13 @@
  */
 
 const { spawn, execFileSync } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 
-// PowerShell can't run a script from inside app.asar (see "asarUnpack" in package.json).
-const SCRIPT = path.join(__dirname, "input-helper.ps1").replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+// Nothing can run a file from inside app.asar (see "asarUnpack" in package.json).
+const unpacked = (file) => path.join(__dirname, file).replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+const SCRIPT = unpacked("input-helper.ps1");
+const MAC_HELPER = unpacked("input-helper-mac");
 
 // Key names -> [Windows virtual-key code, xdotool key name].
 const KEYS = {
@@ -42,6 +47,22 @@ for (let d = 0; d <= 9; d++) KEYS[String(d)] = [0x30 + d, String(d)];
 for (let f = 1; f <= 24; f++) KEYS[`f${f}`] = [0x6f + f, `F${f}`];
 const MODIFIERS = new Set(["ctrl", "control", "shift", "alt", "win", "windows", "meta", "super", "cmd"]);
 
+// Key names -> Mac virtual key codes; "media N" for a media key (input-helper-mac.m); null where
+// a Mac keyboard has no such key. Win (and Cmd, Meta, Super) is Command, Alt is Option.
+const MAC_KEYS = {
+  enter: 36, return: 36, esc: 53, escape: 53, tab: 48, space: 49, backspace: 51, delete: 117, del: 117,
+  insert: 114, home: 115, end: 119, pageup: 116, pagedown: 121, up: 126, down: 125, left: 123, right: 124,
+  ctrl: 59, control: 59, shift: 56, alt: 58, win: 55, windows: 55, meta: 55, super: 55, cmd: 55,
+  capslock: 57, printscreen: 105, menu: null,
+  volumeup: "media 0", volumedown: "media 1", mute: "media 7", playpause: "media 16", nexttrack: "media 17", prevtrack: "media 18", stop: null,
+  ";": 41, "=": 24, ",": 43, "-": 27, ".": 47, "+": 24, plus: 24, "/": 44, "`": 50, "[": 33, "\\": 42, "]": 30, "'": 39,
+  a: 0, s: 1, d: 2, f: 3, h: 4, g: 5, z: 6, x: 7, c: 8, v: 9, b: 11, q: 12, w: 13, e: 14, r: 15, y: 16, t: 17,
+  o: 31, u: 32, i: 34, p: 35, l: 37, j: 38, k: 40, n: 45, m: 46,
+  1: 18, 2: 19, 3: 20, 4: 21, 5: 23, 6: 22, 7: 26, 8: 28, 9: 25, 0: 29,
+  f1: 122, f2: 120, f3: 99, f4: 118, f5: 96, f6: 97, f7: 98, f8: 100, f9: 101, f10: 109, f11: 103, f12: 111,
+  f13: 105, f14: 107, f15: 113, f16: 106, f17: 64, f18: 79, f19: 80, f20: 90, f21: null, f22: null, f23: null, f24: null,
+};
+
 // "Ctrl+Shift+S" -> ["ctrl", "shift", "s"]; throws for a key it doesn't know.
 function parseCombo(combo) {
   const parts = String(combo || "")
@@ -55,8 +76,13 @@ function parseCombo(combo) {
   return parts;
 }
 
-class WindowsDriver {
-  constructor() {
+// A helper process that takes one command a line (input-helper.ps1 on Windows,
+// input-helper-mac on a Mac): the same commands, each with its own key codes.
+class HelperDriver {
+  constructor(command, args, codeOf) {
+    this.command = command;
+    this.args = args;
+    this.codeOf = codeOf; // key name -> key code
     this.proc = null;
     this.ready = null;
     this.waiting = []; // resolvers for answers (pos, pong), in order
@@ -64,7 +90,7 @@ class WindowsDriver {
   start() {
     if (this.ready) return this.ready;
     this.ready = new Promise((resolve, reject) => {
-      const proc = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", SCRIPT], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      const proc = spawn(this.command, this.args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       this.proc = proc;
       let buf = "", errText = "", started = false;
       const timer = setTimeout(() => fail(new Error("The input helper didn't start in time.")), 30000);
@@ -122,7 +148,7 @@ class WindowsDriver {
     this.send(`wheel ${Math.round(n)}`);
   }
   keys(names, action) {
-    const codes = names.map((k) => KEYS[k][0]);
+    const codes = names.map((k) => this.codeOf(k));
     if (action === "down") for (const c of codes) this.send(`keydown ${c}`);
     else if (action === "up") for (const c of [...codes].reverse()) this.send(`keyup ${c}`);
     else {
@@ -143,6 +169,46 @@ class WindowsDriver {
   }
   stop() {
     if (this.proc) this.proc.stdin.end();
+  }
+}
+
+class WindowsDriver extends HelperDriver {
+  constructor() {
+    super("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", SCRIPT], (k) => KEYS[k][0]);
+  }
+}
+
+class MacDriver extends HelperDriver {
+  constructor() {
+    super(MAC_HELPER, [], (k) => {
+      if (MAC_KEYS[k] == null) throw new Error(`A Mac keyboard has no ${k} key.`);
+      return MAC_KEYS[k];
+    });
+    this.asked = 0;
+  }
+  start() {
+    if (this.ready) return this.ready;
+    if (!fs.existsSync(MAC_HELPER)) return Promise.reject(new Error("The Mac input helper isn't built: node scripts/build-mac-helper.js"));
+    // macOS asks the person (in System Settings) before an app may move the pointer or type;
+    // the question once a minute at most, as this is tried with each pointer move.
+    const { systemPreferences } = require("electron");
+    if (!systemPreferences.isTrustedAccessibilityClient(false)) {
+      if (Date.now() - this.asked > 60000) {
+        this.asked = Date.now();
+        systemPreferences.isTrustedAccessibilityClient(true);
+      }
+      return Promise.reject(new Error("macOS needs your permission first: System Settings → Privacy & Security → Accessibility, turn on Hand Tracker, then try again."));
+    }
+    return super.start();
+  }
+  keys(names, action) {
+    // A media key is pressed whole (on its down, or a tap); there's nothing to hold.
+    const media = names.map((k) => this.codeOf(k)).find((c) => typeof c === "string");
+    if (media) {
+      if (action !== "up") this.send(media);
+      return;
+    }
+    super.keys(names, action);
   }
 }
 
@@ -221,10 +287,11 @@ class XdotoolDriver {
 
 class InputDriver {
   constructor() {
-    this.driver = process.platform === "win32" ? new WindowsDriver() : process.platform === "linux" ? new XdotoolDriver() : null;
+    const Driver = { win32: WindowsDriver, darwin: MacDriver, linux: XdotoolDriver }[process.platform];
+    this.driver = Driver ? new Driver() : null;
   }
   start() {
-    if (!this.driver) return Promise.reject(new Error("Controlling the mouse and keyboard works in the Windows and Linux apps."));
+    if (!this.driver) return Promise.reject(new Error("Controlling the mouse and keyboard works in the Windows, Mac and Linux apps."));
     return this.driver.start();
   }
   move(x, y) {
@@ -254,4 +321,4 @@ class InputDriver {
   }
 }
 
-module.exports = { InputDriver, parseCombo, KEYS, MODIFIERS };
+module.exports = { InputDriver, parseCombo, KEYS, MAC_KEYS, MODIFIERS };
