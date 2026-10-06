@@ -1,0 +1,57 @@
+# Builds and checks the Mac app (Apple silicon) when its parts change on a branch other than
+# main (main's "Build apps" builds both Mac apps), so it can be fixed before it reaches main.
+# The same checks as there: signed, the camera and microphone reasons, the input helper (both
+# processors; it starts and answers) and ffmpeg. If the build fails, the end of its output is
+# an annotation on the run (anyone can read those; the log needs signing in). Also by hand:
+# Actions → Check the Mac app → Run workflow.
+name: Check the Mac app
+
+on:
+  push:
+    branches-ignore: [main]
+    paths:
+      - "electron/**"
+      - "scripts/dist.js"
+      - "scripts/build-mac-helper.js"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/check-mac.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run dist:mac 2>&1 | tee mac-build.log
+
+      - name: Check the app
+        run: |
+          app="dist/mac-arm64/Hand Tracker.app"
+          codesign --verify --deep --strict "$app"
+          /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$app/Contents/Info.plist"
+          unpacked="$app/Contents/Resources/app.asar.unpacked"
+          helper="$unpacked/electron/input-helper-mac"
+          archs=$(lipo -archs "$helper"); [[ "$archs" == *x86_64* && "$archs" == *arm64* ]]
+          printf 'ping\npos\n' | "$helper" | tr '\n' ' ' | grep -E "^ready pong pos -?[0-9]+ -?[0-9]+ $"
+          lipo -archs "$unpacked/node_modules/ffmpeg-static/ffmpeg" | grep -qx arm64
+          test -f "$unpacked/oak/oak_bridge.py"
+          echo "The Mac app is signed, with the input helper and ffmpeg"
+
+      - name: Why the build failed
+        if: failure()
+        run: |
+          test -f mac-build.log || exit 0
+          echo "::error title=Mac build::$(tail -n 60 mac-build.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')"

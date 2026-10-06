@@ -94,8 +94,8 @@ jobs:
       - run: npm ci
 
       # Apple silicon, then Intel (Intel Electron, and Intel ffmpeg swapped in: scripts/dist.js).
-      - run: npm run dist:mac
-      - run: npm run dist:mac-x64
+      - run: npm run dist:mac 2>&1 | tee mac-build.log
+      - run: npm run dist:mac-x64 2>&1 | tee mac-build.log
 
       # Each app is signed whole, says why it wants the camera and microphone, and carries the
       # input helper (both processors; it starts and answers) and ffmpeg for its own processor.
@@ -114,6 +114,14 @@ jobs:
             test -f "$unpacked/oak/oak_bridge.py"
           done
           echo "Both Mac apps are signed, with the input helper and the right ffmpeg"
+
+      # The end of a failed build's output, as an annotation on the run (anyone can read those;
+      # the log needs signing in).
+      - name: Why the build failed
+        if: failure()
+        run: |
+          test -f mac-build.log || exit 0
+          echo "::error title=Mac build::$(tail -n 60 mac-build.log | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')"
 
       - uses: actions/upload-artifact@v4
         with:
