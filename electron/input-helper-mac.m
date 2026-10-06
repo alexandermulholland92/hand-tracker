@@ -26,7 +26,7 @@
 static bool held[3];        // left, right, middle buttons held down
 static CGEventFlags mods;   // modifier keys held down (keydown without a keyup yet)
 
-static CGPoint here(void) {
+static CGPoint htHere(void) {
   CGEventRef e = CGEventCreate(NULL);
   if (!e) return CGPointZero;
   CGPoint p = CGEventGetLocation(e);
@@ -34,29 +34,29 @@ static CGPoint here(void) {
   return p;
 }
 
-static int buttonOf(const char *name) {
+static int htButtonOf(const char *name) {
   if (strcmp(name, "right") == 0) return 1;
   if (strcmp(name, "middle") == 0) return 2;
   return 0;
 }
 
-static void post(CGEventRef e) {
+static void htPost(CGEventRef e) {
   if (!e) return;
   CGEventSetFlags(e, mods);
   CGEventPost(kCGHIDEventTap, e);
   CFRelease(e);
 }
 
-static void mouse(int b, bool down, int clicks) {
+static void htMouse(int b, bool down, int clicks) {
   static const CGEventType DOWN[] = {kCGEventLeftMouseDown, kCGEventRightMouseDown, kCGEventOtherMouseDown};
   static const CGEventType UP[] = {kCGEventLeftMouseUp, kCGEventRightMouseUp, kCGEventOtherMouseUp};
-  CGEventRef e = CGEventCreateMouseEvent(NULL, down ? DOWN[b] : UP[b], here(), (CGMouseButton)b);
+  CGEventRef e = CGEventCreateMouseEvent(NULL, down ? DOWN[b] : UP[b], htHere(), (CGMouseButton)b);
   if (e) CGEventSetIntegerValueField(e, kCGMouseEventClickState, clicks);
   held[b] = down;
-  post(e);
+  htPost(e);
 }
 
-static void move(double x, double y) {
+static void htMove(double x, double y) {
   // With a button held, a move is a drag (or apps don't see it as one).
   CGEventType type = kCGEventMouseMoved;
   CGMouseButton b = kCGMouseButtonLeft;
@@ -69,10 +69,10 @@ static void move(double x, double y) {
     type = kCGEventOtherMouseDragged;
     b = kCGMouseButtonCenter;
   }
-  post(CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), b));
+  htPost(CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), b));
 }
 
-static CGEventFlags flagOf(int key) {
+static CGEventFlags htFlagOf(int key) {
   switch (key) {
     case 55: case 54: return kCGEventFlagMaskCommand;
     case 56: case 60: return kCGEventFlagMaskShift;
@@ -82,20 +82,20 @@ static CGEventFlags flagOf(int key) {
   return 0;
 }
 
-static void key(int code, bool down) {
-  CGEventFlags f = flagOf(code);
+static void htKey(int code, bool down) {
+  CGEventFlags f = htFlagOf(code);
   if (f) mods = down ? (mods | f) : (mods & ~f);
-  post(CGEventCreateKeyboardEvent(NULL, (CGKeyCode)code, down));
+  htPost(CGEventCreateKeyboardEvent(NULL, (CGKeyCode)code, down));
 }
 
-static void media(int code) {
+static void htMedia(int code) {
   for (int down = 1; down >= 0; down--) {
     NSEvent *e = [NSEvent otherEventWithType:NSEventTypeSystemDefined location:NSZeroPoint modifierFlags:(down ? 0xa00 : 0xb00) timestamp:0 windowNumber:0 context:nil subtype:8 data1:((code << 16) | ((down ? 0xa : 0xb) << 8)) data2:-1];
     CGEventPost(kCGHIDEventTap, [e CGEvent]);
   }
 }
 
-static void typeText(const char *base64) {
+static void htTypeText(const char *base64) {
   NSData *data = [[NSData alloc] initWithBase64EncodedString:[NSString stringWithUTF8String:base64] options:0];
   if (!data) return;
   NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
@@ -106,8 +106,8 @@ static void typeText(const char *base64) {
     unichar c = [text characterAtIndex:i];
     if (c == '\r') { i++; continue; }
     if (c == '\n') {
-      post(CGEventCreateKeyboardEvent(NULL, 36, true));
-      post(CGEventCreateKeyboardEvent(NULL, 36, false));
+      htPost(CGEventCreateKeyboardEvent(NULL, 36, true));
+      htPost(CGEventCreateKeyboardEvent(NULL, 36, false));
       i++;
       continue;
     }
@@ -118,67 +118,67 @@ static void typeText(const char *base64) {
     for (int down = 1; down >= 0; down--) {
       CGEventRef e = CGEventCreateKeyboardEvent(NULL, 0, down);
       if (e) CGEventKeyboardSetUnicodeString(e, len, chars);
-      post(e);
+      htPost(e);
     }
     i += len;
   }
   mods = saved;
 }
 
-static void say(const char *line) {
+static void htSay(const char *line) {
   fputs(line, stdout);
   fputc('\n', stdout);
   fflush(stdout);
 }
 
-static void click(int b, int times) {
+static void htClick(int b, int times) {
   for (int i = 1; i <= times; i++) {
-    mouse(b, true, i);
-    mouse(b, false, i);
+    htMouse(b, true, i);
+    htMouse(b, false, i);
   }
 }
 
-static void run(char *line) {
+static void htRun(char *line) {
   char *argv[4] = {0};
   int argc = 0;
   for (char *t = strtok(line, " \t\r\n"); t && argc < 4; t = strtok(NULL, " \t\r\n")) argv[argc++] = t;
   if (!argc) return;
   const char *cmd = argv[0], *a = argc > 1 ? argv[1] : "", *b = argc > 2 ? argv[2] : "0";
-  if (strcmp(cmd, "ping") == 0) say("pong");
+  if (strcmp(cmd, "ping") == 0) htSay("pong");
   else if (strcmp(cmd, "pos") == 0) {
-    CGPoint p = here();
+    CGPoint p = htHere();
     char out[64];
     snprintf(out, sizeof out, "pos %d %d", (int)lround(p.x), (int)lround(p.y));
-    say(out);
-  } else if (strcmp(cmd, "move") == 0) move(atof(a), atof(b));
-  else if (strcmp(cmd, "down") == 0) mouse(buttonOf(a), true, 1);
-  else if (strcmp(cmd, "up") == 0) mouse(buttonOf(a), false, 1);
-  else if (strcmp(cmd, "click") == 0) click(buttonOf(a), 1);
-  else if (strcmp(cmd, "double") == 0) click(buttonOf(a), 2);
-  else if (strcmp(cmd, "wheel") == 0) post(CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, atoi(a)));
-  else if (strcmp(cmd, "keydown") == 0) key(atoi(a), true);
-  else if (strcmp(cmd, "keyup") == 0) key(atoi(a), false);
+    htSay(out);
+  } else if (strcmp(cmd, "move") == 0) htMove(atof(a), atof(b));
+  else if (strcmp(cmd, "down") == 0) htMouse(htButtonOf(a), true, 1);
+  else if (strcmp(cmd, "up") == 0) htMouse(htButtonOf(a), false, 1);
+  else if (strcmp(cmd, "click") == 0) htClick(htButtonOf(a), 1);
+  else if (strcmp(cmd, "double") == 0) htClick(htButtonOf(a), 2);
+  else if (strcmp(cmd, "wheel") == 0) htPost(CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, atoi(a)));
+  else if (strcmp(cmd, "keydown") == 0) htKey(atoi(a), true);
+  else if (strcmp(cmd, "keyup") == 0) htKey(atoi(a), false);
   else if (strcmp(cmd, "tap") == 0) {
-    key(atoi(a), true);
-    key(atoi(a), false);
+    htKey(atoi(a), true);
+    htKey(atoi(a), false);
   }
-  else if (strcmp(cmd, "media") == 0) media(atoi(a));
-  else if (strcmp(cmd, "text") == 0) typeText(a);
+  else if (strcmp(cmd, "media") == 0) htMedia(atoi(a));
+  else if (strcmp(cmd, "text") == 0) htTypeText(a);
   else {
     char out[96];
     snprintf(out, sizeof out, "error unknown command %.60s", cmd);
-    say(out);
+    htSay(out);
   }
 }
 
 int main(void) {
   @autoreleasepool {
-    say("ready");
+    htSay("ready");
     char *line = NULL;
     size_t size = 0;
     while (getline(&line, &size, stdin) >= 0) {
       @autoreleasepool {
-        run(line);
+        htRun(line);
       }
     }
     free(line);
