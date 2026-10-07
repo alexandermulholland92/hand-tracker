@@ -37,10 +37,11 @@
  * bring along, and which go into the takes), "camera" (one running camera's { index, role,
  * rotation, mirror }), "scan" (look for the cameras it can start), "pick" (one of those:
  * { id, use, role }), "mode" ("ego", "stereo" or "freeform") or "settings" ({ detailsRequired, screenPictures }:
- * whether the take details are needed, and whether the OAK cameras' pictures are drawn on its screen).
+ * whether the take details are needed, and whether the OAK cameras' pictures are drawn on its screen),
+ * or "sentry" (Sentry mode's settings, boxes and on/off: cleanSentry).
  * onWantPreviews({ on, focus }): a page is (or stopped) looking at the previews; focus: the
- * camera one is looking at full screen (null for none), which then comes bigger and more often
- * (/api/preview?i=N&full=1: each request waits for that camera's next picture).
+ * camera one is looking at full screen (null for none), which then comes bigger
+ * (/api/preview?i=N&full=1). Each preview request waits for that camera's next picture.
  * keyStore: { load() -> key | null, save(key) } (main.js keeps it encrypted by the OS).
  *
  * takes: () => the remote recording folder (or null: none listed). Its takes (each the files
@@ -62,7 +63,7 @@ const FIRST_PORT = 47821;
 const PORTS_TRIED = 10;
 const PREVIEW_WANTED_MS = 3000; // previews are made while a page asked for one this recently
 const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it this recently
-const FULL_WAIT_MS = 400; // a full-screen request waits this long for that camera's next picture
+const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
 const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "sentry"]);
@@ -122,9 +123,30 @@ function cleanSettings(s) {
   return Object.keys(out).length ? out : null;
 }
 
-// Sentry mode from the phone: only on or off.
+// Sentry mode from the page (sentry.js): shown or not, on or off, its settings, a box of a
+// running camera left out or watched again, or every box watched; ntfy's server (a web address),
+// a new topic or a test. Only those, each checked.
+const SENTRY_FLAGS = ["shown", "armed", "ignoreAnimals", "photo", "video", "sound"];
 function cleanSentry(s) {
-  return s && typeof s === "object" && typeof s.armed === "boolean" ? { armed: s.armed } : null;
+  if (!s || typeof s !== "object") return null;
+  const out = {};
+  for (const k of SENTRY_FLAGS) if (typeof s[k] === "boolean") out[k] = s[k];
+  if (Number.isInteger(s.rows) && s.rows >= 1 && s.rows <= 9) out.rows = s.rows;
+  if (Number.isInteger(s.cols) && s.cols >= 1 && s.cols <= 16) out.cols = s.cols;
+  if (["low", "medium", "high"].includes(s.sensitivity)) out.sensitivity = s.sensitivity;
+  if (s.ntfy && typeof s.ntfy === "object") {
+    const n = {};
+    for (const k of ["on", "photo"]) if (typeof s.ntfy[k] === "boolean") n[k] = s.ntfy[k];
+    for (const k of ["newTopic", "test"]) if (s.ntfy[k] === true) n[k] = true;
+    if (typeof s.ntfy.server === "string" && s.ntfy.server.length <= 200 && /^https?:\/\/[^\s/?#]+(\/[^\s?#]*)?$/i.test(s.ntfy.server.trim())) n.server = s.ntfy.server.trim();
+    if (Object.keys(n).length) out.ntfy = n;
+  }
+  const b = s.box;
+  if (b && typeof b === "object" && Number.isInteger(b.camera) && b.camera >= 0 && b.camera < 16 && Number.isInteger(b.cell) && b.cell >= 0 && b.cell < 9 * 16 && typeof b.off === "boolean") {
+    out.box = { camera: b.camera, cell: b.cell, off: b.off };
+  }
+  if (s.watchAll === true) out.watchAll = true;
+  return Object.keys(out).length ? out : null;
 }
 
 // Tailscale's addresses: 100.64.0.0/10.
@@ -334,7 +356,7 @@ class RemoteRecordServer extends EventEmitter {
     this.wantUntil = 0;
     this.focus = null; // the camera a page is looking at full screen
     this.focusUntil = 0;
-    this.lastFull = new Map(); // camera index -> when the picture last sent full screen was made
+    this.lastSent = new Map(); // camera index -> when the picture last sent was made
     this.wanting = false;
     this.viewer = null; // { address, seen }
     this.timer = null;
@@ -444,7 +466,7 @@ class RemoteRecordServer extends EventEmitter {
     if (this.focus === i) return;
     this.focus = i;
     // Newly full screen: its next picture is the bigger one (not the small one already here).
-    if (i !== null) this.lastFull.set(i, Date.now());
+    if (i !== null) this.lastSent.set(i, Date.now());
     if (this.wanting) this.onWantPreviews({ on: true, focus: i });
   }
 
@@ -533,18 +555,17 @@ class RemoteRecordServer extends EventEmitter {
     if (req.method === "GET" && url.pathname === "/api/preview") {
       const i = Number(url.searchParams.get("i"));
       this.wantUntil = Date.now() + PREVIEW_WANTED_MS;
-      // Full screen: that camera only, bigger and more often; each request waits for its next picture.
+      // Full screen: that camera only, bigger. Each request waits for that camera's next picture
+      // (so a page asks again as soon as it has one, and gets each picture once).
       const full = url.searchParams.get("full") === "1" && Number.isInteger(i) && i >= 0 && i < 16;
       if (full) {
         this.focusUntil = Date.now() + FOCUS_MS;
         this.setFocus(i);
       }
       this.setWanting(true);
-      if (full) {
-        const since = this.lastFull.get(i) || 0;
-        for (let t = 0; t < FULL_WAIT_MS && !((this.previews.get(i) || {}).at > since); t += 15) await new Promise((r) => setTimeout(r, 15));
-        if (this.previews.get(i)) this.lastFull.set(i, this.previews.get(i).at);
-      }
+      const since = this.lastSent.get(i) || 0;
+      for (let t = 0; t < NEXT_WAIT_MS && !((this.previews.get(i) || {}).at > since); t += 15) await new Promise((r) => setTimeout(r, 15));
+      if (this.previews.get(i)) this.lastSent.set(i, this.previews.get(i).at);
       const p = this.previews.get(i);
       if (!p || Date.now() - p.at > PREVIEW_STALE_MS) return this.send(res, 204, "");
       return this.send(res, 200, p.jpeg, "image/jpeg");
@@ -581,7 +602,7 @@ class RemoteRecordServer extends EventEmitter {
       if (action === "pick" && !pick) return this.send(res, 400, { error: "Which camera?" });
       if (action === "mode" && !mode) return this.send(res, 400, { error: "Which mode?" });
       if (action === "settings" && !settings) return this.send(res, 400, { error: "Which setting?" });
-      if (action === "sentry" && !sentry) return this.send(res, 400, { error: "On or off?" });
+      if (action === "sentry" && !sentry) return this.send(res, 400, { error: "Which Sentry setting?" });
       // Takes this page has safely: deleted here (checked file by file).
       if (action === "deleteTakes") {
         if (!this.takes) return this.send(res, 404, { error: "No takes here." });
@@ -607,4 +628,4 @@ class RemoteRecordServer extends EventEmitter {
   }
 }
 
-module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_ADDR, cleanDetails, cleanCamera, cleanPick, cleanWifi, crc32, RIG_HOST, RIG_PATH };
+module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_ADDR, cleanDetails, cleanCamera, cleanPick, cleanWifi, cleanSentry, crc32, RIG_HOST, RIG_PATH };

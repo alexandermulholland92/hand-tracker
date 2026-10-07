@@ -1,8 +1,9 @@
 <!doctype html>
 <!-- The remote recording page (remote-client.js): start and stop motion capture on a computer
      running Hand Tracker with Remote recording on, pick its cameras and mode, fill in the take
-     details and watch each camera. The computer serves it to any browser (electron/remote-record.js);
-     the Android app and the Windows, Mac and Linux app open it themselves, from remote.html. -->
+     details and watch each camera; and (hidden until the title is tapped five times) Sentry
+     mode. The computer serves it to any browser (electron/remote-record.js); the Android app
+     and the Windows, Mac and Linux app open it themselves, from remote.html. -->
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -71,7 +72,15 @@
   .tools button.on, button.small.on { background: var(--green); }
   .cam .pic { cursor: zoom-in; }
   #full { position: fixed; inset: 0; z-index: 20; background: #000; display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
-  #full img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  #fullBox { position: relative; display: inline-block; line-height: 0; }
+  #full img { max-width: 100vw; max-height: 100vh; object-fit: contain; }
+  /* Sentry mode's boxes over a camera's picture: tap one to leave it out (dark, dashed), again to
+     watch it; red while it moves. */
+  .boxes { position: absolute; inset: 0; display: grid; gap: 2px; padding: 2px; z-index: 2; }
+  .boxes button { min-width: 0; min-height: 0; padding: 0; border-radius: 6px; border: 1.5px solid rgba(255, 255, 255, 0.55); background: rgba(255, 146, 43, 0.08); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25); cursor: pointer; }
+  .boxes button.hot { background: rgba(250, 82, 82, 0.55); border-color: #ffc9c9; }
+  .boxes button.off { background: rgba(0, 0, 0, 0.5) linear-gradient(to top right, transparent calc(50% - 1px), rgba(255, 255, 255, 0.4) 50%, transparent calc(50% + 1px)); border-style: dashed; border-color: rgba(255, 255, 255, 0.3); }
+  .tools button.big { background: #495057; }
   .fullbar { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: linear-gradient(rgba(0, 0, 0, 0.65), transparent); color: #fff; font-size: 14px; }
   #fullName { flex: 1 1 auto; font-weight: 600; }
   #fullRate { opacity: 0.8; }
@@ -103,8 +112,12 @@
   .join button { padding: 9px 14px; font-weight: 600; }
   .join .quiet { background: #495057; }
   .muted { color: var(--muted); }
-  #videoPanel .row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin: 0 0 6px; }
-  #videoPanel .row .grow { flex: 1 1 auto; }
+  #videoPanel .row, #sentryPanel .row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin: 0 0 6px; }
+  #videoPanel .row .grow, #sentryPanel .row .grow { flex: 1 1 auto; }
+  #sentryPanel select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
+  #sentryPanel .sub { font-size: 13px; color: var(--muted); margin: 2px 0 8px; overflow-wrap: anywhere; }
+  #sentryPanel hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
+  #sentryNote { margin-bottom: 8px; }
   .alert { display: flex; gap: 10px; align-items: flex-start; border-top: 1px solid var(--line); padding: 7px 0; font-size: 14px; }
   .alert img { width: 112px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #0e0f12; flex: none; }
   .alert .meta { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
@@ -155,8 +168,36 @@
   <div id="missing"></div>
   <div id="take" hidden></div>
 
+  <section class="panel" id="sentryPanel" aria-labelledby="sentryTitle" hidden>
+    <h2><span id="sentryTitle" class="grow">Sentry mode</span><button type="button" id="sentryBtn" class="small" aria-pressed="false">Off</button></h2>
+    <div id="sentryNote" class="muted"></div>
+    <div id="sentrySettings" hidden>
+      <div class="row"><span class="grow">Ignore pets and animals</span><button type="button" id="sentryPets" class="small" aria-pressed="false">Off</button></div>
+      <div class="sub">Movement where a cat, dog, bird or other animal is (and no person) doesn't count.</div>
+      <div class="row"><span class="grow">Boxes on each camera</span><select id="sentryRows" aria-label="Rows of boxes"></select><span>×</span><select id="sentryCols" aria-label="Columns of boxes"></select></div>
+      <div class="row"><span class="grow">Sensitivity</span><select id="sentrySens"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
+      <div class="row"><span class="grow">Show the boxes here</span><button type="button" id="sentryBoxes" class="small on" aria-pressed="true">On</button></div>
+      <div class="sub">Tap a box on a camera to leave it out (a window, a screen, a fan); tap it again to watch it. Red: moving.</div>
+      <div class="row"><span class="grow">Every box watched again</span><button type="button" id="sentryAll" class="small">Watch all</button></div>
+      <hr />
+      <div class="row"><span class="grow">Photo of each alert</span><button type="button" id="sentryPhoto" class="small on" aria-pressed="true">On</button></div>
+      <div class="row"><span class="grow">Video, until it's still for 10 s</span><button type="button" id="sentryVideo" class="small on" aria-pressed="true">On</button></div>
+      <div class="row"><span class="grow">Sound with the video</span><button type="button" id="sentrySound" class="small on" aria-pressed="true">On</button></div>
+      <div class="row" id="sentryWatchRow" hidden><span class="grow">Alerts on this phone</span><button type="button" id="sentryWatch" class="small" aria-pressed="false">Off</button></div>
+      <div class="row"><span class="grow">Alerts through ntfy</span><button type="button" id="sentryNtfy" class="small" aria-pressed="false">Off</button></div>
+      <div id="sentryNtfyBox" hidden>
+        <div class="sub">In the ntfy app (Play Store or F-Droid), subscribe to <b id="sentryTopic"></b> on <span id="sentryServerName"></span>: <a id="sentryLink" target="_blank" rel="noopener"></a>. Anyone who knows the topic can read its alerts, so keep it to yourself.</div>
+        <div class="join"><input id="sentryServer" type="url" maxlength="200" autocomplete="off" spellcheck="false" aria-label="ntfy server" /><button type="button" id="sentryServerSave" class="quiet">Save server</button></div>
+        <div class="row"><span class="grow">Photo with each alert</span><button type="button" id="sentryNtfyPhoto" class="small" aria-pressed="false">Off</button></div>
+        <div class="takebtns"><button type="button" id="sentryTest">Send a test</button><button type="button" id="sentryNewTopic" class="stop">New topic</button></div>
+      </div>
+      <hr />
+    </div>
+    <div id="sentryAlerts"></div>
+  </section>
+
   <div id="full" role="dialog" aria-label="One camera, full screen" hidden>
-    <img id="fullImg" alt="" />
+    <div id="fullBox"><img id="fullImg" alt="" /><div class="boxes" id="fullBoxes" hidden></div></div>
     <div class="fullbar"><span id="fullName"></span><span id="fullRate"></span><button type="button" id="fullClose" aria-label="Back to every camera">✕</button></div>
   </div>
 
@@ -171,11 +212,6 @@
     <div id="takesNote"></div>
   </section>
 
-  <section class="panel" id="sentryPanel" aria-labelledby="sentryTitle" hidden>
-    <h2><span id="sentryTitle" class="grow">Sentry mode</span><button type="button" id="sentryBtn" class="small" aria-pressed="false">Off</button></h2>
-    <div id="sentryNote" class="muted"></div>
-    <div id="sentryAlerts"></div>
-  </section>
 
   <section class="panel" id="videoPanel" aria-labelledby="videoTitle" hidden>
     <h2><span id="videoTitle" class="grow">Video with each take</span><button type="button" id="videoBtn" class="small on" aria-pressed="true">On</button></h2>

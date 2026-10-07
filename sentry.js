@@ -1,23 +1,25 @@
 /**
- * sentry.js — Sentry mode: watching the cameras for movement while nobody's there. Hidden:
- * Ctrl+Alt+S, or tapping the title five times within three seconds, shows its card (and
- * hides it again; Sentry keeps watching meanwhile, if it's on).
+ * sentry.js — Sentry mode: watching a camera rig's cameras for movement while nobody's there.
+ * It's set up, turned on and off, and its alerts seen on remote recording's page
+ * (remote-client.js), where it's hidden: tapping the page's title five times (or Ctrl+Alt+S
+ * there) shows it, on every page this computer serves, and hides it again (Sentry keeps
+ * watching meanwhile, if it's on). It watches remote recording's cameras (Several cameras).
  *
  * Each camera's picture is split into boxes, rows by columns (the same grid for every
- * camera). Every box is watched except the ones tapped (tap again to watch it again): a
- * window with trees outside, a screen, a fan. Remembered for each camera and grid. Movement
- * in a watched box for a moment is an alert:
- *   - a photo, and a video of that camera until it's been still for a while: into the remote
- *     recording folder (so the phone's Takes list has them); on the website, into a folder
- *     picked once (or as downloads);
- *   - an alert on remote recording's page;
- *   - a push notification on a phone: by the Hand Tracker app (it keeps an eye on its
- *     computers), by the ntfy app (through ntfy.sh or your own server), or both.
+ * camera), drawn over that camera's preview on the page. Every box is watched except the ones
+ * tapped there (tap again to watch it again): a window with trees outside, a screen, a fan.
+ * Remembered for each camera and grid. Movement in a watched box for a moment is an alert:
+ *   - a photo, and a video of that camera until it's been still for a while, into the remote
+ *     recording folder (so the page's Takes list has them);
+ *   - an alert on the page, with its photo;
+ *   - a push notification on a phone: by the Hand Tracker app (it keeps an eye on the
+ *     computers it's told to: SentryWatchService.java), by the ntfy app (through ntfy.sh or
+ *     your own server), or both.
  * One alert a camera at most every ALERT_GAP_S; the video goes on while there's movement.
- * Ignore animals: movement where a cat, dog, bird or other animal is found (and no person)
- * doesn't count. An OAK camera finds them itself (its object finder is turned on for this);
- * other cameras with an object finder in the app (object-finder.js), run only when something
- * moves.
+ * Ignore pets and animals: movement where a cat, dog, bird or other animal is found (and no
+ * person) doesn't count. An OAK camera finds them itself (its object finder is turned on for
+ * this); other cameras with an object finder in the app (object-finder.js), run only when
+ * something moves.
  *
  * How movement is measured: about eight times a second each camera's picture is shrunk to a
  * small grey picture (64 pixels across; an OAK camera makes it itself). After a light blur, a
@@ -25,21 +27,24 @@
  * when enough of its pixels did (the sensitivity). When most of the whole picture changes at
  * once, that's the light (a lamp, the camera adjusting), not movement.
  *
- *   Sentry.init({ prefs, setPref, views, host, onWantsChange, hostName, link })
- *     views() -> the cameras now: [{ key, name, container, picture (the element the picture is
- *       shown in), canvas() (the canvas it's drawn on: its size, and what's recorded), frame()
- *       (the picture tracked), mirrored(), rotation() (an OAK camera: the turn its own grey
+ *   Sentry.init({ prefs, setPref, views, host, onWantsChange, hostName, link, looking })
+ *     views() -> the cameras now: [{ key, index (its place in remote recording's list), name,
+ *       canvas() (the canvas its picture is drawn on: what's recorded), frame() (the picture
+ *       tracked), mirrored() (its preview is), rotation() (an OAK camera: the turn its own grey
  *       pictures need), grey() (OAK: its last { w, h, data } grey picture, or null), objects()
- *       (OAK: its last objects), want(on) (OAK: draw its pictures often, for a video) }]
- *     host: desktop or mobile (saving into the remote recording folder, ntfy), or null (website)
+ *       (OAK: its last objects), oak, want(on) (draw its pictures often, for a video) }]
+ *     host: desktop or mobile (saving into the remote recording folder, ntfy)
  *     onWantsChange(): the OAK cameras' options changed (wantsMotion / wantsObjects)
  *     hostName() -> this computer's name, link() -> its remote recording page (for ntfy's alerts)
+ *     looking() -> a page is showing the previews now (while it's off, it measures only then)
  *   Sentry.wantsMotion()   // the OAK cameras should send their grey pictures
- *   Sentry.wantsObjects()  // ... and find objects (ignore animals)
- *   Sentry.remoteState()   // for remote recording's page, or null while it's hidden and off
- *   Sentry.command({ armed })  // from that page
- *   Sentry.setArmed(on); Sentry.toggleShown(); Sentry.isShown(); Sentry.isArmed()
- *   Sentry._test            // for the checks: measure(), alert(), events
+ *   Sentry.wantsObjects()  // ... and find objects (ignore pets and animals)
+ *   Sentry.remoteState()   // for the page: its settings, each camera's boxes, the alerts
+ *   await Sentry.command(c) // from the page: { shown, armed, rows, cols, sensitivity,
+ *                          //   ignoreAnimals, photo, video, sound, ntfy: { on, server, photo,
+ *                          //   newTopic, test }, box: { camera, cell, off }, watchAll }
+ *   Sentry.isArmed()
+ *   Sentry._test            // for the checks
  */
 
 (function (global) {
@@ -57,25 +62,23 @@
   const MAX_ROWS = 9, MAX_COLS = 16;
   const ANIMALS = new Set(["bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe"]);
   const ANIMAL_MARGIN = 0.15; // an animal's box grown by this much each way (its movement blurs past it)
+  const HEAT_FADE = 0.6; // a box shown moving on the page fades over a few looks
 
-  let prefs = {}, setPref = () => {}, viewsOf = () => [], host = null, onWantsChange = () => {}, hostName = () => "", linkOf = () => "";
+  let prefs = {}, setPref = () => {}, viewsOf = () => [], host = null, onWantsChange = () => {}, hostName = () => "", linkOf = () => "", lookingOf = () => true;
   let cfg = null;
   let timer = null;
-  const per = new Map(); // view key -> { prev, w, h, streak, levels, overlay, last, session, lastAlertAt, finding }
+  const per = new Map(); // view key -> { prev, streak, levels, heat, session, lastAlertAt, finding }
   const events = [];
   let finderNote = "";
-  let webFolder = null; // the website's folder (File System Access), picked once
 
-  const $ = (id) => document.getElementById(id);
-  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const errText = (err) => (err && err.message ? err.message : String(err)).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
   const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.round(Number(v)))) : d);
 
   function defaults() {
     return {
-      shown: false, armed: false, rows: 3, cols: 4, sensitivity: "medium", ignoreAnimals: false, bubbles: true,
-      photo: true, video: true, sound: true, remote: true,
-      pushApp: false, ntfy: { on: false, server: "https://ntfy.sh", topic: "", photo: false },
+      shown: false, armed: false, rows: 3, cols: 4, sensitivity: "medium", ignoreAnimals: false,
+      photo: true, video: true, sound: true,
+      ntfy: { on: false, server: "https://ntfy.sh", topic: "", photo: false },
       excluded: {}, // camera key -> { "3x4": [box numbers, in the camera's own picture] }
     };
   }
@@ -83,7 +86,8 @@
     const s = prefs.sentry && typeof prefs.sentry === "object" ? prefs.sentry : {};
     const d = defaults();
     cfg = {
-      ...d, ...s,
+      ...d,
+      ...Object.fromEntries(["shown", "armed", "ignoreAnimals", "photo", "video", "sound"].filter((k) => typeof s[k] === "boolean").map((k) => [k, s[k]])),
       rows: clamp(s.rows, 1, MAX_ROWS, d.rows), cols: clamp(s.cols, 1, MAX_COLS, d.cols),
       sensitivity: SENSITIVITY[s.sensitivity] ? s.sensitivity : d.sensitivity,
       ntfy: { ...d.ntfy, ...(s.ntfy || {}) },
@@ -214,16 +218,20 @@
 
   // ---------- each camera, eight times a second ----------
   function stateOf(key) {
-    if (!per.has(key)) per.set(key, { prev: null, streak: 0, levels: [], overlay: null, session: null, lastAlertAt: 0, finding: false, objects: null, objectsAt: 0 });
+    if (!per.has(key)) per.set(key, { prev: null, streak: 0, levels: [], heat: [], session: null, lastAlertAt: 0, finding: false });
     return per.get(key);
   }
 
   function sample() {
+    // Off, with nobody looking at the boxes on the page: nothing to measure.
+    if (!cfg.armed && !lookingOf()) {
+      for (const st of per.values()) Object.assign(st, { prev: null, heat: [], streak: 0 });
+      return;
+    }
     const views = safeViews();
     const keys = new Set(views.map((v) => v.key));
     for (const [key, st] of per) {
       if (keys.has(key)) continue;
-      removeOverlay(st);
       if (st.session) endSession(key, st);
       per.delete(key);
     }
@@ -242,6 +250,9 @@
       st.prev = now;
       st.mask = mask;
       st.levels = levels(mask, cfg.rows, cfg.cols);
+      // What the page shows as moving: each box's movement, fading over a few looks (the page
+      // sees this twice a second).
+      st.heat = st.levels.map((l, i) => Math.max(l, (st.heat.length === st.levels.length ? st.heat[i] : 0) * HEAT_FADE));
       const off = excludedOf(v.key);
       const need = SENSITIVITY[cfg.sensitivity];
       const hot = st.levels.some((l, i) => !off.has(i) && l >= need);
@@ -249,9 +260,7 @@
       if (cfg.armed && st.streak >= STREAK) consider(v, st, off, need);
       if (st.session && performance.now() - st.session.lastMovedAt > STILL_S * 1000) endSession(v.key, st);
       else if (st.session && st.session.rec && st.session.rec.elapsed() > MAX_VIDEO_S) endSession(v.key, st);
-      drawOverlay(v, st, off, need);
     }
-    showStatus(views);
   }
 
   // Movement in a watched box: an alert (or more of one going on), unless it's an animal's.
@@ -348,12 +357,10 @@
         ev.photoError = errText(err);
       }
     }
-    renderEvents();
     if (cfg.ntfy.on) {
       sendNtfy(ev, jpeg)
         .then(() => ev.sent.push("ntfy"))
-        .catch((err) => (ev.ntfyError = errText(err)))
-        .finally(renderEvents);
+        .catch((err) => (ev.ntfyError = errText(err)));
     }
     // (The remote page and the Hand Tracker app read it from remoteState.)
   }
@@ -373,7 +380,7 @@
     if (v && v.want) v.want(false);
     if (!s.rec) {
       if (s.event && s.videoError) s.event.videoError = s.videoError;
-      return renderEvents();
+      return;
     }
     try {
       const clip = await s.rec.stop();
@@ -389,11 +396,10 @@
     } catch (err) {
       if (s.event) s.event.videoError = errText(err);
     }
-    renderEvents();
   }
 
-  // Saved into the remote recording folder (desktop app, phone), else the website's folder or a
-  // download. -> { name, url? }
+  // Saved into the remote recording folder (the desktop app, the phone app), else downloaded.
+  // -> { name }
   async function saveFile(baseName, suffix, ext, blob) {
     const data = new Uint8Array(await blob.arrayBuffer());
     if (host && host.remote && host.remote.saveTake) {
@@ -403,23 +409,13 @@
       return { name: r.path.split(/[\\/]/).pop(), dir: res.dir };
     }
     const name = `${baseName}${suffix}.${ext}`;
-    if (webFolder) {
-      try {
-        const f = await webFolder.getFileHandle(name, { create: true });
-        const w = await f.createWritable();
-        await w.write(blob);
-        await w.close();
-        return { name, dir: webFolder.name, url: URL.createObjectURL(blob) };
-      } catch {
-        // permission gone (a reload): downloads instead
-      }
-    }
     const url = URL.createObjectURL(blob);
     const a = Object.assign(document.createElement("a"), { href: url, download: name });
     document.body.appendChild(a);
     a.click();
     a.remove();
-    return { name, url };
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    return { name, download: true };
   }
 
   // ntfy: a notification through ntfy.sh (or your own server) to the ntfy app.
@@ -448,69 +444,6 @@
     if (!res.ok) throw new Error(`ntfy answered ${res.status}.`);
   }
 
-  // ---------- the boxes over each picture ----------
-  function removeOverlay(st) {
-    if (st.overlay) st.overlay.el.remove();
-    st.overlay = null;
-  }
-
-  function pictureRect(v) {
-    const pic = v.picture, box = v.container;
-    if (!pic || !box) return null;
-    const c = v.canvas ? v.canvas() : null;
-    const pr = pic.getBoundingClientRect(), br = box.getBoundingClientRect();
-    if (!pr.width || !pr.height) return null;
-    const aspect = c && c.width && c.height ? c.width / c.height : pr.width / pr.height;
-    let w = pr.width, h = w / aspect;
-    if (h > pr.height) (h = pr.height), (w = h * aspect);
-    return { left: pr.left - br.left + (pr.width - w) / 2, top: pr.top - br.top + (pr.height - h) / 2, width: w, height: h };
-  }
-
-  function drawOverlay(v, st, off, need) {
-    const show = cfg.shown && cfg.bubbles;
-    if (!show) return removeOverlay(st);
-    const rect = pictureRect(v);
-    if (!rect) return removeOverlay(st);
-    const grid = gridKey();
-    if (!st.overlay || st.overlay.grid !== grid || st.overlay.el.parentElement !== v.container) {
-      removeOverlay(st);
-      if (getComputedStyle(v.container).position === "static") v.container.style.position = "relative";
-      const el = document.createElement("div");
-      el.className = "sentry-bubbles";
-      el.style.gridTemplateColumns = `repeat(${cfg.cols}, 1fr)`;
-      el.style.gridTemplateRows = `repeat(${cfg.rows}, 1fr)`;
-      el.innerHTML = Array.from({ length: cfg.rows * cfg.cols }, (_, i) => `<button type="button" data-cell="${i}" aria-pressed="false"></button>`).join("");
-      el.addEventListener("click", (e) => {
-        const b = e.target.closest("button[data-cell]");
-        if (!b) return;
-        const shown = Number(b.dataset.cell);
-        const cell = toCamera(shown, v.mirrored());
-        const set = excludedOf(v.key);
-        if (set.has(cell)) set.delete(cell);
-        else set.add(cell);
-        setExcluded(v.key, set);
-      });
-      v.container.appendChild(el);
-      st.overlay = { el, grid };
-    }
-    Object.assign(st.overlay.el.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
-    const size = Math.max(10, Math.min(rect.width / cfg.cols, rect.height / cfg.rows) * 0.62);
-    st.overlay.el.style.setProperty("--bubble", `${size}px`);
-    const buttons = st.overlay.el.children;
-    const mirrored = v.mirrored();
-    for (let shown = 0; shown < buttons.length; shown++) {
-      const cell = toCamera(shown, mirrored);
-      const b = buttons[shown];
-      const isOff = off.has(cell);
-      const level = Math.min(1, (st.levels[cell] || 0) / need);
-      b.classList.toggle("off", isOff);
-      b.classList.toggle("hot", !isOff && level >= 1);
-      b.setAttribute("aria-pressed", String(isOff));
-      b.title = isOff ? "Not watched: tap to watch this box" : "Watched: tap to leave this box out";
-      b.style.setProperty("--level", isOff ? 0 : level.toFixed(2));
-    }
-  }
-
   // A box as shown (mirrored or not) -> the same box in the camera's own picture.
   function toCamera(shown, mirrored, cols = cfg.cols) {
     if (!mirrored) return shown;
@@ -518,90 +451,15 @@
     return r * cols + (cols - 1 - c);
   }
 
-  // ---------- the card ----------
-  function setToggle(btn, on, label) {
-    if (!btn) return;
-    btn.classList.toggle("active", !!on);
-    btn.setAttribute("aria-pressed", String(!!on));
-    if (label) btn.textContent = label;
-  }
-
-  function apply() {
-    const card = $("sentryCard");
-    if (!card) return;
-    card.hidden = !cfg.shown;
-    setToggle($("sentryArm"), cfg.armed, cfg.armed ? "Sentry is on" : "Turn Sentry on");
-    $("sentryRows").value = String(cfg.rows);
-    $("sentryCols").value = String(cfg.cols);
-    $("sentrySensitivity").value = cfg.sensitivity;
-    setToggle($("sentryAnimals"), cfg.ignoreAnimals);
-    setToggle($("sentryBubbles"), cfg.bubbles);
-    for (const [id, k] of [["sentryPhoto", "photo"], ["sentryVideo", "video"], ["sentrySound", "sound"], ["sentryRemote", "remote"], ["sentryPushApp", "pushApp"]]) setToggle($(id), cfg[k]);
-    $("sentrySound").disabled = !cfg.video;
-    setToggle($("sentryNtfy"), cfg.ntfy.on);
-    $("sentryNtfyBox").hidden = !cfg.ntfy.on;
-    $("sentryNtfyServer").value = cfg.ntfy.server;
-    $("sentryNtfyTopic").textContent = cfg.ntfy.topic;
-    setToggle($("sentryNtfyPhoto"), cfg.ntfy.photo);
-    const link = `${String(cfg.ntfy.server).replace(/\/+$/, "")}/${cfg.ntfy.topic}`;
-    $("sentryNtfyLink").href = link;
-    $("sentryNtfyLink").textContent = link;
-    const qr = $("sentryNtfyQr");
-    if (qr && global.QRCode && cfg.ntfy.on && qr.dataset.text !== link) {
-      qr.dataset.text = link;
-      try {
-        global.QRCode.draw(qr, link, { scale: 4, margin: 3 });
-      } catch {
-        qr.hidden = true;
-      }
-    }
-    const folderRow = $("sentryFolderRow");
-    if (folderRow) folderRow.hidden = !!(host && host.remote && host.remote.saveTake);
-    for (const st of per.values()) removeOverlay(st); // drawn afresh (the grid may have changed)
-    running();
-  }
-
-  function showStatus(views) {
-    const el = $("sentryStatus");
-    if (!el || !cfg.shown) return;
-    const n = views.length;
-    const recording = [...per.values()].filter((s) => s.session && s.session.rec).length;
-    el.textContent = !cfg.armed
-      ? `Off. ${n ? `${n} camera${n === 1 ? "" : "s"}: tap a box to leave it out, and it isn't watched.` : "No camera is running."}`
-      : !n
-        ? "On, but no camera is running."
-        : `Watching ${n} camera${n === 1 ? "" : "s"}${recording ? ` · recording ${recording}` : ""}.${finderNote ? ` ${finderNote}` : ""}`;
-  }
-
-  function renderEvents() {
-    const list = $("sentryEvents");
-    if (!list) return;
-    const p = (n) => String(n).padStart(2, "0");
-    list.innerHTML = events.length
-      ? events
-          .map((e) => {
-            const t = new Date(e.at);
-            const when = `${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}`;
-            const photo = e.photo ? (e.photo.url ? `<a href="${esc(e.photo.url)}" download="${esc(e.photo.name)}">photo</a>` : esc(e.photo.name)) : e.photoError ? `no photo (${esc(e.photoError)})` : "";
-            const video = e.video ? (e.video.url ? `<a href="${esc(e.video.url)}" download="${esc(e.video.name)}">video</a>` : esc(e.video.name)) : e.videoError ? `no video (${esc(e.videoError)})` : "";
-            const sent = e.ntfyError ? ` · ntfy: ${esc(e.ntfyError)}` : e.sent.length ? ` · sent by ${esc(e.sent.join(", "))}` : "";
-            return `<li><b>${when}</b> ${esc(e.camera)}${photo ? ` · ${photo}` : ""}${video ? ` · ${video}` : ""}${e.seconds ? ` (${e.seconds} s)` : ""}${sent}</li>`;
-          })
-          .join("")
-      : '<li class="muted">No alerts yet.</li>';
-  }
-
-  // Watching (and the boxes) runs while Sentry is on or its card is shown.
+  // ---------- on and off, and what the page sees ----------
+  // Watching runs while Sentry is on, or shown on the page (its boxes show what moves).
   function running() {
     const want = cfg.armed || cfg.shown;
     if (want && !timer) timer = setInterval(sample, SAMPLE_MS);
     if (!want && timer) {
       clearInterval(timer);
       timer = null;
-      for (const [key, st] of per) {
-        removeOverlay(st);
-        if (st.session) endSession(key, st);
-      }
+      for (const [key, st] of per) if (st.session) endSession(key, st);
       per.clear();
     }
   }
@@ -617,16 +475,7 @@
   function setArmed(on) {
     cfg.armed = !!on;
     if (!cfg.armed) for (const [key, st] of per) if (st.session) endSession(key, st);
-    save();
-    apply();
-    notifyWants();
-  }
-
-  function toggleShown() {
-    cfg.shown = !cfg.shown;
-    save();
-    apply();
-    notifyWants();
+    if (cfg.armed && cfg.ignoreAnimals && global.ObjectFinder && global.ObjectFinder.load) global.ObjectFinder.load().catch(() => {});
   }
 
   const wantsMotion = () => !!cfg && (cfg.armed || cfg.shown);
@@ -638,37 +487,94 @@
     onWantsChange();
   }
 
-  // For remote recording's page (and the Hand Tracker app watching for alerts): null while Sentry
-  // is hidden and off.
-  function remoteState() {
-    if (!cfg || (!cfg.shown && !cfg.armed)) return null;
-    return {
-      armed: cfg.armed,
-      pushApp: !!cfg.pushApp,
-      alerts: !!cfg.remote,
-      events: cfg.remote || cfg.pushApp
-        ? events.slice(0, 20).map((e) => ({ id: e.id, at: e.at, camera: e.camera, photo: e.photo && !e.photo.url ? e.photo.name : null, video: e.video && !e.video.url ? e.video.name : null, seconds: e.seconds || 0 }))
-        : [],
-    };
-  }
-  function command(c = {}) {
-    if (typeof c.armed === "boolean") setArmed(c.armed);
-    return { ok: true, message: cfg.armed ? "Sentry is on." : "Sentry is off." };
+  function statusText(views) {
+    const n = views.length;
+    const recording = [...per.values()].filter((s) => s.session && s.session.rec).length;
+    if (!cfg.armed) return n ? "Off. Tap a box to leave it out: the rest are watched once Sentry is on." : "Off. Start the cameras to see their boxes.";
+    if (!n) return "On, but no camera is running.";
+    return `Watching ${n} camera${n === 1 ? "" : "s"}${recording ? ` · recording ${recording}` : ""}.${finderNote ? ` ${finderNote}` : ""}`;
   }
 
-  // The computers in remote recording's list (remote-launcher.js keeps them), each with its code
-  // if this phone has one (remote-client.js keeps those): [{ rig: "name:port", key }].
-  function watchedComputers() {
-    let names = [];
-    try {
-      names = JSON.parse(localStorage.getItem("hand-tracker-remote-computers") || "[]");
-    } catch {
-      names = [];
+  // For remote recording's page (and the Hand Tracker app watching for alerts). While Sentry is
+  // hidden and off, only that.
+  function remoteState() {
+    if (!cfg) return null;
+    if (!cfg.shown && !cfg.armed) return { shown: false, armed: false };
+    const views = safeViews();
+    const need = SENSITIVITY[cfg.sensitivity];
+    const boxes = cfg.rows * cfg.cols;
+    return {
+      shown: cfg.shown, armed: cfg.armed, rows: cfg.rows, cols: cfg.cols, sensitivity: cfg.sensitivity,
+      ignoreAnimals: cfg.ignoreAnimals, photo: cfg.photo, video: cfg.video, sound: cfg.sound,
+      ntfy: { on: cfg.ntfy.on, server: cfg.ntfy.server, topic: cfg.ntfy.topic, photo: cfg.ntfy.photo },
+      note: statusText(views),
+      // Each camera's boxes as its preview shows them (mirrored or not): left out, and moving.
+      cameras: views.map((v) => {
+        const off = excludedOf(v.key), st = per.get(v.key), mirrored = !!(v.mirrored && v.mirrored());
+        const shownOff = [], hot = [];
+        for (let shown = 0; shown < boxes; shown++) {
+          const cell = toCamera(shown, mirrored);
+          if (off.has(cell)) shownOff.push(shown);
+          else if (st && (st.heat[cell] || 0) >= need) hot.push(shown);
+        }
+        return { index: v.index, name: v.name, off: shownOff, hot, recording: !!(st && st.session && st.session.rec) };
+      }),
+      events: events.slice(0, 20).map((e) => ({
+        id: e.id, at: e.at, camera: e.camera,
+        photo: e.photo && !e.photo.download ? e.photo.name : null, video: e.video && !e.video.download ? e.video.name : null, seconds: e.seconds || 0,
+        problem: [e.photoError && `no photo (${e.photoError})`, e.videoError && `no video (${e.videoError})`, e.ntfyError && `ntfy: ${e.ntfyError}`].filter(Boolean).join(" · "),
+      })),
+    };
+  }
+
+  // From the page (the server has checked each part already; checked again here).
+  async function command(c = {}) {
+    let message = "";
+    if (typeof c.shown === "boolean") cfg.shown = c.shown;
+    if (c.rows !== undefined) cfg.rows = clamp(c.rows, 1, MAX_ROWS, cfg.rows);
+    if (c.cols !== undefined) cfg.cols = clamp(c.cols, 1, MAX_COLS, cfg.cols);
+    if (SENSITIVITY[c.sensitivity]) cfg.sensitivity = c.sensitivity;
+    for (const k of ["ignoreAnimals", "photo", "video", "sound"]) if (typeof c[k] === "boolean") cfg[k] = c[k];
+    if (c.ntfy && typeof c.ntfy === "object") {
+      const n = { ...cfg.ntfy };
+      if (typeof c.ntfy.on === "boolean") n.on = c.ntfy.on;
+      if (typeof c.ntfy.photo === "boolean") n.photo = c.ntfy.photo;
+      if (typeof c.ntfy.server === "string") n.server = /^https?:\/\/[^\s/]+/i.test(c.ntfy.server.trim()) ? c.ntfy.server.trim().replace(/\/+$/, "") : "https://ntfy.sh";
+      if (c.ntfy.newTopic === true) n.topic = newTopic();
+      cfg.ntfy = n;
     }
-    return (Array.isArray(names) ? names : [])
-      .map((n) => String(n).toLowerCase())
-      .map((n) => (/:\d{1,5}$/.test(n) ? n : `${n}:47821`))
-      .map((rig) => ({ rig, key: localStorage.getItem(`hand-tracker-remote-key:${rig}`) || "" }));
+    if (c.box && typeof c.box === "object") {
+      const v = safeViews().find((x) => x.index === c.box.camera);
+      if (!v) return { ok: false, message: "That camera isn't running." };
+      const shown = Number(c.box.cell);
+      if (!Number.isInteger(shown) || shown < 0 || shown >= cfg.rows * cfg.cols) return { ok: false, message: "No such box." };
+      const set = excludedOf(v.key), cell = toCamera(shown, !!(v.mirrored && v.mirrored()));
+      if (c.box.off) set.add(cell);
+      else set.delete(cell);
+      setExcluded(v.key, set);
+    }
+    if (c.watchAll === true) {
+      for (const v of safeViews()) setExcluded(v.key, new Set());
+      message = "Every box is watched.";
+    }
+    if (typeof c.armed === "boolean" && c.armed !== cfg.armed) {
+      setArmed(c.armed);
+      message = cfg.armed ? "Sentry is on." : "Sentry is off.";
+    } else if (c.ignoreAnimals === true && cfg.armed) {
+      setArmed(true); // the object finder, made ready
+    }
+    save();
+    running();
+    notifyWants();
+    if (c.ntfy && c.ntfy.test === true) {
+      try {
+        await sendNtfy({ at: Date.now(), camera: "Test", photo: null, sent: [] }, null);
+        message = "Sent: it should be on your phone in a moment.";
+      } catch (err) {
+        return { ok: false, message: `Couldn't send it: ${errText(err)}` };
+      }
+    }
+    return { ok: true, message };
   }
 
   function init(opts) {
@@ -679,117 +585,16 @@
     onWantsChange = opts.onWantsChange || onWantsChange;
     hostName = opts.hostName || hostName;
     linkOf = opts.link || linkOf;
+    lookingOf = opts.looking || lookingOf;
     load();
     notifyWants.last = `${wantsMotion()}${wantsObjects()}`;
-
-    // Hidden: Ctrl+Alt+S, or the title tapped five times within three seconds.
-    document.addEventListener("keydown", (e) => {
-      if (e.ctrlKey && e.altKey && !e.shiftKey && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        toggleShown();
-      }
-    });
-    const title = document.querySelector("header h1");
-    let taps = [];
-    if (title) {
-      title.addEventListener("click", () => {
-        const now = Date.now();
-        taps = [...taps.filter((t) => now - t < 3000), now];
-        if (taps.length >= 5) {
-          taps = [];
-          toggleShown();
-        }
-      });
-    }
-
-    const on = (id, ev, fn) => $(id) && $(id).addEventListener(ev, fn);
-    on("sentryArm", "click", () => setArmed(!cfg.armed));
-    on("sentryRows", "change", () => {
-      cfg.rows = clamp($("sentryRows").value, 1, MAX_ROWS, cfg.rows);
-      save();
-      apply();
-    });
-    on("sentryCols", "change", () => {
-      cfg.cols = clamp($("sentryCols").value, 1, MAX_COLS, cfg.cols);
-      save();
-      apply();
-    });
-    on("sentrySensitivity", "change", () => {
-      cfg.sensitivity = SENSITIVITY[$("sentrySensitivity").value] ? $("sentrySensitivity").value : "medium";
-      save();
-    });
-    const flip = (k) => () => {
-      cfg[k] = !cfg[k];
-      save();
-      apply();
-      notifyWants();
-      if (k === "ignoreAnimals" && cfg[k] && global.ObjectFinder && global.ObjectFinder.load) global.ObjectFinder.load().catch(() => {});
-    };
-    for (const [id, k] of [["sentryAnimals", "ignoreAnimals"], ["sentryBubbles", "bubbles"], ["sentryPhoto", "photo"], ["sentryVideo", "video"], ["sentrySound", "sound"], ["sentryRemote", "remote"], ["sentryPushApp", "pushApp"]]) on(id, "click", flip(k));
-    on("sentryNtfy", "click", () => {
-      cfg.ntfy = { ...cfg.ntfy, on: !cfg.ntfy.on };
-      save();
-      apply();
-    });
-    on("sentryNtfyPhoto", "click", () => {
-      cfg.ntfy = { ...cfg.ntfy, photo: !cfg.ntfy.photo };
-      save();
-      apply();
-    });
-    on("sentryNtfyServer", "change", () => {
-      const v = $("sentryNtfyServer").value.trim();
-      cfg.ntfy = { ...cfg.ntfy, server: /^https?:\/\/[^\s/]+/i.test(v) ? v.replace(/\/+$/, "") : "https://ntfy.sh" };
-      save();
-      apply();
-    });
-    on("sentryNtfyNew", "click", () => {
-      if (!confirm("Make a new topic? Phones subscribed to the old one stop getting alerts until they subscribe to the new one.")) return;
-      cfg.ntfy = { ...cfg.ntfy, topic: newTopic() };
-      save();
-      apply();
-    });
-    on("sentryNtfyTest", "click", () => {
-      const note = $("sentryNtfyNote");
-      note.textContent = "Sending…";
-      sendNtfy({ at: Date.now(), camera: "Test", photo: null, sent: [] }, null)
-        .then(() => (note.textContent = "Sent: it should be on your phone in a moment."))
-        .catch((err) => (note.textContent = `Couldn't send it: ${errText(err)}`));
-    });
-    on("sentryFolder", "click", async () => {
-      try {
-        webFolder = await global.showDirectoryPicker({ id: "sentry", mode: "readwrite" });
-        $("sentryFolderNote").textContent = `Saving into ${webFolder.name}.`;
-      } catch (err) {
-        if (err && err.name !== "AbortError") $("sentryFolderNote").textContent = errText(err);
-      }
-    });
-    if ($("sentryFolder")) $("sentryFolder").hidden = typeof global.showDirectoryPicker !== "function";
-    // On a phone with the Hand Tracker app: notifications for the alerts of the computers in
-    // remote recording's list (SentryWatchService.java).
-    const watch = host && host.sentryWatch;
-    if (watch && $("sentryWatchRow")) {
-      $("sentryWatchRow").hidden = false;
-      const showWatch = (s) => {
-        setToggle($("sentryWatch"), s.on);
-        $("sentryWatchNote").textContent = s.on ? `Watching ${s.rigs.join(", ")}.` : "Off.";
-      };
-      watch.status().then(showWatch).catch(() => {});
-      on("sentryWatch", "click", async () => {
-        try {
-          const s = await watch.status();
-          showWatch(s.on ? await watch.stop() : await watch.start(watchedComputers()));
-        } catch (err) {
-          $("sentryWatchNote").textContent = errText(err);
-        }
-      });
-    }
-    apply();
-    renderEvents();
+    if (cfg.armed) setArmed(true);
+    running();
   }
 
   global.Sentry = {
-    init, setArmed, toggleShown, wantsMotion, wantsObjects, remoteState, command,
-    isShown: () => !!cfg && cfg.shown, isArmed: () => !!cfg && cfg.armed,
+    init, wantsMotion, wantsObjects, remoteState, command,
+    isArmed: () => !!cfg && cfg.armed,
     _test: { shrink, blur, moved, levels, turn, withoutAnimals, sample, events, per, toCamera, config: () => cfg },
   };
 })(typeof window !== "undefined" ? window : globalThis);

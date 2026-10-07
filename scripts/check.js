@@ -586,107 +586,208 @@ async function checkNtfy() {
     JSON.stringify(out));
 }
 
-// Sentry mode in the app: hidden until Ctrl+Alt+S (or the title tapped five times); boxes over
-// the camera's picture, rows by columns; a tapped box is left out (the box shown top-left is
-// the camera's top-right, mirrored); with every box that moves left out, nothing happens; with
-// them watched, movement (the test camera's clock) is an alert: a photo, then a video when it's
-// turned off, both in the remote recording folder; the remote page sees it and can turn it off.
+// Sentry mode, from remote recording's page as a phone shows it: hidden until its title is
+// tapped five times (and hidden again so); its settings there; boxes over each camera's preview,
+// rows by columns, each filling its part (a tapped one is left out: the one shown top-left is
+// the camera's top-right, mirrored), red where the test camera's clock moves. With every box left
+// out nothing happens; turned on, movement is an alert with a photo, shown on the page, then a
+// video once it's turned off, both in the remote recording folder. ntfy's test through a
+// stand-in server; pets and animals ignored or not. Also: the previews come about as often as
+// full screen; a camera's video stopped at once is still a video; the object finder for
+// ignoring animals loads and runs.
 async function checkSentry(js) {
   const dir = process.env.HAND_TRACKER_REMOTE_DIR;
   const before = new Set(fs.readdirSync(dir));
-  const r = await js(`(async () => {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const $ = (id) => document.getElementById(id);
-    const key = () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, altKey: true, bubbles: true }));
-    const set = (id, v) => { $(id).value = String(v); $(id).dispatchEvent(new Event("change")); };
-    const cfg = () => Sentry._test.config();
-    // Sentry watches cameras: the test camera, whatever an earlier check left showing.
-    const source = HandTracker.getCamera().source;
-    if (source !== "camera") await HandTrackerApp.backToCamera();
-    for (let i = 0; i < 40 && HandTracker.getCamera().source !== "camera"; i++) await sleep(250);
-    await sleep(500);
-    const out = { source, hiddenAtStart: $("sentryCard").hidden && !document.querySelector(".sentry-bubbles") };
-    key();
-    await sleep(300);
-    out.shown = !$("sentryCard").hidden && Sentry.isShown() && !Sentry.isArmed();
-    // The camera's video, recorded on its own (camera-video.js): 2 s and a moment.
-    for (const ms of [2000, 400]) {
-      const rec = CameraVideo.start({ canvas: $("stage"), fps: 15, audio: false });
-      await sleep(ms);
-      const clip = await rec.stop();
-      (out.direct = out.direct || []).push({ ms, kb: Math.round(clip.blob.size / 1024), type: clip.mimeType });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = {};
+  const ntfyGot = [];
+  const ntfy = require("http").createServer((req, res) => {
+    let bytes = 0;
+    req.on("data", (c) => (bytes += c.length));
+    req.on("end", () => {
+      ntfyGot.push({ method: req.method, path: req.url.split("?")[0], title: new URL(req.url, "http://x").searchParams.get("title"), bytes });
+      res.setHeader("Content-Type", "application/json");
+      res.end("{}");
+    });
+  });
+  await new Promise((r) => ntfy.listen(0, "127.0.0.1", r));
+  const ntfyAt = `http://127.0.0.1:${ntfy.address().port}`;
+  let win = null, wasOn = true, base = "", key = "";
+  const post = (action, extra = {}) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...extra }) }).then((r) => r.json());
+  const get = (p) => fetch(base + p, { headers: { "X-Key": key } });
+  try {
+    // The computer: remote recording on, the cameras off; a camera's video recorded on its own
+    // (camera-video.js), 2 s and a moment.
+    const setup = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      if (MultiCamera.isActive()) MultiCamera.close();
+      if (HandTracker.getCamera().source !== "camera") await HandTrackerApp.backToCamera();
+      for (let i = 0; i < 40 && HandTracker.getCamera().source !== "camera"; i++) await sleep(250);
+      await sleep(500);
+      let s = await desktop.remote.status();
+      const wasOn = s.on;
+      if (!s.on) document.getElementById("remoteToggle").click();
+      for (let i = 0; i < 50 && !s.on; i++) { await sleep(100); s = await desktop.remote.status(); }
+      const direct = [];
+      for (const ms of [2000, 400]) {
+        const rec = CameraVideo.start({ canvas: document.getElementById("stage"), fps: 15, audio: false });
+        await sleep(ms);
+        const clip = await rec.stop();
+        direct.push({ ms, kb: Math.round(clip.blob.size / 1024), type: clip.mimeType });
+      }
+      return { status: s, wasOn, direct, mainPage: !document.getElementById("sentryCard"), hidden: Sentry.remoteState() };
+    })()`);
+    wasOn = setup.wasOn;
+    out.direct = setup.direct;
+    out.mainPage = setup.mainPage;
+    out.hiddenState = setup.hidden;
+    const keyed = (setup.status.urls || []).find((u) => u.keyed);
+    key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
+    base = `http://127.0.0.1:${setup.status.port}`;
+    // Only the test webcam (its clock moves), any role.
+    await post("scan");
+    let a = null;
+    for (let i = 0; i < 100 && !(a && a.at && !a.scanning); i++) {
+      await sleep(200);
+      a = (await (await get("/api/state")).json()).available;
     }
-    // Quiet for the check: no sound (no microphone here), no ntfy.
-    if (cfg().sound) $("sentrySound").click();
-    set("sentryRows", 9);
-    set("sentryCols", 16);
-    set("sentrySensitivity", "high");
-    await sleep(600);
-    const bubbles = () => [...document.querySelectorAll("#wrap .sentry-bubbles button")];
-    out.bubbles = bubbles().length;
-    // Boxes, each filling its part of the picture (not round).
-    const gridEl = document.querySelector("#wrap .sentry-bubbles");
-    if (!gridEl) {
-      const rect = (id) => { const r = $(id) && $(id).getBoundingClientRect(); return r ? [Math.round(r.width), Math.round(r.height)] : null; };
-      return { ...out, noBoxes: { layout: $("layoutSelect").value, wrap: rect("wrap"), stage: rect("stage"), views: Sentry._test.per.size, multi: document.querySelectorAll("#multiCamGrid .multi-cam-tile").length } };
-    }
-    const grid = gridEl.getBoundingClientRect(), b0 = bubbles()[0].getBoundingClientRect();
-    out.box = { w: Math.round(b0.width), h: Math.round(b0.height), cellW: Math.round(grid.width / 16), cellH: Math.round(grid.height / 9), radius: getComputedStyle(bubbles()[0]).borderTopLeftRadius };
-    const camKey = [...Sentry._test.per.keys()][0];
-    // Tapping the bubble shown top-left (the picture's mirrored): the camera's top-right is left out.
-    bubbles()[0].click();
-    await sleep(300);
-    out.tapped = ((cfg().excluded[camKey] || {})["9x16"] || []).slice();
-    out.tappedShown = bubbles()[0].classList.contains("off");
-    bubbles()[0].click(); // watched again
-    // Which bubbles the test camera's clock moves.
-    const most = new Array(9 * 16).fill(0);
-    for (let i = 0; i < 24; i++) {
-      await sleep(125);
-      const st = Sentry._test.per.get(camKey);
-      (st && st.levels || []).forEach((l, j) => (most[j] = Math.max(most[j], l)));
-    }
-    const moving = most.map((l, j) => (l >= 0.03 ? j : -1)).filter((j) => j >= 0);
-    out.moving = moving.length;
-    // Every bubble that moves left out: on, nothing happens.
-    const all = new Set(Array.from({ length: 9 * 16 }, (_, j) => j));
-    const exc = { ...cfg().excluded, [camKey]: { "9x16": [...all] } };
-    Object.assign(cfg(), { excluded: exc });
-    $("sentryArm").click();
+    for (const c of a.cameras) await post("pick", { pick: { id: c.id, use: !c.id.startsWith("oak:") && c.present } });
+    await post("mode", { mode: "freeform" });
+
+    win = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-sentry", backgroundThrottling: false } });
+    await win.loadURL(`${base}/#k=${key}`);
+    const pjs = (code) => withLimit(win.webContents.executeJavaScript(code), "the remote page, Sentry");
+    const PAGE = `
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      const until = async (fn, ms = 15000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+      const set = (id, v) => { $(id).value = String(v); $(id).dispatchEvent(new Event("change")); };
+      const boxes = () => [...document.querySelectorAll("#cam0 .boxes button")];
+    `;
+    // Hidden, then shown by tapping the title five times; its settings; ntfy's test; the cameras
+    // started from the page, with boxes over the preview.
+    Object.assign(out, await pjs(`(async () => {
+      ${PAGE}
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => false }); // (a window that isn't shown)
+      await until(() => /Hand Tracker on/.test($("title").textContent));
+      const out = { hiddenAtStart: $("sentryPanel").hidden };
+      for (let i = 0; i < 5; i++) $("title").click();
+      out.shown = !!(await until(() => !$("sentryPanel").hidden && !$("sentrySettings").hidden));
+      for (const [id, v] of [["sentryRows", 9], ["sentryCols", 16], ["sentrySens", "high"]]) {
+        set(id, v);
+        await until(() => !$(id).disabled && $(id).value === String(v));
+        await sleep(300);
+      }
+      if ($("sentrySound").classList.contains("on")) $("sentrySound").click(); // (no microphone here)
+      await until(() => !$("sentrySound").classList.contains("on"));
+      await sleep(300);
+      $("sentryNtfy").click();
+      await until(() => !$("sentryNtfyBox").hidden && !$("sentryServerSave").disabled);
+      $("sentryServer").value = ${JSON.stringify(ntfyAt)};
+      $("sentryServerSave").click();
+      out.server = await until(() => $("sentryServerName").textContent === ${JSON.stringify(ntfyAt.replace("http://", ""))} && $("sentryServerName").textContent);
+      await sleep(300);
+      $("sentryTest").click();
+      out.test = await until(() => /^Sent/.test($("message").textContent) && $("message").textContent);
+      $("camsBtn").click();
+      out.boxes = (await until(() => boxes().length === 144 && !document.querySelector("#cam0 .boxes").hidden && !document.querySelector("#cam0 img").hidden && boxes(), 40000) || []).length;
+      if (out.boxes !== 144) {
+        const el = document.querySelector("#cam0 .boxes"), img = document.querySelector("#cam0 img");
+        throw new Error("No boxes: " + JSON.stringify({ status: $("status").textContent, message: $("message").textContent, cam0: !!el, boxesHidden: el && el.hidden, imgHidden: img && img.hidden, n: boxes().length, note: $("sentryNote").textContent }));
+      }
+      // Each box fills its part of the picture (boxes, not bubbles), its corners only a little round.
+      const pic = document.querySelector("#cam0 .pic").getBoundingClientRect(), b0 = boxes()[0].getBoundingClientRect();
+      out.box = { w: Math.round(b0.width), h: Math.round(b0.height), cellW: Math.round(pic.width / 16), cellH: Math.round(pic.height / 9), radius: getComputedStyle(boxes()[0]).borderTopLeftRadius };
+      // The previews: each as the computer makes it (as often as full screen).
+      const img = document.querySelector("#cam0 img");
+      let n = 0;
+      const seen = new MutationObserver(() => n++);
+      seen.observe(img, { attributes: true, attributeFilter: ["src"] });
+      await sleep(3000);
+      seen.disconnect();
+      out.previewFps = Math.round((n / 3) * 10) / 10;
+      // Red where the clock moves.
+      out.hot = !!(await until(() => document.querySelector("#cam0 .boxes button.hot"), 10000));
+      // The box shown top-left, tapped: left out.
+      boxes()[0].click();
+      out.tapped = !!(await until(() => boxes()[0].classList.contains("off") && !boxes()[0].dataset.pending, 5000));
+      return out;
+    })()`));
+    const camKey = await js(`[...Sentry._test.per.keys()][0] || ""`);
+    out.leftOutCell = await js(`((Sentry._test.config().excluded[${JSON.stringify(camKey)}] || {})["9x16"] || []).join()`);
+    // Watched again; pets and animals ignored, then not (a switch).
+    Object.assign(out, await pjs(`(async () => {
+      ${PAGE}
+      const out = {};
+      boxes()[0].click();
+      out.untapped = !!(await until(() => !boxes()[0].classList.contains("off") && !boxes()[0].dataset.pending, 5000));
+      $("sentryPets").click();
+      out.petsOn = !!(await until(() => $("sentryPets").classList.contains("on") && $("sentryPets").textContent === "On"));
+      await sleep(300);
+      $("sentryPets").click();
+      out.petsOff = !!(await until(() => !$("sentryPets").classList.contains("on") && $("sentryPets").textContent === "Off"));
+      return out;
+    })()`));
+    out.petsState = await js(`Sentry._test.config().ignoreAnimals`);
+    // Every box left out, then turned on from the page: nothing happens.
+    await js(`(() => { const c = Sentry._test.config(); c.excluded = { ...c.excluded, ${JSON.stringify(camKey)}: { "9x16": Array.from({ length: 144 }, (_, j) => j) } }; return true; })()`);
+    out.armed = await pjs(`(async () => {
+      ${PAGE}
+      $("sentryBtn").click();
+      return !!(await until(() => $("sentryBtn").classList.contains("on")));
+    })()`);
     await sleep(2500);
-    const st0 = Sentry._test.per.get(camKey);
-    out.leftOut = { armed: Sentry.isArmed(), events: Sentry._test.events.length, session: !!(st0 && st0.session) };
-    // Watched: an alert.
-    Object.assign(cfg(), { excluded: { ...cfg().excluded, [camKey]: { "9x16": [] } } });
-    let ev = null;
-    for (let i = 0; i < 80 && !(ev = Sentry._test.events[0]); i++) await sleep(125);
-    for (let i = 0; i < 40 && ev && !ev.photo && !ev.photoError; i++) await sleep(125);
-    out.alert = ev ? { camera: ev.camera, photo: ev.photo && ev.photo.name, photoError: ev.photoError || "" } : null;
-    out.listed = $("sentryEvents").textContent.includes(ev ? ev.camera : "?");
-    // The remote page's view of it, and turning it off from there.
-    const rs = Sentry.remoteState();
-    out.remote = rs && { armed: rs.armed, events: rs.events.length, photo: rs.events[0] && rs.events[0].photo };
-    out.offFromPage = await RemoteRecordUI._carryOut("sentry", { sentry: { armed: false } });
-    // Turned off: the video so far is saved.
-    for (let i = 0; i < 60 && ev && !ev.video && !ev.videoError; i++) await sleep(125);
-    out.video = ev ? { name: ev.video && ev.video.name, error: ev.videoError || "", seconds: ev.seconds } : null;
-    out.offNow = !Sentry.isArmed();
-    // Hidden again by tapping the title five times; no bubbles left behind.
-    for (let i = 0; i < 5; i++) document.querySelector("header h1").click();
-    await sleep(300);
-    out.hiddenAgain = $("sentryCard").hidden && !document.querySelector(".sentry-bubbles") && !Sentry.remoteState();
-    // The object finder for "ignore animals" loads (it ships with the app) and runs.
-    try {
-      const pic = Object.assign(document.createElement("canvas"), { width: 320, height: 180 });
-      pic.getContext("2d").drawImage(HandTracker.getFrameImage(), 0, 0, 320, 180);
-      const t0 = performance.now();
-      const found = await ObjectFinder.find(pic);
-      out.finder = { ok: Array.isArray(found), ms: Math.round(performance.now() - t0), labels: found.map((o) => o.label) };
-    } catch (err) {
-      out.finder = { error: String(err && err.message || err) };
-    }
-    return out;
-  })()`);
+    out.leftOut = await js(`(() => { const st = Sentry._test.per.get(${JSON.stringify(camKey)}); return { armed: Sentry.isArmed(), events: Sentry._test.events.length, session: !!(st && st.session) }; })()`);
+    // Every box watched again (from the page): the clock is an alert, with its photo on the page.
+    Object.assign(out, await pjs(`(async () => {
+      ${PAGE}
+      const out = {};
+      $("sentryAll").click();
+      out.alert = !!(await until(() => document.querySelector("#sentryAlerts .alert img"), 20000));
+      out.listed = $("sentryAlerts").textContent;
+      return out;
+    })()`));
+    const ev = await js(`(() => { const e = Sentry._test.events[0]; return e ? { camera: e.camera, photo: e.photo && e.photo.name, photoError: e.photoError || "" } : null; })()`);
+    out.event = ev;
+    // Turned off from the page: the video so far is saved.
+    out.off = await pjs(`(async () => {
+      ${PAGE}
+      $("sentryBtn").click();
+      return !!(await until(() => !$("sentryBtn").classList.contains("on")));
+    })()`);
+    out.video = await js(`(async () => {
+      const e = Sentry._test.events[0];
+      for (let i = 0; i < 80 && e && !e.video && !e.videoError; i++) await new Promise((r) => setTimeout(r, 125));
+      return e ? { name: e.video && e.video.name, error: e.videoError || "", seconds: e.seconds } : null;
+    })()`);
+    // Hidden again by tapping the title five times: no boxes left on the previews.
+    out.hiddenAgain = await pjs(`(async () => {
+      ${PAGE}
+      for (let i = 0; i < 5; i++) $("title").click();
+      return !!(await until(() => $("sentryPanel").hidden && document.querySelector("#cam0 .boxes").hidden));
+    })()`);
+    out.hiddenStateAgain = await js(`JSON.stringify(Sentry.remoteState())`);
+    // The object finder for "ignore pets and animals" loads (it ships with the app) and runs.
+    out.finder = await js(`(async () => {
+      try {
+        const pic = Object.assign(document.createElement("canvas"), { width: 320, height: 180 });
+        pic.getContext("2d").drawImage(HandTracker.getFrameImage(), 0, 0, 320, 180);
+        const t0 = performance.now();
+        const found = await ObjectFinder.find(pic);
+        return { ok: Array.isArray(found), ms: Math.round(performance.now() - t0), labels: found.map((o) => o.label) };
+      } catch (err) {
+        return { error: String((err && err.message) || err) };
+      }
+    })()`);
+  } catch (err) {
+    out.error = String((err && err.message) || err);
+  } finally {
+    if (win) win.destroy();
+    if (base) await post("close").catch(() => {});
+    if (!wasOn) await js(`(async () => { if ((await desktop.remote.status()).on) document.getElementById("remoteToggle").click(); return true; })()`).catch(() => {});
+    ntfy.close();
+  }
+  out.ntfy = ntfyGot.map((g) => `${g.method} ${g.title}`);
   const added = fs.readdirSync(dir).filter((f) => !before.has(f));
   const file = (re) => {
     const f = added.find((n) => re.test(n));
@@ -694,15 +795,15 @@ async function checkSentry(js) {
     const b = fs.readFileSync(path.join(dir, f));
     return { f, kb: Math.round(b.length / 1024), head: b.subarray(0, 4).toString("hex") };
   };
-  r.files = { photo: file(/^Sentry_.+\.jpg$/), video: file(/^Sentry_.+-video\.(webm|mp4)$/) };
-  const what = "Sentry mode: hidden until Ctrl+Alt+S (and the title tapped five times hides it); boxes over the picture, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored); with every moving box left out nothing happens; watched, movement is an alert with a photo, then a video when it's turned off (from the remote page), both in the remote recording folder; a camera's video stopped at once is still a video; the object finder for ignoring animals loads and runs";
-  if (r.noBoxes) return check(what, false, `No boxes over the camera's picture: ${JSON.stringify(r)}`);
-  check("Sentry mode: hidden until Ctrl+Alt+S (and the title tapped five times hides it); boxes over the picture, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored); with every moving box left out nothing happens; watched, movement is an alert with a photo, then a video when it's turned off (from the remote page), both in the remote recording folder; a camera's video stopped at once is still a video; the object finder for ignoring animals loads and runs",
-    r.hiddenAtStart && r.shown && r.direct.every((d) => d.kb > 3) && r.bubbles === 144 &&
-      r.box.w >= r.box.cellW * 0.7 && r.box.h >= r.box.cellH * 0.6 && parseFloat(r.box.radius) < Math.min(r.box.w, r.box.h) / 2 && r.tapped.join() === "15" && r.tappedShown && r.moving > 0 &&
-      r.leftOut.armed && r.leftOut.events === 0 && !r.leftOut.session &&
-      r.alert && r.alert.photo && r.listed && r.remote && r.remote.armed && r.remote.events === 1 && r.remote.photo === r.alert.photo &&
-      r.offFromPage.ok && r.offNow && r.video && r.video.name && r.hiddenAgain &&
+  out.files = { photo: file(/^Sentry_.+\.jpg$/), video: file(/^Sentry_.+-video\.(webm|mp4)$/) };
+  const r = out;
+  check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
+    !r.error && r.mainPage && r.hiddenState && r.hiddenState.shown === false && r.hiddenAtStart && r.shown && r.direct.every((d) => d.kb > 3) &&
+      r.test && r.boxes === 144 && r.box.w >= r.box.cellW * 0.7 && r.box.h >= r.box.cellH * 0.6 && parseFloat(r.box.radius) < Math.min(r.box.w, r.box.h) / 2 &&
+      r.previewFps >= 8 && r.hot && r.tapped && r.leftOutCell === "15" && r.untapped && r.petsOn && r.petsOff && r.petsState === false &&
+      r.armed && r.leftOut.armed && r.leftOut.events === 0 && !r.leftOut.session &&
+      r.alert && r.event && r.event.photo && r.listed.includes(r.event.camera) && r.off && r.video && r.video.name && r.hiddenAgain && r.hiddenStateAgain === '{"shown":false,"armed":false}' &&
+      r.ntfy.length >= 2 && r.ntfy[0] === "POST Sentry: Test" && r.ntfy.slice(1).some((t) => t.startsWith("POST Sentry: ")) &&
       r.files.photo && r.files.photo.head.startsWith("ffd8") && r.files.photo.kb > 5 &&
       r.files.video && r.files.video.kb > 5 && (r.files.video.head === "1a45dfa3" || r.files.video.f.endsWith(".mp4")) &&
       r.finder && r.finder.ok,

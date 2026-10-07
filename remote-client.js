@@ -4,7 +4,9 @@
  * Raspberry Pi, say). Before the cameras start it lists the ones the computer can start (any
  * kind: OAK cameras and webcams), to pick and give roles; the mode says which it needs (Ego:
  * all four roles; Stereo: a head camera, the others picked too; Freeform: any). Then each
- * camera's live preview, its role, turn and flip, the take details and Start/Stop.
+ * camera's live preview, its role, turn and flip, the take details and Start/Stop. Hidden until
+ * the title is tapped five times: Sentry mode (watching the cameras for movement, with boxes
+ * over each preview to leave parts of the picture out).
  *
  * Where it runs, and how it reaches the computer:
  *   - served by the computer itself (electron/remote-record.js), in any browser: plain requests
@@ -246,11 +248,119 @@
   $("videoBtn").addEventListener("click", () => command("settings", { settings: { video: !videoOn } }));
   $("soundBtn").addEventListener("click", () => command("settings", { settings: { sound: !soundOn } }));
 
-  // Sentry mode on the computer (shown only while it isn't hidden there, or it's on): on or
-  // off, and its alerts, each with its photo (a slice of the takes folder, as the takes come).
-  let sentryOn = false;
+  // ---------- Sentry mode (sentry.js on the computer) ----------
+  // Hidden: tapping the page's title five times (or Ctrl+Alt+S) shows it, on every page the
+  // computer serves, and hides it again. Then: on or off (on starts the cameras if they're off),
+  // ignoring pets and animals, the boxes over each camera's preview (tap one to leave it out of
+  // what's watched; the grid and the sensitivity for every camera), what an alert saves, the
+  // alerts on this phone (in the Hand Tracker app) and through ntfy, and the alerts themselves,
+  // each with its photo (a slice of the takes folder, as the takes come).
+  let sentry = null; // the computer's Sentry state (null: it has none)
+  let titleTaps = [];
+  // (A Hand Tracker from before Sentry mode was set up here says nothing while it's hidden.)
+  const toggleSentry = () => {
+    if (!state) return;
+    if (!sentry || (sentry.shown === undefined && !sentry.armed)) return say(`Sentry mode needs a newer Hand Tracker on ${state.host || "this computer"}: update it there.`, true);
+    command("sentry", { sentry: { shown: !(sentry.shown || sentry.armed) } }, { quiet: true });
+  };
+  $("title").addEventListener("click", () => {
+    const now = Date.now();
+    titleTaps = titleTaps.filter((t) => now - t < 3000).concat(now);
+    if (titleTaps.length >= 5) {
+      titleTaps = [];
+      toggleSentry();
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && e.altKey && !e.shiftKey && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      toggleSentry();
+    }
+  });
+  const sentryCommand = (c, quiet = true) => command("sentry", { sentry: c }, { quiet });
+  // Boxes shown over the previews (this page only: hide them to see the pictures).
+  const BOXES_KEY = "hand-tracker-sentry-boxes";
+  let boxesOn = true;
+  try {
+    boxesOn = localStorage.getItem(BOXES_KEY) !== "off";
+  } catch {}
+  const setToggle = (id, on, disabled = false) => {
+    const b = $(id);
+    b.textContent = on ? "On" : "Off";
+    b.classList.toggle("on", !!on);
+    b.setAttribute("aria-pressed", String(!!on));
+    b.disabled = disabled;
+  };
+  for (let n = 1; n <= 9; n++) $("sentryRows").insertAdjacentHTML("beforeend", `<option value="${n}">${n}</option>`);
+  for (let n = 1; n <= 16; n++) $("sentryCols").insertAdjacentHTML("beforeend", `<option value="${n}">${n}</option>`);
+  $("sentryBtn").addEventListener("click", () => sentryCommand({ armed: !(sentry && sentry.armed) }, false));
+  $("sentryPets").addEventListener("click", () => sentryCommand({ ignoreAnimals: !(sentry && sentry.ignoreAnimals) }));
+  for (const [id, k] of [["sentryPhoto", "photo"], ["sentryVideo", "video"], ["sentrySound", "sound"]]) {
+    $(id).addEventListener("click", () => sentryCommand({ [k]: !(sentry && sentry[k]) }));
+  }
+  $("sentryRows").addEventListener("change", () => sentryCommand({ rows: Number($("sentryRows").value) }));
+  $("sentryCols").addEventListener("change", () => sentryCommand({ cols: Number($("sentryCols").value) }));
+  $("sentrySens").addEventListener("change", () => sentryCommand({ sensitivity: $("sentrySens").value }));
+  $("sentryAll").addEventListener("click", () => sentryCommand({ watchAll: true }, false));
+  $("sentryBoxes").addEventListener("click", () => {
+    boxesOn = !boxesOn;
+    try {
+      localStorage.setItem(BOXES_KEY, boxesOn ? "on" : "off");
+    } catch {}
+    if (state) renderSentry(state);
+  });
+  $("sentryNtfy").addEventListener("click", () => sentryCommand({ ntfy: { on: !(sentry && sentry.ntfy && sentry.ntfy.on) } }));
+  $("sentryNtfyPhoto").addEventListener("click", () => sentryCommand({ ntfy: { photo: !(sentry && sentry.ntfy && sentry.ntfy.photo) } }));
+  $("sentryServerSave").addEventListener("click", () => {
+    const v = $("sentryServer").value.trim() || "https://ntfy.sh";
+    if (!/^https?:\/\/[^\s/?#]+(\/[^\s?#]*)?$/i.test(v)) return say("That isn't a web address (https://…).", true);
+    sentryCommand({ ntfy: { server: v } }, false);
+  });
+  $("sentryTest").addEventListener("click", () => sentryCommand({ ntfy: { test: true } }, false));
+  $("sentryNewTopic").addEventListener("click", () => {
+    if (confirm("Make a new topic? Phones subscribed to the old one stop getting alerts until they subscribe to the new one.")) sentryCommand({ ntfy: { newTopic: true } }, false);
+  });
+
+  // Alerts on this phone, from the Hand Tracker app (SentryWatchService.java): this computer
+  // among the ones it watches, or not.
+  const watcher = rig && onPhoneApp ? (typeof cap.registerPlugin === "function" ? cap.registerPlugin("SentryWatch") : cap.Plugins && cap.Plugins.SentryWatch) : null;
+  let watching = null; // null: not known yet
+  async function lookAtWatcher() {
+    try {
+      const s = await watcher.status();
+      watching = !!s.on && (s.rigs || []).includes(rig.toLowerCase());
+    } catch {
+      watching = false;
+    }
+    if (state) renderSentry(state);
+  }
+  if (watcher) {
+    $("sentryWatchRow").hidden = false;
+    lookAtWatcher();
+    $("sentryWatch").addEventListener("click", async () => {
+      try {
+        const s = await watcher.status();
+        const me = rig.toLowerCase();
+        const others = (s.on ? s.rigs || [] : []).filter((r) => r !== me);
+        const keyOf = (r) => {
+          try {
+            return localStorage.getItem(`hand-tracker-remote-key:${r}`) || "";
+          } catch {
+            return "";
+          }
+        };
+        const list = (watching ? others : [...others, me]).map((r) => ({ rig: r, key: keyOf(r) }));
+        if (list.length) await watcher.start({ rigs: list });
+        else await watcher.stop();
+        say(watching ? "This phone no longer gets this computer's alerts." : "This phone gets this computer's alerts now, as notifications.");
+      } catch (err) {
+        say(String((err && err.message) || err), true);
+      }
+      lookAtWatcher();
+    });
+  }
+
   const sentryPhotos = new Map(); // photo's file name -> its picture here (or "" while it comes)
-  $("sentryBtn").addEventListener("click", () => command("sentry", { sentry: { armed: !sentryOn } }));
   async function sentryPhoto(name) {
     sentryPhotos.set(name, "");
     try {
@@ -261,20 +371,92 @@
     }
     if (state) renderSentry(state);
   }
+
+  // The boxes over one camera's picture: rows by columns, each left out or watched, and moving.
+  function drawBoxes(el, cam) {
+    const show = !!(sentry && sentry.rows && (sentry.shown || sentry.armed) && boxesOn && cam);
+    el.hidden = !show;
+    if (!show) return;
+    const sig = `${sentry.rows}x${sentry.cols}`;
+    if (el.dataset.grid !== sig) {
+      el.dataset.grid = sig;
+      el.style.gridTemplateColumns = `repeat(${sentry.cols}, 1fr)`;
+      el.style.gridTemplateRows = `repeat(${sentry.rows}, 1fr)`;
+      el.innerHTML = Array.from({ length: sentry.rows * sentry.cols }, (_, n) => `<button type="button" data-cell="${n}" aria-pressed="false"></button>`).join("");
+    }
+    el.dataset.camera = String(cam.index);
+    const off = new Set(cam.off || []), hot = new Set(cam.hot || []);
+    for (const b of el.children) {
+      const n = Number(b.dataset.cell);
+      const isOff = b.dataset.pending ? b.dataset.pending === "off" : off.has(n);
+      if (b.dataset.pending && b.dataset.pending === (off.has(n) ? "off" : "on")) delete b.dataset.pending; // the computer has it now
+      b.classList.toggle("off", isOff);
+      b.classList.toggle("hot", !isOff && hot.has(n));
+      b.setAttribute("aria-pressed", String(isOff));
+      b.title = isOff ? "Not watched: tap to watch this box" : "Watched: tap to leave this box out";
+    }
+  }
+  // A box tapped: left out, or watched again (shown at once; the computer confirms).
+  function tapBox(b) {
+    const el = b.parentElement;
+    const camera = Number(el.dataset.camera), cell = Number(b.dataset.cell);
+    if (!Number.isInteger(camera) || !Number.isInteger(cell)) return;
+    const off = !b.classList.contains("off");
+    b.dataset.pending = off ? "off" : "on";
+    b.classList.toggle("off", off);
+    b.classList.remove("hot");
+    sentryCommand({ box: { camera, cell, off } });
+  }
+
   function renderSentry(s) {
-    const st = s.sentry;
-    $("sentryPanel").hidden = !st;
-    if (!st) return;
-    sentryOn = !!st.armed;
-    const btn = $("sentryBtn");
-    btn.textContent = sentryOn ? "On" : "Off";
-    btn.classList.toggle("on", sentryOn);
-    btn.setAttribute("aria-pressed", String(sentryOn));
-    btn.disabled = sending;
+    sentry = s.sentry || null;
+    const st = sentry;
+    const open = !!(st && (st.shown || st.armed));
+    $("sentryPanel").hidden = !open;
+    const cams = s.cameras || [];
+    const camOf = (i) => (st && Array.isArray(st.cameras) ? st.cameras.find((c) => c.index === i) : null);
+    cams.forEach((c, i) => {
+      const el = document.querySelector(`#cam${i} .boxes`);
+      if (el) drawBoxes(el, open ? camOf(i) : null);
+    });
+    drawBoxes($("fullBoxes"), open && full ? camOf(full.i) : null);
+    if (!open) return;
     const where = s.host || "the computer";
-    $("sentryNote").textContent = sentryOn
-      ? `Watching ${where}'s cameras for movement.`
-      : `Off: ${where}'s cameras aren't being watched.`;
+    const newer = !!st.rows; // a Hand Tracker from before Sentry's settings came to this page has only on and off
+    setToggle("sentryBtn", st.armed, sending);
+    $("sentryNote").textContent = !newer
+      ? (st.armed ? `Watching ${where}'s cameras for movement. ` : `Off. `) + `Update Hand Tracker on ${where} to set Sentry up from here.`
+      : st.note || "";
+    $("sentrySettings").hidden = !newer;
+    if (newer) {
+      setToggle("sentryPets", st.ignoreAnimals, sending);
+      setToggle("sentryPhoto", st.photo, sending);
+      setToggle("sentryVideo", st.video, sending);
+      setToggle("sentrySound", st.sound, sending || !st.video);
+      setToggle("sentryBoxes", boxesOn);
+      $("sentryBoxes").disabled = false;
+      for (const [id, v] of [["sentryRows", st.rows], ["sentryCols", st.cols], ["sentrySens", st.sensitivity]]) {
+        if (document.activeElement !== $(id)) $(id).value = String(v);
+        $(id).disabled = sending;
+      }
+      const left = (st.cameras || []).reduce((n, c) => n + (c.off || []).length, 0);
+      $("sentryAll").disabled = sending || !left;
+      if (watcher) setToggle("sentryWatch", !!watching, watching === null);
+      const n = st.ntfy || {};
+      setToggle("sentryNtfy", n.on, sending);
+      $("sentryNtfyBox").hidden = !n.on;
+      if (n.on) {
+        const server = String(n.server || "https://ntfy.sh").replace(/\/+$/, "");
+        $("sentryTopic").textContent = n.topic || "";
+        $("sentryServerName").textContent = server.replace(/^https?:\/\//, "");
+        const link = $("sentryLink");
+        link.href = `${server}/${encodeURIComponent(n.topic || "")}`;
+        link.textContent = link.href;
+        if (document.activeElement !== $("sentryServer")) $("sentryServer").value = server;
+        setToggle("sentryNtfyPhoto", n.photo, sending);
+        for (const id of ["sentryTest", "sentryNewTopic", "sentryServerSave"]) $(id).disabled = sending;
+      }
+    }
     const events = st.events || [];
     for (const e of events) if (e.photo && !sentryPhotos.has(e.photo)) sentryPhoto(e.photo);
     const p = (n) => String(n).padStart(2, "0");
@@ -285,10 +467,11 @@
             const when = `${t.toLocaleDateString()} ${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}`;
             const img = e.photo && sentryPhotos.get(e.photo) ? `<img src="${esc(sentryPhotos.get(e.photo))}" alt="" />` : "";
             const video = e.video ? `<br />Video: ${esc(e.video)}${e.seconds ? ` (${e.seconds} s)` : ""}` : "";
-            return `<div class="alert">${img}<div><b>${esc(e.camera)}</b><div class="meta">${esc(when)}${video}</div></div></div>`;
+            const problem = e.problem ? `<br /><span class="err">${esc(e.problem)}</span>` : "";
+            return `<div class="alert">${img}<div><b>${esc(e.camera)}</b><div class="meta">${esc(when)}${video}${problem}</div></div></div>`;
           })
           .join("")
-      : st.alerts ? '<div class="muted">No alerts yet.</div>' : "";
+      : '<div class="muted">No alerts yet.</div>';
   }
 
   // ---------- the takes on the computer: download them, then delete them from it ----------
@@ -834,17 +1017,19 @@
   }
 
   // A box per running camera (only those: Hand Tracker starts only the cameras plugged in),
-  // each with its own preview loop (a few pictures a second, only while this page is visible:
-  // the computer makes previews only while they're asked for), its role, turn and flip.
+  // each with its own preview loop (each picture as the computer makes it, up to about 15 a
+  // second, only while this page is visible: the computer makes previews only while they're
+  // asked for), its role, turn and flip.
   function buildGrid(n) {
     shownCams = n;
     loops.forEach((l) => (l.stop = true));
     loops.length = 0;
     const cams = Array.from({ length: n }, (_, i) =>
-      `<div class="cam" id="cam${i}"><div class="pic" title="Full screen"><span>No picture yet</span><img alt="" hidden /></div>` +
+      `<div class="cam" id="cam${i}"><div class="pic" title="Full screen"><span>No picture yet</span><img alt="" hidden /><div class="boxes" hidden></div></div>` +
       `<div class="cap"><div class="tools"><select data-i="${i}" aria-label="Role">${roleOptions("")}</select>` +
       `<button type="button" class="rot" data-i="${i}" aria-label="Turn 90 degrees clockwise"></button>` +
-      `<button type="button" class="flip" data-i="${i}" aria-pressed="false">Flip</button></div><div class="what"></div></div></div>`);
+      `<button type="button" class="flip" data-i="${i}" aria-pressed="false">Flip</button>` +
+      `<button type="button" class="big" data-i="${i}" aria-label="Full screen">Full</button></div><div class="what"></div></div></div>`);
     $("grid").innerHTML = cams.join("");
     for (let i = 0; i < n; i++) {
       const loop = { stop: false };
@@ -857,6 +1042,8 @@
     if (e.target.matches("select")) command("camera", { camera: { index: Number(e.target.dataset.i), role: e.target.value } });
   });
   $("grid").addEventListener("click", (e) => {
+    const box = e.target.closest(".boxes button");
+    if (box) return tapBox(box);
     const pic = e.target.closest(".cam .pic");
     if (pic) return openFull(Number(pic.parentElement.id.slice(3)));
     const b = e.target.closest("button");
@@ -864,6 +1051,7 @@
     if (!c) return;
     if (b.matches(".rot")) command("camera", { camera: { index: c.index, rotation: ((c.rotation || 0) + 90) % 360 } });
     else if (b.matches(".flip")) command("camera", { camera: { index: c.index, mirror: !c.mirror } });
+    else if (b.matches(".big")) openFull(c.index);
   });
   // A preview's box in its camera's shape (a phone held upright: tall, not wide with black
   // bars), no taller than most of the screen.
@@ -875,6 +1063,7 @@
     pic.style.maxWidth = `calc(75vh * ${(w / h).toFixed(4)})`;
   }
 
+  const PREVIEW_EVERY_MS = 66;
   async function previewLoop(i, loop) {
     const img = document.querySelector(`#cam${i} img`), note = document.querySelector(`#cam${i} .pic span`);
     let url = null;
@@ -884,6 +1073,7 @@
         continue;
       }
       try {
+        const asked = performance.now();
         const res = await api(`/api/preview?i=${i}`);
         if (res.status === 200 && !loop.stop) {
           const next = URL.createObjectURL(new Blob([res.bytes], { type: "image/jpeg" }));
@@ -893,7 +1083,8 @@
           img.hidden = false;
           note.hidden = true;
           shape(img);
-          await sleep(200);
+          // (The computer waits for each new picture; one that doesn't is asked at most this often.)
+          await sleep(Math.max(0, PREVIEW_EVERY_MS - (performance.now() - asked)));
         } else {
           await sleep(700);
         }
@@ -918,6 +1109,7 @@
     $("fullRate").textContent = "";
     $("fullImg").removeAttribute("src");
     $("full").hidden = false;
+    if (state) renderSentry(state);
     try {
       history.pushState({ full: i }, "");
     } catch {}
@@ -934,7 +1126,11 @@
     if (!fromHistory && history.state && history.state.full !== undefined) history.back();
   }
   window.addEventListener("popstate", () => closeFull(true));
-  $("full").addEventListener("click", () => closeFull(false));
+  $("full").addEventListener("click", (e) => {
+    const box = e.target.closest(".boxes button");
+    if (box) return tapBox(box);
+    closeFull(false);
+  });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeFull(false);
   });

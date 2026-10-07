@@ -636,12 +636,6 @@
   api.natnet = createNatNet();
   Object.assign(api, createRemote(), createLink());
   api.phoneControl = createPhoneControl();
-  // Sentry mode's alerts on this phone (SentryWatchService.java): from the computers in remote
-  // recording's list, each with its code if it has one. start -> { on, rigs }
-  const watch = plugin("SentryWatch");
-  api.sentryWatch = watch
-    ? { start: (rigs) => watch.start({ rigs }), stop: () => watch.stop(), status: () => watch.status() }
-    : null;
   // Saving many results "into one folder" (the desktop app's chooseFolder / saveFilesTo):
   // on the phone that's always Documents/Hand Tracker.
   api.chooseFolder = async () => ({ token: "documents", dir: `Documents/${FOLDER}` });

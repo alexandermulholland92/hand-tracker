@@ -1747,34 +1747,17 @@
     syncTiles();
     // A phone's browser starting and stopping recording with those cameras (Windows, Mac and Linux app).
     RemoteRecordUI.init({ desktop, mobile, prefs, setPref, app: window.HandTrackerApp });
-    // Sentry mode (hidden: Ctrl+Alt+S, or the title tapped five times): the cameras it watches,
-    // the main one or each of Several cameras. (Not a video file or a window: nothing to guard.)
-    const mainSentryView = () => {
-      const cam = HandTracker.getCamera();
-      const oak = OakSource.isActive();
-      if (!oak && cam.source !== "camera") return null;
-      return {
-        key: oak ? `oak:${OakSource.info().camera || "camera"}` : MultiCamera.keyOf({ deviceId: cam.deviceId || "camera", label: cam.name || "" }),
-        name: oak ? OakSource.info().camera || "OAK camera" : cam.name || "Camera",
-        container: wrap,
-        picture: stage,
-        canvas: () => stage,
-        frame: () => HandTracker.getFrameImage(),
-        mirrored: () => mirrorOn,
-        rotation: () => HandTracker.getRotation(),
-        grey: oak ? () => OakSource.grey() : null,
-        objects: oak ? () => OakSource.objects() : null,
-        oak,
-      };
-    };
-    Sentry.init({
+    // Sentry mode, set up and seen from remote recording's page (hidden there): it watches
+    // remote recording's cameras, Several cameras. Only where remote recording is (the apps).
+    if (desktop || mobile) Sentry.init({
       prefs, setPref,
-      host: desktop || mobile || null,
-      views: () => (MultiCamera.isActive() ? MultiCamera.sentryViews() : [mainSentryView()].filter(Boolean)),
+      host: desktop || mobile,
+      views: () => (MultiCamera.isActive() ? MultiCamera.sentryViews() : []),
       onWantsChange: () => {
         restartOak();
         syncTiles();
       },
+      looking: () => RemoteRecordUI.looking(),
       link: () => RemoteRecordUI.tailnetLink(),
       hostName: () => {
         const link = RemoteRecordUI.tailnetLink();

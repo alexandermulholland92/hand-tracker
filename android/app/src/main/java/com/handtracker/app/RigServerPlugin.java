@@ -32,6 +32,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -66,7 +67,7 @@ public class RigServerPlugin extends Plugin {
     private static final long PREVIEW_WANTED_MS = 3000;
     private static final long PREVIEW_STALE_MS = 5000;
     private static final long FOCUS_MS = 1500;
-    private static final long FULL_WAIT_MS = 400;
+    private static final long NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
     private static final long VIEWER_GONE_MS = 10000;
     private static final long ANSWER_MS = 30000;
     private static final int HEAD_BYTES = 16 * 1024;
@@ -89,7 +90,7 @@ public class RigServerPlugin extends Plugin {
         Frame(byte[] jpeg, long at) { this.jpeg = jpeg; this.at = at; }
     }
     private final Map<Integer, Frame> previews = new ConcurrentHashMap<>();
-    private final Map<Integer, Long> lastFull = new ConcurrentHashMap<>();
+    private final Map<Integer, Long> lastSent = new ConcurrentHashMap<>();
     private volatile long wantUntil = 0, focusUntil = 0;
     private volatile boolean wanting = false;
     private volatile Integer focus = null;
@@ -290,7 +291,7 @@ public class RigServerPlugin extends Plugin {
         if (i == null ? focus == null : i.equals(focus)) return;
         focus = i;
         // Newly full screen: its next picture is the bigger one (not the small one already here).
-        if (i != null) lastFull.put(i, System.currentTimeMillis());
+        if (i != null) lastSent.put(i, System.currentTimeMillis());
         if (wanting) wantEvent();
     }
 
@@ -498,16 +499,16 @@ public class RigServerPlugin extends Plugin {
                 setFocus(i);
             }
             setWanting(true);
-            if (full) {
-                long since = lastFull.containsKey(i) ? lastFull.get(i) : 0;
-                for (long t = 0; t < FULL_WAIT_MS; t += 15) {
-                    Frame f = previews.get(i);
-                    if (f != null && f.at > since) break;
-                    Thread.sleep(15);
-                }
+            // Each request waits for that camera's next picture (the page asks again as soon as it
+            // has one, and gets each picture once).
+            long since = lastSent.containsKey(i) ? lastSent.get(i) : 0;
+            for (long t = 0; t < NEXT_WAIT_MS; t += 15) {
                 Frame f = previews.get(i);
-                if (f != null) lastFull.put(i, f.at);
+                if (f != null && f.at > since) break;
+                Thread.sleep(15);
             }
+            Frame next = previews.get(i);
+            if (next != null) lastSent.put(i, next.at);
             Frame p = previews.get(i);
             if (p == null || System.currentTimeMillis() - p.at > PREVIEW_STALE_MS) send(out, 204, "application/json; charset=utf-8", new byte[0], null);
             else send(out, 200, "image/jpeg", p.jpeg, null);
@@ -548,7 +549,7 @@ public class RigServerPlugin extends Plugin {
                 cmd.put("details", details);
             }
             // Settings: whether the take details are needed, and each camera's video (and its
-            // sound) with the take; Sentry mode on or off. Only those, as booleans.
+            // sound) with the take. Only those, as booleans.
             JSONObject st = msg.optJSONObject("settings");
             if (st != null) {
                 JSObject settings = new JSObject();
@@ -557,12 +558,10 @@ public class RigServerPlugin extends Plugin {
                 }
                 if (settings.length() > 0) cmd.put("settings", settings);
             }
-            JSONObject sn = msg.optJSONObject("sentry");
-            if (sn != null && sn.opt("armed") instanceof Boolean) {
-                JSObject sentry = new JSObject();
-                sentry.put("armed", sn.optBoolean("armed"));
-                cmd.put("sentry", sentry);
-            }
+            // Sentry mode (sentry.js): checked as the computer checks it (cleanSentry in
+            // electron/remote-record.js).
+            JSObject sentry = cleanSentry(msg.optJSONObject("sentry"));
+            if (sentry != null) cmd.put("sentry", sentry);
             // The cameras to start (picked, with a role), the mode, and a running camera's role,
             // turn and flip: checked as the computer checks them (electron/remote-record.js).
             JSONObject pk = msg.optJSONObject("pick");
@@ -587,7 +586,7 @@ public class RigServerPlugin extends Plugin {
                     : action.equals("camera") && !cmd.has("camera") ? "Which camera?"
                     : action.equals("mode") && !cmd.has("mode") ? "Which mode?"
                     : action.equals("settings") && !cmd.has("settings") ? "Which setting?"
-                    : action.equals("sentry") && !cmd.has("sentry") ? "On or off?" : null;
+                    : action.equals("sentry") && !cmd.has("sentry") ? "Which Sentry setting?" : null;
             if (missingPart != null) {
                 json(out, 400, error(missingPart));
                 return;
@@ -621,5 +620,41 @@ public class RigServerPlugin extends Plugin {
             return;
         }
         json(out, 404, error("Not found"));
+    }
+
+    // Sentry mode from the page: shown or not, on or off, its settings, a box of a running camera
+    // left out or watched again, or every box watched; ntfy's server (a web address), a new topic
+    // or a test. Only those, each checked; null if there's nothing.
+    private static final Pattern NTFY_SERVER = Pattern.compile("^https?://[^\\s/?#]+(/[^\\s?#]*)?$", Pattern.CASE_INSENSITIVE);
+    static JSObject cleanSentry(JSONObject s) {
+        if (s == null) return null;
+        JSObject out = new JSObject();
+        for (String k : new String[] { "shown", "armed", "ignoreAnimals", "photo", "video", "sound" }) {
+            if (s.opt(k) instanceof Boolean) out.put(k, s.optBoolean(k));
+        }
+        if (s.opt("rows") instanceof Integer && s.optInt("rows") >= 1 && s.optInt("rows") <= 9) out.put("rows", s.optInt("rows"));
+        if (s.opt("cols") instanceof Integer && s.optInt("cols") >= 1 && s.optInt("cols") <= 16) out.put("cols", s.optInt("cols"));
+        String sens = s.optString("sensitivity", "");
+        if (sens.equals("low") || sens.equals("medium") || sens.equals("high")) out.put("sensitivity", sens);
+        JSONObject n = s.optJSONObject("ntfy");
+        if (n != null) {
+            JSObject ntfy = new JSObject();
+            for (String k : new String[] { "on", "photo" }) if (n.opt(k) instanceof Boolean) ntfy.put(k, n.optBoolean(k));
+            for (String k : new String[] { "newTopic", "test" }) if (Boolean.TRUE.equals(n.opt(k))) ntfy.put(k, true);
+            Object server = n.opt("server");
+            if (server instanceof String && ((String) server).length() <= 200 && NTFY_SERVER.matcher(((String) server).trim()).matches()) ntfy.put("server", ((String) server).trim());
+            if (ntfy.length() > 0) out.put("ntfy", ntfy);
+        }
+        JSONObject b = s.optJSONObject("box");
+        if (b != null && b.opt("camera") instanceof Integer && b.opt("cell") instanceof Integer && b.opt("off") instanceof Boolean
+                && b.optInt("camera") >= 0 && b.optInt("camera") < 16 && b.optInt("cell") >= 0 && b.optInt("cell") < 9 * 16) {
+            JSObject box = new JSObject();
+            box.put("camera", b.optInt("camera"));
+            box.put("cell", b.optInt("cell"));
+            box.put("off", b.optBoolean("off"));
+            out.put("box", box);
+        }
+        if (Boolean.TRUE.equals(s.opt("watchAll"))) out.put("watchAll", true);
+        return out.length() > 0 ? out : null;
     }
 }

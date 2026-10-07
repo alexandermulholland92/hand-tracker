@@ -24,12 +24,12 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Sentry mode's alerts on this phone, from the computers in its remote recording list (the
- * Hand Tracker app's own way; the other is the ntfy app). A foreground service, with a quiet
- * notification saying it's watching, that asks each computer for its state every POLL_MS (over
- * Tailscale from anywhere, or on the same Wi-Fi with the computer's code) and shows a
- * notification, with the photo, for each new alert a computer's Sentry mode has (when that
- * computer has "Push: Hand Tracker app" on). Started and stopped by SentryWatchPlugin.java;
+ * Sentry mode's alerts on this phone, from the computers it's told to watch ("Alerts on this
+ * phone" in Sentry mode on a computer's remote recording page; the Hand Tracker app's own way,
+ * the other is the ntfy app). A foreground service, with a quiet notification saying it's
+ * watching, that asks each computer for its state every POLL_MS (over Tailscale from anywhere,
+ * or on the same Wi-Fi with the computer's code) and shows a notification, with the photo, for
+ * each new alert a computer's Sentry mode has. Started and stopped by SentryWatchPlugin.java;
  * the computers are kept in its SharedPreferences, so it carries on after a restart of the app.
  */
 public class SentryWatchService extends Service {
@@ -134,7 +134,7 @@ public class SentryWatchService extends Service {
                     if (a.status != 200) continue;
                     JSONObject state = new JSONObject(new String(a.body, StandardCharsets.UTF_8));
                     JSONObject sentry = state.optJSONObject("sentry");
-                    if (sentry == null || !sentry.optBoolean("pushApp")) {
+                    if (sentry == null) {
                         looked.add(rig);
                         continue;
                     }

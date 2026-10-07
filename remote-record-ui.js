@@ -25,13 +25,15 @@
  *             its metadata;
  *   camera  — one running camera's role (which moves it to that block of the grid), its turn
  *             (0, 90, 180 or 270 degrees) or its flip;
- *   sentry  — Sentry mode on or off (sentry.js; only while it isn't hidden or it's on).
+ *   sentry  — Sentry mode (sentry.js, hidden on the page until its title is tapped five times):
+ *             its settings, each camera's boxes, on and off (on, it starts the cameras if
+ *             they're off: it watches them).
  * With each take, each camera's video is recorded too (with sound from this computer's
  * microphone), saved beside the take's motion capture as <take>-video-<role>.webm (.mp4 on a
  * phone): the phone's Takes list has them too.
  * Only cameras that are plugged in get a tile. Nothing starts by itself: the cameras only run once the phone (or someone here) asks.
- * While the phone's page is open, each camera's picture with its hands drawn goes to it a few
- * times a second.
+ * While the phone's page is open, each camera's picture with its hands drawn goes to it, up to
+ * about 15 times a second (fewer if making them would take much of this computer's time).
  *
  *   RemoteRecordUI.init({ desktop, mobile, prefs, setPref, app: HandTrackerApp });
  * (On the website it only shows the header's link to remote.html, which opens a rig's page.)
@@ -43,7 +45,8 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const MAX_CAMERAS = 4;
   const STATE_MS = 500;
-  const PREVIEW_MS = 250;
+  const PREVIEW_MS = 66; // at most; less often if making them takes long (PREVIEW_SHARE)
+  const PREVIEW_SHARE = 0.5; // of the time, at most, spent making previews
   const PREVIEW_WIDTH = 400;
   // A camera looked at full screen on the page: that one only, bigger and more often.
   const FOCUS_MS = 66;
@@ -171,16 +174,36 @@
   }
 
   // Each camera's picture (its tracker's canvas, so the hands are drawn), small, while asked
-  // for; or only the one looked at full screen, bigger and about 15 times a second.
+  // for; or only the one looked at full screen, bigger. Each about 15 times a second.
   // want: { on, focus } (or just on/off).
   const small = document.createElement("canvas");
   let focus = null;
+  let previewsOn = false, previewMs = PREVIEW_MS, previewRun = 0;
+  // How often the cameras' pictures are made (the tiles draw them only as often as needed).
+  const wantPictures = () => cams() && cams().setPreviewWant(focus !== null ? { on: previewsOn, focus, ms: PREVIEW_MS, focusMs: previewMs } : { on: previewsOn, focus: null, ms: previewMs, focusMs: FOCUS_MS });
   function setPreviews(want) {
     const w = want && typeof want === "object" ? want : { on: !!want, focus: null };
     focus = w.on && Number.isInteger(w.focus) ? w.focus : null;
-    if (cams()) cams().setPreviewWant({ on: !!w.on, focus, ms: PREVIEW_MS, focusMs: FOCUS_MS }); // (how often its pictures are needed)
-    clearInterval(previewTimer);
-    previewTimer = w.on ? setInterval(sendPreviews, focus !== null ? FOCUS_MS : PREVIEW_MS) : null;
+    previewsOn = !!w.on;
+    previewMs = focus !== null ? FOCUS_MS : PREVIEW_MS;
+    wantPictures();
+    clearTimeout(previewTimer);
+    const run = ++previewRun;
+    previewTimer = previewsOn ? setTimeout(() => previewRound(run), 0) : null;
+  }
+  // A round of previews, then the next as soon as allowed: each camera's about 15 times a
+  // second, unless a round takes long (four cameras on a Raspberry Pi): then as often as keeps
+  // making them under PREVIEW_SHARE of the time.
+  async function previewRound(run) {
+    const t0 = performance.now();
+    await sendPreviews();
+    if (run !== previewRun || !previewsOn) return;
+    const took = performance.now() - t0;
+    const ms = Math.min(1000, Math.max(focus !== null ? FOCUS_MS : PREVIEW_MS, took / PREVIEW_SHARE));
+    const changed = Math.abs(ms - previewMs) > 10;
+    previewMs = ms;
+    if (changed) wantPictures();
+    previewTimer = setTimeout(() => previewRound(run), Math.max(0, ms - took));
   }
   let sending = false;
   async function sendPreviews() {
@@ -501,8 +524,15 @@
       return { ok: true, message: "" };
     }
     if (action === "sentry") {
-      if (!global.Sentry || !global.Sentry.remoteState()) return { ok: false, message: "Sentry mode isn't on this computer." };
-      return global.Sentry.command(data.sentry || {});
+      if (!global.Sentry || !global.Sentry.remoteState()) return { ok: false, message: "This Hand Tracker has no Sentry mode." };
+      const c = data.sentry || {};
+      const res = await global.Sentry.command(c);
+      // Turned on with the cameras off: they start (Sentry watches remote recording's cameras).
+      if (res.ok && c.armed === true && !cams().isActive() && !pending) {
+        inBackground("Starting the cameras…", startCameras);
+        return { ok: true, message: "Sentry is on: starting the cameras…" };
+      }
+      return res;
     }
     if (action === "settings") {
       const st = data.settings || {};
@@ -669,5 +699,7 @@
     return u ? u.url : "";
   }
 
-  global.RemoteRecordUI = { init, tailnetLink, _carryOut: carryOut, _takeName: takeName };
+  // Whether a page is looking at the previews now (Sentry mode measures only then, unless it's on).
+  const looking = () => previewsOn;
+  global.RemoteRecordUI = { init, tailnetLink, looking, _carryOut: carryOut, _takeName: takeName };
 })(window);

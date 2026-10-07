@@ -530,13 +530,13 @@
     };
   }
 
-  // For Sentry mode (sentry.js): each tile's camera, where its picture is and what it tracks.
+  // For Sentry mode (sentry.js): each tile's camera (its place in remoteState's list), its
+  // picture and what it tracks.
   function sentryViews() {
-    return tiles.map((t) => ({
+    return tiles.map((t, i) => ({
       key: t.deviceId,
+      index: i,
       name: nameOf(t),
-      container: t.el,
-      picture: t.frame,
       canvas: () => t.frame.contentDocument && t.frame.contentDocument.getElementById("stage"),
       frame: () => t.frame.contentWindow.HandTracker.getFrameImage(),
       mirrored: () => !!t.view.mirror,
