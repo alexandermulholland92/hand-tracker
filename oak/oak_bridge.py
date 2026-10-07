@@ -148,7 +148,7 @@ def add_extras(dai, pipeline, cam, stereo, extras, tracker):
         else:
             nn = pipeline.create(dai.node.MobileNetDetectionNetwork)
         nn.setBlobPath(extras["detect"])
-        nn.setConfidenceThreshold(0.5)
+        nn.setConfidenceThreshold(0.4)  # (a cat seen from above, in poor light, is often less sure than 0.5)
         nn.setNumInferenceThreads(1)  # the hands' models need the camera's processor too
         nn.input.setBlocking(False)
         nn.input.setQueueSize(1)

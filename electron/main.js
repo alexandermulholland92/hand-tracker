@@ -932,6 +932,24 @@ function registerIpc() {
     await fs.promises.mkdir(dir, { recursive: true });
     return { dir, results: await writeFiles(dir, baseName, files) };
   });
+  // Sentry mode's photos and videos deleted from the remote recording folder: the ones named,
+  // or every one there ({ all: true }). Only Sentry's own files (sentry.js names them).
+  handle("files:delete-sentry", async (event, { names, all } = {}) => {
+    const SENTRY_FILE = /^Sentry_[A-Za-z0-9-]{1,80}_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d(-video)?( \(\d{1,4}\))?\.(jpg|webm|mp4)$/;
+    const dir = remoteFolder();
+    const list = all === true ? (await fs.promises.readdir(dir).catch(() => [])).filter((n) => SENTRY_FILE.test(n)) : Array.isArray(names) ? names.filter((n) => typeof n === "string" && SENTRY_FILE.test(n)).slice(0, 200) : [];
+    let deleted = 0;
+    const failed = [];
+    for (const name of list) {
+      try {
+        await fs.promises.unlink(path.join(dir, name));
+        deleted++;
+      } catch (err) {
+        if (err.code !== "ENOENT") failed.push(`${name}: ${err.message}`);
+      }
+    }
+    return { deleted, failed };
+  });
   // Sentry mode's alerts through ntfy (checked in electron/ntfy.js first).
   handle("sentry:ntfy", async (event, req) => {
     const { cleanNtfy, sendNtfy } = require("./ntfy");

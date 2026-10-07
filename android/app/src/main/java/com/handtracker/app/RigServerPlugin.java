@@ -624,8 +624,10 @@ public class RigServerPlugin extends Plugin {
 
     // Sentry mode from the page: shown or not, on or off, its settings, a box of a running camera
     // left out or watched again, or every box watched; ntfy's server (a web address), a new topic
-    // or a test. Only those, each checked; null if there's nothing.
+    // or a test; alerts deleted (by their ids) or all of Sentry's files. Only those, each
+    // checked; null if there's nothing.
     private static final Pattern NTFY_SERVER = Pattern.compile("^https?://[^\\s/?#]+(/[^\\s?#]*)?$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern ALERT_ID = Pattern.compile("^[0-9]{1,15}-[a-z0-9]{1,8}$");
     static JSObject cleanSentry(JSONObject s) {
         if (s == null) return null;
         JSObject out = new JSObject();
@@ -655,6 +657,18 @@ public class RigServerPlugin extends Plugin {
             out.put("box", box);
         }
         if (Boolean.TRUE.equals(s.opt("watchAll"))) out.put("watchAll", true);
+        // Alerts deleted, with their photos and videos; or every Sentry photo and video.
+        JSONArray ids = s.optJSONArray("deleteAlerts");
+        if (ids != null && ids.length() >= 1 && ids.length() <= 50) {
+            JSONArray kept = new JSONArray();
+            for (int i = 0; i < ids.length(); i++) {
+                Object id = ids.opt(i);
+                if (!(id instanceof String) || !ALERT_ID.matcher((String) id).matches()) { kept = null; break; }
+                kept.put(id);
+            }
+            if (kept != null) out.put("deleteAlerts", kept);
+        }
+        if (Boolean.TRUE.equals(s.opt("deleteAll"))) out.put("deleteAll", true);
         return out.length() > 0 ? out : null;
     }
 }

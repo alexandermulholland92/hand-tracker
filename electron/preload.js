@@ -225,6 +225,8 @@ contextBridge.exposeInMainWorld("desktop", {
     chooseFolder: () => ipcRenderer.invoke("remote:choose-folder"),
     // A take saved without asking where: { baseName, files } -> { dir, results }
     saveTake: ({ baseName, files }) => ipcRenderer.invoke("files:save-remote", { baseName, files }),
+    // Sentry mode's photos and videos deleted from it: { names } or { all: true } -> { deleted, failed }
+    deleteSentry: ({ names, all } = {}) => ipcRenderer.invoke("files:delete-sentry", { names, all }),
     onStatus: (cb) => {
       const listener = (_event, data) => cb(data);
       ipcRenderer.on("remote:status", listener);

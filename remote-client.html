@@ -121,6 +121,10 @@
   .alert { display: flex; gap: 10px; align-items: flex-start; border-top: 1px solid var(--line); padding: 7px 0; font-size: 14px; }
   .alert img { width: 112px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #0e0f12; flex: none; }
   .alert .meta { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  .alert > div { flex: 1 1 auto; min-width: 0; }
+  .alert .del, #sentryDelAll { flex: none; }
+  .alert .del.armed, #sentryDelAll.armed { background: var(--red, #e03131); }
+  #sentryDelAll { margin-top: 8px; }
   #sentryBtn.on { background: var(--red, #e03131); }
   .err { color: var(--err); }
   #take { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 14px; font-size: 14px; word-break: break-word; }
@@ -194,6 +198,7 @@
       <hr />
     </div>
     <div id="sentryAlerts"></div>
+    <button type="button" id="sentryDelAll" class="small" hidden>Delete every Sentry photo and video</button>
   </section>
 
   <div id="full" role="dialog" aria-label="One camera, full screen" hidden>

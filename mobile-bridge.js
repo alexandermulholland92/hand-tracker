@@ -92,6 +92,39 @@
     return { dir: `Documents/${FOLDER}`, results };
   }
 
+  // Sentry mode's photos and videos deleted from Documents/Hand Tracker: the ones named, or
+  // every one there ({ all: true }). Only Sentry's own files (sentry.js names them).
+  const SENTRY_FILE = /^Sentry_[A-Za-z0-9-]{1,80}_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d(-video)?( \(\d{1,4}\))?\.(jpg|webm|mp4)$/;
+  async function deleteSentry({ names, all } = {}) {
+    let list = [];
+    if (all === true) {
+      const { files } = await Filesystem.readdir({ path: FOLDER, directory: DIRECTORY }).catch(() => ({ files: [] }));
+      list = (files || []).map((f) => (typeof f === "string" ? f : f.name)).filter((n) => SENTRY_FILE.test(n));
+    } else if (Array.isArray(names)) {
+      const plain = (n) => {
+        try {
+          return decodeURIComponent(n); // a name from a file's address
+        } catch {
+          return n;
+        }
+      };
+      list = names.filter((n) => typeof n === "string").map(plain).filter((n) => SENTRY_FILE.test(n)).slice(0, 200);
+    }
+    let deleted = 0;
+    const failed = [];
+    for (const name of list) {
+      const path = `${FOLDER}/${name}`;
+      try {
+        if (!(await exists(path))) continue;
+        await Filesystem.deleteFile({ path, directory: DIRECTORY });
+        deleted++;
+      } catch (err) {
+        failed.push(`${name}: ${(err && err.message) || err}`);
+      }
+    }
+    return { deleted, failed };
+  }
+
   async function share(uri) {
     await Share.share({ files: [uri] });
   }
@@ -620,6 +653,7 @@
       setAutostart: async () => false,
       chooseFolder: async () => `Documents/${FOLDER}`,
       saveTake: ({ baseName, files }) => saveFiles({ baseName, files }),
+      deleteSentry,
       onStatus: on("status"),
       setState: (state) => Rig.setState({ state: JSON.stringify(state) }).catch(() => {}),
       sendPreviews: (list) => {

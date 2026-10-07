@@ -525,7 +525,9 @@ async function checkRotate({ js }) {
 
 // Sentry mode's measuring (sentry.js), on made-up grey pictures: what moved, box by box;
 // the whole picture changing at once (the light) isn't movement; a turned camera's grey picture
-// turns with it; movement where an animal is (and no person) is left out.
+// turns with it; movement where an animal is (and no person) is left out, and where one was a
+// moment ago (a finder misses it now and then), for a few seconds only; an OAK camera's boxes
+// turn as its grey picture does; ntfy's link saved as its server is just the server.
 function checkSentryMath() {
   global.window = undefined;
   require("../sentry.js");
@@ -545,10 +547,20 @@ function checkSentryMath() {
     animals: { none: left([]), cat: left(cat), catAndPerson: left(catAndPerson) },
     mirrored: [S.toCamera(0, true, 16), S.toCamera(17, true, 16), S.toCamera(5, false, 16)],
   };
-  check("Sentry mode measures movement box by box (only the corner that changed), not the light changing everywhere at once; an OAK camera's turned grey picture turns with it; movement where an animal is (and no person) is left out",
+  // The cat found, then missed for a second (still left out), then gone 4 s (not any more); an OAK
+  // camera turned a quarter: its cat along the bottom of its own picture is the left quarter.
+  const st = { mask };
+  const only = (objects, at, rotation = 0) => S.animalsOnly(st, objects, rotation, new Set(), 0.08, 1, 4, at);
+  out.held = [only(cat, 1000), only([], 2000), only([], 5000), only(catAndPerson, 6000)];
+  const oak = { mask };
+  out.oakTurned = [S.turnBox([0, 0.75, 1, 1], 90).join(), S.animalsOnly(oak, [{ label: "cat", box: [0, 0.75, 1, 1] }], 90, new Set(), 0.08, 1, 4, 0)];
+  out.server = [S.serverOnly("https://ntfy.sh/handtracker-abc/", "handtracker-abc"), S.serverOnly("https://ntfy.example.org/ntfy", "handtracker-abc"), S.serverOnly("nonsense", "x")];
+  check("Sentry mode measures movement box by box (only the corner that changed), not the light changing everywhere at once; an OAK camera's turned grey picture turns with it, and its objects' boxes too; movement where an animal is (and no person) is left out, and where one was for a few seconds; ntfy's link as its server is just the server",
     out.corner.slice(0, 11).every((v) => v === 0) && out.corner[11] > 0.5 && out.light === null &&
       out.turned === "2x4:4,0,5,1,6,2,7,3" && out.animals.none === 1 && out.animals.cat === 0 && out.animals.catAndPerson === 1 &&
-      out.mirrored.join() === "15,30,5",
+      out.mirrored.join() === "15,30,5" && out.held.join() === "true,true,false,false" &&
+      out.oakTurned[0] === "0,0,0.25,1" && out.oakTurned[1] === true &&
+      out.server.join() === "https://ntfy.sh,https://ntfy.example.org/ntfy,https://ntfy.sh",
     JSON.stringify(out));
 }
 
@@ -618,8 +630,10 @@ function checkWifiJoin() {
 // rows by columns, each filling its part (a tapped one is left out: the one shown top-left is
 // the camera's top-right, mirrored), red where the test camera's clock moves. With every box left
 // out nothing happens; turned on, movement is an alert with a photo, shown on the page, then a
-// video once it's turned off, both in the remote recording folder. ntfy's test through a
-// stand-in server; pets and animals ignored or not. Also: the previews come about as often as
+// video once it's turned off, both in the remote recording folder. Deleted from the page (two
+// taps): an alert with its photo and video, then every Sentry photo and video there (an older
+// one too), and nothing else. ntfy's test through a stand-in server; pets and animals ignored
+// or not. Also: the previews come about as often as
 // full screen; a camera's video stopped at once is still a video; the object finder for
 // ignoring animals loads and runs.
 async function checkSentry(js) {
@@ -642,6 +656,13 @@ async function checkSentry(js) {
   let win = null, wasOn = true, base = "", key = "";
   const post = (action, extra = {}) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...extra }) }).then((r) => r.json());
   const get = (p) => fetch(base + p, { headers: { "X-Key": key } });
+  const file = (re) => {
+    const f = fs.readdirSync(dir).filter((n) => !before.has(n)).find((n) => re.test(n));
+    if (!f) return null;
+    const b = fs.readFileSync(path.join(dir, f));
+    return { f, kb: Math.round(b.length / 1024), head: b.subarray(0, 4).toString("hex") };
+  };
+  const OLD = "Sentry_Old-Camera_2020-01-02_03-04-05.jpg", KEEP = "Kept-take_check-sentry.jpg";
   try {
     // The computer: remote recording on, the cameras off; a camera's video recorded on its own
     // (camera-video.js), 2 s and a moment.
@@ -787,6 +808,32 @@ async function checkSentry(js) {
       for (let i = 0; i < 80 && e && !e.video && !e.videoError; i++) await new Promise((r) => setTimeout(r, 125));
       return e ? { name: e.video && e.video.name, error: e.videoError || "", seconds: e.seconds } : null;
     })()`);
+    out.files = { photo: file(/^Sentry_.+\.jpg$/), video: file(/^Sentry_.+-video\.(webm|mp4)$/) };
+    // Deleted from the page: the alert (two taps), with its photo and video; then every Sentry
+    // photo and video (two taps), an older one too, and nothing else. A made-up alert id is refused.
+    fs.writeFileSync(path.join(dir, OLD), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    fs.writeFileSync(path.join(dir, KEEP), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    out.badId = await post("sentry", { sentry: { deleteAlerts: ["../../x"] } });
+    const evId = await js(`(Sentry._test.events[0] || {}).id || ""`);
+    Object.assign(out, await pjs(`(async () => {
+      ${PAGE}
+      const out = {};
+      const del = () => document.querySelector('#sentryAlerts button[data-del="${evId}"]');
+      out.delShown = !!(await until(() => del() && !del().disabled));
+      del().click();
+      out.delArmed = !!(await until(() => del() && del().textContent === "Tap again"));
+      del().click();
+      out.delGone = !!(await until(() => !del()));
+      out.delMessage = $("message").textContent;
+      await until(() => !$("sentryDelAll").disabled);
+      $("sentryDelAll").click();
+      out.allArmed = !!(await until(() => /^Tap again/.test($("sentryDelAll").textContent)));
+      $("sentryDelAll").click();
+      out.allGone = !!(await until(() => /No alerts yet/.test($("sentryAlerts").textContent) && /^Every Sentry photo and video deleted/.test($("message").textContent)));
+      out.allMessage = $("message").textContent;
+      return out;
+    })()`));
+    out.afterDelete = { photo: file(/^Sentry_.+\.jpg$/), video: file(/^Sentry_.+-video\.(webm|mp4)$/), old: fs.existsSync(path.join(dir, OLD)), kept: fs.existsSync(path.join(dir, KEEP)), events: await js(`Sentry._test.events.length`) };
     // Hidden again by tapping the title five times: no boxes left on the previews.
     out.hiddenAgain = await pjs(`(async () => {
       ${PAGE}
@@ -810,21 +857,14 @@ async function checkSentry(js) {
     out.error = String((err && err.message) || err);
   } finally {
     if (win) win.destroy();
+    for (const f of [OLD, KEEP]) fs.rmSync(path.join(dir, f), { force: true });
     if (base) await post("close").catch(() => {});
     if (!wasOn) await js(`(async () => { if ((await desktop.remote.status()).on) document.getElementById("remoteToggle").click(); return true; })()`).catch(() => {});
     ntfy.close();
   }
   out.ntfy = ntfyGot.map((g) => `${g.method} ${g.title}`);
-  const added = fs.readdirSync(dir).filter((f) => !before.has(f));
-  const file = (re) => {
-    const f = added.find((n) => re.test(n));
-    if (!f) return null;
-    const b = fs.readFileSync(path.join(dir, f));
-    return { f, kb: Math.round(b.length / 1024), head: b.subarray(0, 4).toString("hex") };
-  };
-  out.files = { photo: file(/^Sentry_.+\.jpg$/), video: file(/^Sentry_.+-video\.(webm|mp4)$/) };
   const r = out;
-  check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
+  check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; deleted from the page (an alert with its files, then every Sentry file, nothing else); ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
     !r.error && r.mainPage && r.hiddenState && r.hiddenState.shown === false && r.hiddenAtStart && r.shown && r.direct.every((d) => d.kb > 3) &&
       r.test && r.boxes === 144 && r.box.w >= r.box.cellW * 0.7 && r.box.h >= r.box.cellH * 0.6 && parseFloat(r.box.radius) < Math.min(r.box.w, r.box.h) / 2 &&
       r.previewFps >= 8 && r.hot && r.tapped && r.leftOutCell === "15" && r.untapped && r.petsOn && r.petsOff && r.petsState === false &&
@@ -833,6 +873,8 @@ async function checkSentry(js) {
       r.ntfy.length >= 2 && r.ntfy[0] === "POST Sentry: Test" && r.ntfy.slice(1).some((t) => t.startsWith("POST Sentry: ")) &&
       r.files.photo && r.files.photo.head.startsWith("ffd8") && r.files.photo.kb > 5 &&
       r.files.video && r.files.video.kb > 5 && (r.files.video.head === "1a45dfa3" || r.files.video.f.endsWith(".mp4")) &&
+      r.badId && r.badId.error === "Which Sentry setting?" && r.delShown && r.delArmed && r.delGone && /^The alert deleted \(2 files\)/.test(r.delMessage) && r.allArmed && r.allGone &&
+      r.afterDelete.photo === null && r.afterDelete.video === null && !r.afterDelete.old && r.afterDelete.kept && r.afterDelete.events === 0 &&
       r.finder && r.finder.ok,
     JSON.stringify(r));
 }

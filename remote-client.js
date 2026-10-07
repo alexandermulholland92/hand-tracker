@@ -360,6 +360,28 @@
     });
   }
 
+  // Deleting: an alert (its photo and video too), or every Sentry photo and video on the
+  // computer, older ones included. Two taps: the first arms it for a few seconds.
+  let delArmed = "", delArmedAt = 0;
+  const isArmed = (what) => delArmed === what && Date.now() - delArmedAt < 4000;
+  async function sentryDelete(what) {
+    if (!isArmed(what)) {
+      delArmed = what;
+      delArmedAt = Date.now();
+      if (state) renderSentry(state);
+      setTimeout(() => state && renderSentry(state), 4100);
+      return;
+    }
+    delArmed = "";
+    await sentryCommand(what === "all" ? { deleteAll: true } : { deleteAlerts: [what] }, false);
+    loadTakes();
+  }
+  $("sentryDelAll").addEventListener("click", () => sentryDelete("all"));
+  $("sentryAlerts").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-del]");
+    if (b && !b.disabled) sentryDelete(b.dataset.del);
+  });
+
   const sentryPhotos = new Map(); // photo's file name -> its picture here (or "" while it comes)
   async function sentryPhoto(name) {
     sentryPhotos.set(name, "");
@@ -468,10 +490,19 @@
             const img = e.photo && sentryPhotos.get(e.photo) ? `<img src="${esc(sentryPhotos.get(e.photo))}" alt="" />` : "";
             const video = e.video ? `<br />Video: ${esc(e.video)}${e.seconds ? ` (${e.seconds} s)` : ""}` : "";
             const problem = e.problem ? `<br /><span class="err">${esc(e.problem)}</span>` : "";
-            return `<div class="alert">${img}<div><b>${esc(e.camera)}</b><div class="meta">${esc(when)}${video}${problem}</div></div></div>`;
+            const armed = isArmed(e.id);
+            const del = st.canDelete
+              ? `<button type="button" class="small del${armed ? " armed" : ""}" data-del="${esc(e.id)}"${sending ? " disabled" : ""} title="Delete this alert, with its photo and video">${armed ? "Tap again" : "Delete"}</button>`
+              : "";
+            return `<div class="alert">${img}<div><b>${esc(e.camera)}</b><div class="meta">${esc(when)}${video}${problem}</div></div>${del}</div>`;
           })
           .join("")
       : '<div class="muted">No alerts yet.</div>';
+    const delAll = $("sentryDelAll");
+    delAll.hidden = !st.canDelete;
+    delAll.disabled = sending;
+    delAll.classList.toggle("armed", isArmed("all"));
+    delAll.textContent = isArmed("all") ? `Tap again to delete them all from ${where}` : "Delete every Sentry photo and video";
   }
 
   // ---------- the takes on the computer: download them, then delete them from it ----------

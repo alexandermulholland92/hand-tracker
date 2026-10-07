@@ -146,6 +146,10 @@ function cleanSentry(s) {
     out.box = { camera: b.camera, cell: b.cell, off: b.off };
   }
   if (s.watchAll === true) out.watchAll = true;
+  // Alerts deleted, with their photos and videos; or every Sentry photo and video.
+  const ids = s.deleteAlerts;
+  if (Array.isArray(ids) && ids.length >= 1 && ids.length <= 50 && ids.every((id) => typeof id === "string" && /^\d{1,15}-[a-z0-9]{1,8}$/.test(id))) out.deleteAlerts = [...ids];
+  if (s.deleteAll === true) out.deleteAll = true;
   return Object.keys(out).length ? out : null;
 }
 

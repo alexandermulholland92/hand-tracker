@@ -33,7 +33,8 @@
  *       tracked), mirrored() (its preview is), rotation() (an OAK camera: the turn its own grey
  *       pictures need), grey() (OAK: its last { w, h, data } grey picture, or null), objects()
  *       (OAK: its last objects), oak, want(on) (draw its pictures often, for a video) }]
- *     host: desktop or mobile (saving into the remote recording folder, ntfy)
+ *     host: desktop or mobile (saving into the remote recording folder and deleting Sentry's
+ *       files there: host.remote.deleteSentry({ names } or { all }), ntfy)
  *     onWantsChange(): the OAK cameras' options changed (wantsMotion / wantsObjects)
  *     hostName() -> this computer's name, link() -> its remote recording page (for ntfy's alerts)
  *     looking() -> a page is showing the previews now (while it's off, it measures only then)
@@ -42,7 +43,9 @@
  *   Sentry.remoteState()   // for the page: its settings, each camera's boxes, the alerts
  *   await Sentry.command(c) // from the page: { shown, armed, rows, cols, sensitivity,
  *                          //   ignoreAnimals, photo, video, sound, ntfy: { on, server, photo,
- *                          //   newTopic, test }, box: { camera, cell, off }, watchAll }
+ *                          //   newTopic, test }, box: { camera, cell, off }, watchAll,
+ *                          //   deleteAlerts: [alert ids] (their photos and videos too),
+ *                          //   deleteAll (every Sentry photo and video in the folder) }
  *   Sentry.isArmed()
  *   Sentry._test            // for the checks
  */
@@ -61,7 +64,9 @@
   const MAX_EVENTS = 50;
   const MAX_ROWS = 9, MAX_COLS = 16;
   const ANIMALS = new Set(["bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe"]);
-  const ANIMAL_MARGIN = 0.15; // an animal's box grown by this much each way (its movement blurs past it)
+  const ANIMAL_MARGIN = 0.25; // an animal's box grown by this much each way (its movement blurs past it)
+  const ANIMAL_HOLD_MS = 3000; // an animal found this recently still counts where it was (a finder misses it now and then)
+  const LOOSE_STREAK = 2; // ignoring animals: looks in a row with movement no animal explains before it counts
   const HEAT_FADE = 0.6; // a box shown moving on the page fades over a few looks
 
   let prefs = {}, setPref = () => {}, viewsOf = () => [], host = null, onWantsChange = () => {}, hostName = () => "", linkOf = () => "", lookingOf = () => true;
@@ -94,6 +99,14 @@
       excluded: s.excluded && typeof s.excluded === "object" ? s.excluded : {},
     };
     if (!cfg.ntfy.topic) cfg.ntfy.topic = newTopic();
+    cfg.ntfy.server = serverOnly(cfg.ntfy.server, cfg.ntfy.topic);
+  }
+  // ntfy's server without the topic: its link (https://ntfy.sh/<topic>, as the page shows it)
+  // saved as the server would send to <topic>/<topic>.
+  function serverOnly(server, topic) {
+    let s = String(server || "https://ntfy.sh").replace(/\/+$/, "");
+    if (topic && s.toLowerCase().endsWith(`/${topic.toLowerCase()}`)) s = s.slice(0, -topic.length - 1);
+    return /^https?:\/\/[^\s/]+/i.test(s) ? s : "https://ntfy.sh";
   }
   function save() {
     setPref("sentry", cfg);
@@ -216,6 +229,35 @@
     return { mask: { ...mask, data }, animals: animals.length };
   }
 
+  // A box [x0, y0, x1, y1] (0-1 of the picture) turned as an OAK camera's grey picture is (turn).
+  function turnBox(b, rotation) {
+    const r = ((rotation % 360) + 360) % 360;
+    if (!r) return b;
+    const pt = (x, y) => (r === 90 ? [1 - y, x] : r === 180 ? [1 - x, 1 - y] : [y, 1 - x]);
+    const [ax, ay] = pt(b[0], b[1]), [bx, by] = pt(b[2], b[3]);
+    return [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)];
+  }
+
+  // The animals among objects found, remembered (for ANIMAL_HOLD_MS) -> the objects with boxes.
+  function remember(st, objects, rotation, now = Date.now()) {
+    const found = (objects || []).filter((o) => o && Array.isArray(o.box) && o.box.length === 4);
+    st.animals = (st.animals || []).filter((a) => now - a.at < ANIMAL_HOLD_MS);
+    for (const o of found) if (ANIMALS.has(String(o.label).toLowerCase())) st.animals.push({ label: String(o.label).toLowerCase(), box: turnBox(o.box, rotation), at: now });
+    if (st.animals.length > 40) st.animals.splice(0, st.animals.length - 40);
+    return found;
+  }
+
+  // Ignoring animals: is the movement in st.mask all where an animal is, or was in the last few
+  // seconds (where it walked from; a finder misses one now and then), and no person is? Animals
+  // found are remembered in st.animals. rotation: the turn the objects' boxes need.
+  function animalsOnly(st, objects, rotation, off, need, rows, cols, now = Date.now()) {
+    const found = remember(st, objects, rotation, now);
+    if (!st.animals.length || !st.mask) return false;
+    const people = found.filter((o) => String(o.label).toLowerCase() === "person").map((o) => ({ label: "person", box: turnBox(o.box, rotation) }));
+    const left = withoutAnimals(st.mask, [...st.animals, ...people]);
+    return !levels(left.mask, rows, cols).some((l, i) => !off.has(i) && l >= need);
+  }
+
   // ---------- each camera, eight times a second ----------
   function stateOf(key) {
     if (!per.has(key)) per.set(key, { prev: null, streak: 0, levels: [], heat: [], session: null, lastAlertAt: 0, finding: false });
@@ -257,6 +299,12 @@
       const need = SENSITIVITY[cfg.sensitivity];
       const hot = st.levels.some((l, i) => !off.has(i) && l >= need);
       st.streak = hot ? st.streak + 1 : 0;
+      if (!hot) st.loose = 0;
+      // An OAK camera's objects come with every picture: its animals remembered even before they move.
+      if (cfg.armed && cfg.ignoreAnimals && v.objects && st.streak < STREAK) {
+        const objects = v.objects();
+        if (objects) remember(st, objects, v.rotation ? v.rotation() : 0);
+      }
       if (cfg.armed && st.streak >= STREAK) consider(v, st, off, need);
       if (st.session && performance.now() - st.session.lastMovedAt > STILL_S * 1000) endSession(v.key, st);
       else if (st.session && st.session.rec && st.session.rec.elapsed() > MAX_VIDEO_S) endSession(v.key, st);
@@ -264,26 +312,33 @@
   }
 
   // Movement in a watched box: an alert (or more of one going on), unless it's an animal's.
+  // An OAK camera finds objects itself (in its own picture, before it's turned); if it isn't
+  // (its object finder couldn't run alongside the hands), the app's object finder looks at the
+  // picture as shown, as for any other camera.
   async function consider(v, st, off, need) {
     if (cfg.ignoreAnimals) {
       if (st.finding) return;
       let objects = v.objects ? v.objects() : null;
-      if (!objects && !v.oak) {
+      let rotation = objects && v.rotation ? v.rotation() : 0;
+      if (!objects) {
         st.finding = true;
         try {
           objects = await findObjects(v.frame());
         } finally {
           st.finding = false;
         }
+        rotation = 0;
       }
       if (objects === undefined) return; // the object finder isn't ready: not yet
-      if (objects && st.mask) {
-        const left = withoutAnimals(st.mask, objects);
-        const still = !levels(left.mask, cfg.rows, cfg.cols).some((l, i) => !off.has(i) && l >= need);
-        if (still) {
+      if (objects) {
+        if (animalsOnly(st, objects, rotation, off, need, cfg.rows, cfg.cols)) {
+          st.loose = 0;
           st.ignoredAt = Date.now();
           return;
         }
+        // Not (all) an animal's: it counts once it's so a moment longer.
+        st.loose = (st.loose || 0) + 1;
+        if (st.loose < LOOSE_STREAK && !st.session) return;
       }
     }
     moving(v, st);
@@ -398,6 +453,35 @@
     }
   }
 
+  // Alerts deleted, with their photos and videos in the remote recording folder (ids: those
+  // alerts; null: every alert, and every Sentry photo and video there, older ones too).
+  async function deleteSaved(ids) {
+    const gone = ids ? events.filter((e) => ids.includes(e.id)) : events.slice();
+    if (ids && !gone.length) return { ok: false, message: "That alert isn't there any more." };
+    const names = [];
+    for (const e of gone) for (const f of [e.photo, e.video]) if (f && !f.download && f.name) names.push(f.name);
+    const del = host && host.remote && host.remote.deleteSentry;
+    let n = 0;
+    if (!ids || names.length) {
+      if (!del) return { ok: false, message: "This Hand Tracker can't delete its files: update it." };
+      let res;
+      try {
+        res = await del(ids ? { names } : { all: true });
+      } catch (err) {
+        return { ok: false, message: `Couldn't delete them: ${errText(err)}` };
+      }
+      n = res.deleted || 0;
+      if (res.failed && res.failed.length) return { ok: false, message: `Deleted ${n}; ${res.failed.length} couldn't be: ${res.failed[0]}` };
+    }
+    for (const e of gone) {
+      const i = events.indexOf(e);
+      if (i >= 0) events.splice(i, 1);
+      for (const s of per.values()) if (s.session && s.session.event === e) s.session.event = null; // its video: not an alert's any more
+    }
+    const what = ids ? (gone.length === 1 ? "The alert" : `${gone.length} alerts`) : "Every Sentry photo and video";
+    return { ok: true, message: `${what} deleted${n ? ` (${n} file${n === 1 ? "" : "s"})` : ""}.` };
+  }
+
   // Saved into the remote recording folder (the desktop app, the phone app), else downloaded.
   // -> { name }
   async function saveFile(baseName, suffix, ext, blob) {
@@ -508,6 +592,7 @@
       ignoreAnimals: cfg.ignoreAnimals, photo: cfg.photo, video: cfg.video, sound: cfg.sound,
       ntfy: { on: cfg.ntfy.on, server: cfg.ntfy.server, topic: cfg.ntfy.topic, photo: cfg.ntfy.photo },
       note: statusText(views),
+      canDelete: !!(host && host.remote && host.remote.deleteSentry), // its photos and videos, from the page
       // Each camera's boxes as its preview shows them (mirrored or not): left out, and moving.
       cameras: views.map((v) => {
         const off = excludedOf(v.key), st = per.get(v.key), mirrored = !!(v.mirrored && v.mirrored());
@@ -541,6 +626,7 @@
       if (typeof c.ntfy.photo === "boolean") n.photo = c.ntfy.photo;
       if (typeof c.ntfy.server === "string") n.server = /^https?:\/\/[^\s/]+/i.test(c.ntfy.server.trim()) ? c.ntfy.server.trim().replace(/\/+$/, "") : "https://ntfy.sh";
       if (c.ntfy.newTopic === true) n.topic = newTopic();
+      n.server = serverOnly(n.server, n.topic);
       cfg.ntfy = n;
     }
     if (c.box && typeof c.box === "object") {
@@ -556,6 +642,11 @@
     if (c.watchAll === true) {
       for (const v of safeViews()) setExcluded(v.key, new Set());
       message = "Every box is watched.";
+    }
+    if (Array.isArray(c.deleteAlerts) || c.deleteAll === true) {
+      const r = await deleteSaved(c.deleteAll === true ? null : c.deleteAlerts.filter((id) => typeof id === "string"));
+      if (!r.ok) return r;
+      message = r.message;
     }
     if (typeof c.armed === "boolean" && c.armed !== cfg.armed) {
       setArmed(c.armed);
@@ -595,6 +686,6 @@
   global.Sentry = {
     init, wantsMotion, wantsObjects, remoteState, command,
     isArmed: () => !!cfg && cfg.armed,
-    _test: { shrink, blur, moved, levels, turn, withoutAnimals, sample, events, per, toCamera, config: () => cfg },
+    _test: { shrink, blur, moved, levels, turn, turnBox, withoutAnimals, animalsOnly, serverOnly, sample, events, per, toCamera, config: () => cfg },
   };
 })(typeof window !== "undefined" ? window : globalThis);
