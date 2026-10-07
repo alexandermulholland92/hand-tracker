@@ -129,6 +129,7 @@ const STEPS = [
   ["remote-recording", [], ({ js }) => checkRemoteRecording(js)],
   ["remote-launcher", ["remote-recording"], ({ js }) => checkRemoteLauncher(js)], // downloads the take it saved
   ["remote-hotspot-wifi", [], () => checkRemoteHotspotWifi()],
+  ["wifi-join", [], () => checkWifiJoin()],
   ["remote-takes", [], () => checkRemoteTakes()],
   ["sentry-math", [], () => checkSentryMath()],
   ["ntfy", [], () => checkNtfy()],
@@ -583,6 +584,32 @@ async function checkNtfy() {
     out.text.method === "POST" && out.text.path === "/handtracker-abc123" && out.text.title === "Sentry: Tête" && out.text.click === base.click && out.text.priority === "4" &&
       out.photo.method === "PUT" && out.photo.bytes === 5 && out.photo.message === base.message && out.photo.filename === "Sentry_Head.jpg" && out.photo.click === null &&
       out.refused.every(Boolean),
+    JSON.stringify(out));
+}
+
+// Joining a Wi-Fi network from the page (electron/wifi.js): NetworkManager's profile is made with
+// the security the network was listed with (WPA2: WPA-PSK; WPA3 alone: SAE; open: none), or a
+// saved one gets the new password, then it's brought up on the normal Wi-Fi. Never "nmcli device
+// wifi connect", which fails while the Wi-Fi is the hotspot ("key-mgmt: property is missing").
+function checkWifiJoin() {
+  const { joinSteps } = require("../electron/wifi.js");
+  const flat = (o) => joinSteps(o).map((a) => a.join(" "));
+  const out = {
+    savedWithPassword: flat({ ssid: "Workstream", password: "secret123", dev: "wlan0", savedName: "Workstream", security: "WPA2" }),
+    savedNoPassword: flat({ ssid: "Home", password: "", dev: "wlan0", savedName: "Home" }),
+    newWpa3: flat({ ssid: "Cafe", password: "pw12345678", dev: "wlan0", security: "WPA3" }),
+    newMixed: flat({ ssid: "Lab", password: "pw12345678", dev: "wlan0", security: "WPA2 WPA3" }),
+    newOpen: flat({ ssid: "Open", password: "", dev: "wlan0", security: "--" }),
+    newUnknown: flat({ ssid: "Gone", password: "pw12345678", dev: "wlan0" }),
+  };
+  const all = Object.values(out).flat();
+  check("Joining a Wi-Fi network from the page makes NetworkManager's profile with the security it was listed with (or gives a saved one the new password), then brings it up on the normal Wi-Fi; never \"device wifi connect\" (which fails while the Wi-Fi is the hotspot)",
+    out.savedWithPassword.join("|") === "connection modify Workstream wifi-sec.key-mgmt wpa-psk wifi-sec.psk secret123|connection modify Workstream connection.interface-name wlan0|--wait 30 connection up id Workstream ifname wlan0" &&
+      out.savedNoPassword.join("|") === "connection modify Home connection.interface-name wlan0|--wait 30 connection up id Home ifname wlan0" &&
+      out.newWpa3[0] === "connection add type wifi ifname wlan0 con-name Cafe ssid Cafe wifi-sec.key-mgmt sae wifi-sec.psk pw12345678" &&
+      out.newMixed[0].includes("key-mgmt wpa-psk") && out.newUnknown[0].includes("key-mgmt wpa-psk") &&
+      out.newOpen[0] === "connection add type wifi ifname wlan0 con-name Open ssid Open" && !out.newOpen[0].includes("wifi-sec") &&
+      !all.some((a) => a.includes("device wifi connect")),
     JSON.stringify(out));
 }
 

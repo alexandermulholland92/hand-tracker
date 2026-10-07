@@ -42,6 +42,29 @@ function fields(line) {
   return out;
 }
 
+// The nmcli steps that join a network: a saved one is brought up (with the new password, if
+// one's given); a new one is made first, with the security it was seen with when listed. Not
+// "nmcli device wifi connect", which needs the network in the Wi-Fi's own latest look around:
+// while the Wi-Fi is the hotspot that look is old, and the profile it makes then has no
+// security ("802-11-wireless-security.key-mgmt: property is missing").
+// security: what the list said ("WPA2", "WPA1 WPA2", "WPA3", "--"); WPA3 alone is SAE.
+function joinSteps({ ssid, password, dev, savedName, security }) {
+  const keyMgmt = /WPA1|WPA2/.test(security || "") || !/WPA3/.test(security || "") ? "wpa-psk" : "sae";
+  const secret = password ? ["wifi-sec.key-mgmt", keyMgmt, "wifi-sec.psk", password] : [];
+  const steps = [];
+  let name = savedName;
+  if (!name) {
+    name = ssid;
+    steps.push(["connection", "add", "type", "wifi", "ifname", dev, "con-name", name, "ssid", ssid, ...secret]);
+  } else if (password) {
+    steps.push(["connection", "modify", name, ...secret]);
+  }
+  // On the normal Wi-Fi only (not a hotspot's own interface).
+  if (savedName) steps.push(["connection", "modify", name, "connection.interface-name", dev]);
+  steps.push(["--wait", "30", "connection", "up", "id", name, "ifname", dev]);
+  return steps;
+}
+
 // Why a network couldn't be joined, in a few words.
 function why(err) {
   const m = String((err && err.message) || err);
@@ -56,6 +79,7 @@ function createWifi() {
   let ok = false;
   let connecting = null;
   let last = null;
+  const seen = new Map(); // network name -> its security, from the last list
   nmcli(["--version"], 5000).then(() => (ok = true), () => (ok = false));
 
   // The Wi-Fi device (wlan0 on a Pi).
@@ -90,6 +114,7 @@ function createWifi() {
       const [inUse, ssid, signal, security] = fields(line);
       if (!ssid || ssid === hotspotSsid) continue;
       const n = { ssid, signal: Number(signal) || 0, secure: !!security && security !== "--", saved: known.has(ssid) };
+      if (security) seen.set(ssid, security);
       if (inUse.trim() === "*") current = { ssid, signal: n.signal };
       const had = bySsid.get(ssid);
       if (!had || had.signal < n.signal) bySsid.set(ssid, n);
@@ -105,16 +130,9 @@ function createWifi() {
       let made = false;
       try {
         const dev = await device();
-        const name = (await saved()).get(ssid);
-        if (name && !password) {
-          await nmcli(["--wait", "30", "connection", "up", "id", name, "ifname", dev], 45000);
-        } else {
-          made = !name;
-          await nmcli(["--wait", "30", "device", "wifi", "connect", ssid, ...(password ? ["password", password] : []), "ifname", dev], 45000);
-          // It joins on the normal Wi-Fi only (not the hotspot's interface).
-          const now = (await saved()).get(ssid);
-          if (now) await nmcli(["connection", "modify", now, "connection.interface-name", dev]).catch(() => {});
-        }
+        const savedName = (await saved()).get(ssid);
+        made = !savedName;
+        for (const args of joinSteps({ ssid, password, dev, savedName, security: seen.get(ssid) })) await nmcli(args, 45000);
         last = { ssid, ok: true, message: `Joined ${ssid}.`, at: Date.now() };
       } catch (err) {
         // A network that couldn't be joined isn't kept (NetworkManager would keep trying it).
@@ -133,4 +151,4 @@ function createWifi() {
   return { available: () => ok, status: () => ({ connecting, last }), list, connect };
 }
 
-module.exports = { createWifi, fields };
+module.exports = { createWifi, fields, joinSteps };
