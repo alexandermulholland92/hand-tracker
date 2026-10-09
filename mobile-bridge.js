@@ -1,6 +1,6 @@
 /**
  * mobile-bridge.js
- * Android support (Capacitor). When the page runs inside the Android app this
+ * Android and iPhone support (Capacitor). When the page runs inside the Android app this
  * defines window.mobile with the same saveFiles() shape as the desktop bridge
  * (electron/preload.js), writing into Documents/Hand Tracker on the phone, plus
  * share() to hand a saved file to another app (Photos, Drive, email…).
@@ -17,7 +17,10 @@
 
   // A plugin, as the app's own bridge has it: Capacitor.Plugins.<name> (registerPlugin belongs
   // to the @capacitor/core package, which this app doesn't load; on a phone it isn't there).
-  const plugin = (name) => (typeof cap.registerPlugin === "function" ? cap.registerPlugin(name) : cap.Plugins && cap.Plugins[name]);
+  // null when this app has no such plugin: most are the Android app's alone (the iPhone app
+  // has Filesystem, Share and HandBrowser).
+  const available = (name) => (typeof cap.isPluginAvailable === "function" ? cap.isPluginAvailable(name) : !!(cap.Plugins && cap.Plugins[name]));
+  const plugin = (name) => (!available(name) ? null : typeof cap.registerPlugin === "function" ? cap.registerPlugin(name) : cap.Plugins[name]);
   const Filesystem = plugin("Filesystem");
   const Share = plugin("Share");
   const DIRECTORY = "DOCUMENTS"; // public Documents folder; Android 11+ lets apps write files they create there
@@ -140,8 +143,8 @@
   // plugin (NatNetPlugin.java) has the sockets, natnet-parse.js speaks the protocol.
   function createNatNet() {
     const P = global.NatNetParse;
-    if (!P) return null;
     const NatNet = plugin("NatNet");
+    if (!P || !NatNet) return null;
     const statusListeners = new Set(), frameListeners = new Set();
     const emit = (set, value) => {
       for (const cb of set) {
@@ -241,8 +244,8 @@
   // and answers the page's /__ops/<id> (session videos) and /__fleet/<rig>/<camera>.
   function createRemote() {
     const Core = global.RemoteCore;
-    if (!Core) return {};
     const Remote = plugin("Remote");
+    if (!Core || !Remote) return {};
     // A fetch-like request; with cookies, the WebView's (a sign-in on the dashboard's page).
     const request = async (url, init = {}, { cookies = false, followRedirects = true } = {}) => {
       const r = await Remote.request({
@@ -387,9 +390,9 @@
   // signed as phone-link-protocol.js says.
   function createLink() {
     const L = global.PhoneLinkProtocol;
-    if (!L) return {};
     const Udp = plugin("Udp");
     const Remote = plugin("Remote");
+    if (!L || !Udp || !Remote) return {};
     const STORE = "hand-tracker-pc-link"; // { port, addresses, name }; the key is in the Keystore
     const statusListeners = new Set(), keyboardListeners = new Set(), toggleListeners = new Set();
     const state = { paired: false, connected: false, pc: "", address: "", error: "" };
@@ -683,10 +686,87 @@
     };
   }
 
+  // The iPhone and iPad app's hand mouse (HandBrowserPlugin, ios/App/App/HandBrowser.swift).
+  // iOS lets no app tap inside other apps, so it works websites in a browser inside the app,
+  // below the camera, with web-pc.js's page pointer added to every page: the same calls as
+  // the computer apps' desktop.pc (pointer, button, wheel, key, text) carried out there.
+  //   mobile.browser: open(url, top), back(), close(), status(), onPage(cb)
+  function createHandBrowser() {
+    const B = plugin("HandBrowser");
+    if (!B) return null;
+    const pageListeners = new Set();
+    B.addListener("page", (s) => pageListeners.forEach((cb) => cb(s)));
+    // Every page's pointer: web-pc.js's page pointer, with its look and a way to find an
+    // element (for the self-test), made into a script the browser runs on each page.
+    const script = () => {
+      const make = global.WebPc && global.WebPc._pagePointer;
+      if (!make) throw new Error("The hand browser's pointer isn't here.");
+      const css = "#handPointer{position:fixed;left:-11px;top:-11px;width:22px;height:22px;border-radius:50%;z-index:2147483647;pointer-events:none;" +
+        "border:2px solid #fff;background:rgba(77,171,247,.45);box-shadow:0 0 0 2px rgba(0,0,0,.45);transition:background .1s}#handPointer.down{background:rgba(255,146,43,.85)}";
+      return `(function(){if(window.__htPointer)return;var s=document.createElement("style");s.textContent=${JSON.stringify(css)};(document.head||document.documentElement).appendChild(s);
+var p=(${make.toString()})();p.where=function(sel){var e=document.querySelector(sel);if(!e)return null;var r=e.getBoundingClientRect();return{x:(r.left+r.width/2)/innerWidth,y:(r.top+r.height/2)/innerHeight};};window.__htPointer=p;})();`;
+    };
+    const call = (method, ...args) => B.call({ method, args: JSON.stringify(args) }).then((r) => r && r.value);
+    // Pointer moves come every frame: only the newest is sent once the last has arrived.
+    let moving = false, nextMove = null;
+    const flush = () => {
+      if (moving || !nextMove) return;
+      const [nx, ny] = nextMove;
+      nextMove = null;
+      moving = true;
+      call("pointer", nx, ny)
+        .catch(() => {})
+        .finally(() => {
+          moving = false;
+          flush();
+        });
+    };
+    const opened = async () => {
+      const s = await B.status();
+      if (!s.open) throw new Error("Open a website in the hand browser first.");
+      return true;
+    };
+    const pc = {
+      platform: "ios",
+      start: opened,
+      pointer: (nx, ny) => {
+        nextMove = [nx, ny];
+        flush();
+      },
+      button: (which, action) => call("button", which, action),
+      wheel: (notches) => call("wheel", notches),
+      key: (combo, action) => call("key", combo, action),
+      text: (text) => call("text", text),
+      web: async ({ url, method = "GET", body = null } = {}) => {
+        const m = String(method).toUpperCase();
+        const res = await fetch(String(url), { method: m, headers: body !== null && m !== "GET" ? { "Content-Type": "application/json" } : undefined, body: body !== null && m !== "GET" ? JSON.stringify(body) : undefined });
+        return { ok: res.ok, status: res.status };
+      },
+      setKeyboard: async () => {
+        throw new Error("On an iPhone, tap a box on the page and type with its own keyboard (or with a gesture action's Type text).");
+      },
+      status: () => {},
+      onStatus: () => () => {},
+      toggleMouse: () => {},
+      onToggleMouse: () => () => {},
+      onKeyboard: () => () => {},
+    };
+    const browser = {
+      open: (url, top) => B.open({ url, top, script: script() }),
+      back: () => B.back(),
+      close: () => B.close(),
+      status: () => B.status(),
+      where: (selector) => call("where", selector),
+      onPage: (cb) => (pageListeners.add(cb), () => pageListeners.delete(cb)),
+    };
+    return { pc, browser };
+  }
+
   // Controlling the phone itself with your hand (PhoneControlPlugin.java): the pointer over
   // every app and the hand mouse's taps, swipes and keys, while Hand Tracker is in the background.
   function createPhoneControl() {
     const PhoneControl = plugin("PhoneControl");
+    if (!PhoneControl) return null;
     const stopped = new Set();
     PhoneControl.addListener("stopped", () => stopped.forEach((cb) => cb()));
     return {
@@ -757,6 +837,7 @@
   api.natnet = createNatNet();
   Object.assign(api, createRemote(), createLink());
   if (api.pc) api.pc = withDevice(api.pc, createBtHid());
+  else Object.assign(api, createHandBrowser() || {}); // the iPhone app
   api.phoneControl = createPhoneControl();
   // Saving many results "into one folder" (the desktop app's chooseFolder / saveFilesTo):
   // on the phone that's always Documents/Hand Tracker.

@@ -693,6 +693,78 @@ async function run() {
 
   await checkRemoteFromPhone(win, js);
   await checkPhoneAsRig(win, js);
+  await checkIphoneApp();
+}
+
+// The iPhone app (ios/: the same bundle, with Capacitor's iOS bridge, stood in for here with
+// ?fakeplatform=ios): only its own plugins are used (Filesystem, Share, HandBrowser) and the
+// Android-only parts stay hidden. The card is the hand mouse's, with the hand browser: a website
+// opens below the camera with the hand-mouse pointer on it; the hand mouse's calls point at its
+// link and click it (the next page opens), click into its text box and type; Back goes back,
+// Close closes it. Its self-test (what the build runs in the iPhone simulator) passes too.
+async function checkIphoneApp() {
+  const win = new BrowserWindow({
+    show: false, width: 390, height: 844, useContentSize: true,
+    webPreferences: { preload: path.join(__dirname, "fake-capacitor.js"), contextIsolation: false, sandbox: false, backgroundThrottling: false },
+  });
+  const wc = win.webContents;
+  const js = (code) => wc.executeJavaScript(code, true);
+  const logs = [];
+  wc.on("console-message", (...args) => {
+    const d = args[0] && typeof args[0].message === "string" ? args[0] : { level: args[1], message: args[2] };
+    logs.push(d.message);
+  });
+  let out = {};
+  try {
+    await win.loadURL(`app://${HOST}/index.html?fakeplatform=ios&selftest=1`);
+    for (let i = 0; i < 120 && !logs.some((m) => /^HT-SELFTEST /.test(m)); i++) await sleep(250);
+    const line = logs.find((m) => /^HT-SELFTEST /.test(m));
+    out.selfTest = line ? JSON.parse(line.slice(12)) : null;
+    out.page = await js(`(async () => {
+      const $ = (id) => document.getElementById(id);
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const until = async (fn, ms = 10000) => { for (let t = 0; t < ms; t += 100) { const v = await fn(); if (v) return v; await sleep(100); } return null; };
+      const out = {
+        platform: mobile.platform, label: $("pcCard").querySelector(".section-label").textContent,
+        shown: !$("pcCard").hidden && !$("handBrowser").hidden, android: [$("linkPhone").hidden, $("selfControl").hidden, $("deviceRow").hidden],
+        noKeyboard: $("keyboardToggle").hidden, noRemote: !mobile.remote && !mobile.link && !mobile.phoneControl && !mobile.natnet,
+      };
+      await mobile.browser.close();
+      $("hbUrl").value = "example.com";
+      $("hbOpen").click();
+      out.opened = !!(await until(async () => { const s = await mobile.browser.status(); return s.open && /Example Domain/.test(s.title) && !$("hbBar").hidden && s; }));
+      out.mouseOn = PcControl.isMouseOn();
+      out.barTitle = $("hbTitle").textContent;
+      await sleep(300);
+      const link = await mobile.browser.where("#more");
+      mobile.pc.pointer(link.x, link.y);
+      await sleep(200);
+      await mobile.pc.button("left", "click");
+      out.followed = !!(await until(async () => /Example Domains/.test((await mobile.browser.status()).title)));
+      const box = await mobile.browser.where("#box");
+      mobile.pc.pointer(box.x, box.y);
+      await sleep(200);
+      await mobile.pc.button("left", "click");
+      await mobile.pc.text("hello");
+      out.typed = document.querySelector("iframe").contentDocument.getElementById("box").value;
+      $("hbBack").click();
+      out.back = !!(await until(async () => /Example Domain$/.test((await mobile.browser.status()).title)));
+      $("hbClose").click();
+      out.closed = !!(await until(async () => !(await mobile.browser.status()).open && $("hbBar").hidden));
+      out.opens = window.__fakeCapacitor.calls.filter((c) => c[0] === "handBrowser.open").map((c) => [c[1], c[2], c[3] > 1000]);
+      return out;
+    })()`);
+  } catch (err) {
+    out.error = String((err && err.message) || err);
+  } finally {
+    win.destroy();
+  }
+  const st = out.selfTest || {}, pg = out.page || {};
+  check("The iPhone app: only its own plugins, the Android-only parts hidden; the hand browser opens a website below the camera with the hand-mouse pointer on it, and the hand mouse's calls click its link (the next page opens), click into a box and type; Back and Close work; and its self-test (as in the iPhone simulator) passes",
+    !out.error && st.ok === true && st.plugins.join() === "Filesystem,HandBrowser,Share" && pg.platform === "ios" && pg.label === "Hand mouse" && pg.shown &&
+      pg.android.every(Boolean) && pg.noKeyboard && pg.noRemote && pg.opened && pg.mouseOn && /Example Domain/.test(pg.barTitle) && pg.followed && pg.typed === "hello" && pg.back && pg.closed &&
+      pg.opens.length >= 2 && pg.opens.every(([url, top, script]) => /^https:\/\/example\.com\/?$/.test(url) && top > 0.3 && top < 0.6 && script),
+    JSON.stringify(out));
 }
 
 // The phone as a rig, like a computer: another device (the PC's Hand Tracker, played here by

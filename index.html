@@ -181,6 +181,12 @@
   #handPointer { position: fixed; left: -11px; top: -11px; width: 22px; height: 22px; border-radius: 50%; z-index: 2147483647; pointer-events: none;
     border: 2px solid #fff; background: rgba(77, 171, 247, 0.45); box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45); transition: background 0.1s; }
   #handPointer.down { background: rgba(255, 146, 43, 0.85); }
+  /* The iPhone app's hand browser: its address row, and its buttons over the camera while it's open. */
+  #hbUrl { flex: 1 1 200px; min-width: 0; }
+  #hbBar { position: fixed; top: 0; left: 0; right: 0; z-index: 50; display: flex; gap: 6px; align-items: center; padding: 6px 8px;
+    background: rgba(14, 15, 18, 0.82); font-size: 13px; }
+  #hbBar button { padding: 6px 10px; font-size: 13px; }
+  #hbBar #hbTitle { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; }
   .multi-cam-caption .lbl { opacity: 0.6; }
   .multi-cam-caption select.role, .multi-table select.role { font-size: 12px; padding: 2px 4px; }
   .multi-cam-caption button.retry, .multi-cam-caption button.rot, .multi-cam-caption button.flip { font-size: 12px; padding: 1px 8px; margin-left: 2px; }
@@ -273,6 +279,7 @@
 </head>
 <body>
 
+<div id="hbBar" hidden><button id="hbBack">‹ Back</button><button id="hbMouse" aria-pressed="false">Hand mouse</button><span id="hbTitle"></span><button id="hbClose">✕ Close</button></div>
 <header>
   <h1>Hand Landmark Tracker</h1>
   <span id="buildInfo"></span>
@@ -506,6 +513,16 @@
           <div class="toolbar"><button id="selfAppInfo">Open App info</button></div>
         </div>
         <div id="selfStatus" class="note"></div>
+      </div>
+      <!-- The iPhone and iPad app: the hand mouse works websites in a browser inside the app (phone-link-ui.js). -->
+      <div id="handBrowser" hidden>
+        <div class="section-label">Hand browser</div>
+        <div class="note">iPhones and iPads don't let an app tap inside other apps, so here the hand mouse works websites: open one, and your hand moves a pointer over it, below the camera. A quick curl of your index finger taps, curl and hold it to drag, a quick curl of your middle finger right-clicks; gesture actions can scroll, press keys and type. To work every app on this iPhone, a computer with Hand Tracker can be its Bluetooth mouse (see the README).</div>
+        <div class="toolbar">
+          <input id="hbUrl" type="url" inputmode="url" placeholder="Website or search" autocapitalize="off" autocomplete="off" spellcheck="false" />
+          <button id="hbOpen" class="primary">Open</button>
+        </div>
+        <div id="hbStatus" class="note"></div>
       </div>
       <div class="toolbar">
         <button id="mouseToggle" aria-pressed="false" title="Move the pointer by moving your hand. A quick curl of your index finger clicks (curl and hold to drag); a quick curl of your middle finger right-clicks. Curl both, or make a fist, to hold the pointer still while you move your hand back. Keeps working with this window minimized. Ctrl+Alt+M turns it on and off from anywhere.">Hand mouse: OFF<kbd>Ctrl+Alt+M</kbd></button>

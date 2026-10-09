@@ -190,10 +190,102 @@
     refresh();
   }
 
+  // ---------- the iPhone app: the hand browser ----------
+  // A website opened below the camera; the hand mouse (pc-control.js, through mobile.pc) works
+  // it. While it's open, a bar over the camera has Back, the hand mouse and Close.
+  const HB_TOP = 0.42; // the share of the screen kept for the camera and the bar
+  function initBrowser(browser, setPref, prefs) {
+    $("handBrowser").hidden = false;
+    const label = $("pcCard").querySelector(".section-label");
+    if (label) label.textContent = "Hand mouse";
+    // (No other screens, and no floating keyboard: on an iPhone the page's own keyboard types.)
+    for (const id of ["mouseScreen", "keyboardToggle"]) {
+      const el = $(id);
+      if (el) (el.closest("label") || el).hidden = true;
+    }
+    const status = $("hbStatus"), url = $("hbUrl"), bar = $("hbBar");
+    const saved = prefs.handBrowser || {};
+    url.value = saved.url || "";
+    const mouseButton = () => {
+      const on = global.PcControl && global.PcControl.isMouseOn();
+      $("hbMouse").textContent = `Hand mouse: ${on ? "ON" : "OFF"}`;
+      $("hbMouse").setAttribute("aria-pressed", String(!!on));
+    };
+    // What was typed -> a web address (a search for anything that isn't one).
+    const addressOf = (text) => {
+      const t = String(text || "").trim();
+      if (/^https?:\/\//i.test(t)) return t;
+      if (/^[^\s]+\.[a-z]{2,}(\/.*)?$/i.test(t)) return `https://${t}`;
+      return `https://duckduckgo.com/?q=${encodeURIComponent(t)}`;
+    };
+    async function open(text) {
+      const target = addressOf(text);
+      window.scrollTo(0, 0); // the camera at the top, above the browser
+      try {
+        await browser.open(target, HB_TOP);
+        bar.hidden = false;
+        setPref("handBrowser", { url: String(text || "").trim() });
+        if (global.PcControl && !global.PcControl.isMouseOn()) global.PcControl.setMouse(true);
+        mouseButton();
+        return target;
+      } catch (err) {
+        status.textContent = (err && err.message) || String(err);
+        throw err;
+      }
+    }
+    $("hbOpen").addEventListener("click", () => url.value.trim() && open(url.value).catch(() => {}));
+    url.addEventListener("keydown", (e) => e.key === "Enter" && url.value.trim() && open(url.value).catch(() => {}));
+    $("hbBack").addEventListener("click", () => browser.back());
+    $("hbClose").addEventListener("click", () => browser.close());
+    $("hbMouse").addEventListener("click", () => {
+      if (global.PcControl) global.PcControl.setMouse(!global.PcControl.isMouseOn());
+      setTimeout(mouseButton, 100);
+    });
+    browser.onPage((s) => {
+      bar.hidden = !s.open;
+      $("hbTitle").textContent = s.loading ? "Loading…" : s.title || s.url || "";
+      status.textContent = s.error ? `Couldn't open it: ${s.error}` : s.open ? `Open: ${s.title || s.url}` : "";
+      mouseButton();
+    });
+    // The build's own check in the iPhone simulator (launched with -HTSelfTest): open a page,
+    // point at its link with the hand mouse's calls and click it; the page it opens is the
+    // proof. The result goes to the log the check reads.
+    if (global.__htSelfTest) {
+      (async () => {
+        const out = { plugins: Object.keys((global.Capacitor && global.Capacitor.Plugins) || {}).sort() };
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const page = (test, ms = 30000) =>
+          new Promise((resolve) => {
+            const t = setTimeout(() => (off(), resolve(null)), ms);
+            const off = browser.onPage((s) => test(s) && (clearTimeout(t), off(), resolve(s)));
+          });
+        try {
+          const first = page((s) => s.open && !s.loading && /example/i.test(s.title || s.url));
+          out.opened = await open("https://example.com");
+          out.first = (await first) || (await browser.status());
+          await sleep(500);
+          const at = await browser.where("a");
+          out.link = at;
+          const next = page((s) => s.open && !s.loading && !/example\.com/i.test(s.url || ""));
+          await global.mobile.pc.start();
+          global.mobile.pc.pointer(at.x, at.y);
+          await sleep(300);
+          await global.mobile.pc.button("left", "click");
+          out.after = await next;
+          out.ok = !!(out.after && out.after.url);
+        } catch (err) {
+          out.error = String((err && err.message) || err);
+        }
+        console.log("HT-SELFTEST " + JSON.stringify(out));
+      })();
+    }
+  }
+
   function init({ desktop, mobile, prefs, setPref }) {
     if (desktop && desktop.pc && desktop.pc.link && $("linkPc")) initPc(desktop.pc.link, prefs, setPref);
     else if (mobile && mobile.link && $("linkPhone")) initPhone(mobile.link);
     if (mobile && mobile.phoneControl && $("selfControl")) initSelf(mobile.phoneControl, prefs);
+    if (mobile && mobile.browser && $("handBrowser")) initBrowser(mobile.browser, setPref, prefs);
   }
 
   global.PhoneLinkUI = { init };

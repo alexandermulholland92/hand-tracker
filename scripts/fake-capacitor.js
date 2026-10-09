@@ -441,11 +441,79 @@
     };
   })();
 
-  // registerPlugin (that's @capacitor/core's, which the app doesn't load).
+  // HandBrowser (the iPhone app's HandBrowser.swift), for ?fakeplatform=ios: the browser is an
+  // iframe over the lower part of the page showing stand-in websites (a page with a link, the
+  // page it leads to, with a text box), with the page's pointer script put in each, as the
+  // real one does. A link clicked there opens the next stand-in page.
+  const HandBrowser = (() => {
+    const ev = events();
+    let frame = null, script = "", url = "", history = [];
+    const PAGES = {
+      "https://example.com/": '<title>Example Domain</title><h1>Example Domain</h1><p style="margin-top:40vh"><a id="more" href="https://www.iana.org/help/example-domains">Learn more</a></p>',
+      "https://www.iana.org/help/example-domains": '<title>Example Domains</title><h1>Example Domains</h1><input id="box" style="margin-top:30vh;width:60vw;height:40px" />',
+    };
+    const state = () => ({ open: !!frame, url, title: frame && frame.contentDocument ? frame.contentDocument.title : "", loading: false, error: "" });
+    const load = (to) =>
+      new Promise((resolve) => {
+        url = new URL(to).href;
+        frame.onload = () => {
+          const w = frame.contentWindow;
+          w.document.addEventListener("click", (e) => {
+            const a = e.target.closest && e.target.closest("a");
+            if (!a) return;
+            e.preventDefault();
+            history.push(url);
+            load(a.href);
+          }, true);
+          w.eval(script);
+          ev.emit("page", state());
+          resolve();
+        };
+        frame.srcdoc = PAGES[url] || `<title>Not found</title><p>${url}</p>`;
+      });
+    return {
+      addListener: ev.addListener,
+      async open({ url: to, top, script: s }) {
+        calls.push(["handBrowser.open", to, top, (s || "").length]);
+        script = s;
+        if (!frame) {
+          frame = document.createElement("iframe");
+          Object.assign(frame.style, { position: "fixed", left: "0", bottom: "0", width: "100%", height: `${Math.round((1 - top) * 100)}%`, border: "0", zIndex: "40", background: "#fff" });
+          document.body.appendChild(frame);
+        }
+        load(to);
+        return state();
+      },
+      async call({ method, args }) {
+        const p = frame && frame.contentWindow.__htPointer;
+        if (!p) throw new Error("The page is still loading.");
+        const v = await p[method](...JSON.parse(args));
+        return v === undefined ? {} : { value: v };
+      },
+      async back() {
+        if (history.length) await load(history.pop());
+        return state();
+      },
+      async close() {
+        if (frame) frame.remove();
+        frame = null;
+        ev.emit("page", state());
+        return state();
+      },
+      async status() {
+        return state();
+      },
+    };
+  })();
+
+  // registerPlugin (that's @capacitor/core's, which the app doesn't load). With ?fakeplatform=ios,
+  // the iPhone app's: Filesystem, Share and HandBrowser only (and ?selftest=1, its self-test).
+  const ios = /[?&]fakeplatform=ios\b/.test(location.search);
+  if (/[?&]selftest=1\b/.test(location.search)) window.__htSelfTest = true;
   window.Capacitor = {
     isNativePlatform: () => true,
-    getPlatform: () => "android",
-    Plugins: { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch, BtHid },
+    getPlatform: () => (ios ? "ios" : "android"),
+    Plugins: ios ? { Filesystem, Share, HandBrowser } : { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch, BtHid },
   };
   window.__fakeCapacitor = { files, calls, shared, btHidReports: BtHid._reports, stopPhoneControl: () => PhoneControl._stoppedOutside(), setAccessibility: (on) => PhoneControl._setAccessibility(on) };
 })();

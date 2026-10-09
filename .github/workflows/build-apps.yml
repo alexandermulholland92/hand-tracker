@@ -1,6 +1,7 @@
-# Builds the Windows app (.exe), the Mac app (.dmg), the Linux app (.deb) and the Android app
-# (.apk) whenever main changes, and publishes them on the "Latest build" release, replacing the
-# previous build (a Mac build that fails doesn't hold up the others):
+# Builds the Windows app (.exe), the Mac app (.dmg), the Linux app (.deb), the Android app (.apk)
+# and the iPhone app (.ipa, unsigned: sideloaded) whenever main changes, and publishes them on the
+# "Latest build" release, replacing the previous build (a Mac or iPhone build that fails doesn't
+# hold up the others):
 # https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build
 # Run it by hand from the Actions tab (Build apps → Run workflow) too.
 name: Build apps
@@ -129,6 +130,76 @@ jobs:
           path: dist/*.dmg
           if-no-files-found: error
 
+  # The iPhone and iPad app (Capacitor's iOS app, ios/): built for the simulator and checked
+  # there (the app launched with -HTSelfTest opens a page in its hand browser and clicks its link
+  # with the hand mouse's calls), then built for iPhones, unsigned: Sideloadly or AltStore sign
+  # it with the user's own Apple ID when they install it.
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # (No install scripts: the iPhone app needs neither Electron nor ffmpeg.)
+      - run: npm ci --ignore-scripts
+
+      - name: Build the web app into the iPhone app
+        run: |
+          node scripts/build-web.js 2>&1 | tee ios-build.log
+          npx cap sync ios 2>&1 | tee -a ios-build.log
+
+      - name: Build for the simulator
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios-sim CODE_SIGNING_ALLOWED=NO build 2>&1 \
+            | tee -a ios-build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/ios-sim/Build/Products/Debug-iphonesimulator/App.app
+
+      # The hand browser in the simulator: the self-test's result is in the app's log.
+      - name: Check it in the simulator
+        run: |
+          udid=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl install "$udid" build/ios-sim/Build/Products/Debug-iphonesimulator/App.app
+          xcrun simctl launch --console-pty "$udid" com.handtracker.app -HTSelfTest > sim.log 2>&1 &
+          for i in $(seq 1 90); do grep -q "HT-SELFTEST" sim.log && break; sleep 2; done
+          grep -a "HT-SELFTEST" sim.log | tail -1 | tee selftest.txt
+          grep -q '"ok":true' selftest.txt || { tail -n 80 sim.log >> ios-build.log; exit 1; }
+          echo "The hand browser opened a page and the hand mouse clicked its link"
+
+      - name: Build for iPhones (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 \
+            | tee -a ios-build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          app=build/ios/Build/Products/Release-iphoneos/App.app
+          test -d "$app"
+          /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$app/Info.plist"
+          lipo -archs "$app/App" | grep -q arm64
+          mkdir -p Payload dist
+          cp -R "$app" Payload/
+          zip -qr "dist/HandTracker-$(node -p "require('./package.json').version")-ios-unsigned.ipa" Payload
+
+      - name: Why the build failed
+        if: failure()
+        run: |
+          test -f ios-build.log || exit 0
+          echo "::error title=iPhone build::$(grep -E "error:|HT-SELFTEST|Error" ios-build.log | tail -n 40 | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios
+          path: dist/*.ipa
+          if-no-files-found: error
+
   android:
     runs-on: ubuntu-latest
     env:
@@ -192,8 +263,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [windows, linux, android, mac]
-    # Published without the Mac app if only its build failed.
+    needs: [windows, linux, android, mac, ios]
+    # Published without the Mac or iPhone app if only their builds failed.
     if: ${{ !cancelled() && needs.windows.result == 'success' && needs.linux.result == 'success' && needs.android.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
@@ -211,4 +282,4 @@ jobs:
         run: |
           gh release delete latest-build --yes --cleanup-tag || true
           gh release create latest-build dist/* --target "$GITHUB_SHA" --prerelease --title "Latest build" \
-            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk."
+            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID)."

@@ -12,6 +12,8 @@ Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmark
 
 **Mac app** (macOS 12 or later): from the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release, `HandTracker-<version>-mac-arm64.dmg` for Apple silicon Macs (M1 and later) or `HandTracker-<version>-mac-x64.dmg` for Intel Macs. Open it and drag **Hand Tracker** into Applications. It isn't signed with an Apple Developer ID, so the first time macOS won't open it: try once, then open it from System Settings → Privacy & Security → **Open Anyway** (or run `xattr -dr com.apple.quarantine "/Applications/Hand Tracker.app"` in Terminal). macOS then asks before Hand Tracker uses the camera (and the microphone, for videos with sound); the hand mouse and floating keyboard need it turned on under Privacy & Security → Accessibility. Without a Developer ID, macOS asks for these again after each update. It does everything the Linux app does. It's built and checked on GitHub's Macs, but hasn't been tried on a real Mac yet.
 
+**iPhone and iPad:** `HandTracker-<version>-ios-unsigned.ipa`, sideloaded with your Apple ID; see [iPhone and iPad app](#iphone-and-ipad-app).
+
 **Raspberry Pi** (Pi 4 or 5 with 64-bit Raspberry Pi OS, and other 64-bit ARM Linux boards): the same, with the ARM package: `sudo apt install ./hand-tracker_1.1.0_arm64.deb` from the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release. Tracking uses the Pi's GPU and starts with the Lite model (it's quicker on a Pi; Full is in Model). OAK cameras work on a Pi too. The hand mouse and floating keyboard need an X11 session: Raspberry Pi OS starts in Wayland, so switch it in `sudo raspi-config` → Advanced Options → Wayland → X11, and install xdotool (`sudo apt install xdotool`). A Pi 5 is recommended; a Pi 4 tracks more slowly.
 
 **Download the latest build:** every change to `main` rebuilds the Windows, Linux and Android apps on GitHub and puts them on the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release (`.github/workflows/build-apps.yml`). Each APK built there installs over the last one, but it's signed with a different key from one built on your PC, so Android only installs it over a PC-built copy after that copy is uninstalled (and the other way round). The same happens whenever GitHub drops the saved key (after a week with no builds, or sooner when its cache fills up). To fix the key for good, save a `debug.keystore` as the repository secret `ANDROID_DEBUG_KEYSTORE` (base64; *Settings → Secrets and variables → Actions → New repository secret*): every build is then signed with it, and saving your PC's own (`%USERPROFILE%\.android\debug.keystore`; in Git Bash, `base64 -w0 ~/.android/debug.keystore | clip` copies it) makes GitHub's and your PC's APKs install over each other. The build's log shows which key it signed with (*Signing key in use*).
@@ -409,6 +411,21 @@ This builds `www/` and uploads it to Cloudflare Pages (project `hand-tracker`) w
 ```bash
 npx wrangler@4 login --scopes account:read user:read pages:write offline_access
 ```
+
+## iPhone and iPad app
+
+`HandTracker-<version>-ios-unsigned.ipa`, from the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release, is the same app for iPhones and iPads (iOS 15 or later): tracking, recording, motion capture and video export, saved into Files → On My iPhone → Hand Tracker, and shared from there.
+
+**Install it:** it isn't on the App Store, and isn't signed, so a sideloading tool signs it with your own Apple ID as it installs it: [Sideloadly](https://sideloadly.io) (Windows or Mac, with the iPhone plugged in by USB) or [AltStore](https://altstore.io). With a free Apple ID the app works for 7 days, then needs installing again (Sideloadly or AltStore can refresh it); a paid Apple Developer account makes that a year. On the iPhone, allow it once under Settings → General → VPN & Device Management (trust your Apple ID), and turn on Settings → Privacy & Security → Developer Mode if it asks.
+
+**The hand mouse on an iPhone.** iOS lets no app tap inside other apps, and stops an app's camera once another app is in front, so the Android app's hand control of the whole phone can't be made on an iPhone. Instead:
+
+- **Hand browser** (in the app's **Hand mouse** card): type a website (or anything to search for) and tap **Open**. It opens below the camera, and the hand mouse works it: the pointer follows your palm, a quick curl of your index finger taps, curl and hold it to drag, a quick curl of your middle finger right-clicks, and gesture actions scroll, press keys and type into the box you tapped. The bar above it has Back, the hand mouse's switch, and Close. Any website: YouTube, recipes, maps, your email.
+- **Every app on the iPhone:** a computer with Hand Tracker (Windows or Linux, a Raspberry Pi too), or the Android app, can be the iPhone's Bluetooth mouse and keyboard, with that device's camera: see [An iPhone or iPad](#an-iphone-or-ipad). A Mac can work it through iPhone Mirroring.
+
+What the iPhone app doesn't have (each needs the Android app's own native parts, not made for iOS yet): controlling a PC over Wi-Fi, the phone as a remote recording rig, Sentry alerts, OptiTrack Motive's live stream, and the work dashboards.
+
+**Build it:** GitHub builds it on every change to main (`.github/workflows/build-apps.yml`: the iPhone job), and checks it in the iPhone simulator first: launched with `-HTSelfTest`, the app opens a page in its hand browser and clicks its link with the hand mouse's calls. On a Mac with Xcode: `node scripts/build-web.js && npx cap sync ios`, then open `ios/App/App.xcodeproj`. The hand browser is `ios/App/App/HandBrowser.swift`.
 
 ## Android app
 

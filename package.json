@@ -30,6 +30,7 @@
     "deploy:web": "node scripts/build-web.js && npx --yes wrangler@4 pages deploy www --project-name hand-tracker --commit-dirty=true --branch \"hand tracker\" && npx --yes wrangler@4 pages deploy www --project-name hand-tracker --commit-dirty=true --branch main"
   },
   "dependencies": {
+    "@capacitor/ios": "^8.5.3",
     "@mediapipe/drawing_utils": "0.3.1620248257",
     "@mediapipe/hands": "0.4.1646424915",
     "@mediapipe/pose": "0.5.1675469404",
