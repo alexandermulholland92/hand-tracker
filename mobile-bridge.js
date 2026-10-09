@@ -736,6 +736,7 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
       },
       button: (which, action) => call("button", which, action),
       wheel: (notches) => call("wheel", notches),
+      swipe: (x1, y1, x2, y2, ms) => call("swipe", x1, y1, x2, y2, ms),
       key: (combo, action) => call("key", combo, action),
       text: (text) => call("text", text),
       web: async ({ url, method = "GET", body = null } = {}) => {

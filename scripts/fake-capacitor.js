@@ -327,7 +327,7 @@
       return "";
     };
     window.HandControl = {
-      pointer: did("pointer"), button: did("button"), wheel: did("wheel"), key: did("key"), text: did("text"),
+      pointer: did("pointer"), button: did("button"), wheel: did("wheel"), swipe: did("swipe"), key: did("key"), text: did("text"),
       web: (json) => (calls.push(["hand.web", json]), JSON.stringify({ status: 200 })),
       status: () => {}, stop: did("stop"),
     };

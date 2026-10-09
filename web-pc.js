@@ -72,8 +72,8 @@
       return false;
     };
     const SLOP = 10; // moved more than this (px) with the button down, it isn't a click
-    function panMove(p) {
-      const dx = x - p.x0, dy = y - p.y0;
+    function panMove(p, px = x, py = y) {
+      const dx = px - p.x0, dy = py - p.y0;
       if (Math.hypot(dx, dy) > SLOP) p.moved = true;
       if (p.h === p.v) scrollTo(p.h, p.left0 - dx, p.top0 - dy);
       else {
@@ -81,12 +81,12 @@
         scrollTo(p.v, scrollPos(p.v)[0], p.top0 - dy);
       }
       const now = performance.now();
-      p.trail.push([now, x, y]);
+      p.trail.push([now, px, py]);
       while (p.trail.length > 2 && now - p.trail[0][0] > 150) p.trail.shift();
     }
-    function panEnd(p) {
+    function panEnd(p, px = x, py = y) {
       const now = performance.now(), [t0, x0, y0] = p.trail[0];
-      let vx = now > t0 ? (x - x0) / (now - t0) : 0, vy = now > t0 ? (y - y0) / (now - t0) : 0; // px a millisecond
+      let vx = now > t0 ? (px - x0) / (now - t0) : 0, vy = now > t0 ? (py - y0) / (now - t0) : 0; // px a millisecond
       if (Math.hypot(vx, vy) < 0.3) return;
       let left = scrollPos(p.h)[0], top = scrollPos(p.v)[1], last = now;
       const step = () => {
@@ -158,6 +158,22 @@
           up(which);
           fire(targetAt(), "dblclick", which);
         }
+      },
+      // A finger's quick swipe (a flick, with dragScrolls) from one place to another (shares of the
+      // page) in ms: what's there scrolls with it and glides on. The pointer stays where it is.
+      async swipe(nx1, ny1, nx2, ny2, ms = 120) {
+        if (!dragScrolls) return;
+        const at = (n, size) => Math.max(0, Math.min(size - 1, n * size));
+        const x1 = at(nx1, innerWidth), y1 = at(ny1, innerHeight), x2 = at(nx2, innerWidth), y2 = at(ny2, innerHeight);
+        const t = document.elementFromPoint(x1, y1) || document.body;
+        clearTimeout(glide);
+        const h = scroller(t, "x"), v = scroller(t, "y");
+        const p = { h, v, x0: x1, y0: y1, left0: scrollPos(h)[0], top0: scrollPos(v)[1], moved: true, trail: [[performance.now(), x1, y1]] };
+        for (let i = 1; i <= 4; i++) {
+          await new Promise((r) => setTimeout(r, ms / 4));
+          panMove(p, x1 + ((x2 - x1) * i) / 4, y1 + ((y2 - y1) * i) / 4);
+        }
+        panEnd(p, x2, y2);
       },
       async wheel(notches) {
         // Steps close together (a swipe's) add up, rather than each starting again from

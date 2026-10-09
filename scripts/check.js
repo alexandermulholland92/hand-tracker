@@ -1118,6 +1118,11 @@ async function checkWebMouse(js) {
     q.pointer(bx, by);
     await q.button("left", "click");
     out.pan.pressedByTap = pressed - out.pressed - out.pan.pressedByDrag;
+    // A flick (the hand browser's quick swipe): the list scrolls with it and glides on.
+    list.scrollTop = 0;
+    await q.swipe(lx, ly + 0.05, lx, ly - 0.1, 120);
+    await sleep(800);
+    out.pan.flicked = Math.round(list.scrollTop);
     q.stop();
     box.remove();
     out.pointerGone = !document.getElementById("handPointer");
@@ -1144,7 +1149,7 @@ async function checkWebMouse(js) {
   })()`);
   check("The website's hand mouse pointer clicks a button, types into a box and scrolls a list on the page where it points (as a touchscreen, for the iPhone's hand browser: a drag scrolls with the pointer and glides on, and doesn't press what it started on); the app's switch for the website turns on and off, and refuses anything but the website",
     r.pressed === 1 && r.typed === "hell" && r.focused === "wpText" && r.scrolled > 50 && r.pointer && r.pointerGone &&
-      Math.abs(r.pan.dragged - r.pan.moved) <= 2 && r.pan.glided > 10 && r.pan.pressedByDrag === 0 && r.pan.pressedByTap === 1 &&
+      Math.abs(r.pan.dragged - r.pan.moved) <= 2 && r.pan.glided > 10 && r.pan.pressedByDrag === 0 && r.pan.pressedByTap === 1 && r.pan.flicked > r.pan.moved * 0.6 &&
       r.desktopShown && r.on && r.fromAppPage !== 200 && r.off,
     JSON.stringify(r));
 }

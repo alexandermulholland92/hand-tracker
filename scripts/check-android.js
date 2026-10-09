@@ -603,15 +603,37 @@ async function run() {
     await frames(25, (i) => [hand(0.6, 1.0 - i * 0.022)]);
     await frames(8, [hand(0.6, 0.472)]);
     out.top = Math.min(...calls.slice(m).filter((c) => c[0] === "hand.pointer").map((c) => c[2]));
+    // A flick: the open hand moved quickly up swipes up; brought back down just as quickly
+    // straight after, it doesn't swipe down; a moment later, a flick down swipes down. Slow
+    // movements don't swipe at all, nor does the hand jumping (here, between these steps).
+    await frames(10, [hand(0.6, 0.6)]);
+    m = calls.length;
+    await frames(14, (i) => [hand(0.6, 0.6 - i * 0.02)]); // (as quick as moving the pointer up the screen in a second)
+    await frames(10, [hand(0.6, 0.6)]);
+    out.slowFlicks = calls.slice(m).filter((c) => c[0] === "hand.swipe").length;
+    m = calls.length;
+    await frames(5, (i) => [hand(0.6, 0.6 - i * 0.06)]);
+    await frames(10, [hand(0.6, 0.36)]);
+    await frames(5, (i) => [hand(0.6, 0.36 + i * 0.06)]);
+    await frames(25, [hand(0.6, 0.6)]);
+    await frames(5, (i) => [hand(0.6, 0.6 + i * 0.06)]);
+    await frames(10, [hand(0.6, 0.84)]);
+    const swipes = calls.slice(m).filter((c) => c[0] === "hand.swipe");
+    out.flicks = swipes.map((c) => (c[2] > c[4] ? "up" : "down"));
+    out.flickTaps = calls.slice(m).filter((c) => c[0] === "hand.button").length;
+    out.flickInside = swipes.every((c) => [c[2], c[4]].every((y) => y >= 0.149 && y <= 0.851) && c[1] === c[3]);
     return out;
   })()`).catch((err) => ({ error: String((err && err.message) || err) }));
   controlWin.destroy();
   check("The control window tracks with the camera and turns the hand mouse and gesture actions into taps and keys on the phone (a curl taps; Thumbs Up turns the volume up)",
     controlled.camera > 0 && controlled.mouse && controlled.pointers > 10 && (controlled.taps || []).includes("left click") && (controlled.keys || []).some((k) => /^volumeup/.test(k)),
     JSON.stringify(controlled));
-  check("Control window on a touchscreen: one hand tracked (quicker); a curl held still taps rather than long-pressing; curled and moving swipes; a hand low in the picture reaches the top",
+  check("Control window on a touchscreen: one hand tracked (quicker); a curl held still taps rather than long-pressing; curled and moving drags; a hand low in the picture reaches the top",
     controlled.maxHands === 1 && (controlled.heldStill || []).join() === "left click" && (controlled.swipe || []).join() === "left down,left up" && controlled.top < 0.1,
     JSON.stringify({ maxHands: controlled.maxHands, heldStill: controlled.heldStill, swipe: controlled.swipe, top: controlled.top }));
+  check("Control window: a quick flick of the open hand up swipes up and one down swipes down (inside the screen, away from its edges, no taps); the hand coming back doesn't swipe back, and slow movements or the hand jumping don't swipe",
+    (controlled.flicks || []).join() === "up,down" && controlled.slowFlicks === 0 && controlled.flickTaps === 0 && controlled.flickInside,
+    JSON.stringify({ flicks: controlled.flicks, slow: controlled.slowFlicks, taps: controlled.flickTaps, inside: controlled.flickInside }));
 
   await js("document.querySelector('a[href=\"viewer.html\"]').click()");
   await sleep(1500);

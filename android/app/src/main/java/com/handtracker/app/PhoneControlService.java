@@ -269,6 +269,19 @@ public class PhoneControlService extends Service {
             }
         }
 
+        // A flick (pc-control.js): a quick swipe from one place to another (shares of the screen).
+        @JavascriptInterface
+        public String swipe(double nx1, double ny1, double nx2, double ny2, double ms) {
+            HandControlService s = touch();
+            if (s == null) return NO_SERVICE;
+            if (dragging) return "";
+            DisplayMetrics m = screen();
+            float w = m.widthPixels - 1, h = m.heightPixels - 1;
+            float x1 = (float) (Math.max(0, Math.min(1, nx1)) * w), y1 = (float) (Math.max(0, Math.min(1, ny1)) * h);
+            float x2 = (float) (Math.max(0, Math.min(1, nx2)) * w), y2 = (float) (Math.max(0, Math.min(1, ny2)) * h);
+            return s.stroke(x1, y1, x2, y2, Math.max(40, Math.min(1000, Math.round(ms)))) ? "" : "Android didn't take the swipe";
+        }
+
         @JavascriptInterface
         public String wheel(double notches) {
             HandControlService s = touch();

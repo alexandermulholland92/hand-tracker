@@ -8,7 +8,8 @@
  *    click, curled and moved straight away it swipes (scrolls what's under the pointer, as a
  *    finger does on a touchscreen), curled and held still a moment it drags; a quick curl of
  *    the middle finger is a right click. Curl both (or make a fist) to hold the pointer still
- *    while you move your hand back to the middle. Keeps working with the app minimized;
+ *    while you move your hand back to the middle. On a touchscreen (a phone), a flick of the
+ *    open hand up or down swipes the page that way. Keeps working with the app minimized;
  *    Ctrl+Alt+M turns it on and off anywhere.
  *  - Floating keyboard: an always-on-top keyboard to type into any app (keyboard.html),
  *    Ctrl+Alt+K.
@@ -129,18 +130,25 @@
   const TAP_MS = 450; // a curl shorter than this is a click; an index curl held longer drags
   const TOUCH_DRAG = 0.04; // moving this far (of the hand's box) with the index curled swipes
   const SWIPE_NOTCHES = 10; // a swipe's wheel notches for a hand movement across the whole box (about a screen)
+  // A flick, on a touchscreen: the open hand moved at least `min` of its box, at `speed` boxes a
+  // second or more (well above moving the pointer briskly), mostly up or down, within windowMs,
+  // swipes the page that way. The hand must slow below `rest` before the next one, and one the
+  // other way within oppositeMs is the hand coming back, not a flick.
+  const FLICK = { windowMs: 250, min: 0.2, speed: 2.5, rest: 0.5, oppositeMs: 800, strokeMs: 120 };
   const mouse = {
     on: false,
     side: null, // the hand being followed
     lastSeen: 0,
     filter: pointerFilter(),
-    // While dragging (a swipe, on a touchscreen): no running ahead of the hand, which the
-    // pointer otherwise does a little when the hand stops (so the swipe went on past it).
-    dragFilter: pointerFilter({ correction: 0, prediction: 0 }),
+    // While dragging (a swipe, on a touchscreen): small moves aren't held back (a slow swipe
+    // moves the page all the way), and when the hand stops the pointer runs on past it only a
+    // little (otherwise up to 5% of the screen: the swipe went on after the hand stopped).
+    dragFilter: pointerFilter({ jitter: 0.004, maxDeviation: 0.02 }),
     last: null, // last pointer sent [nx, ny]
     freezeUntil: 0,
     dragging: false,
     swipe: null, // a swipe under way: { y, acc, trail }
+    flick: { trail: [], pointers: [], resting: true, last: null, shown: null }, // flicks (touchscreens)
     glide: 0, // the swipe's glide once let go (its timer)
     fingers: { index: null, middle: null }, // { base, curled, since, cancelled }
   };
@@ -190,6 +198,7 @@
       if (mouse.side && now - mouse.lastSeen > 600) {
         if (mouse.dragging) release();
         stopSwipe();
+        mouse.flick.trail = [];
         mouse.side = null;
         mouse.filter.reset();
         mouse.fingers = { index: null, middle: null };
@@ -259,6 +268,7 @@
       }
     }
     if (mouse.swipe) swipeMove(cy, span, now);
+    if (touch) flickCheck(x, cy, span, now, !index.st.curled && !middle.st.curled && !mouse.dragging);
     if (index.ended) {
       if (mouse.dragging) release();
       else if (mouse.swipe) swipeEnd(span, now);
@@ -279,9 +289,15 @@
       if (!mouse.last || Math.hypot(p[0] - mouse.last[0], p[1] - mouse.last[1]) > 0.0005) {
         mouse.last = p;
         desktop.pc.pointer(p[0], p[1], els.mouseScreen.value);
+        if (touch) {
+          const ps = mouse.flick.pointers;
+          ps.push([now, p[0], p[1]]);
+          while (ps.length > 2 && now - ps[0][0] > 600) ps.shift();
+        }
       }
     }
-    const state = clutch ? "holding still" : mouse.dragging ? "dragging" : mouse.swipe ? "scrolling with" : "following";
+    const flicked = mouse.flick.shown && now - mouse.flick.shown.at < 700 ? `flicked ${mouse.flick.shown.dir} with` : "";
+    const state = clutch ? "holding still" : mouse.dragging ? "dragging" : mouse.swipe ? "scrolling with" : flicked || "following";
     mouseStatus(`Hand mouse on: ${state} your ${hand.handedness.toLowerCase()} hand`);
   }
 
@@ -326,6 +342,57 @@
       }
       if (Math.abs(v) < 0.004) stopGlide();
     }, 30);
+  }
+  // A flick (touchscreens): the open hand moved quickly up or down. The page is swiped that
+  // way from where the pointer was as the flick began (the pointer itself moves with the hand
+  // as usual), further for a quicker flick, as a finger's quick swipe (the page flies on).
+  function flickCheck(x, cy, span, now, open) {
+    const f = mouse.flick;
+    const at = [now, x / span, cy / span];
+    if (!open || !desktop.pc.swipe) {
+      f.trail = [at];
+      return;
+    }
+    f.trail.push(at);
+    while (f.trail.length > 2 && now - f.trail[0][0] > FLICK.windowMs) f.trail.shift();
+    // Resting: hardly moving over about the last tenth of a second.
+    const recent = f.trail.find((p) => now - p[0] <= 120) || f.trail[0];
+    const rdt = (now - recent[0]) / 1000;
+    if (rdt >= 0.06 && Math.hypot(at[1] - recent[1], at[2] - recent[2]) / rdt < FLICK.rest) f.resting = true;
+    if (!f.resting) return;
+    // Far enough, quickly enough, from some moment of the last quarter second (the earliest that
+    // is: a flick's whole length, without the stillness before it).
+    let hit = null;
+    for (const p of f.trail) {
+      const dt = (now - p[0]) / 1000;
+      if (dt < 0.06) break;
+      const dx = at[1] - p[1], dy = at[2] - p[2];
+      // ...and seen on its way there, not in one jump (the tracking losing the hand and finding it
+      // somewhere else).
+      const between = f.trail.some((q) => q[0] > p[0] && q[0] < now && (q[2] - p[2]) / dy >= 0.15 && (q[2] - p[2]) / dy <= 0.85);
+      if (between && Math.abs(dy) >= FLICK.min && Math.abs(dy) / dt >= FLICK.speed && Math.abs(dy) >= 2 * Math.abs(dx)) {
+        hit = { t0: p[0], dy, speed: Math.abs(dy) / dt };
+        break;
+      }
+    }
+    if (!hit) return;
+    const { t0, dy, speed } = hit;
+    const dir = dy < 0 ? "up" : "down";
+    if (f.last && f.last.dir !== dir && now - f.last.at < FLICK.oppositeMs) return; // the hand coming back
+    f.resting = false;
+    f.last = f.shown = { dir, at: now };
+    f.trail = [at];
+    const before = f.pointers.filter((p) => p[0] <= t0).pop() || f.pointers[0] || [now, ...(mouse.last || [0.5, 0.5])];
+    // A finger's stroke the flick's way (up: the finger moves up, the page with it), kept off
+    // the screen's top and bottom edges (where the phone's own swipes start).
+    const len = Math.min(0.5, 0.3 + 0.1 * (speed - FLICK.speed));
+    let a = dir === "up" ? before[2] + len / 2 : before[2] - len / 2;
+    let b = dir === "up" ? a - len : a + len;
+    const shift = Math.max(0.15 - Math.min(a, b), 0) - Math.max(Math.max(a, b) - 0.85, 0);
+    a += shift;
+    b += shift;
+    const sx = Math.min(0.9, Math.max(0.1, before[1]));
+    desktop.pc.swipe(sx, a, sx, b, FLICK.strokeMs).catch((err) => note(errText(err)));
   }
   function stopGlide() {
     clearInterval(mouse.glide);

@@ -8,7 +8,7 @@
 //                                   (aspect: the camera picture's width / height, its shape)
 //   show({ app })                   the app full screen over the website (true), or back (false)
 //   call({ method, args })          window.__htPointer[method](...args) in the page shown
-//                                   (pointer, button, wheel, key, text, where), its result back
+//                                   (pointer, button, wheel, swipe, key, text, where), its result back
 //   back(), close(), status() -> { open, app, url, title, loading }
 //   layout() -> { screen, browser, app }   where each is on the screen (for the self-test)
 //   "page" events { open, app, url, title, loading, error }
@@ -258,7 +258,7 @@ public class HandBrowserPlugin: CAPPlugin, CAPBridgedPlugin, WKNavigationDelegat
     // The page pointer's methods, with their arguments as JSON (so nothing is pasted into code).
     @objc func call(_ call: CAPPluginCall) {
         let method = call.getString("method") ?? ""
-        let allowed: Set<String> = ["pointer", "button", "wheel", "key", "text", "where"]
+        let allowed: Set<String> = ["pointer", "button", "wheel", "swipe", "key", "text", "where"]
         guard allowed.contains(method) else {
             call.reject("Unknown pointer call.")
             return

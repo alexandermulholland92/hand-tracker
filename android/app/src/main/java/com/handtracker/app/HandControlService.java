@@ -87,8 +87,8 @@ public class HandControlService extends AccessibilityService {
     private boolean swipeBusy, swipeEnding;
     private float swipeX, swipeY; // where the last piece ended
     private float[] swipeNext; // where the pointer is now, not sent yet
-    private long nextAt; // when the pointer got there
-    private static final long SWIPE_LAG_MS = 20; // the finger reaches each place this long after the pointer did
+    private long nextAt, lastAt; // when the pointer got there; when its move before that came
+    private long gap = 33; // the pointer's usual time between moves (the camera's frame time)
 
     @TargetApi(Build.VERSION_CODES.O)
     boolean swipeStart(float x, float y) {
@@ -98,6 +98,8 @@ public class HandControlService extends AccessibilityService {
             swipeY = Math.max(0, y);
             swipeNext = null;
             swipeEnding = false;
+            lastAt = SystemClock.uptimeMillis();
+            gap = 33;
             Path p = new Path();
             p.moveTo(swipeX, swipeY);
             swipe = new GestureDescription.StrokeDescription(p, 0, 1, true);
@@ -110,6 +112,9 @@ public class HandControlService extends AccessibilityService {
         long at = SystemClock.uptimeMillis();
         main.post(() -> {
             if (swipe == null) return;
+            long between = at - lastAt;
+            if (between > 0 && between < 200) gap = (gap * 7 + between * 3) / 10;
+            lastAt = at;
             swipeNext = new float[] { Math.max(0, x), Math.max(0, y) };
             nextAt = at;
             if (!swipeBusy) swipeStep();
@@ -132,15 +137,18 @@ public class HandControlService extends AccessibilityService {
         if (swipe == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O || (swipeNext == null && !swipeEnding)) return;
         float[] to = swipeNext != null ? swipeNext : new float[] { swipeX, swipeY };
         swipeNext = null;
-        // Each piece is timed to get there a moment after the pointer did, so the finger keeps the
-        // hand's pace (a flick flicks) and stops when the hand stops. (Timed from when the last
-        // piece was sent instead, Android's own time for each piece would add up: the finger fell
-        // further and further behind the hand, and carried on after it had stopped.)
-        long ms = Math.max(8, Math.min(100, nextAt + SWIPE_LAG_MS - SystemClock.uptimeMillis()));
+        boolean last = swipeEnding, still = to[0] == swipeX && to[1] == swipeY;
+        // Each piece is timed to get there one move's time after the pointer did: the finger
+        // keeps moving between the pointer's moves, at the hand's pace (so a flick flicks), and
+        // stays just that far behind, stopping when the hand stops. (Timed from when the last
+        // piece was sent instead, Android's own time for each piece added up: the finger fell
+        // further and further behind the hand, and carried on after it had stopped.) Let go
+        // where it already is, it lifts at once: held still first, Android would take the flick
+        // to have stopped.
+        long ms = last && still ? 1 : Math.max(8, Math.min(100, nextAt + gap - SystemClock.uptimeMillis()));
         Path p = new Path();
         p.moveTo(swipeX, swipeY);
-        if (to[0] != swipeX || to[1] != swipeY) p.lineTo(to[0], to[1]);
-        boolean last = swipeEnding;
+        if (!still) p.lineTo(to[0], to[1]);
         GestureDescription.StrokeDescription next = swipe.continueStroke(p, 0, ms, !last);
         swipeX = to[0];
         swipeY = to[1];

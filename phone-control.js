@@ -37,6 +37,7 @@
     pointer: (nx, ny) => native.pointer(nx, ny),
     button: async (which, action) => call("button", String(which), String(action)),
     wheel: async (notches) => call("wheel", Number(notches) || 0),
+    swipe: async (x1, y1, x2, y2, ms) => call("swipe", Number(x1), Number(y1), Number(x2), Number(y2), Number(ms) || 120),
     key: async (combo, action) => call("key", String(combo), String(action || "tap")),
     text: async (text) => call("text", String(text)),
     web: async (req) => {
