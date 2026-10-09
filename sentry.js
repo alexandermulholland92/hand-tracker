@@ -67,6 +67,9 @@
   const ANIMAL_MARGIN = 0.25; // an animal's box grown by this much each way (its movement blurs past it)
   const ANIMAL_HOLD_MS = 3000; // an animal found this recently still counts where it was (a finder misses it now and then)
   const LOOSE_STREAK = 2; // ignoring animals: looks in a row with movement no animal explains before it counts
+  // ...where an OAK camera finds the objects: it looks 3 times a second (oak_bridge.py's
+  // DETECT_GAP_S), so an animal walking in may not be found until up to ~0.45 s later.
+  const OAK_LOOSE_STREAK = 4;
   const HEAT_FADE = 0.6; // a box shown moving on the page fades over a few looks
 
   let prefs = {}, setPref = () => {}, viewsOf = () => [], host = null, onWantsChange = () => {}, hostName = () => "", linkOf = () => "", lookingOf = () => true;
@@ -320,6 +323,7 @@
       if (st.finding) return;
       let objects = v.objects ? v.objects() : null;
       let rotation = objects && v.rotation ? v.rotation() : 0;
+      const loose = objects ? OAK_LOOSE_STREAK : LOOSE_STREAK; // (the app's finder looks at this very picture)
       if (!objects) {
         st.finding = true;
         try {
@@ -338,7 +342,7 @@
         }
         // Not (all) an animal's: it counts once it's so a moment longer.
         st.loose = (st.loose || 0) + 1;
-        if (st.loose < LOOSE_STREAK && !st.session) return;
+        if (st.loose < loose && !st.session) return;
       }
     }
     moving(v, st);

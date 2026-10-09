@@ -115,6 +115,19 @@ def depth_picture(disparity, max_disparity, w, h):
     return img
 
 
+DETECT_GAP_S = 0.33
+# On the camera (a Script node): only every frame DETECT_GAP_S after the last one sent goes on.
+DETECT_EVERY = f"""
+last = -1.0
+while True:
+    frame = node.io["frame"].get()
+    t = frame.getTimestamp().total_seconds()
+    if t - last >= {DETECT_GAP_S}:
+        last = t
+        node.io["out"].send(frame)
+"""
+
+
 def add_extras(dai, pipeline, cam, stereo, extras, tracker):
     """More from the same camera alongside the hands, each only when asked for: objects found
     on the camera (with their distance on a depth camera), the depth picture, and a small grey
@@ -130,13 +143,24 @@ def add_extras(dai, pipeline, cam, stereo, extras, tracker):
 
     tracker.extra_streams = []
     if extras.get("detect"):
+        # A few looks a second (DETECT_GAP_S apart) rather than one at every frame: plenty for
+        # Sentry (it keeps each animal where it was for 3 s, and waits for a look before
+        # movement counts; the app keeps each object for 1 s), and each look takes the camera's
+        # processor from the hands' models (on an OAK-D-PRO-W, full model, two hands and depth:
+        # 11.7 a second with a look at every frame, 14.5 with 5 looks a second, 18.8 with 2,
+        # side by side; 20 without objects).
+        every = pipeline.create(dai.node.Script)
+        every.setScript(DETECT_EVERY)
+        every.inputs["frame"].setBlocking(False)
+        every.inputs["frame"].setQueueSize(1)
+        cam.preview.link(every.inputs["frame"])
         manip = pipeline.create(dai.node.ImageManip)
         manip.initialConfig.setResize(300, 300)  # stretched: its boxes are then fractions of the picture as they are
         manip.initialConfig.setFrameType(dai.ImgFrame.Type.BGR888p)
         manip.setMaxOutputFrameSize(300 * 300 * 3)
         manip.inputImage.setQueueSize(1)
         manip.inputImage.setBlocking(False)
-        cam.preview.link(manip.inputImage)
+        every.outputs["out"].link(manip.inputImage)
         if stereo is not None:
             nn = pipeline.create(dai.node.MobileNetSpatialDetectionNetwork)
             nn.setBoundingBoxScaleFactor(0.4)  # the middle of each box: its distance, not the background's
@@ -368,21 +392,20 @@ def run(args):
 
         # The camera's frame rate: one the camera's processor keeps up with, given all it's
         # asked to do. Asked for more, it starts frames it can't finish and slows right down.
-        # Measured on an OAK-D-PRO-W (Pi 5, no hands in view), full model and two hands:
-        # with depth and objects, 60 asked -> 4.7 a second, 39 -> 6.6, 25 -> 10.3, 20 -> 11.0,
-        # 15 -> 11.7; with depth only, 25 -> 14.6, 20 -> 15.3; neither, 39 -> 13.1, 30 -> 15.9.
+        # Measured on an OAK-D-PRO-W (Pi 5), full model and two hands, with depth and objects
+        # (a look at every frame then): 60 asked -> 4.7 a second, 39 -> 6.6, 15 -> 11.7. With
+        # objects looked for 3 times a second, 20 -> 20.0 and 25 -> 22.9 (depth only: 25 ->
+        # 20.0, 30 -> 17.8). Its rates vary with what's in view: 24 was never far off the best.
         # (The lite model's rates are the tracker's own.) 60 asked for holds only where nothing
         # else shares the processor: no depth, no objects.
         def pick_fps(self, asked, depth):
-            full = args.lm == "full"
-            if extras.get("detect"):
-                best = 15
-            elif depth:
-                best = 20 if full else 29
+            busy = depth or extras.get("detect")
+            if args.lm == "full":
+                best = 24 if busy else 26
             else:
-                best = 26 if full else 36
+                best = 29 if busy else 36
             if asked:
-                return asked if not depth and not extras.get("detect") else min(asked, best)
+                return min(asked, best) if busy else asked
             return best
 
         # Landmarks with their fractions of a pixel kept (the original rounds them).
