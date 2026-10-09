@@ -366,6 +366,25 @@ def run(args):
         def extend_pipeline(self, pipeline, cam, stereo):
             add_extras(dai, pipeline, cam, stereo, extras, self)
 
+        # The camera's frame rate: one the camera's processor keeps up with, given all it's
+        # asked to do. Asked for more, it starts frames it can't finish and slows right down.
+        # Measured on an OAK-D-PRO-W (Pi 5, no hands in view), full model and two hands:
+        # with depth and objects, 60 asked -> 4.7 a second, 39 -> 6.6, 25 -> 10.3, 20 -> 11.0,
+        # 15 -> 11.7; with depth only, 25 -> 14.6, 20 -> 15.3; neither, 39 -> 13.1, 30 -> 15.9.
+        # (The lite model's rates are the tracker's own.) 60 asked for holds only where nothing
+        # else shares the processor: no depth, no objects.
+        def pick_fps(self, asked, depth):
+            full = args.lm == "full"
+            if extras.get("detect"):
+                best = 15
+            elif depth:
+                best = 20 if full else 29
+            else:
+                best = 26 if full else 36
+            if asked:
+                return asked if not depth and not extras.get("detect") else min(asked, best)
+            return best
+
         # Landmarks with their fractions of a pixel kept (the original rounds them).
         def extract_hand_data(self, res, hand_idx):
             hand = super().extract_hand_data(res, hand_idx)

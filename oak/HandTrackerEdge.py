@@ -177,7 +177,11 @@ class HandTracker:
                 else:
                     print("Warning: depth unavailable on this device, 'xyz' argument is ignored")
 
-            if internal_fps is None:
+            if hasattr(self, "pick_fps"):
+                # (Hand Tracker's oak_bridge.py: the rate its whole pipeline keeps up with. The
+                # table below never matched there: its lm_model is a model's file.)
+                self.internal_fps = self.pick_fps(internal_fps, self.xyz)
+            elif internal_fps is None:
                 if lm_model == "full":
                     if self.xyz:
                         self.internal_fps = 22 
