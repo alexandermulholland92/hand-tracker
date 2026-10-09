@@ -103,6 +103,23 @@ ids_for_bounding_box = [0, 1, 2, 3, 5, 6, 9, 10, 13, 14, 17, 18]
 
 lm_input_size = 224
 
+# (Hand Tracker) Palms the landmark model has just turned down (palm detection's false alarms:
+# something palm-like, or grain in a dim picture), each [center x, center y, size, frame number
+# until which it's let be]: a new palm in the same place, of about the same size, is skipped for
+# about a second rather than checked again on every frame (each check is a landmark inference,
+# which slowed the camera to half its rate). One that moves, or a hand being followed, is
+# never skipped.
+rejected_palms = []
+frame_no = 0
+def rejected_palm(x, y, size):
+    for r in rejected_palms:
+        if frame_no < r[3] and abs(x - r[0]) < 0.25 * r[2] and abs(y - r[1]) < 0.25 * r[2] and 0.7 * r[2] < size < 1.4 * r[2]:
+            return True
+    return False
+def reject_palm(x, y, size):
+    global rejected_palms
+    rejected_palms = [r for r in rejected_palms if frame_no < r[3]][-3:] + [[x, y, size, frame_no + 25]]
+
 detected_hands = []
 
 reuse_prev_image = False
@@ -110,6 +127,8 @@ reuse_prev_image = False
 
 while True:
     nb_lm_inf = 0
+    frame_no += 1
+    from_pd = False
     if send_new_frame_to_branch == 1: # Routing frame to pd branch
         hands = []
         node.io['pre_pd_manip_cfg'].send(cfg_pre_pd)
@@ -131,6 +150,9 @@ while True:
                 rotation = normalize_radians(rotation)
                 sqn_rr_center_x = box_x + 0.5*box_size*sin(rotation)
                 sqn_rr_center_y = box_y - 0.5*box_size*cos(rotation)
+                if rejected_palm(sqn_rr_center_x, sqn_rr_center_y, sqn_rr_size):
+                    ${_TRACE1} ("Palm detection - skipping a palm turned down a moment ago")
+                    continue
                 hands.append([sqn_rr_size, rotation, sqn_rr_center_x, sqn_rr_center_y])
         
         ${_TRACE1} (f"Palm detection - nb hands detected: {len(hands)}")
@@ -145,6 +167,7 @@ while True:
 
         if not(nb_hands_in_previous_frame == 1 and len(hands) <= 1):
             detected_hands = hands
+            from_pd = True
         else:
             # otherwise detected_hands come from last frame
             ${_TRACE1} (f"Keep previous landmarks")
@@ -291,6 +314,8 @@ while True:
             hand[3] = sqn_rr_center_y
 
             updated_detect_hands.append(hand)
+        elif from_pd:
+            reject_palm(sqn_rr_center_x, sqn_rr_center_y, sqn_rr_size)
     detected_hands = updated_detect_hands
 
     ${_TRACE1} (f"Landmarks - nb hands confirmed : {len(detected_hands)}")
