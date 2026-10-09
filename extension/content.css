@@ -1,0 +1,6 @@
+/* The hand mouse's pointer over a page (content.js; the same as the website's, web-pc.js). */
+#handPointer { position: fixed !important; left: -11px !important; top: -11px !important; width: 22px !important; height: 22px !important;
+  margin: 0 !important; padding: 0 !important; border-radius: 50% !important; z-index: 2147483647 !important; pointer-events: none !important;
+  border: 2px solid #fff !important; background: rgba(77, 171, 247, 0.45) !important; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45) !important;
+  transition: background 0.1s !important; box-sizing: border-box !important; display: block !important; }
+#handPointer.down { background: rgba(255, 146, 43, 0.85) !important; }

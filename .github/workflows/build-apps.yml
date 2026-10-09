@@ -213,6 +213,34 @@ jobs:
           path: dist/*.ipa
           if-no-files-found: error
 
+  # The Chrome extension (the hand mouse for web pages, extension/): built, then checked in
+  # Chrome for Testing with a fake camera (scripts/check-extension.js).
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: node scripts/build-extension.js
+
+      - name: Check it in Chrome for Testing
+        run: |
+          npm install --no-save puppeteer-core@24 @puppeteer/browsers@2
+          CHROME=$(npx @puppeteer/browsers install chrome@stable --path "$RUNNER_TEMP/cft" | tail -1 | cut -d' ' -f2-)
+          CHROME="$CHROME" node scripts/check-extension.js --no-build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension
+          path: dist/*-chrome-extension.zip
+          if-no-files-found: error
+
   android:
     runs-on: ubuntu-latest
     env:
@@ -276,8 +304,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [windows, linux, android, mac, ios]
-    # Published without the Mac or iPhone app if only their builds failed.
+    needs: [windows, linux, android, mac, ios, extension]
+    # Published without the Mac or iPhone app or the Chrome extension if only their builds failed.
     if: ${{ !cancelled() && needs.windows.result == 'success' && needs.linux.result == 'success' && needs.android.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
@@ -295,4 +323,4 @@ jobs:
         run: |
           gh release delete latest-build --yes --cleanup-tag || true
           gh release create latest-build dist/* --target "$GITHUB_SHA" --prerelease --title "Latest build" \
-            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID)."
+            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID). Chrome (the hand mouse for web pages): HandTracker-*-chrome-extension.zip, unzipped and loaded in chrome://extensions with Developer mode on (Load unpacked)."

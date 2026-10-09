@@ -53,7 +53,11 @@ checksum, the first time *Find objects* is turned on. Apache License 2.0
 ## MediaPipe
 
 MediaPipe Hands and MediaPipe Pose (`@mediapipe/hands`, `@mediapipe/pose`, installed from npm),
-by Google, under the Apache License 2.0 (see each package's own licence file).
+by Google, under the Apache License 2.0 (see each package's own licence file). The Chrome
+extension's copy of MediaPipe Hands is modified: in `hands_solution_wasm_bin.js` and
+`hands_solution_simd_wasm_bin.js`, three of Emscripten's embind functions (`createNamedFunction`,
+`craftInvokerFunction`, `__emval_get_method_caller`) are replaced by `scripts/build-extension.js`
+with equivalents that don't evaluate code from text, which Chrome extensions may not do.
 
 Sentry mode's "Ignore pets and animals" uses MediaPipe Tasks Vision (`@mediapipe/tasks-vision`,
 installed from npm) and its EfficientDet-Lite0 object detector trained on COCO

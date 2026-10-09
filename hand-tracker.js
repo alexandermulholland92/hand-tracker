@@ -886,7 +886,8 @@
       if (!worker) {
         try {
           const src = "onmessage = (e) => setTimeout(() => postMessage(e.data.id), e.data.ms);";
-          worker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+          // (The Chrome extension's page can't run a worker from a blob: its own file, the same.)
+          worker = new Worker(global.HT_TIMER_WORKER || URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
           worker.onmessage = (e) => {
             const f = waiting.get(e.data);
             waiting.delete(e.data);

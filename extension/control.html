@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hand mouse</title>
+<link rel="icon" href="icons/icon32.png" />
+<!-- app.css: the app's own look (index.html's styles, copied by scripts/build-extension.js). -->
+<link rel="stylesheet" href="app.css" />
+<link rel="stylesheet" href="control.css" />
+</head>
+<body>
+<header>
+  <h1>Hand Tracker · hand mouse</h1>
+  <span id="buildInfo"></span>
+  <span class="spacer"></span>
+  <span id="fpsBadge"></span>
+</header>
+<div id="ctlLayout">
+  <div>
+    <div id="wrap">
+      <video id="video" playsinline muted></video>
+      <canvas id="stage" width="1280" height="720"></canvas>
+      <div id="stageMessage" hidden></div>
+    </div>
+    <div class="toolbar ctl-camera">
+      <label>Camera <select id="cameraSelect"></select></label>
+      <label title="Full finds hands more surely; lite is quicker on a slow computer">Hand model
+        <select id="modelSelect"><option value="1">full</option><option value="0">lite (quicker)</option></select>
+      </label>
+      <label title="Show the camera picture mirrored, like a mirror"><input type="checkbox" id="mirrorToggle" checked /> Mirror</label>
+    </div>
+  </div>
+  <div class="card" id="pcCard" hidden>
+    <div class="section-label">Hand mouse</div>
+    <div class="note" id="howTo">
+      Turn it on, then go to any other tab: a pointer follows your palm over that page. A quick curl of your
+      <b>index finger</b> clicks (curl and hold it to drag), a quick curl of your <b>middle finger</b> right-clicks,
+      and curling both (or a fist) holds the pointer still while you move your hand back to the middle.
+      Keep this tab open: it's pinned at the left of your tabs. <b>Alt+Shift+M</b> turns it on and off from anywhere in Chrome.
+    </div>
+    <div class="toolbar">
+      <button id="mouseToggle" class="primary" aria-pressed="false">Hand mouse: OFF</button>
+      <label>Hand <select id="mouseHand"><option value="Right">right</option><option value="Left">left</option><option value="either">either</option></select></label>
+      <label title="How far you move your hand to cross the page">Moves
+        <select id="mouseReach"><option value="0.4">small</option><option value="0.55" selected>medium</option><option value="0.7">large</option></select>
+      </label>
+      <!-- (pc-control.js's; one screen here: the page in front) -->
+      <label hidden>Screen <select id="mouseScreen"><option value="primary">the page in front</option></select></label>
+      <button id="keyboardToggle" hidden>Floating keyboard</button>
+    </div>
+    <div id="mouseStatus" class="note">Hand mouse off</div>
+    <div id="pageNote" class="note"></div>
+    <div class="section-label">Gesture actions</div>
+    <div class="note">A gesture can press keys, type, click or scroll in the page in front. Each one has its own switch.</div>
+    <div class="toolbar">
+      <button id="actionsToggle" aria-pressed="false">Gesture actions: OFF</button>
+      <label title="Allow actions that press keys or type"><input type="checkbox" id="allowKeys" checked /> Keyboard</label>
+      <label title="Allow actions that click, drag or scroll"><input type="checkbox" id="allowMouse" checked /> Mouse</label>
+      <label hidden><input type="checkbox" id="allowWeb" /> Web requests</label>
+      <button id="addAction">+ Add action</button>
+    </div>
+    <div id="actionList"></div>
+    <div id="actionLog" class="note"></div>
+    <div class="section-label">What it can't do</div>
+    <div class="note">
+      It works web pages only: not Chrome's own controls (tabs, the address bar), its own pages (a new tab, settings),
+      the Web Store, or other apps. For the whole computer, use the
+      <a class="header-link" href="https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build" target="_blank" rel="noopener">Hand Tracker app</a>.
+      A few sites ignore clicks that don't come from a real mouse.
+    </div>
+  </div>
+</div>
+<!-- config.js first: the tracker's timer worker (no blob: workers in an extension). -->
+<script src="config.js"></script>
+<script src="vendor/mediapipe-hands/hands.js"></script>
+<script src="vendor/mediapipe-drawing/drawing_utils.js"></script>
+<script src="hand-tracker.js"></script>
+<script src="gestures.js"></script>
+<script src="pc-control.js"></script>
+<script src="web-pc.js"></script>
+<script src="control.js"></script>
+</body>
+</html>

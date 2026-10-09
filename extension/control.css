@@ -1,0 +1,9 @@
+/* The extension's control page, on top of the app's own styles (app.css). */
+#ctlLayout {
+  display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; max-width: 1180px; margin: 0 auto;
+}
+@media (max-width: 900px) { #ctlLayout { grid-template-columns: minmax(0, 1fr); } }
+.ctl-camera { margin-top: 10px; }
+#howTo { margin-bottom: 10px; line-height: 1.45; }
+#pageNote:empty { display: none; }
+#pageNote { color: #ffa94d; }

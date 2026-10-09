@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Hand Tracker hand mouse",
+  "short_name": "Hand mouse",
+  "description": "Work web pages with your hand through your webcam: a pointer that follows your palm, clicks, drags, scrolls and types. Tracking stays on your computer.",
+  "version": "0.0.0",
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "action": {
+    "default_title": "Hand mouse: open its page",
+    "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png" }
+  },
+  "background": { "service_worker": "background.js" },
+  "permissions": ["scripting"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["web-pc.js", "content.js"], "css": ["content.css"], "run_at": "document_idle" }
+  ],
+  "commands": {
+    "toggle-hand-mouse": { "suggested_key": { "default": "Alt+Shift+M" }, "description": "Turn the hand mouse on or off" }
+  },
+  "content_security_policy": { "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'" }
+}
