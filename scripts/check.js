@@ -136,6 +136,7 @@ const STEPS = [
   ["sentry", [], ({ js }) => checkSentry(js)],
   ["web-link", [], () => checkWebLink()],
   ["web-mouse", [], ({ js }) => checkWebMouse(js)],
+  ["iphone-mouse", [], ({ js }) => checkIphoneMouse(js)],
   ["mac-app", [], () => checkMacApp()],
   ["external-source", [], checkExternalSource],
   ["duplicate-hands", [], checkDuplicateHands],
@@ -962,6 +963,114 @@ async function checkWebLink() {
 // The website's own hand mouse pointer (web-pc.js) on this page: it clicks a button, types into a
 // box and scrolls a list where it's pointing; and the app's switch for the website turns on (and
 // says no to anything but the website).
+// An iPhone or iPad worked instead of this computer, with this computer as its Bluetooth mouse
+// and keyboard (hid-core.js's reports): the pointer pushed into the corner first, then moved by
+// the difference, and pushed past an edge it goes to; clicks, Home, keys and letters as their
+// reports; unknown keys and letters refused. The Windows helper builds with the C# compiler
+// Windows has, and starts; the Linux one is valid Python. In the app, "Controls: an iPhone or
+// iPad" starts the helper (a stand-in here: nothing over Bluetooth), says when one's connected,
+// and the hand mouse, keys and typing go to it, not this computer; back to "this computer" it
+// stops.
+async function checkIphoneMouse(js) {
+  const H = require("../hid-core.js");
+  const out = {};
+  const got = [];
+  const dev = H.create({ send: (id, b) => got.push(`${id}:${b.join(",")}`), screen: H.screenFor("iphone") });
+  dev.pointer(0.5, 0.5);
+  out.home = got.length === 24 && got.slice(0, 20).every((r) => r === "2:0,129,129,0");
+  out.first = got.slice(20).join(" ");
+  got.length = 0;
+  dev.pointer(0, 0.5);
+  const sum = (i) => got.reduce((n, r) => n + ((Number(r.split(/[:,]/)[i]) << 24) >> 24), 0);
+  out.edge = [sum(2), sum(3)];
+  got.length = 0;
+  dev.button("left", "click");
+  dev.key("homescreen");
+  dev.key("cmd+h");
+  dev.text("Hi!");
+  out.keys = got.join(" ");
+  const refused = (f) => {
+    try {
+      f();
+      return "";
+    } catch (err) {
+      return err.message;
+    }
+  };
+  out.refused = [refused(() => dev.key("bogus")), refused(() => dev.text("héllo"))];
+  // The descriptor: three reports, every collection closed.
+  let ids = 0, depth = 0;
+  for (let i = 0; i < H.REPORT_MAP.length; ) {
+    const b = H.REPORT_MAP[i], size = [0, 1, 2, 4][b & 3];
+    if (b === 0x85) ids++;
+    if (b === 0xa1) depth++;
+    if (b === 0xc0) depth--;
+    i += 1 + size;
+  }
+  out.map = { ids, depth };
+  // The helpers.
+  if (process.platform === "win32") {
+    try {
+      const exe = await require("../electron/bt-hid.js").buildWindowsHelper(fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-bthid-")));
+      out.windows = spawnSync(exe, [], { encoding: "utf8", timeout: 20000 }).stdout.trim();
+    } catch (err) {
+      out.windows = `build failed: ${err.message}`;
+    }
+  }
+  const py = ["python3", "python"].find((c) => spawnSync(c, ["--version"], { encoding: "utf8" }).status === 0);
+  if (py) out.linux = spawnSync(py, ["-c", "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read()); print('valid')", path.join(__dirname, "..", "electron", "bt-hid-linux.py")], { encoding: "utf8" }).stdout.trim();
+  // In the app, with the stand-in helper.
+  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-bthid-log-")), "lines.txt");
+  process.env.HAND_TRACKER_BTHID_FAKE = path.join(__dirname, "fake-bt-hid.js");
+  process.env.HAND_TRACKER_BTHID_LOG = log;
+  try {
+    out.app = await js(`(async () => {
+      const $ = (id) => document.getElementById(id);
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const pick = (v) => (($("pcTarget").value = v), $("pcTarget").dispatchEvent(new Event("change")));
+      const out = { row: !$("deviceRow").hidden, optionsBefore: $("deviceOptions").hidden };
+      pick("device");
+      for (let i = 0; i < 100 && !/Connected to Test iPhone/.test($("deviceNote").textContent); i++) await sleep(100);
+      out.note = $("deviceNote").textContent;
+      out.options = !$("deviceOptions").hidden;
+      out.screenHidden = $("mouseScreen").parentElement.hidden;
+      desktop.pc.pointer(0.5, 0.5, "primary");
+      await desktop.pc.button("left", "click");
+      await desktop.pc.key("homescreen", "tap");
+      await desktop.pc.text("Hi");
+      await sleep(300);
+      pick("computer");
+      await sleep(800);
+      out.noteAfter = $("deviceNote").hidden;
+      out.statusAfter = (await desktop.pc.targetStatus()).target;
+      return out;
+    })()`);
+  } catch (err) {
+    out.app = { error: String((err && err.message) || err) };
+  } finally {
+    delete process.env.HAND_TRACKER_BTHID_FAKE;
+    delete process.env.HAND_TRACKER_BTHID_LOG;
+  }
+  const lines = fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
+  out.sent = {
+    args: lines[0] === `args ${Buffer.from(H.REPORT_MAP).toString("hex")} 1:8,2:4,3:2`,
+    home: lines.filter((l) => l === "r 2 00818100").length,
+    click: lines.includes("r 2 01000000") && lines.includes("r 2 00000000"),
+    homescreen: lines.includes("r 3 2302") && lines.includes("r 3 0000"),
+    typed: lines.includes("r 1 02000b0000000000") && lines.includes("r 1 00000c0000000000"),
+    quit: lines[lines.length - 1] === "quit",
+  };
+  const a = out.app || {};
+  check("An iPhone or iPad worked as this computer's Bluetooth mouse and keyboard: the pointer from the corner, then by the difference, pushed past an edge; clicks, Home, keys and letters as their reports (unknown ones refused); the Windows helper builds and starts, the Linux one is valid; in the app the hand mouse, keys and typing go to the iPhone once it's connected, and back to this computer it stops",
+    out.home && out.first === "2:0,50,109,0 2:0,50,109,0 2:0,50,108,0 2:0,50,109,0" && out.edge[0] === -391 && out.edge[1] === 0 &&
+      out.keys === "2:1,0,0,0 2:0,0,0,0 3:35,2 3:0,0 1:8,0,11,0,0,0,0,0 1:0,0,0,0,0,0,0,0 1:2,0,11,0,0,0,0,0 1:0,0,0,0,0,0,0,0 1:0,0,12,0,0,0,0,0 1:0,0,0,0,0,0,0,0 1:2,0,30,0,0,0,0,0 1:0,0,0,0,0,0,0,0" &&
+      /Unknown key/.test(out.refused[0]) && /can't be typed.*é/.test(out.refused[1]) && out.map.ids === 3 && out.map.depth === 0 &&
+      (process.platform !== "win32" || /^error usage/.test(out.windows || "")) && (!py || out.linux === "valid") &&
+      a.row && a.optionsBefore && /Connected to Test iPhone/.test(a.note || "") && a.options && a.screenHidden && a.noteAfter && a.statusAfter === "computer" &&
+      out.sent.args && out.sent.home === 20 && out.sent.click && out.sent.homescreen && out.sent.typed && out.sent.quit,
+    JSON.stringify(out));
+}
+
 async function checkWebMouse(js) {
   const r = await js(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1260,6 +1369,18 @@ async function checkPcControl(js) {
     await frames(15, h, as("Fist"));
     out.keyboardOff = calls.length;
     PcControl._state().allow.keyboard = true;
+    // A mouse action "with keys": shift held around the click; for a held button, while it's held.
+    PcControl._setRules([
+      { enabled: true, gesture: "Fist", hand: "any", action: "click", mods: "shift", trigger: "enter", hold: 0, every: 1 },
+      { enabled: true, gesture: "Peace", hand: "any", action: "hold", mods: "ctrl", trigger: "enter_leave", hold: 0, every: 1 },
+    ], true);
+    await frames(6, [], none);
+    calls.length = 0;
+    await frames(5, h, as("Fist"));
+    await frames(6, [], none);
+    await frames(5, h, as("Peace"));
+    await frames(6, [], none);
+    out.withKeys = calls.map((c) => c.slice(1).join(" "));
     PcControl._setRules([], false);
     PcControl._setDesktop(window.desktop);
     HandTracker.setPaused(false);
@@ -1272,9 +1393,10 @@ async function checkPcControl(js) {
     o.leftClick.join() === "left click" && o.drag.join() === "left down,left up" && o.rightClick.join() === "right click" && o.bothCurled === 0 &&
       o.lightClicks.join() === "left click,right click",
     JSON.stringify({ leftClick: o.leftClick, drag: o.drag, rightClick: o.rightClick, bothCurled: o.bothCurled, lightClicks: o.lightClicks }));
-  check("Gesture actions: hold time, dropouts, repeats, start-and-end, which hand, web requests and the on/off switches work",
+  check("Gesture actions: hold time, dropouts, repeats, start-and-end, which hand, web requests, the on/off switches, and a click with keys held (shift + click) work",
     o.fistEarly === 0 && o.fist.join() === "playpause tap" && o.thumbs >= 3 && o.thumbs <= 5 && o.wrongHand === 0 &&
-      o.hold.join() === "left down,left up" && o.web.join() === "http://127.0.0.1:9/hook POST Point" && o.disabled === 0 && o.keyboardOff === 0,
+      o.hold.join() === "left down,left up" && o.web.join() === "http://127.0.0.1:9/hook POST Point" && o.disabled === 0 && o.keyboardOff === 0 &&
+      o.withKeys.join() === "shift down,left click,shift up,ctrl down,left down,left up,ctrl up",
     JSON.stringify(o));
 }
 

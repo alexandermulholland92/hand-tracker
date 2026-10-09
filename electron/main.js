@@ -70,6 +70,10 @@ if (!isPrimaryInstance) app.quit();
 let mainWindow = null;
 let keyboardWindow = null; // the floating keyboard
 const input = new InputDriver(); // mouse and keyboard input to this computer (see input.js)
+// What the hand mouse, gesture actions and the floating keyboard work: this computer, or an
+// iPhone or iPad this computer is a Bluetooth mouse and keyboard for (see bt-hid.js).
+let pcTarget = "computer";
+let btHid = null;
 let oak = null; // Luxonis OAK cameras (see oak.js), created once the app is ready
 let oakViewer = null; // the window receiving the OAK camera's frames
 const oakStreams = new Map(); // several OAK cameras at once (multi-camera.js): id -> { cam, busy }
@@ -335,11 +339,32 @@ function closeKeyboard() {
   if (keyboardWindow && !keyboardWindow.isDestroyed()) keyboardWindow.close();
 }
 
-// A point given as fractions of a screen ("primary", or "all" screens together) -> the
-// physical pixels the input helper works in.
+// iPhone Mirroring's window on a Mac (its iPhone, worked from the Mac): where it is, looked up
+// at most once a second (System Events, with the Accessibility permission the hand mouse has).
+let mirroring = { at: 0, bounds: null, busy: false };
+function mirroringBounds() {
+  if (process.platform !== "darwin") return null;
+  if (!mirroring.busy && Date.now() - mirroring.at > 1000) {
+    mirroring.busy = true;
+    const script = 'tell application "System Events" to tell (first process whose name is "iPhone Mirroring") to get {position, size} of window 1';
+    require("child_process").execFile("osascript", ["-e", script], { timeout: 3000 }, (err, stdout) => {
+      const v = String(stdout || "").split(",").map((n) => Number(n.trim()));
+      mirroring = { at: Date.now(), busy: false, bounds: !err && v.length === 4 && v.every(Number.isFinite) && v[2] > 50 ? { x: v[0], y: v[1], width: v[2], height: v[3] } : null };
+    });
+  }
+  return mirroring.bounds;
+}
+
+// A point given as fractions of a screen ("primary", "all" screens together, or "mirroring":
+// iPhone Mirroring's window) -> the physical pixels the input helper works in; null if that
+// window isn't open.
 function screenPoint(nx, ny, which) {
   const displays = screen.getAllDisplays();
   let b = screen.getPrimaryDisplay().bounds;
+  if (which === "mirroring") {
+    b = mirroringBounds();
+    if (!b) return null;
+  }
   if (which === "all" && displays.length > 1) {
     const x0 = Math.min(...displays.map((d) => d.bounds.x)), y0 = Math.min(...displays.map((d) => d.bounds.y));
     const x1 = Math.max(...displays.map((d) => d.bounds.x + d.bounds.width)), y1 = Math.max(...displays.map((d) => d.bounds.y + d.bounds.height));
@@ -351,33 +376,66 @@ function screenPoint(nx, ny, which) {
 }
 
 function registerPcIpc() {
-  handle("pc:start", () => input.start());
+  const { BtHid } = require("./bt-hid");
+  btHid = new BtHid({
+    folder: path.join(app.getPath("userData"), "bt-hid"),
+    onStatus: (s) => {
+      for (const w of [mainWindow, keyboardWindow]) if (w && !w.isDestroyed()) w.webContents.send("pc:target-status", { target: pcTarget, ...s });
+    },
+  });
+  // The input goes to this computer, or to the iPhone or iPad (as a Bluetooth mouse and keyboard).
+  const toDevice = () => pcTarget === "device";
+  const ready = () => (toDevice() ? btHid.start() : input.start());
+  handle("pc:start", () => ready());
   // Pointer moves come many times a second: fire-and-forget, from our own pages only.
   ipcMain.on("pc:pointer", (event, { nx, ny, screen: which } = {}) => {
     if (!event.senderFrame || !isAppUrl(event.senderFrame.url)) return;
+    if (toDevice()) {
+      if (btHid.status().state === "connected") btHid.device.pointer(nx, ny);
+      return;
+    }
     input
       .start()
       .then(() => {
         const p = screenPoint(nx, ny, which);
-        input.move(p.x, p.y);
+        if (p) input.move(p.x, p.y);
       })
       .catch(() => {});
   });
   handle("pc:button", async (event, { which, action }) => {
-    await input.start();
-    input.button(which, action);
+    await ready();
+    (toDevice() ? btHid.device : input).button(which, action);
   });
   handle("pc:wheel", async (event, { notches }) => {
-    await input.start();
-    input.wheel(notches);
+    await ready();
+    (toDevice() ? btHid.device : input).wheel(notches);
   });
   handle("pc:key", async (event, { combo, action }) => {
-    await input.start();
-    input.key(combo, action);
+    await ready();
+    (toDevice() ? btHid.device : input).key(combo, action);
   });
   handle("pc:text", async (event, { text }) => {
-    await input.start();
-    input.text(text);
+    await ready();
+    (toDevice() ? btHid.device : input).text(text);
+  });
+  // Which to work: { target: "computer" | "device", screen ("iphone", "ipad", ... sideways),
+  // speed }. -> { target, state, device, message }. The device: this computer starts
+  // advertising as a Bluetooth mouse and keyboard (and stops when it's this computer again).
+  handle("pc:target", async (event, { target, screen: kind, speed } = {}) => {
+    pcTarget = target === "device" ? "device" : "computer";
+    if (pcTarget === "device") {
+      btHid.setScreen(kind, speed);
+      await btHid.start().catch(() => {}); // (its status says why not)
+    } else btHid.stop();
+    return { target: pcTarget, ...btHid.status() };
+  });
+  handle("pc:target-status", () => ({ target: pcTarget, ...btHid.status() }));
+  // A Mac: iPhone Mirroring opened (macOS 15 and later).
+  handle("pc:open-mirroring", async () => {
+    if (process.platform !== "darwin") throw new Error("iPhone Mirroring is on a Mac.");
+    const err = await shell.openPath("/System/Applications/iPhone Mirroring.app");
+    if (err) throw new Error("iPhone Mirroring isn't on this Mac (it needs macOS 15 and an iPhone with iOS 18).");
+    return true;
   });
   // Gesture actions' web requests, from here (no browser cross-site limits), http(s) only.
   handle("pc:web", async (event, { url, method = "GET", body = null } = {}) => {
@@ -1164,6 +1222,7 @@ app.on("window-all-closed", () => {
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
   input.stop();
+  if (btHid) btHid.stop();
   if (oak) oak.stop();
   for (const id of [...oakStreams.keys()]) stopOakStream(id);
   if (natnet.client) natnet.client.stop();

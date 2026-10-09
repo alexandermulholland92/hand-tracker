@@ -177,6 +177,19 @@ contextBridge.exposeInMainWorld("desktop", {
     web: (req) => ipcRenderer.invoke("pc:web", req),
     // The floating keyboard window: show or hide it.
     setKeyboard: (show) => ipcRenderer.invoke("pc:keyboard", { show }),
+    // What all this works: this computer, or an iPhone or iPad this computer is a Bluetooth
+    // mouse and keyboard for (bt-hid.js): { target: "computer" | "device", screen, speed }
+    // -> { target, state: "off" | "starting" | "waiting" | "connected" | "error", device, message }
+    platform: process.platform,
+    setTarget: (opts) => ipcRenderer.invoke("pc:target", opts),
+    targetStatus: () => ipcRenderer.invoke("pc:target-status"),
+    onTargetStatus: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("pc:target-status", listener);
+      return () => ipcRenderer.removeListener("pc:target-status", listener);
+    },
+    // A Mac: opens iPhone Mirroring (its window can be the hand mouse's screen).
+    openMirroring: () => ipcRenderer.invoke("pc:open-mirroring"),
     // Hand mouse status, from the main window to the floating keyboard: { mouseOn, hand, dragging, note }
     status: (s) => ipcRenderer.send("pc:status", s),
     onStatus: (cb) => {

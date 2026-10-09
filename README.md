@@ -55,7 +55,7 @@ Video import and export work in all three: the Windows, Mac and Linux app conver
 - **Recording Viewer** (header link or *File → Open Recording Viewer*): opens hand recordings (JSON, CSV, BVH, NPZ, GLB, MCAP), **C3D** and TRC files, and **OptiTrack `.tak`** takes. You can play them back, browse the frames, and convert them to every other motion format, or to any of the 36 video formats, one at a time or several in a queue; see [Viewing and converting recordings](#viewing-and-converting-recordings).
 - **Recovers from camera dropouts**: if the camera stops sending frames, the app shows a notice and reconnects automatically.
 - **3D view**: *Hand shape: Real size* draws each hand at its real size and shape in metres (MediaPipe's world landmarks), and with an OAK-D at its measured distance; *From the picture* shows it as the camera sees it. *View* can rotate or swing back and forth by itself.
-- **Control your PC** (Windows, Mac and Linux app): a hand mouse, a floating keyboard and gesture actions. The Android app can do the same to a PC over Wi-Fi, or to the phone itself; see [Control your PC](#control-your-pc).
+- **Control your PC** (Windows, Mac and Linux app): a hand mouse, a floating keyboard and gesture actions. The Android app can do the same to a PC over Wi-Fi, or to the phone itself, and the computer or phone can work an iPhone or iPad as its Bluetooth mouse; see [Control your PC](#control-your-pc).
 - **Luxonis OAK cameras** (Windows, Mac and Linux app): tracking on the camera itself, with each hand's distance on an OAK-D; see [Luxonis OAK cameras](#luxonis-oak-cameras).
 
 ### Keyboard shortcuts
@@ -110,9 +110,21 @@ In the Windows, Mac and Linux app, the **Control your PC** card turns your hands
   - repeatedly while it's held;
   - on every frame.
 
+  A mouse action can hold keys down while it clicks or scrolls (**with keys**: `shift`, `ctrl`, `ctrl+shift`…), so one gesture can Shift-click or Ctrl-scroll; for *Hold left button* they're held as long as the button is.
+
   Also set how long the gesture must be held first; a few misread frames don't end it. The **Keyboard**, **Mouse** and **Web requests** switches turn whole kinds of action off, and each action has its own switch. Three examples (volume up and down with thumbs up and down, play/pause with a fist) are there but switched off. Adapted from depthai_hand_tracker's HandController.
 
 On Windows this uses Windows' own input functions (nothing to install). On a Mac it uses macOS's own (a small helper built with the app), once Hand Tracker is turned on under System Settings → Privacy & Security → Accessibility (it asks the first time); there, the floating keyboard's Win key is ⌘ Command and Alt is ⌥ Option (⌘, then C, copies), and a gesture action's `cmd+c` (or `win+c`) copies. On Linux it needs **xdotool** (`sudo apt install xdotool`) and an X11 (Xorg) session: Wayland desktops don't let apps move the pointer or type into other apps.
+
+### An iPhone or iPad
+
+The hand mouse, gesture actions and floating keyboard can work an iPhone or iPad instead of the computer, in every app on it. iOS doesn't let an app control other apps, so Hand Tracker becomes something it already accepts: a **Bluetooth mouse and keyboard**, with the tracking done on the camera of whatever is being the mouse. Three ways:
+
+- **The computer as the mouse** (Windows and Linux app, a Raspberry Pi too): in **Control your PC**, set **Controls** to *an iPhone or iPad (Bluetooth)*, and pick its screen (iPhone or iPad, upright or sideways). The computer's own Bluetooth advertises a mouse and keyboard: nothing to install (on Windows, a small helper is built the first time with the C# compiler Windows comes with; on Linux it needs python3-dbus and python3-gi, which Raspberry Pi OS has). On the iPhone: Settings → Bluetooth, tap **Hand Tracker** (or the computer's name) under Other Devices; it connects by itself after that. Turn on Settings → Accessibility → Touch → **AssistiveTouch** for the pointer. A click is a tap, holding the index curl drags (to scroll and swipe), the right button opens AssistiveTouch's menu. Gesture actions' keys reach it too, plus `homescreen`, `search` (Spotlight) and `onscreenkeyboard`; typing works for the letters, digits and symbols of a US keyboard. **Pointer speed** matches your hand's movement to the iPhone's pointer: a Bluetooth mouse moves the pointer by steps, so Hand Tracker pushes it into the corner when the iPhone connects and keeps track from there; moving your hand to any edge puts it right again.
+- **The phone as the mouse** (Android app): the same, with **Controls** → *an iPhone or iPad (Bluetooth)* in the phone's Control your PC card, and the phone's camera. Allow *Nearby devices* when asked, and let the phone be visible so the iPhone finds it (**Pair a new one** asks again). Needs Android 9 or later.
+- **iPhone Mirroring** (Mac app, macOS 15 with iOS 18): a Mac can't be a Bluetooth mouse (macOS doesn't let apps be one), but iPhone Mirroring shows the iPhone in a window and works it with the Mac's pointer. Tap **Open iPhone Mirroring**, then set **Screen** to *iPhone Mirroring window*: the hand mouse then moves over the iPhone in its window only.
+
+Being a Bluetooth mouse hasn't been tried with a real iPhone yet: the reports, the routing and both helpers' Bluetooth setup are checked (the Linux one on a Raspberry Pi 5), but not an iPhone pairing with them.
 
 ### From the website
 
@@ -472,6 +484,7 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `hand-tracker.js` | Camera, MediaPipe, smoothing, features, orientation, stall recovery, square crop, pause, far-away focusing, external (OAK) frames |
 | `far-hands.js` | Far-away hands: MediaPipe Pose and the square to search around the wrists |
 | `pc-control.js` | Hand mouse, gesture actions and the Control your PC card |
+| `hid-core.js`, `electron/bt-hid.js`, `electron/bt-hid-win.cs`, `electron/bt-hid-linux.py`, `BtHidPlugin.java` | An iPhone or iPad worked as a Bluetooth mouse and keyboard: the reports, and the Windows, Linux and Android Bluetooth helpers |
 | `web-pc.js`, `electron/web-link.js` | The website's hand mouse: this page's pointer, or this computer's through the app |
 | `gestures.js` | Names each hand's gesture from its landmarks (shared by the main window and phone control) |
 | `phone-link-protocol.js`, `phone-link-ui.js`, `qr-code.js` | A phone controlling a PC over Wi-Fi: the signed messages, the pairing (with the QR code) on both sides |

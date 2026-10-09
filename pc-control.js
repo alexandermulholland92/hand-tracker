@@ -1,5 +1,8 @@
 /**
  * pc-control.js — controlling this computer with your hands (Windows, Mac and Linux app):
+ * or, instead of it, an iPhone or iPad this computer (or the Android app's phone) is a
+ * Bluetooth mouse and keyboard for (hid-core.js), or on a Mac the iPhone in iPhone
+ * Mirroring's window:
  *
  *  - Hand mouse: the pointer follows your palm; a quick curl of the index finger is a left
  *    click (curl and hold to drag), a quick curl of the middle finger a right click. Curl
@@ -304,8 +307,22 @@
     const [label, category] = ACTIONS[rule.action] || [];
     if (!label || !allow[category]) return;
     const who = `${rule.gesture}${hand ? ` (${hand.handedness.toLowerCase()})` : ""}`;
+    // A mouse action's "with keys" (shift, ctrl+shift...): held down around the click or scroll,
+    // and for "Hold left button" while it's held.
+    const mods = category === "mouse" && rule.mods ? String(rule.mods).trim() : "";
     try {
       await ensureStarted();
+      if (mods && rule.action !== "hold" && phase !== "leave") {
+        await desktop.pc.key(mods, "down");
+        try {
+          if (rule.action === "scrollUp" || rule.action === "scrollDown") await desktop.pc.wheel(rule.action === "scrollUp" ? 1 : -1);
+          else await desktop.pc.button(rule.action === "right" ? "right" : rule.action === "middle" ? "middle" : "left", rule.action === "double" ? "double" : "click");
+        } finally {
+          await desktop.pc.key(mods, "up");
+        }
+        if (rule.trigger !== "continuous") note(`${who} → ${mods} + ${label}`);
+        return;
+      }
       switch (rule.action) {
         case "keys":
           // Start and end: keys held down while the gesture lasts.
@@ -315,7 +332,16 @@
           if (phase !== "leave") await desktop.pc.text(rule.value);
           break;
         case "hold":
-          await desktop.pc.button("left", phase === "leave" ? "up" : "down");
+          if (phase === "leave") {
+            try {
+              await desktop.pc.button("left", "up");
+            } finally {
+              if (mods) await desktop.pc.key(mods, "up");
+            }
+          } else {
+            if (mods) await desktop.pc.key(mods, "down");
+            await desktop.pc.button("left", "down");
+          }
           break;
         case "scrollUp":
         case "scrollDown":
@@ -398,6 +424,7 @@
         <select data-f="action" title="What it does">${opt(Object.entries(ACTIONS).map(([k, [l]]) => [k, l]), rule.action)}</select>
         ${rule.action === "web" ? `<select data-f="method" title="Request method">${opt([["GET", "GET"], ["POST", "POST"], ["PUT", "PUT"]], rule.method || "GET")}</select>` : ""}
         ${valueHint ? `<input type="text" data-f="value" placeholder="${valueHint}" value="${esc(rule.value)}" spellcheck="false" autocomplete="off" />` : ""}
+        ${(ACTIONS[rule.action] || [])[1] === "mouse" ? `<input type="text" data-f="mods" class="mods" placeholder="with keys, e.g. shift" title="Keys held down with it, e.g. shift, ctrl or ctrl+shift (leave empty for none)" value="${esc(rule.mods)}" spellcheck="false" autocomplete="off" />` : ""}
         <select data-f="trigger" title="When">${opt(Object.entries(TRIGGERS), rule.trigger)}</select>
         <label title="How long the gesture must be held first (seconds)">after <input type="number" data-f="hold" min="0" max="10" step="0.1" value="${esc(rule.hold)}" /> s</label>
         ${rule.trigger === "periodic" ? `<label title="How often while held (seconds)">every <input type="number" data-f="every" min="0.05" max="60" step="0.05" value="${esc(rule.every)}" /> s</label>` : ""}
@@ -445,11 +472,16 @@
       list: $("actionList"), log: $("actionLog"), add: $("addAction"),
     };
     const saved = prefs.handMouse || {};
+    // A Mac: iPhone Mirroring's window can be the screen (its iPhone, worked from the Mac).
+    if (desktop.pc.platform === "darwin" && !els.mouseScreen.querySelector('option[value="mirroring"]')) {
+      els.mouseScreen.insertAdjacentHTML("beforeend", '<option value="mirroring">iPhone Mirroring window</option>');
+    }
     if (saved.hand) els.mouseHand.value = saved.hand;
-    if (saved.screen) els.mouseScreen.value = saved.screen;
+    if (saved.screen && els.mouseScreen.querySelector(`option[value="${saved.screen}"]`)) els.mouseScreen.value = saved.screen;
     if (saved.reach) els.mouseReach.value = saved.reach;
-    const saveMouse = () => setPref("handMouse", { hand: els.mouseHand.value, screen: els.mouseScreen.value, reach: els.mouseReach.value });
+    const saveMouse = () => setPref("handMouse", { ...(prefs.handMouse || {}), hand: els.mouseHand.value, screen: els.mouseScreen.value, reach: els.mouseReach.value, ...deviceChoice() });
     for (const el of [els.mouseHand, els.mouseScreen, els.mouseReach]) el.addEventListener("change", saveMouse);
+    setupDevice(saved, saveMouse);
     els.mouseToggle.addEventListener("click", () => setMouse(!mouse.on));
     desktop.pc.onToggleMouse(() => setMouse(!mouse.on));
 
@@ -495,6 +527,74 @@
     setToggle(els.mouseToggle, false, "Hand mouse");
     showKeyboard(false);
     return true;
+  }
+
+  // ---------- an iPhone or iPad instead of this computer ----------
+  // The computer apps and the Android app can be a Bluetooth mouse and keyboard for one (its
+  // pointer needs AssistiveTouch on); a Mac can't, but its iPhone Mirroring window can be the
+  // hand mouse's screen.
+  const deviceEls = {};
+  function deviceChoice() {
+    if (!deviceEls.target) return {};
+    return { target: deviceEls.target.value, deviceScreen: deviceEls.screen.value, deviceSpeed: deviceEls.speed.value };
+  }
+  function setupDevice(saved, saveMouse) {
+    const pc = desktop.pc;
+    const row = $("deviceRow");
+    if (!row) return;
+    Object.assign(deviceEls, { target: $("pcTarget"), screen: $("deviceScreen"), speed: $("deviceSpeed"), options: $("deviceOptions"), note: $("deviceNote"), visible: $("deviceVisible") });
+    if (pc.platform === "darwin") {
+      row.hidden = false;
+      $("pcTargetLabel").hidden = true;
+      const open = $("openMirroring");
+      open.hidden = false;
+      open.addEventListener("click", () => pc.openMirroring().catch((err) => note(errText(err))));
+      deviceEls.note.hidden = false;
+      deviceEls.note.textContent = "Your iPhone, worked from this Mac: open iPhone Mirroring (macOS 15 or later, with iOS 18), then choose Screen → iPhone Mirroring window. Your hand then moves the pointer over the iPhone in its window; a click is a tap.";
+      return;
+    }
+    if (!pc.setTarget) return;
+    row.hidden = false;
+    if (pc.platform === "android") deviceEls.target.querySelector('option[value="computer"]').textContent = "the paired PC";
+    deviceEls.target.value = saved.target === "device" ? "device" : "computer";
+    if (saved.deviceScreen) deviceEls.screen.value = saved.deviceScreen;
+    deviceEls.speed.value = saved.deviceSpeed || "1";
+    if (!deviceEls.speed.value) deviceEls.speed.value = "1";
+    const apply = () => {
+      if (mouse.dragging) release();
+      endAll();
+      started = null; // the next action starts what it now works
+      const device = deviceEls.target.value === "device";
+      deviceEls.options.hidden = !device;
+      els.mouseScreen.parentElement.hidden = device;
+      saveMouse();
+      pc.setTarget({ target: deviceEls.target.value, screen: deviceEls.screen.value, speed: Number(deviceEls.speed.value) || 1 })
+        .then(showDevice)
+        .catch((err) => showDevice({ target: deviceEls.target.value, state: "error", message: errText(err) }));
+    };
+    for (const el of [deviceEls.target, deviceEls.screen, deviceEls.speed]) el.addEventListener("change", apply);
+    if (pc.platform === "android" && pc.deviceVisible) {
+      deviceEls.visible.hidden = false;
+      deviceEls.visible.addEventListener("click", () => pc.deviceVisible().catch((err) => note(errText(err))));
+    }
+    pc.onTargetStatus(showDevice);
+    apply();
+  }
+  function showDevice(s) {
+    const n = deviceEls.note;
+    if (!n) return;
+    const device = s && s.target === "device";
+    n.hidden = !device;
+    if (!device) return;
+    const where = desktop.pc.platform === "android" ? "this phone" : "this computer";
+    const name = desktop.pc.platform === "android" ? "this phone's name" : "\u201cHand Tracker\u201d (or this computer's name)";
+    n.textContent = {
+      starting: "Starting Bluetooth…",
+      waiting: `Waiting for your iPhone or iPad. On it: Settings → Bluetooth, tap ${name} under Other Devices (the first time; after that it connects by itself), and turn on Settings → Accessibility → Touch → AssistiveTouch for the pointer.`,
+      connected: `Connected to ${s.device || "your device"}: the hand mouse, gesture actions${desktop.pc.platform === "android" ? "" : " and the floating keyboard"} work it now (a click is a tap; the right button opens AssistiveTouch's menu). Its keys for gesture actions include homescreen, search, onscreenkeyboard, cmd+space.`,
+      error: `Can't be its Bluetooth mouse: ${s.message || "Bluetooth didn't start."}`,
+      off: `Bluetooth is off on ${where}.`,
+    }[s.state] || "";
   }
 
   function update(hands, gestureOf, mirrored, aspect) {

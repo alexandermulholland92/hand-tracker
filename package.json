@@ -96,6 +96,8 @@
     ],
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
+      "electron/bt-hid-win.cs",
+      "electron/bt-hid-linux.py",
       "electron/tak-convert.ps1",
       "electron/input-helper.ps1",
       "electron/input-helper-mac",

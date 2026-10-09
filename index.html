@@ -516,6 +516,24 @@
         <label>Screen <select id="mouseScreen"><option value="primary">main screen</option><option value="all">all screens</option></select></label>
         <button id="keyboardToggle" aria-pressed="false" title="A keyboard that floats on top of every window. Type into any app by clicking its keys with the hand mouse (or a mouse). Ctrl+Alt+K shows and hides it from anywhere.">Floating keyboard: OFF<kbd>Ctrl+Alt+K</kbd></button>
       </div>
+      <!-- The computer apps and the Android app: an iPhone or iPad worked instead, as a Bluetooth
+           mouse and keyboard (hid-core.js); on a Mac, iPhone Mirroring's window (pc-control.js). -->
+      <div id="deviceRow" hidden>
+        <div class="toolbar">
+          <label id="pcTargetLabel" title="What the hand mouse, gesture actions and the floating keyboard work">Controls
+            <select id="pcTarget"><option value="computer">this computer</option><option value="device">an iPhone or iPad (Bluetooth)</option></select>
+          </label>
+          <span id="deviceOptions" class="toolbar" hidden>
+            <label>Its screen <select id="deviceScreen"><option value="iphone">iPhone</option><option value="iphone-landscape">iPhone, sideways</option><option value="ipad">iPad</option><option value="ipad-landscape">iPad, sideways</option></select></label>
+            <label title="If the pointer goes too far, or not far enough, for your hand">Pointer speed
+              <select id="deviceSpeed"><option value="0.5">½×</option><option value="0.75">¾×</option><option value="1">1×</option><option value="1.5">1½×</option><option value="2">2×</option><option value="3">3×</option></select>
+            </label>
+            <button id="deviceVisible" hidden title="Lets a new iPhone or iPad find this phone, to pair">Pair a new one</button>
+          </span>
+          <button id="openMirroring" hidden title="iPhone Mirroring shows your iPhone in a window on this Mac, worked with this Mac's pointer: then choose Screen → iPhone Mirroring window">Open iPhone Mirroring</button>
+        </div>
+        <div id="deviceNote" class="note" hidden></div>
+      </div>
       <!-- The website: which pointer the hand mouse moves (web-pc.js). -->
       <div id="webMouseRow" hidden>
         <div class="toolbar">
@@ -762,6 +780,7 @@
 <script src="natnet-parse.js"></script>
 <script src="remote-core.js"></script>
 <script src="phone-link-protocol.js"></script>
+<script src="hid-core.js"></script>
 <script src="mobile-bridge.js"></script>
 <script src="export-ui.js"></script>
 <script src="video-formats.js"></script>

@@ -464,6 +464,40 @@ async function run() {
       pcGot.includes('button {"which":"left","action":"click"}') && linked.keyboard === true && linked.kept && /didn't answer/.test(linked.gone || ""),
     JSON.stringify(linked));
 
+  // 8b. This phone as an iPhone's Bluetooth mouse and keyboard (the BtHid plugin stood in for:
+  // an iPhone connects a moment after it starts): "Controls: an iPhone or iPad" starts it, says
+  // when it's connected, and the hand mouse, clicks, Home and typing go to it as HID reports,
+  // not to the paired PC; back to the PC it stops.
+  const iphone = await js(`(async () => {
+    const $ = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const pick = (v) => (($("pcTarget").value = v), $("pcTarget").dispatchEvent(new Event("change")));
+    const out = { row: !$("deviceRow").hidden, pcLabel: $("pcTarget").options[0].textContent, visibleButton: !$("deviceVisible").hidden };
+    pick("device");
+    for (let i = 0; i < 50 && !/Connected to Test iPhone/.test($("deviceNote").textContent); i++) await sleep(100);
+    out.note = $("deviceNote").textContent;
+    const R = window.__fakeCapacitor.btHidReports;
+    R.length = 0;
+    mobile.pc.pointer(0.5, 0.5, "primary");
+    await mobile.pc.button("left", "click");
+    await mobile.pc.key("homescreen", "tap");
+    await mobile.pc.text("Hi");
+    await sleep(300);
+    out.reports = R.map(([id, b]) => id + ":" + b.join(","));
+    out.started = window.__fakeCapacitor.calls.filter((c) => c[0] === "btHid.start").map((c) => c[1]);
+    pick("computer");
+    await sleep(300);
+    out.stopped = window.__fakeCapacitor.calls.some((c) => c[0] === "btHid.stop");
+    out.noteAfter = $("deviceNote").hidden;
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  const rep = iphone.reports || [];
+  check("The phone as an iPhone's Bluetooth mouse and keyboard: it starts, says when the iPhone's connected, and the hand mouse, clicks, Home and typing go to it as HID reports; back to the PC it stops",
+    iphone.row && iphone.pcLabel === "the paired PC" && iphone.visibleButton && /Connected to Test iPhone/.test(iphone.note || "") && iphone.started.length && iphone.started[0] > 100 &&
+      rep.filter((r) => r === "2:0,129,129,0").length === 20 && rep.includes("2:1,0,0,0") && rep.includes("3:35,2") && rep.includes("1:2,0,11,0,0,0,0,0") && rep.includes("1:0,0,12,0,0,0,0,0") &&
+      iphone.stopped && iphone.noteAfter,
+    JSON.stringify({ ...iphone, reports: rep.length }));
+
   // 9. Controlling the phone itself: "Control this phone" hands the camera to the control
   // window (the PhoneControl plugin stood in for) and takes it back when that stops; and the
   // control window's page (phone-control.html) turns the hand mouse and gesture actions into

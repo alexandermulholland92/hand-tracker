@@ -94,6 +94,11 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Hand tracking uses the camera (the web page asks via getUserMedia). -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- This phone as a Bluetooth mouse and keyboard for an iPhone or iPad (BtHidPlugin.java). -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <!-- Saving exports to Documents/Hand Tracker needs this only on Android 9 and 10;
          newer versions let apps write their own files there without asking. -->

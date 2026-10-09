@@ -22,7 +22,7 @@ const APP_FILES = [
   "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js", "ops-sessions.js", "rig-live.js", "motion-video.js",
   "natnet-parse.js", "stage-overlay.js", "remote-core.js", "phone-link-protocol.js", "phone-link-ui.js", "remote-record-ui.js", "remote.html", "remote-launcher.js", "remote-client.html", "remote-client.js", "gestures.js", "phone-control.html", "phone-control.js", "qr-code.js", "video-native.js",
   "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
-  "sentry.js", "camera-video.js", "object-finder.js", "object-finder-worker.js", "web-pc.js",
+  "sentry.js", "camera-video.js", "object-finder.js", "object-finder-worker.js", "web-pc.js", "hid-core.js",
 ];
 
 const LIBRARY_FILES = [

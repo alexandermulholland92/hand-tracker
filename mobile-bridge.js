@@ -596,6 +596,93 @@
     return { link, pc };
   }
 
+  // This phone as a Bluetooth mouse and keyboard for an iPhone or iPad (BtHidPlugin.java; the
+  // reports are hid-core.js's): the hand mouse, gesture actions and keys work it, with this
+  // phone's camera, instead of the paired PC.
+  function createBtHid() {
+    const Hid = plugin("BtHid");
+    if (!Hid || !global.HidCore) return null;
+    const H = global.HidCore;
+    let state = { state: "off", device: "", message: "" };
+    const listeners = new Set();
+    const device = H.create({ send: (id, bytes) => Hid.send({ id, data: toBase64(Uint8Array.from(bytes)) }).catch(() => {}) });
+    const set = (s) => {
+      if (s && s.state === "connected" && state.state !== "connected") device.rehome(); // a new connection: from the corner again
+      state = { ...state, ...s };
+      for (const cb of listeners) cb({ ...state });
+    };
+    Hid.addListener("status", set);
+    let starting = null;
+    return {
+      device,
+      status: () => ({ ...state }),
+      onStatus: (cb) => (listeners.add(cb), () => listeners.delete(cb)),
+      start() {
+        if (!starting) {
+          starting = Hid.start({ map: toBase64(Uint8Array.from(H.REPORT_MAP)) })
+            .then((s) => set(s))
+            .catch((err) => {
+              starting = null;
+              set({ state: "error", device: "", message: (err && err.message) || String(err) });
+              throw err;
+            });
+        }
+        return starting;
+      },
+      stop() {
+        starting = null;
+        try {
+          device.release();
+        } catch {}
+        return Hid.stop().then(set).catch(() => {});
+      },
+      visible: () => Hid.visible(),
+      setScreen: (kind, speed) => device.setScreen(H.screenFor(kind, speed)),
+    };
+  }
+  // The pc object pc-control.js works, to the paired PC or to the iPhone or iPad: the same
+  // calls (and setTarget, targetStatus, onTargetStatus) as the computer apps' desktop.pc.
+  function withDevice(pc, hid) {
+    if (!hid) return pc;
+    let target = "computer";
+    const toDevice = () => target === "device";
+    const listeners = new Set();
+    const tell = () => {
+      const s = { target, ...hid.status() };
+      for (const cb of listeners) cb(s);
+    };
+    hid.onStatus(tell);
+    const via = (name) => async (...args) => {
+      if (!toDevice()) return pc[name](...args);
+      await hid.start();
+      return hid.device[name](...args);
+    };
+    return {
+      ...pc,
+      platform: "android",
+      start: () => (toDevice() ? hid.start().then(() => true) : pc.start()),
+      pointer: (nx, ny, screen) => {
+        if (!toDevice()) return pc.pointer(nx, ny, screen);
+        if (hid.status().state === "connected") hid.device.pointer(nx, ny);
+      },
+      button: via("button"),
+      wheel: via("wheel"),
+      key: via("key"),
+      text: via("text"),
+      async setTarget({ target: t, screen, speed } = {}) {
+        target = t === "device" ? "device" : "computer";
+        if (target === "device") {
+          hid.setScreen(screen, speed);
+          await hid.start().catch(() => {}); // (its status says why not)
+        } else await hid.stop();
+        return { target, ...hid.status() };
+      },
+      targetStatus: async () => ({ target, ...hid.status() }),
+      onTargetStatus: (cb) => (listeners.add(cb), () => listeners.delete(cb)),
+      deviceVisible: () => hid.visible(),
+    };
+  }
+
   // Controlling the phone itself with your hand (PhoneControlPlugin.java): the pointer over
   // every app and the hand mouse's taps, swipes and keys, while Hand Tracker is in the background.
   function createPhoneControl() {
@@ -669,6 +756,7 @@
   api.remote = createRigServer();
   api.natnet = createNatNet();
   Object.assign(api, createRemote(), createLink());
+  if (api.pc) api.pc = withDevice(api.pc, createBtHid());
   api.phoneControl = createPhoneControl();
   // Saving many results "into one folder" (the desktop app's chooseFolder / saveFilesTo):
   // on the phone that's always Documents/Hand Tracker.

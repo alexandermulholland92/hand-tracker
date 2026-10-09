@@ -407,11 +407,45 @@
     };
   })();
 
+  // BtHid (BtHidPlugin.java): this phone as a Bluetooth mouse and keyboard. Here an iPhone
+  // ("Test iPhone") connects a moment after it starts; every report sent is kept.
+  const BtHid = (() => {
+    const ev = events();
+    let state = { state: "off", device: "", message: "" };
+    const set = (s) => ((state = { ...state, ...s }), ev.emit("status", { ...state }), { ...state });
+    const reports = [];
+    return {
+      addListener: ev.addListener,
+      async start({ map }) {
+        calls.push(["btHid.start", (map || "").length]);
+        set({ state: "waiting", device: "" });
+        setTimeout(() => set({ state: "connected", device: "Test iPhone" }), 300);
+        return { ...state };
+      },
+      async send({ id, data }) {
+        reports.push([id, Array.from(atob(data), (c) => c.charCodeAt(0))]);
+        return { sent: state.state === "connected" };
+      },
+      async stop() {
+        calls.push(["btHid.stop"]);
+        return set({ state: "off", device: "" });
+      },
+      async visible() {
+        calls.push(["btHid.visible"]);
+        return { ...state };
+      },
+      async status() {
+        return { ...state };
+      },
+      _reports: reports,
+    };
+  })();
+
   // registerPlugin (that's @capacitor/core's, which the app doesn't load).
   window.Capacitor = {
     isNativePlatform: () => true,
     getPlatform: () => "android",
-    Plugins: { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch },
+    Plugins: { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch, BtHid },
   };
-  window.__fakeCapacitor = { files, calls, shared, stopPhoneControl: () => PhoneControl._stoppedOutside(), setAccessibility: (on) => PhoneControl._setAccessibility(on) };
+  window.__fakeCapacitor = { files, calls, shared, btHidReports: BtHid._reports, stopPhoneControl: () => PhoneControl._stoppedOutside(), setAccessibility: (on) => PhoneControl._setAccessibility(on) };
 })();
