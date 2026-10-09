@@ -59,6 +59,13 @@
 	<string>Hand Tracker reaches the computers on your network that you control or record with.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Hand Tracker saves your recordings to Photos when you share them there.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>

@@ -12,8 +12,8 @@
 //   "page" events { open, url, title, loading, error }
 //
 // HandTrackerViewController is the app's main screen (SceneDelegate.swift): Capacitor's own,
-// with this plugin registered. Launched with -HTSelfTest (the build's simulator check), the
-// page runs its self-test (app.js).
+// with this plugin registered. Launched with -HTSelfTest <test page> (the build's simulator
+// check), the page runs its self-test on that page (phone-link-ui.js).
 
 import UIKit
 import WebKit
@@ -22,9 +22,12 @@ import Capacitor
 class HandTrackerViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(HandBrowserPlugin())
-        if ProcessInfo.processInfo.arguments.contains("-HTSelfTest") {
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-HTSelfTest") {
+            let page = i + 1 < args.count ? args[i + 1] : ""
+            let json = (try? JSONSerialization.data(withJSONObject: [page])).flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
             webView?.configuration.userContentController.addUserScript(
-                WKUserScript(source: "window.__htSelfTest = true;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+                WKUserScript(source: "window.__htSelfTest = \(json)[0] || true;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
     }
 }

@@ -247,10 +247,11 @@
       status.textContent = s.error ? `Couldn't open it: ${s.error}` : s.open ? `Open: ${s.title || s.url}` : "";
       mouseButton();
     });
-    // The build's own check in the iPhone simulator (launched with -HTSelfTest): open a page,
-    // point at its link with the hand mouse's calls and click it; the page it opens is the
-    // proof. The result goes to the log the check reads.
+    // The build's own check in the iPhone simulator (launched with -HTSelfTest <test page>, a
+    // page the build serves): open the page, point at its link with the hand mouse's calls and
+    // click it; the page it opens is the proof. The result goes to the log the check reads.
     if (global.__htSelfTest) {
+      const test = typeof global.__htSelfTest === "string" ? global.__htSelfTest : "https://example.com/";
       (async () => {
         const out = { plugins: Object.keys((global.Capacitor && global.Capacitor.Plugins) || {}).sort() };
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -260,13 +261,14 @@
             const off = browser.onPage((s) => test(s) && (clearTimeout(t), off(), resolve(s)));
           });
         try {
-          const first = page((s) => s.open && !s.loading && /example/i.test(s.title || s.url));
-          out.opened = await open("https://example.com");
+          const first = page((s) => s.open && !s.loading && !!s.url && !!s.title);
+          out.opened = await open(test);
           out.first = (await first) || (await browser.status());
           await sleep(500);
           const at = await browser.where("a");
           out.link = at;
-          const next = page((s) => s.open && !s.loading && !/example\.com/i.test(s.url || ""));
+          const from = out.first.url;
+          const next = page((s) => s.open && !s.loading && !!s.url && s.url !== from);
           await global.mobile.pc.start();
           global.mobile.pc.pointer(at.x, at.y);
           await sleep(300);

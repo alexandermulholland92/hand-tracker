@@ -131,11 +131,12 @@ jobs:
           if-no-files-found: error
 
   # The iPhone and iPad app (Capacitor's iOS app, ios/): built for the simulator and checked
-  # there (the app launched with -HTSelfTest opens a page in its hand browser and clicks its link
-  # with the hand mouse's calls), then built for iPhones, unsigned: Sideloadly or AltStore sign
-  # it with the user's own Apple ID when they install it.
+  # there (the app launched with -HTSelfTest <test page> opens a page this job serves in its hand
+  # browser and clicks its link with the hand mouse's calls), then built for iPhones, unsigned:
+  # Sideloadly or AltStore sign it with the user's own Apple ID when they install it.
   ios:
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -152,6 +153,13 @@ jobs:
           node scripts/build-web.js 2>&1 | tee ios-build.log
           npx cap sync ios 2>&1 | tee -a ios-build.log
 
+      # Started now: a simulator's first start takes minutes, done while the app builds.
+      - name: Start the simulator
+        run: |
+          udid=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          echo "SIM=$udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$udid"
+
       - name: Build for the simulator
         run: |
           set -o pipefail
@@ -160,17 +168,22 @@ jobs:
             | tee -a ios-build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
           test -d build/ios-sim/Build/Products/Debug-iphonesimulator/App.app
 
-      # The hand browser in the simulator: the self-test's result is in the app's log.
+      # The hand browser in the simulator, on a test page served here (a link, and the page it
+      # opens): the self-test's result is in the app's log.
       - name: Check it in the simulator
+        timeout-minutes: 20
         run: |
-          udid=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
-          xcrun simctl boot "$udid"
-          xcrun simctl bootstatus "$udid" -b
+          mkdir -p selftest-site
+          echo '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Hand Tracker test</title><a href="next.html" style="display:block;margin:40px 20px;padding:40px 0;font:28px sans-serif;text-align:center;background:#def">Next page</a>' > selftest-site/index.html
+          echo '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Next page</title><p>The hand mouse clicked the link.</p>' > selftest-site/next.html
+          (cd selftest-site && python3 -m http.server 8765 --bind 127.0.0.1 > ../site.log 2>&1 &)
+          udid="$SIM"
+          xcrun simctl bootstatus "$udid" -b > /dev/null
           xcrun simctl install "$udid" build/ios-sim/Build/Products/Debug-iphonesimulator/App.app
-          xcrun simctl launch --console-pty "$udid" com.handtracker.app -HTSelfTest > sim.log 2>&1 &
+          xcrun simctl launch --console-pty "$udid" com.handtracker.app -HTSelfTest http://127.0.0.1:8765/ > sim.log 2>&1 &
           for i in $(seq 1 90); do grep -q "HT-SELFTEST" sim.log && break; sleep 2; done
           grep -a "HT-SELFTEST" sim.log | tail -1 | tee selftest.txt
-          grep -q '"ok":true' selftest.txt || { tail -n 80 sim.log >> ios-build.log; exit 1; }
+          grep -q '"ok":true' selftest.txt || { tail -n 80 sim.log >> ios-build.log; cat site.log >> ios-build.log; exit 1; }
           echo "The hand browser opened a page and the hand mouse clicked its link"
 
       - name: Build for iPhones (unsigned)

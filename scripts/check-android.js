@@ -144,6 +144,9 @@ async function run() {
     return new Response(fs.readFileSync(file), { headers: { "Content-Type": MIME[path.extname(file)] || "application/octet-stream" } });
   });
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === "media"));
+  // npm run check:android -- --only iphone: just the iPhone app's check.
+  const only = process.argv.includes("--only") ? String(process.argv[process.argv.indexOf("--only") + 1]) : "";
+  if (/iphone/i.test(only)) return checkIphoneApp();
 
   // Phone-sized window (a typical 412×915 dp Android screen).
   const win = new BrowserWindow({

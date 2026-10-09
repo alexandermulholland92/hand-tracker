@@ -509,7 +509,7 @@
   // registerPlugin (that's @capacitor/core's, which the app doesn't load). With ?fakeplatform=ios,
   // the iPhone app's: Filesystem, Share and HandBrowser only (and ?selftest=1, its self-test).
   const ios = /[?&]fakeplatform=ios\b/.test(location.search);
-  if (/[?&]selftest=1\b/.test(location.search)) window.__htSelfTest = true;
+  if (/[?&]selftest=1\b/.test(location.search)) window.__htSelfTest = "https://example.com/";
   window.Capacitor = {
     isNativePlatform: () => true,
     getPlatform: () => (ios ? "ios" : "android"),
