@@ -71,6 +71,7 @@ public class PhoneControlService extends Service {
     private float dragX, dragY;
     private long dragSince;
     private boolean dragging;
+    private boolean swiping; // the drag is a swipe that follows the hand (HandControlService.swipeStart)
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -229,6 +230,8 @@ public class PhoneControlService extends Service {
             main.post(() -> {
                 if (pointer != null) pointer.moveTo(px, py, dragging);
             });
+            HandControlService s = touch();
+            if (swiping && s != null) s.swipeTo(px, py);
         }
 
         @JavascriptInterface
@@ -243,15 +246,22 @@ public class PhoneControlService extends Service {
                 case "double":
                     return s.doubleTap(px, py) ? "" : "Android didn't take the tap";
                 case "down":
-                    // A drag: the swipe is made when the button comes up, from here to there.
+                    // A drag: a swipe that follows the hand (Android 8 and later); before that, the
+                    // swipe is made when the button comes up, from here to there.
                     dragging = true;
                     dragX = px;
                     dragY = py;
                     dragSince = System.currentTimeMillis();
+                    swiping = !right && s.swipeStart(px, py);
                     return "";
                 case "up":
                     if (!dragging) return "";
                     dragging = false;
+                    if (swiping) {
+                        swiping = false;
+                        s.swipeEnd(px, py);
+                        return "";
+                    }
                     long ms = Math.max(120, Math.min(3000, System.currentTimeMillis() - dragSince));
                     return s.stroke(dragX, dragY, px, py, ms) ? "" : "Android didn't take the swipe";
                 default:

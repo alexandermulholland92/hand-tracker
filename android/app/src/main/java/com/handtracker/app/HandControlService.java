@@ -2,12 +2,15 @@ package com.handtracker.app;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
+import android.annotation.TargetApi;
 import android.content.ComponentName;
 import android.content.Context;
 import android.graphics.Path;
 import android.media.AudioManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.TextUtils;
@@ -17,8 +20,8 @@ import android.view.accessibility.AccessibilityNodeInfo;
 
 /**
  * The accessibility service that carries out the hand mouse and gesture actions on the
- * phone itself (PhoneControlService.java, phone-control.js): taps, long presses, swipes and
- * scrolls at the pointer, Back / Home / Recents and the other system buttons, volume and
+ * phone itself (PhoneControlService.java, phone-control.js): taps, long presses, swipes (that
+ * follow the hand) and scrolls at the pointer, Back / Home / Recents and the other system buttons, volume and
  * media keys, and typing into the text box in use. The user turns it on in Android's
  * Accessibility settings; it does nothing while phone control isn't running, and it reads
  * nothing on screen except the text box being typed into.
@@ -73,6 +76,98 @@ public class HandControlService extends AccessibilityService {
                 .addStroke(new GestureDescription.StrokeDescription(path, 0, Math.max(1, durationMs)))
                 .build();
         return dispatchGesture(g, null, null);
+    }
+
+    // A swipe that follows the hand (Android 8 and later): the finger goes down where the drag
+    // starts, follows the pointer piece by piece (each piece sent once Android has carried out
+    // the last, from where it ended), and lifts where the drag ends, so the page moves with the
+    // hand, and flicks on when it's let go while moving. All on the main thread.
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private GestureDescription.StrokeDescription swipe; // the swipe's last piece, null when there's none
+    private boolean swipeBusy, swipeEnding;
+    private float swipeX, swipeY; // where the last piece ended
+    private float[] swipeNext; // where the pointer is now, not sent yet
+    private long nextAt; // when the pointer got there
+    private static final long SWIPE_LAG_MS = 20; // the finger reaches each place this long after the pointer did
+
+    @TargetApi(Build.VERSION_CODES.O)
+    boolean swipeStart(float x, float y) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false;
+        main.post(() -> {
+            swipeX = Math.max(0, x);
+            swipeY = Math.max(0, y);
+            swipeNext = null;
+            swipeEnding = false;
+            Path p = new Path();
+            p.moveTo(swipeX, swipeY);
+            swipe = new GestureDescription.StrokeDescription(p, 0, 1, true);
+            swipeSend(swipe);
+        });
+        return true;
+    }
+
+    void swipeTo(float x, float y) {
+        long at = SystemClock.uptimeMillis();
+        main.post(() -> {
+            if (swipe == null) return;
+            swipeNext = new float[] { Math.max(0, x), Math.max(0, y) };
+            nextAt = at;
+            if (!swipeBusy) swipeStep();
+        });
+    }
+
+    void swipeEnd(float x, float y) {
+        long at = SystemClock.uptimeMillis();
+        main.post(() -> {
+            if (swipe == null) return;
+            swipeNext = new float[] { Math.max(0, x), Math.max(0, y) };
+            nextAt = at;
+            swipeEnding = true;
+            if (!swipeBusy) swipeStep();
+        });
+    }
+
+    @TargetApi(Build.VERSION_CODES.O)
+    private void swipeStep() {
+        if (swipe == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O || (swipeNext == null && !swipeEnding)) return;
+        float[] to = swipeNext != null ? swipeNext : new float[] { swipeX, swipeY };
+        swipeNext = null;
+        // Each piece is timed to get there a moment after the pointer did, so the finger keeps the
+        // hand's pace (a flick flicks) and stops when the hand stops. (Timed from when the last
+        // piece was sent instead, Android's own time for each piece would add up: the finger fell
+        // further and further behind the hand, and carried on after it had stopped.)
+        long ms = Math.max(8, Math.min(100, nextAt + SWIPE_LAG_MS - SystemClock.uptimeMillis()));
+        Path p = new Path();
+        p.moveTo(swipeX, swipeY);
+        if (to[0] != swipeX || to[1] != swipeY) p.lineTo(to[0], to[1]);
+        boolean last = swipeEnding;
+        GestureDescription.StrokeDescription next = swipe.continueStroke(p, 0, ms, !last);
+        swipeX = to[0];
+        swipeY = to[1];
+        swipe = last ? null : next;
+        swipeEnding = false;
+        swipeSend(next);
+    }
+
+    private void swipeSend(GestureDescription.StrokeDescription s) {
+        swipeBusy = true;
+        boolean sent = dispatchGesture(new GestureDescription.Builder().addStroke(s).build(), new GestureResultCallback() {
+            @Override
+            public void onCompleted(GestureDescription g) {
+                swipeBusy = false;
+                swipeStep();
+            }
+
+            @Override
+            public void onCancelled(GestureDescription g) {
+                swipeBusy = false;
+                swipe = null;
+            }
+        }, main);
+        if (!sent) {
+            swipeBusy = false;
+            swipe = null;
+        }
     }
 
     boolean tap(float x, float y) {

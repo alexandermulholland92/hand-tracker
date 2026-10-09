@@ -702,9 +702,12 @@ async function run() {
 // The iPhone app (ios/: the same bundle, with Capacitor's iOS bridge, stood in for here with
 // ?fakeplatform=ios): only its own plugins are used (Filesystem, Share, HandBrowser) and the
 // Android-only parts stay hidden. The card is the hand mouse's, with the hand browser: a website
-// opens below the camera with the hand-mouse pointer on it; the hand mouse's calls point at its
-// link and click it (the next page opens), click into its text box and type; Back goes back,
-// Close closes it. Its self-test (what the build runs in the iPhone simulator) passes too.
+// opens full screen with the hand-mouse pointer on it, the app shrunk to just its camera (and
+// the browser's buttons); the hand mouse's calls point at its link and click it (the next page
+// opens), click into its text box and type; the ⚙ button shows the app over the website and
+// back; Back goes back, Close closes it. Its self-test (what the build runs in the iPhone
+// simulator: the layout, the small window moving out of the pointer's way, a drag scrolling)
+// passes too.
 async function checkIphoneApp() {
   const win = new BrowserWindow({
     show: false, width: 390, height: 844, useContentSize: true,
@@ -738,6 +741,12 @@ async function checkIphoneApp() {
       out.opened = !!(await until(async () => { const s = await mobile.browser.status(); return s.open && /Example Domain/.test(s.title) && !$("hbBar").hidden && s; }));
       out.mouseOn = PcControl.isMouseOn();
       out.barTitle = $("hbTitle").textContent;
+      const pip = () => document.documentElement.classList.contains("hb-pip");
+      out.small = pip() && getComputedStyle($("wrap")).position === "fixed" && $("hbMouse").textContent === "✋";
+      $("hbApp").click();
+      out.appShown = !!(await until(async () => (await mobile.browser.status()).app && !pip() && /Hand mouse: ON/.test($("hbMouse").textContent) && $("hbBack").hidden));
+      $("hbApp").click();
+      out.siteShown = !!(await until(async () => !(await mobile.browser.status()).app && pip() && !$("hbBack").hidden));
       await sleep(300);
       const link = await mobile.browser.where("#more");
       mobile.pc.pointer(link.x, link.y);
@@ -753,7 +762,7 @@ async function checkIphoneApp() {
       $("hbBack").click();
       out.back = !!(await until(async () => /Example Domain$/.test((await mobile.browser.status()).title)));
       $("hbClose").click();
-      out.closed = !!(await until(async () => !(await mobile.browser.status()).open && $("hbBar").hidden));
+      out.closed = !!(await until(async () => !(await mobile.browser.status()).open && $("hbBar").hidden && !pip()));
       out.opens = window.__fakeCapacitor.calls.filter((c) => c[0] === "handBrowser.open").map((c) => [c[1], c[2], c[3] > 1000]);
       return out;
     })()`);
@@ -763,10 +772,10 @@ async function checkIphoneApp() {
     win.destroy();
   }
   const st = out.selfTest || {}, pg = out.page || {};
-  check("The iPhone app: only its own plugins, the Android-only parts hidden; the hand browser opens a website below the camera with the hand-mouse pointer on it, and the hand mouse's calls click its link (the next page opens), click into a box and type; Back and Close work; and its self-test (as in the iPhone simulator) passes",
+  check("The iPhone app: only its own plugins, the Android-only parts hidden; the hand browser opens a website full screen with the hand-mouse pointer on it and the app as just its camera, and the hand mouse's calls click its link (the next page opens), click into a box and type; the app shows over it and back; Back and Close work; and its self-test (as in the iPhone simulator: full screen, the small window moving off, a drag scrolling) passes",
     !out.error && st.ok === true && st.plugins.join() === "Filesystem,HandBrowser,Share" && pg.platform === "ios" && pg.label === "Hand mouse" && pg.shown &&
-      pg.android.every(Boolean) && pg.noKeyboard && pg.noRemote && pg.opened && pg.mouseOn && /Example Domain/.test(pg.barTitle) && pg.followed && pg.typed === "hello" && pg.back && pg.closed &&
-      pg.opens.length >= 2 && pg.opens.every(([url, top, script]) => /^https:\/\/example\.com\/?$/.test(url) && top > 0.3 && top < 0.6 && script),
+      pg.android.every(Boolean) && pg.noKeyboard && pg.noRemote && pg.opened && pg.mouseOn && /Example Domain/.test(pg.barTitle) && pg.small && pg.appShown && pg.siteShown && pg.followed && pg.typed === "hello" && pg.back && pg.closed &&
+      pg.opens.length >= 2 && pg.opens.every(([url, aspect, script]) => /^https:\/\/example\.com\/?$/.test(url) && aspect > 0 && script),
     JSON.stringify(out));
 }
 

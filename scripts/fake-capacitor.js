@@ -442,17 +442,24 @@
   })();
 
   // HandBrowser (the iPhone app's HandBrowser.swift), for ?fakeplatform=ios: the browser is an
-  // iframe over the lower part of the page showing stand-in websites (a page with a link, the
-  // page it leads to, with a text box), with the page's pointer script put in each, as the
-  // real one does. A link clicked there opens the next stand-in page.
+  // iframe over the whole page showing stand-in websites (a long page with a link, the page it
+  // leads to, with a text box), with the page's pointer script put in each, as the real one
+  // does. A link clicked there opens the next stand-in page. The app's small window can't be
+  // made here (the page is the app), so layout() reports where the real one puts it, worked out
+  // the same way, and it moves away from the pointer the same way.
   const HandBrowser = (() => {
     const ev = events();
-    let frame = null, script = "", url = "", history = [];
+    let frame = null, script = "", url = "", history = [], app = true, aspect = 0.75, right = true;
     const PAGES = {
-      "https://example.com/": '<title>Example Domain</title><h1>Example Domain</h1><p style="margin-top:40vh"><a id="more" href="https://www.iana.org/help/example-domains">Learn more</a></p>',
+      "https://example.com/": '<title>Example Domain</title><h1>Example Domain</h1><p style="margin-top:40vh"><a id="more" href="https://www.iana.org/help/example-domains">Learn more</a></p><div style="height:300vh"></div>',
       "https://www.iana.org/help/example-domains": '<title>Example Domains</title><h1>Example Domains</h1><input id="box" style="margin-top:30vh;width:60vw;height:40px" />',
     };
-    const state = () => ({ open: !!frame, url, title: frame && frame.contentDocument ? frame.contentDocument.title : "", loading: false, error: "" });
+    const state = () => ({ open: !!frame, app: !frame || app, url, title: frame && frame.contentDocument ? frame.contentDocument.title : "", loading: false, error: "" });
+    const pip = () => {
+      const sw = innerWidth, sh = innerHeight, a = Math.max(0.45, Math.min(aspect, 2.2));
+      const w = Math.max(120, Math.sqrt(sw * sh * 0.09 * a)), h = w / a;
+      return [right ? sw - 10 - w : 10, 10, w, h];
+    };
     const load = (to) =>
       new Promise((resolve) => {
         url = new URL(to).href;
@@ -473,21 +480,40 @@
       });
     return {
       addListener: ev.addListener,
-      async open({ url: to, top, script: s }) {
-        calls.push(["handBrowser.open", to, top, (s || "").length]);
+      async open({ url: to, aspect: a, script: s }) {
+        calls.push(["handBrowser.open", to, a, (s || "").length]);
         script = s;
+        if (a > 0) aspect = a;
         if (!frame) {
           frame = document.createElement("iframe");
-          Object.assign(frame.style, { position: "fixed", left: "0", bottom: "0", width: "100%", height: `${Math.round((1 - top) * 100)}%`, border: "0", zIndex: "40", background: "#fff" });
+          Object.assign(frame.style, { position: "fixed", inset: "0", width: "100%", height: "100%", border: "0", zIndex: "2147483000", background: "#fff" });
           document.body.appendChild(frame);
         }
+        frame.hidden = false;
+        app = false;
         load(to);
         return state();
+      },
+      async show({ app: full }) {
+        calls.push(["handBrowser.show", !!full]);
+        app = !!full || !frame;
+        if (frame) frame.hidden = app;
+        ev.emit("page", state());
+        return state();
+      },
+      async layout() {
+        const screen = [innerWidth, innerHeight], site = frame && !app;
+        return { screen, browser: site ? [0, 0, innerWidth, innerHeight] : null, app: site ? pip() : [0, 0, innerWidth, innerHeight] };
       },
       async call({ method, args }) {
         const p = frame && frame.contentWindow.__htPointer;
         if (!p) throw new Error("The page is still loading.");
-        const v = await p[method](...JSON.parse(args));
+        const list = JSON.parse(args);
+        if (method === "pointer" && !app) {
+          const [x, y, w, h] = pip(), px = list[0] * innerWidth, py = list[1] * innerHeight;
+          if (px > x - 24 && px < x + w + 24 && py > y - 24 && py < y + h + 24) right = !right;
+        }
+        const v = await p[method](...list);
         return v === undefined ? {} : { value: v };
       },
       async back() {
@@ -497,6 +523,7 @@
       async close() {
         if (frame) frame.remove();
         frame = null;
+        app = true;
         ev.emit("page", state());
         return state();
       },

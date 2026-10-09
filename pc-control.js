@@ -5,9 +5,11 @@
  * Mirroring's window:
  *
  *  - Hand mouse: the pointer follows your palm; a quick curl of the index finger is a left
- *    click (curl and hold to drag), a quick curl of the middle finger a right click. Curl
- *    both (or make a fist) to hold the pointer still while you move your hand back to the
- *    middle. Keeps working with the app minimized; Ctrl+Alt+M turns it on and off anywhere.
+ *    click, curled and moved straight away it swipes (scrolls what's under the pointer, as a
+ *    finger does on a touchscreen), curled and held still a moment it drags; a quick curl of
+ *    the middle finger is a right click. Curl both (or make a fist) to hold the pointer still
+ *    while you move your hand back to the middle. Keeps working with the app minimized;
+ *    Ctrl+Alt+M turns it on and off anywhere.
  *  - Floating keyboard: an always-on-top keyboard to type into any app (keyboard.html),
  *    Ctrl+Alt+K.
  *  - Gesture actions: a gesture (with a given hand) presses keys, types text, clicks,
@@ -125,15 +127,21 @@
   }
 
   const TAP_MS = 450; // a curl shorter than this is a click; an index curl held longer drags
-  const TOUCH_DRAG = 0.04; // on a touchscreen, moving this far (of the screen) with the index curled drags
+  const TOUCH_DRAG = 0.04; // moving this far (of the hand's box) with the index curled swipes
+  const SWIPE_NOTCHES = 10; // a swipe's wheel notches for a hand movement across the whole box (about a screen)
   const mouse = {
     on: false,
     side: null, // the hand being followed
     lastSeen: 0,
     filter: pointerFilter(),
+    // While dragging (a swipe, on a touchscreen): no running ahead of the hand, which the
+    // pointer otherwise does a little when the hand stops (so the swipe went on past it).
+    dragFilter: pointerFilter({ correction: 0, prediction: 0 }),
     last: null, // last pointer sent [nx, ny]
     freezeUntil: 0,
     dragging: false,
+    swipe: null, // a swipe under way: { y, acc, trail }
+    glide: 0, // the swipe's glide once let go (its timer)
     fingers: { index: null, middle: null }, // { base, curled, since, cancelled }
   };
 
@@ -181,6 +189,7 @@
     if (!hand) {
       if (mouse.side && now - mouse.lastSeen > 600) {
         if (mouse.dragging) release();
+        stopSwipe();
         mouse.side = null;
         mouse.filter.reset();
         mouse.fingers = { index: null, middle: null };
@@ -202,6 +211,7 @@
     if (clutch) {
       index.st.cancelled = true;
       middle.st.cancelled = true;
+      stopSwipe();
     }
 
     // The pointer follows the palm's centre (it hardly moves when a finger curls), within a
@@ -227,18 +237,31 @@
     const ny = clamp((cy - mouse.box.y) / span);
 
     if (index.started || middle.started) mouse.freezeUntil = Infinity; // clicks land where the pointer was
-    if (index.started) index.st.at = [x, cy];
-    // Left: a quick curl clicks; held, it drags (button down until the finger straightens).
-    // On a touchscreen a press held still is a long press, so there a curl is a tap however
-    // long it's held, and drags once the hand moves with the finger curled.
-    const drag = touch ? !!index.st.at && Math.hypot(x - index.st.at[0], cy - index.st.at[1]) / span > TOUCH_DRAG : now - index.st.since > TAP_MS;
-    if (index.st.curled && !index.st.cancelled && !mouse.dragging && drag) {
-      mouse.dragging = true;
-      mouse.freezeUntil = 0;
-      desktop.pc.button("left", "down").catch((err) => note(errText(err)));
+    if (index.started) {
+      index.st.at = [x, cy];
+      stopGlide();
     }
+    // Left: a quick curl clicks. Moved straight away with the finger curled, it swipes: on a
+    // touchscreen a drag (the finger's own swipe); on a computer the wheel scrolls what's under
+    // the pointer as the hand moves, and glides on when let go while moving. Held still a
+    // moment first (a computer), it drags: the button down until the finger straightens. (On a
+    // touchscreen a press held still is a long press, so there a curl is a tap however long.)
+    const moved = !!index.st.at && Math.hypot(x - index.st.at[0], cy - index.st.at[1]) / span > TOUCH_DRAG;
+    if (index.st.curled && !index.st.cancelled && !mouse.dragging && !mouse.swipe) {
+      if (!touch && moved) {
+        mouse.swipe = { y: cy, acc: 0, trail: [[now, cy]] };
+        mouse.freezeUntil = 0;
+      } else if (touch ? moved : now - index.st.since > TAP_MS) {
+        mouse.dragging = true;
+        mouse.freezeUntil = 0;
+        mouse.dragFilter.reset();
+        desktop.pc.button("left", "down").catch((err) => note(errText(err)));
+      }
+    }
+    if (mouse.swipe) swipeMove(cy, span, now);
     if (index.ended) {
       if (mouse.dragging) release();
+      else if (mouse.swipe) swipeEnd(span, now);
       else if (!index.st.cancelled && (touch || now - index.st.since <= TAP_MS)) desktop.pc.button("left", "click").catch((err) => note(errText(err)));
       mouse.freezeUntil = now + 150;
     }
@@ -251,20 +274,66 @@
     if (clutch || now < mouse.freezeUntil) {
       mouse.filter.reset(); // pick up from wherever the hand is when it moves again
     } else {
-      const [fx, fy] = mouse.filter.update([nx, ny]);
+      const [fx, fy] = (mouse.dragging ? mouse.dragFilter : mouse.filter).update([nx, ny]);
       const p = [clamp(fx), clamp(fy)];
       if (!mouse.last || Math.hypot(p[0] - mouse.last[0], p[1] - mouse.last[1]) > 0.0005) {
         mouse.last = p;
         desktop.pc.pointer(p[0], p[1], els.mouseScreen.value);
       }
     }
-    const state = clutch ? "holding still" : mouse.dragging ? "dragging" : "following";
+    const state = clutch ? "holding still" : mouse.dragging ? "dragging" : mouse.swipe ? "scrolling with" : "following";
     mouseStatus(`Hand mouse on: ${state} your ${hand.handedness.toLowerCase()} hand`);
   }
 
   function release() {
     mouse.dragging = false;
     desktop.pc.button("left", "up").catch((err) => note(errText(err)));
+  }
+
+  // A swipe on a computer: the hand's movement up and down, as wheel notches (whole ones, the
+  // rest kept for the next), the page moving with the hand (up scrolls down, as on a phone).
+  const wheel = (n) => desktop.pc.wheel(n).catch((err) => note(errText(err)));
+  function swipeMove(cy, span, now) {
+    const s = mouse.swipe;
+    s.acc += ((cy - s.y) / span) * SWIPE_NOTCHES;
+    s.y = cy;
+    s.trail.push([now, cy]);
+    while (s.trail.length > 2 && now - s.trail[0][0] > 150) s.trail.shift();
+    const n = Math.trunc(s.acc);
+    if (n) {
+      s.acc -= n;
+      wheel(n);
+    }
+  }
+  // Let go while moving, it glides on and slows down (the hand's speed over its last moment).
+  function swipeEnd(span, now) {
+    const s = mouse.swipe;
+    mouse.swipe = null;
+    const [t0, y0] = s.trail[0];
+    let v = now > t0 ? (((s.y - y0) / span) * SWIPE_NOTCHES) / (now - t0) : 0; // notches a millisecond
+    if (Math.abs(v) < 0.012) return;
+    let acc = s.acc, last = performance.now();
+    stopGlide();
+    mouse.glide = setInterval(() => {
+      const t = performance.now(), ms = t - last;
+      last = t;
+      acc += v * ms;
+      v *= Math.pow(0.996, ms);
+      const n = Math.trunc(acc);
+      if (n) {
+        acc -= n;
+        wheel(n);
+      }
+      if (Math.abs(v) < 0.004) stopGlide();
+    }, 30);
+  }
+  function stopGlide() {
+    clearInterval(mouse.glide);
+    mouse.glide = 0;
+  }
+  function stopSwipe() {
+    mouse.swipe = null;
+    stopGlide();
   }
 
   function setMouse(on) {
@@ -286,6 +355,7 @@
       return;
     }
     if (mouse.dragging) release();
+    stopSwipe();
     mouse.on = false;
     mouse.side = null;
     setToggle(els.mouseToggle, false, "Hand mouse");
@@ -562,6 +632,7 @@
     if (!deviceEls.speed.value) deviceEls.speed.value = "1";
     const apply = () => {
       if (mouse.dragging) release();
+      stopSwipe();
       endAll();
       started = null; // the next action starts what it now works
       const device = deviceEls.target.value === "device";

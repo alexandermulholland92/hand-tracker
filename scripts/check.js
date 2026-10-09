@@ -678,11 +678,11 @@ async function checkSentry(js) {
       if (!s.on) document.getElementById("remoteToggle").click();
       for (let i = 0; i < 50 && !s.on; i++) { await sleep(100); s = await desktop.remote.status(); }
       const direct = [];
-      for (const ms of [2000, 400]) {
-        const rec = CameraVideo.start({ canvas: document.getElementById("stage"), fps: 15, audio: false });
+      for (const [ms, quality] of [[2000], [400], [1300, "low"], [1300, "best"]]) {
+        const rec = CameraVideo.start({ canvas: document.getElementById("stage"), fps: 15, audio: false, quality });
         await sleep(ms);
         const clip = await rec.stop();
-        direct.push({ ms, kb: Math.round(clip.blob.size / 1024), type: clip.mimeType });
+        direct.push({ ms, quality, kb: Math.round(clip.blob.size / 1024), type: clip.mimeType, bits: clip.bitsPerSecond });
       }
       return { status: s, wasOn, direct, mainPage: !document.getElementById("sentryCard"), hidden: Sentry.remoteState() };
     })()`);
@@ -866,7 +866,7 @@ async function checkSentry(js) {
   out.ntfy = ntfyGot.map((g) => `${g.method} ${g.title}`);
   const r = out;
   check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; deleted from the page (an alert with its files, then every Sentry file, nothing else); ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
-    !r.error && r.mainPage && r.hiddenState && r.hiddenState.shown === false && r.hiddenAtStart && r.shown && r.direct.every((d) => d.kb > 3) &&
+    !r.error && r.mainPage && r.hiddenState && r.hiddenState.shown === false && r.hiddenAtStart && r.shown && r.direct.every((d) => d.kb > 3) && r.direct[0].bits === r.direct[1].bits && r.direct[3].bits >= r.direct[2].bits * 3 && r.direct[2].bits < r.direct[0].bits &&
       r.test && r.boxes === 144 && r.box.w >= r.box.cellW * 0.7 && r.box.h >= r.box.cellH * 0.6 && parseFloat(r.box.radius) < Math.min(r.box.w, r.box.h) / 2 &&
       r.previewFps >= 8 && r.hot && r.tapped && r.leftOutCell === "15" && r.untapped && r.petsOn && r.petsOff && r.petsState === false &&
       r.armed && r.leftOut.armed && r.leftOut.events === 0 && !r.leftOut.session &&
@@ -1096,6 +1096,29 @@ async function checkWebMouse(js) {
     await sleep(600);
     const out = { pressed, typed: document.getElementById("wpText").value, focused: document.activeElement && document.activeElement.id, scrolled: document.getElementById("wpList").scrollTop, pointer: !!document.getElementById("handPointer") };
     p.stop();
+    // With dragScrolls (the iPhone's hand browser): a drag up the list scrolls it with the
+    // pointer and glides on; a drag on the button doesn't press it; a tap still does.
+    const list = document.getElementById("wpList"), q = WebPc._pagePointer({ dragScrolls: true });
+    list.scrollTop = 0;
+    await q.start();
+    const [lx, ly] = at(list);
+    q.pointer(lx, ly + 0.03);
+    await q.button("left", "down");
+    for (let i = 1; i <= 6; i++) { q.pointer(lx, ly + 0.03 - i * 0.04); await sleep(20); }
+    const dragged = list.scrollTop;
+    await q.button("left", "up");
+    await sleep(700);
+    out.pan = { dragged: Math.round(dragged), glided: Math.round(list.scrollTop - dragged), moved: Math.round(0.24 * innerHeight) };
+    const [bx, by] = at(document.getElementById("wpBtn"));
+    q.pointer(bx, by);
+    await q.button("left", "down");
+    for (let i = 1; i <= 4; i++) { q.pointer(bx + i * 0.01, by); await sleep(20); }
+    await q.button("left", "up");
+    out.pan.pressedByDrag = pressed - out.pressed;
+    q.pointer(bx, by);
+    await q.button("left", "click");
+    out.pan.pressedByTap = pressed - out.pressed - out.pan.pressedByDrag;
+    q.stop();
     box.remove();
     out.pointerGone = !document.getElementById("handPointer");
     // The desktop app's side: the switch, and the app's own page refused (it isn't the website).
@@ -1119,8 +1142,9 @@ async function checkWebMouse(js) {
     await new Promise((r) => setTimeout(r, 300));
     return !(await desktop.webLink.status()).on;
   })()`);
-  check("The website's hand mouse pointer clicks a button, types into a box and scrolls a list on the page where it points; the app's switch for the website turns on and off, and refuses anything but the website",
+  check("The website's hand mouse pointer clicks a button, types into a box and scrolls a list on the page where it points (as a touchscreen, for the iPhone's hand browser: a drag scrolls with the pointer and glides on, and doesn't press what it started on); the app's switch for the website turns on and off, and refuses anything but the website",
     r.pressed === 1 && r.typed === "hell" && r.focused === "wpText" && r.scrolled > 50 && r.pointer && r.pointerGone &&
+      Math.abs(r.pan.dragged - r.pan.moved) <= 2 && r.pan.glided > 10 && r.pan.pressedByDrag === 0 && r.pan.pressedByTap === 1 &&
       r.desktopShown && r.on && r.fromAppPage !== 200 && r.off,
     JSON.stringify(r));
 }
@@ -1301,6 +1325,16 @@ async function checkPcControl(js) {
     await frames(25, [hand(0.65, 0.6, ["index"])]); // held: drag
     await frames(6, [hand(0.65, 0.6)]);
     out.drag = calls.filter((c) => c[0] === "button").map((c) => c.slice(1).join(" "));
+    // Curled and moved straight away: a swipe. The hand going up scrolls down (the page moves
+    // with it), no button; let go while moving, it glides on a little.
+    calls.length = 0;
+    await frames(6, [hand(0.65, 0.7)]);
+    await frames(12, (i) => [hand(0.65, 0.7 - i * 0.025, ["index"])]);
+    const during = calls.filter((c) => c[0] === "wheel").length;
+    await frames(4, [hand(0.65, 0.4)]);
+    await sleep(900);
+    const notches = calls.filter((c) => c[0] === "wheel").map((c) => c[1]);
+    out.swipe = { buttons: calls.filter((c) => c[0] === "button").length, during, after: notches.length - during, total: notches.reduce((a, b) => a + b, 0), down: notches.every((n) => n < 0) };
     calls.length = 0;
     await frames(3, [hand(0.65, 0.6, ["middle"])]);
     await frames(6, [hand(0.65, 0.6)]);
@@ -1389,10 +1423,11 @@ async function checkPcControl(js) {
   const o = r.out;
   check("Control your PC: the card is shown in the desktop app", r.visible);
   check("Hand mouse: the pointer follows the palm (the other way in mirrored view, so it moves the way your hand does)", o.follows && o.mirrored, JSON.stringify({ follows: o.follows, mirrored: o.mirrored }));
-  check("Hand mouse: quick index curl = left click, held = drag, quick middle curl = right click, both curled = no click; light clicks count too",
+  check("Hand mouse: quick index curl = left click, held still = drag, curled and moved = a swipe (the wheel, as the hand moves, gliding on), quick middle curl = right click, both curled = no click; light clicks count too",
     o.leftClick.join() === "left click" && o.drag.join() === "left down,left up" && o.rightClick.join() === "right click" && o.bothCurled === 0 &&
-      o.lightClicks.join() === "left click,right click",
-    JSON.stringify({ leftClick: o.leftClick, drag: o.drag, rightClick: o.rightClick, bothCurled: o.bothCurled, lightClicks: o.lightClicks }));
+      o.lightClicks.join() === "left click,right click" &&
+      o.swipe.buttons === 0 && o.swipe.during >= 3 && o.swipe.after >= 1 && o.swipe.total <= -5 && o.swipe.total >= -20 && o.swipe.down,
+    JSON.stringify({ leftClick: o.leftClick, drag: o.drag, swipe: o.swipe, rightClick: o.rightClick, bothCurled: o.bothCurled, lightClicks: o.lightClicks }));
   check("Gesture actions: hold time, dropouts, repeats, start-and-end, which hand, web requests, the on/off switches, and a click with keys held (shift + click) work",
     o.fistEarly === 0 && o.fist.join() === "playpause tap" && o.thumbs >= 3 && o.thumbs <= 5 && o.wrongHand === 0 &&
       o.hold.join() === "left down,left up" && o.web.join() === "http://127.0.0.1:9/hook POST Point" && o.disabled === 0 && o.keyboardOff === 0 &&
@@ -1972,6 +2007,11 @@ async function checkRemoteRecording(js) {
     out.egoRecord = await (await post("record")).json();
     out.optional = await (await post("settings", { settings: { detailsRequired: false } })).json();
     out.optionalState = (await state()).detailsRequired;
+    // Each camera's video quality: set from the page, kept and shown; a made-up one refused.
+    out.quality = await (await post("settings", { settings: { videoQuality: "high" } })).json();
+    out.qualityState = [(await state()).videoQuality, await js(`JSON.parse(localStorage.getItem("hand-tracker:prefs") || "{}").remoteVideoQuality`)];
+    out.qualityBad = (await post("settings", { settings: { videoQuality: "ultra" } })).status;
+    await post("settings", { settings: { videoQuality: "standard" } });
     out.egoRecordOptional = await (await post("record")).json();
     await post("settings", { settings: { detailsRequired: true } });
     await post("mode", { mode: "stereo" });
@@ -2086,6 +2126,7 @@ async function checkRemoteRecording(js) {
       out.ego.mode === "ego" && !out.ego.need.ok && out.ego.need.missing.join() === "wrist_left,wrist_right" && out.ego.start.ok === false &&
       /Ego needs the Left wrist and Right wrist cameras/.test(out.ego.start.message) && (out.egoRecord.missing || []).length === 3 &&
       out.optional.ok && out.optionalState === false && out.egoRecordOptional.ok === false && /Ego needs/.test(out.egoRecordOptional.message) &&
+      out.quality.ok && /at high quality/.test(out.quality.message) && out.qualityState.join() === "high,high" && out.qualityBad === 400 &&
       out.stereo.mode === "stereo" && out.stereo.need.ok && !out.stereo.running &&
       out.inPlace.inPlace && out.inPlace.beforeView && !out.inPlace.viewShown && out.backAfterClose &&
       out.refused.ok === false && (out.refused.missing || []).join() === "location,task" && /Fill in Location and Task first/.test(out.refused.message) && out.refusedStarted === false &&

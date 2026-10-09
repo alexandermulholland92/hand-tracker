@@ -4,9 +4,11 @@
  * camera, and Sentry mode's clips. Unlike video-recorder.js (the Record card's: several views
  * stacked, frames pushed one by one), it takes the picture as it's drawn, at a steady rate.
  *
- *   const rec = CameraVideo.start({ canvas, fps: 30, audio: true | false, preferMp4 });
+ *   const rec = CameraVideo.start({ canvas, fps: 30, audio: true | false, preferMp4, quality });
+ *     (quality: "low" | "standard" | "high" | "best", how much of the picture's detail is kept,
+ *     and so how big the file is: CameraVideo.QUALITIES; standard if not given)
  *   rec.elapsed()                          // seconds so far
- *   const clip = await rec.stop();         // { blob, mimeType, ext: "webm" | "mp4", duration, width, height, sound }
+ *   const clip = await rec.stop();         // { blob, mimeType, ext: "webm" | "mp4", duration, width, height, sound, bitsPerSecond }
  *   CameraVideo.setMicrophone(deviceId)    // which microphone the sound comes from ("" the usual one)
  *   await CameraVideo.microphones()        // [{ deviceId, label }]
  *
@@ -25,7 +27,10 @@
     "video/mp4",
   ];
   const MIME_SILENT = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4;codecs=avc1", "video/mp4"];
-  const BITS_PER_PIXEL_FRAME = 0.12; // plenty for a camera's picture at these rates
+  // Bits for each pixel of each frame: Standard is plenty for a camera's picture at these
+  // rates; High and Best keep fine detail and quick movement sharper (about twice and four
+  // times the size), Small files is under half the size with a softer picture.
+  const QUALITY = { low: 0.05, standard: 0.12, high: 0.25, best: 0.5 };
   // The browser's recorder gives nothing at all for a clip stopped much sooner than this.
   const MIN_CLIP_MS = 1200;
 
@@ -92,12 +97,12 @@
 
   // Starts recording canvas (it's recorded as it's drawn on). The sound, if any, starts a moment
   // later: the microphone may still be opening.
-  function start({ canvas, fps = 15, audio = false, preferMp4 = false }) {
+  function start({ canvas, fps = 15, audio = false, preferMp4 = false, quality = "standard" }) {
     if (!supported()) throw new Error("This browser can't record video.");
     if (!canvas || !canvas.width || !canvas.height) throw new Error("There's no picture to record yet.");
     const stream = canvas.captureStream(fps); // (up to fps: a picture drawn less often is recorded less often)
     const startedAt = performance.now();
-    let recorder = null, chunks = [], sound = false, ownTrack = null, stopped = false, mimeType = "";
+    let recorder = null, chunks = [], sound = false, ownTrack = null, stopped = false, mimeType = "", bitsPerSecond = 0;
     const ready = (async () => {
       if (audio) {
         ownTrack = await micTrack();
@@ -113,9 +118,10 @@
       if (stopped) return;
       mimeType = pickMime(sound, preferMp4);
       const pixels = canvas.width * canvas.height;
+      bitsPerSecond = Math.max(400000, Math.round(pixels * fps * (QUALITY[quality] || QUALITY.standard)));
       recorder = new MediaRecorder(stream, {
         ...(mimeType ? { mimeType } : {}),
-        videoBitsPerSecond: Math.max(400000, Math.round(pixels * fps * BITS_PER_PIXEL_FRAME)),
+        videoBitsPerSecond: bitsPerSecond,
         ...(sound ? { audioBitsPerSecond: 96000 } : {}),
       });
       recorder.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
@@ -149,10 +155,11 @@
           width: canvas.width,
           height: canvas.height,
           sound,
+          bitsPerSecond,
         };
       },
     };
   }
 
-  global.CameraVideo = { supported, start, microphones, setMicrophone };
+  global.CameraVideo = { supported, start, microphones, setMicrophone, QUALITIES: Object.keys(QUALITY) };
 })(typeof window !== "undefined" ? window : globalThis);

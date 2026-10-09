@@ -549,13 +549,15 @@ public class RigServerPlugin extends Plugin {
                 cmd.put("details", details);
             }
             // Settings: whether the take details are needed, and each camera's video (and its
-            // sound) with the take. Only those, as booleans.
+            // sound) with the take, as booleans; the video's quality, one of camera-video.js's.
             JSONObject st = msg.optJSONObject("settings");
             if (st != null) {
                 JSObject settings = new JSObject();
                 for (String k : new String[] { "detailsRequired", "video", "sound" }) {
                     if (st.opt(k) instanceof Boolean) settings.put(k, st.optBoolean(k));
                 }
+                String q = st.opt("videoQuality") instanceof String ? st.optString("videoQuality") : "";
+                if (q.matches("low|standard|high|best")) settings.put("videoQuality", q);
                 if (settings.length() > 0) cmd.put("settings", settings);
             }
             // Sentry mode (sentry.js): checked as the computer checks it (cleanSentry in

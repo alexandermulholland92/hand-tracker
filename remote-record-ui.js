@@ -12,7 +12,8 @@
  *             any others picked run too) or Freeform (any): Start cameras and Start recording
  *             need the cameras the mode does;
  *   settings — whether the take details are needed before recording (a hidden switch on the
- *             page), and whether each camera's video (and sound) is recorded with the take;
+ *             page), and whether each camera's video (and sound) is recorded with the take, and
+ *             at what quality (videoQuality: low, standard, high or best);
  *   cameras — start Several cameras with the cameras picked that are plugged in;
  *   record  — start motion capture (starting the cameras first, if need be);
  *   stop    — stop it, and save the take into the remote recording folder by itself, in the
@@ -62,6 +63,9 @@
   let host = null; // desktop or mobile: saving the videos
   const remoteVideo = () => prefs.remoteVideo !== false;
   const remoteSound = () => prefs.remoteSound !== false;
+  const QUALITIES = ["low", "standard", "high", "best"]; // (CameraVideo's)
+  const QUALITY_NAMES = { low: "small files", standard: "standard", high: "high", best: "best" };
+  const remoteQuality = () => (QUALITIES.includes(prefs.remoteVideoQuality) ? prefs.remoteVideoQuality : "standard");
   let stateTimer = null, previewTimer = null, shownQr = "";
 
   // ---------- the card ----------
@@ -103,6 +107,10 @@
       $("remoteVideo").checked = remoteVideo();
       $("remoteSound").checked = remoteSound();
       $("remoteSound").disabled = !remoteVideo();
+    }
+    if ($("remoteQuality")) {
+      $("remoteQuality").value = remoteQuality();
+      $("remoteQuality").disabled = !remoteVideo();
     }
   }
 
@@ -154,7 +162,7 @@
     const locked = detailsLocked();
     const common = { ...st, pending, lastTake, notice, details: takeDetails || details(), detailsLocked: locked, detailsRequired: detailsRequired() };
     return {
-      ...common, kind: "rig", video: remoteVideo(), sound: remoteSound(),
+      ...common, kind: "rig", video: remoteVideo(), sound: remoteSound(), videoQuality: remoteQuality(),
       sentry: global.Sentry ? global.Sentry.remoteState() : null,
       // (Pictures on its own screen: OAK cameras only, which a phone doesn't have.)
       mode: modeNow(), requirement: requirement(), screenPictures: onPhone ? undefined : cams().screenPictures(),
@@ -419,7 +427,7 @@
       const view = views[src.i];
       try {
         if (view && view.want) view.want(true);
-        const rec = global.CameraVideo.start({ canvas: src.canvas, fps: VIDEO_FPS, audio: remoteSound(), preferMp4: onPhone });
+        const rec = global.CameraVideo.start({ canvas: src.canvas, fps: VIDEO_FPS, audio: remoteSound(), preferMp4: onPhone, quality: remoteQuality() });
         videos.push({ role: cam.role || cam.name, rec, view });
       } catch (err) {
         if (view && view.want) view.want(false);
@@ -538,13 +546,14 @@
     }
     if (action === "settings") {
       const st = data.settings || {};
-      // Each camera's video with the take, and its sound (from the next take).
-      if (typeof st.video === "boolean" || typeof st.sound === "boolean") {
+      // Each camera's video with the take, its sound and its quality (from the next take).
+      if (typeof st.video === "boolean" || typeof st.sound === "boolean" || QUALITIES.includes(st.videoQuality)) {
         if (recording) return { ok: false, message: "Stop recording first." };
         if (typeof st.video === "boolean") setPref("remoteVideo", st.video);
         if (typeof st.sound === "boolean") setPref("remoteSound", st.sound);
+        if (QUALITIES.includes(st.videoQuality)) setPref("remoteVideoQuality", st.videoQuality);
         showSettings();
-        return { ok: true, message: !remoteVideo() ? "Takes are motion capture only." : remoteSound() ? "Each camera's video is recorded with the take, with sound." : "Each camera's video is recorded with the take, without sound." };
+        return { ok: true, message: !remoteVideo() ? "Takes are motion capture only." : `Each camera's video is recorded with the take, ${remoteSound() ? "with" : "without"} sound, at ${QUALITY_NAMES[remoteQuality()]} quality.` };
       }
       // The OAK cameras' pictures on this computer's screen (any time: recording doesn't mind).
       if (typeof st.screenPictures === "boolean" && !onPhone) {
@@ -662,6 +671,13 @@
     $("remoteFolderBtn").addEventListener("click", async () => {
       settings.folder = await remote.chooseFolder();
       showSettings();
+    });
+    $("remoteQuality").addEventListener("change", (e) => {
+      if (!cams().isRecording() && QUALITIES.includes(e.target.value)) {
+        setPref("remoteVideoQuality", e.target.value);
+        push();
+      }
+      showSettings(); // (from the next take: not halfway through one)
     });
     for (const [id, key] of [["remoteVideo", "remoteVideo"], ["remoteSound", "remoteSound"]]) {
       $(id).addEventListener("change", (e) => {

@@ -174,7 +174,7 @@ jobs:
         timeout-minutes: 20
         run: |
           mkdir -p selftest-site
-          echo '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Hand Tracker test</title><a href="next.html" style="display:block;margin:40px 20px;padding:40px 0;font:28px sans-serif;text-align:center;background:#def">Next page</a>' > selftest-site/index.html
+          echo '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Hand Tracker test</title><a href="next.html" style="display:block;margin:40px 20px;padding:40px 0;font:28px sans-serif;text-align:center;background:#def">Next page</a><div style="height:300vh"></div>' > selftest-site/index.html
           echo '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Next page</title><p>The hand mouse clicked the link.</p>' > selftest-site/next.html
           (cd selftest-site && python3 -m http.server 8765 --bind 127.0.0.1 > ../site.log 2>&1 &)
           udid="$SIM"

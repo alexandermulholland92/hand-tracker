@@ -114,7 +114,7 @@
   .muted { color: var(--muted); }
   #videoPanel .row, #sentryPanel .row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin: 0 0 6px; }
   #videoPanel .row .grow, #sentryPanel .row .grow { flex: 1 1 auto; }
-  #sentryPanel select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
+  #videoPanel select, #sentryPanel select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
   #sentryPanel .sub { font-size: 13px; color: var(--muted); margin: 2px 0 8px; overflow-wrap: anywhere; }
   #sentryPanel hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
   #sentryNote { margin-bottom: 8px; }
@@ -221,6 +221,7 @@
   <section class="panel" id="videoPanel" aria-labelledby="videoTitle" hidden>
     <h2><span id="videoTitle" class="grow">Video with each take</span><button type="button" id="videoBtn" class="small on" aria-pressed="true">On</button></h2>
     <div class="row"><span class="grow">Sound</span><button type="button" id="soundBtn" class="small on" aria-pressed="true">On</button></div>
+    <div class="row" id="qualityRow" hidden><span class="grow">Quality</span><select id="qualitySel"><option value="low">Small files</option><option value="standard">Standard</option><option value="high">High</option><option value="best">Best</option></select></div>
     <div id="videoNote" class="muted"></div>
   </section>
 

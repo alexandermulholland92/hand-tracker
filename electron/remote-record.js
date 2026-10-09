@@ -36,8 +36,9 @@
  * "details" (only the take details: { contributor, location, task }, which any request can
  * bring along, and which go into the takes), "camera" (one running camera's { index, role,
  * rotation, mirror }), "scan" (look for the cameras it can start), "pick" (one of those:
- * { id, use, role }), "mode" ("ego", "stereo" or "freeform") or "settings" ({ detailsRequired, screenPictures }:
- * whether the take details are needed, and whether the OAK cameras' pictures are drawn on its screen),
+ * { id, use, role }), "mode" ("ego", "stereo" or "freeform") or "settings" ({ detailsRequired, screenPictures,
+ * video, sound, videoQuality }: whether the take details are needed, whether the OAK cameras' pictures
+ * are drawn on its screen, and each camera's video with a take, its sound and its quality),
  * or "sentry" (Sentry mode's settings, boxes and on/off: cleanSentry).
  * onWantPreviews({ on, focus }): a page is (or stopped) looking at the previews; focus: the
  * camera one is looking at full screen (null for none), which then comes bigger
@@ -71,6 +72,7 @@ const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
 const ROLES = ["", "head", "chest", "wrist_left", "wrist_right"];
 const MODES = ["ego", "stereo", "freeform"];
+const VIDEO_QUALITIES = ["low", "standard", "high", "best"]; // (camera-video.js's)
 // The page's script and style are its own (nothing inline); pictures come as blobs.
 // What the apps may ask another computer's Hand Tracker for, for its remote recording page
 // (a page can't reach a device on the network itself): a computer by name or address and port,
@@ -120,6 +122,7 @@ function cleanSettings(s) {
   if (!s || typeof s !== "object") return null;
   const out = {};
   for (const k of ["detailsRequired", "screenPictures", "video", "sound"]) if (typeof s[k] === "boolean") out[k] = s[k];
+  if (VIDEO_QUALITIES.includes(s.videoQuality)) out.videoQuality = s.videoQuality;
   return Object.keys(out).length ? out : null;
 }
 

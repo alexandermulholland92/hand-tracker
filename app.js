@@ -1733,7 +1733,8 @@
     // or from the Android app, a PC it's paired with over Wi-Fi.
     // The website's hand mouse: this page's pointer, or this computer's through the app (web-pc.js).
     const webPc = !desktop && !mobile ? { pc: WebPc.create({ prefs, setPref }) } : null;
-    PcControl.init({ desktop: desktop || (mobile && mobile.pc ? mobile : null) || webPc, prefs, setPref, gestureLabels: GESTURE_LABELS });
+    // (The iPhone app's hand browser is a touchscreen: a drag there is a finger's swipe.)
+    PcControl.init({ desktop: desktop || (mobile && mobile.pc ? mobile : null) || webPc, prefs, setPref, gestureLabels: GESTURE_LABELS, touch: !!(mobile && mobile.pc && mobile.pc.platform === "ios") });
     if (desktop) WebPc.initDesktop({ desktop, prefs, setPref });
     // A phone controlling a PC over Wi-Fi: pairing it (the phone's side, and the PC's).
     PhoneLinkUI.init({ desktop, mobile, prefs, setPref });

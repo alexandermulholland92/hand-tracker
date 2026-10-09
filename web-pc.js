@@ -20,8 +20,13 @@
   const $ = (id) => document.getElementById(id);
 
   // ---------- this page's own pointer ----------
-  function pagePointer() {
-    let el = null, x = 0, y = 0, held = null; // held: { which, target } while a button is down
+  // (Also put into other pages as it is, by the Chrome extension and the iPhone app's hand
+  // browser: it uses nothing from outside itself.) With dragScrolls (the iPhone's hand browser,
+  // a touchscreen), a left drag scrolls what's under the pointer, as a finger does, unless the
+  // page takes the press itself (a map, a slider), and glides on when let go while moving.
+  function pagePointer({ dragScrolls = false } = {}) {
+    let el = null, x = 0, y = 0, held = null; // held: { which, target, pan } while a button is down
+    let glide = 0, wheelTo = null; // a drag's glide (its timer); where the wheel's steps add up to
     const show = () => {
       if (el) return;
       el = document.createElement("div");
@@ -41,20 +46,86 @@
       return target.dispatchEvent(ev);
     };
     const focusable = (t) => t.closest("input, textarea, select, [contenteditable=''], [contenteditable='true'], button, a[href], [tabindex]");
-    function down(which) {
-      const t = targetAt();
-      held = { which, target: t };
-      fire(t, "pointerdown", which);
-      fire(t, "mousedown", which);
+    const focus = (t) => {
       const f = focusable(t);
       if (f && f.focus) f.focus({ preventScroll: true });
+    };
+    // What scrolls along an axis ("x" or "y") at an element: the nearest that does, or the page.
+    const scroller = (t, axis) => {
+      for (let e = t; e && e !== document.body && e !== document.documentElement; e = e.parentElement) {
+        const s = getComputedStyle(e);
+        if (axis === "y" ? e.scrollHeight > e.clientHeight && /(auto|scroll)/.test(s.overflowY) : e.scrollWidth > e.clientWidth && /(auto|scroll)/.test(s.overflowX)) return e;
+      }
+      return window;
+    };
+    const scrollPos = (e) => (e === window ? [window.scrollX, window.scrollY] : [e.scrollLeft, e.scrollTop]);
+    const scrollMax = (e) => {
+      const d = document.scrollingElement || document.documentElement;
+      return e === window ? [d.scrollWidth - window.innerWidth, d.scrollHeight - window.innerHeight] : [e.scrollWidth - e.clientWidth, e.scrollHeight - e.clientHeight];
+    };
+    const scrollTo = (e, left, top) => e.scrollTo({ left, top, behavior: "instant" });
+    // The page has the press to itself: it stopped the pointerdown, or it's in a part that
+    // doesn't pan (touch-action: none).
+    const owned = (t, taken) => {
+      if (taken) return true;
+      for (let e = t; e && e.nodeType === 1; e = e.parentElement) if (/^(none|pinch-zoom)$/.test(getComputedStyle(e).touchAction || "")) return true;
+      return false;
+    };
+    const SLOP = 10; // moved more than this (px) with the button down, it isn't a click
+    function panMove(p) {
+      const dx = x - p.x0, dy = y - p.y0;
+      if (Math.hypot(dx, dy) > SLOP) p.moved = true;
+      if (p.h === p.v) scrollTo(p.h, p.left0 - dx, p.top0 - dy);
+      else {
+        scrollTo(p.h, p.left0 - dx, scrollPos(p.h)[1]);
+        scrollTo(p.v, scrollPos(p.v)[0], p.top0 - dy);
+      }
+      const now = performance.now();
+      p.trail.push([now, x, y]);
+      while (p.trail.length > 2 && now - p.trail[0][0] > 150) p.trail.shift();
+    }
+    function panEnd(p) {
+      const now = performance.now(), [t0, x0, y0] = p.trail[0];
+      let vx = now > t0 ? (x - x0) / (now - t0) : 0, vy = now > t0 ? (y - y0) / (now - t0) : 0; // px a millisecond
+      if (Math.hypot(vx, vy) < 0.3) return;
+      let left = scrollPos(p.h)[0], top = scrollPos(p.v)[1], last = now;
+      const step = () => {
+        const t = performance.now(), ms = Math.min(50, t - last);
+        last = t;
+        left -= vx * ms;
+        top -= vy * ms;
+        if (p.h === p.v) scrollTo(p.h, left, top);
+        else {
+          scrollTo(p.h, left, scrollPos(p.h)[1]);
+          scrollTo(p.v, scrollPos(p.v)[0], top);
+        }
+        const k = Math.pow(0.997, ms);
+        vx *= k;
+        vy *= k;
+        glide = Math.hypot(vx, vy) > 0.03 ? setTimeout(step, 16) : 0;
+      };
+      glide = setTimeout(step, 16); // (a timer: a page out of sight gets no animation frames)
+    }
+    function down(which) {
+      const t = targetAt();
+      clearTimeout(glide);
+      held = { which, target: t };
+      const taken = !fire(t, "pointerdown", which);
+      fire(t, "mousedown", which);
+      if (dragScrolls && which === "left" && !owned(t, taken)) {
+        const h = scroller(t, "x"), v = scroller(t, "y");
+        held.pan = { h, v, x0: x, y0: y, left0: scrollPos(h)[0], top0: scrollPos(v)[1], moved: false, trail: [[performance.now(), x, y]] };
+      } else focus(t);
     }
     function up(which) {
       const t = targetAt();
       fire(t, "pointerup", which);
       fire(t, "mouseup", which);
+      const pan = held && held.pan;
       const same = held && held.target === t;
       held = null;
+      if (pan && pan.moved) return panEnd(pan); // a swipe, not a click
+      if (pan) focus(t); // a tap: as a click, it focuses
       if (!same) return;
       if (which === "right") fire(t, "contextmenu", which);
       else if (which === "left") {
@@ -75,6 +146,7 @@
         const t = targetAt();
         fire(t, "pointermove", held ? held.which : "left");
         fire(t, "mousemove", held ? held.which : "left");
+        if (held && held.pan) panMove(held.pan);
       },
       async button(which, action) {
         if (action === "down") return down(which);
@@ -88,9 +160,13 @@
         }
       },
       async wheel(notches) {
-        let t = targetAt();
-        while (t && t !== document.body && !(t.scrollHeight > t.clientHeight && /(auto|scroll)/.test(getComputedStyle(t).overflowY))) t = t.parentElement;
-        (t && t !== document.body ? t : window).scrollBy({ top: -notches * 100, behavior: "smooth" });
+        // Steps close together (a swipe's) add up, rather than each starting again from
+        // wherever the last one's smooth scroll had got to.
+        const e = scroller(targetAt(), "y"), now = performance.now();
+        if (!wheelTo || wheelTo.e !== e || now - wheelTo.at > 400) wheelTo = { e, top: scrollPos(e)[1] };
+        wheelTo.top = Math.max(0, Math.min(scrollMax(e)[1], wheelTo.top - notches * 100));
+        wheelTo.at = now;
+        e.scrollTo({ top: wheelTo.top, behavior: "smooth" });
       },
       async key(combo, action = "tap") {
         if (action === "up") return;

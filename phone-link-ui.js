@@ -191,9 +191,10 @@
   }
 
   // ---------- the iPhone app: the hand browser ----------
-  // A website opened below the camera; the hand mouse (pc-control.js, through mobile.pc) works
-  // it. While it's open, a bar over the camera has Back, the hand mouse and Close.
-  const HB_TOP = 0.42; // the share of the screen kept for the camera and the bar
+  // A website opened full screen; the hand mouse (pc-control.js, through mobile.pc) works it.
+  // While it's open the app is a small window in a corner (HandBrowser.swift) showing just the
+  // camera (html.hb-pip), with the browser's buttons: Back, the hand mouse, the app full screen
+  // (the website kept behind it; then a bar at the top has the way back) and Close.
   function initBrowser(browser, setPref, prefs) {
     $("handBrowser").hidden = false;
     const label = $("pcCard").querySelector(".section-label");
@@ -203,13 +204,25 @@
       const el = $(id);
       if (el) (el.closest("label") || el).hidden = true;
     }
-    const status = $("hbStatus"), url = $("hbUrl"), bar = $("hbBar");
+    const status = $("hbStatus"), url = $("hbUrl"), bar = $("hbBar"), root = document.documentElement;
     const saved = prefs.handBrowser || {};
     url.value = saved.url || "";
-    const mouseButton = () => {
-      const on = global.PcControl && global.PcControl.isMouseOn();
-      $("hbMouse").textContent = `Hand mouse: ${on ? "ON" : "OFF"}`;
-      $("hbMouse").setAttribute("aria-pressed", String(!!on));
+    const small = (on) => root.classList.toggle("hb-pip", !!on);
+    // The buttons: symbols in the small window, words over the app.
+    const buttons = () => {
+      const pip = root.classList.contains("hb-pip");
+      const on = !!(global.PcControl && global.PcControl.isMouseOn());
+      $("hbMouse").textContent = pip ? "✋" : `Hand mouse: ${on ? "ON" : "OFF"}`;
+      $("hbMouse").setAttribute("aria-pressed", String(on));
+      $("hbMouse").classList.toggle("active", on);
+      $("hbBack").hidden = !pip;
+      $("hbApp").textContent = pip ? "⚙" : "Back to the website";
+      $("hbClose").textContent = pip ? "✕" : "✕ Close";
+    };
+    // The small window takes the camera picture's shape.
+    const aspect = () => {
+      const cam = global.HandTracker && global.HandTracker.getCamera ? global.HandTracker.getCamera() : null;
+      return cam && cam.width > 0 && cam.height > 0 ? cam.width / cam.height : 0.75;
     };
     // What was typed -> a web address (a search for anything that isn't one).
     const addressOf = (text) => {
@@ -220,15 +233,16 @@
     };
     async function open(text) {
       const target = addressOf(text);
-      window.scrollTo(0, 0); // the camera at the top, above the browser
+      small(true);
       try {
-        await browser.open(target, HB_TOP);
+        await browser.open(target, aspect());
         bar.hidden = false;
         setPref("handBrowser", { url: String(text || "").trim() });
         if (global.PcControl && !global.PcControl.isMouseOn()) global.PcControl.setMouse(true);
-        mouseButton();
+        buttons();
         return target;
       } catch (err) {
+        small(false);
         status.textContent = (err && err.message) || String(err);
         throw err;
       }
@@ -239,13 +253,19 @@
     $("hbClose").addEventListener("click", () => browser.close());
     $("hbMouse").addEventListener("click", () => {
       if (global.PcControl) global.PcControl.setMouse(!global.PcControl.isMouseOn());
-      setTimeout(mouseButton, 100);
+      setTimeout(buttons, 100);
+    });
+    $("hbApp").addEventListener("click", () => {
+      const toApp = root.classList.contains("hb-pip");
+      if (!toApp) small(true);
+      browser.show(toApp).then(buttons, () => {});
     });
     browser.onPage((s) => {
       bar.hidden = !s.open;
+      small(s.open && !s.app);
       $("hbTitle").textContent = s.loading ? "Loading…" : s.title || s.url || "";
       status.textContent = s.error ? `Couldn't open it: ${s.error}` : s.open ? `Open: ${s.title || s.url}` : "";
-      mouseButton();
+      buttons();
     });
     // The build's own check in the iPhone simulator (launched with -HTSelfTest <test page>, a
     // page the build serves): open the page, point at its link with the hand mouse's calls and
@@ -260,21 +280,51 @@
             const t = setTimeout(() => (off(), resolve(null)), ms);
             const off = browser.onPage((s) => test(s) && (clearTimeout(t), off(), resolve(s)));
           });
+        const pc = global.mobile.pc;
+        const drag = async (y0, y1) => {
+          pc.pointer(0.5, y0);
+          await sleep(150);
+          await pc.button("left", "down");
+          for (let i = 1; i <= 10; i++) {
+            pc.pointer(0.5, y0 + ((y1 - y0) * i) / 10);
+            await sleep(30);
+          }
+          await pc.button("left", "up");
+          await sleep(1500);
+        };
         try {
           const first = page((s) => s.open && !s.loading && !!s.url && !!s.title);
           out.opened = await open(test);
           out.first = (await first) || (await browser.status());
           await sleep(500);
+          // The website fills the screen; the app is a small window over it.
+          const L = await browser.layout(), [sw, sh] = L.screen, b = L.browser, a = L.app;
+          out.layout = L;
+          out.full = !!b && b[2] >= sw - 1 && b[3] >= sh * 0.85;
+          out.small = a[2] * a[3] <= sw * sh * 0.15 && a[0] >= 0 && a[1] >= 0 && a[0] + a[2] <= sw && a[1] + a[3] <= sh;
+          // The pointer over it: it moves to the other side.
+          await pc.start();
+          pc.pointer((a[0] + a[2] / 2 - b[0]) / b[2], (a[1] + a[3] / 2 - b[1]) / b[3]);
+          await sleep(600);
+          const a2 = (await browser.layout()).app;
+          out.moved = a2[0] + a2[2] / 2 < sw / 2 !== a[0] + a[2] / 2 < sw / 2;
+          // A drag up scrolls the page (and doesn't click); a longer one down scrolls it back to the top.
+          const from = out.first.url;
+          const y0 = (await browser.where("a")).y;
+          await drag(0.8, 0.4);
+          out.scrolled = +(y0 - (await browser.where("a")).y).toFixed(3);
+          out.stayed = (await browser.status()).url === from;
+          await drag(0.1, 0.95);
           const at = await browser.where("a");
           out.link = at;
-          const from = out.first.url;
+          out.y0 = y0;
+          out.back = Math.abs(at.y - y0) < 0.02;
           const next = page((s) => s.open && !s.loading && !!s.url && s.url !== from);
-          await global.mobile.pc.start();
-          global.mobile.pc.pointer(at.x, at.y);
+          pc.pointer(at.x, at.y);
           await sleep(300);
-          await global.mobile.pc.button("left", "click");
+          await pc.button("left", "click");
           out.after = await next;
-          out.ok = !!(out.after && out.after.url);
+          out.ok = !!(out.after && out.after.url) && out.full && out.small && out.moved && out.scrolled > 0.2 && out.stayed && out.back;
         } catch (err) {
           out.error = String((err && err.message) || err);
         }

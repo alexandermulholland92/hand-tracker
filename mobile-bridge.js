@@ -688,9 +688,10 @@
 
   // The iPhone and iPad app's hand mouse (HandBrowserPlugin, ios/App/App/HandBrowser.swift).
   // iOS lets no app tap inside other apps, so it works websites in a browser inside the app,
-  // below the camera, with web-pc.js's page pointer added to every page: the same calls as
-  // the computer apps' desktop.pc (pointer, button, wheel, key, text) carried out there.
-  //   mobile.browser: open(url, top), back(), close(), status(), onPage(cb)
+  // filling the screen with the app in a small window in a corner, with web-pc.js's page
+  // pointer added to every page: the same calls as the computer apps' desktop.pc (pointer,
+  // button, wheel, key, text) carried out there, and a drag scrolls, as a finger does.
+  //   mobile.browser: open(url, aspect), show(app), back(), close(), status(), layout(), onPage(cb)
   function createHandBrowser() {
     const B = plugin("HandBrowser");
     if (!B) return null;
@@ -704,7 +705,7 @@
       const css = "#handPointer{position:fixed;left:-11px;top:-11px;width:22px;height:22px;border-radius:50%;z-index:2147483647;pointer-events:none;" +
         "border:2px solid #fff;background:rgba(77,171,247,.45);box-shadow:0 0 0 2px rgba(0,0,0,.45);transition:background .1s}#handPointer.down{background:rgba(255,146,43,.85)}";
       return `(function(){if(window.__htPointer)return;var s=document.createElement("style");s.textContent=${JSON.stringify(css)};(document.head||document.documentElement).appendChild(s);
-var p=(${make.toString()})();p.where=function(sel){var e=document.querySelector(sel);if(!e)return null;var r=e.getBoundingClientRect();return{x:(r.left+r.width/2)/innerWidth,y:(r.top+r.height/2)/innerHeight};};window.__htPointer=p;})();`;
+var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=document.querySelector(sel);if(!e)return null;var r=e.getBoundingClientRect();return{x:(r.left+r.width/2)/innerWidth,y:(r.top+r.height/2)/innerHeight};};window.__htPointer=p;})();`;
     };
     const call = (method, ...args) => B.call({ method, args: JSON.stringify(args) }).then((r) => r && r.value);
     // Pointer moves come every frame: only the newest is sent once the last has arrived.
@@ -743,7 +744,7 @@ var p=(${make.toString()})();p.where=function(sel){var e=document.querySelector(
         return { ok: res.ok, status: res.status };
       },
       setKeyboard: async () => {
-        throw new Error("On an iPhone, tap a box on the page and type with its own keyboard (or with a gesture action's Type text).");
+        throw new Error("On an iPhone, tap a box on the page (with the hand mouse or a finger) and type with its own keyboard, or with a gesture action's Type text.");
       },
       status: () => {},
       onStatus: () => () => {},
@@ -752,7 +753,9 @@ var p=(${make.toString()})();p.where=function(sel){var e=document.querySelector(
       onKeyboard: () => () => {},
     };
     const browser = {
-      open: (url, top) => B.open({ url, top, script: script() }),
+      open: (url, aspect) => B.open({ url, aspect, script: script() }),
+      show: (app) => B.show({ app: !!app }),
+      layout: () => B.layout(),
       back: () => B.back(),
       close: () => B.close(),
       status: () => B.status(),

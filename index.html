@@ -181,12 +181,19 @@
   #handPointer { position: fixed; left: -11px; top: -11px; width: 22px; height: 22px; border-radius: 50%; z-index: 2147483647; pointer-events: none;
     border: 2px solid #fff; background: rgba(77, 171, 247, 0.45); box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45); transition: background 0.1s; }
   #handPointer.down { background: rgba(255, 146, 43, 0.85); }
-  /* The iPhone app's hand browser: its address row, and its buttons over the camera while it's open. */
+  /* The iPhone app's hand browser: its address row, and its buttons while a website is open: in
+     the small window the app becomes (html.hb-pip: just the camera, the buttons along its foot),
+     or at the top with the app shown full screen over the website. */
   #hbUrl { flex: 1 1 200px; min-width: 0; }
   #hbBar { position: fixed; top: 0; left: 0; right: 0; z-index: 50; display: flex; gap: 6px; align-items: center; padding: 6px 8px;
     background: rgba(14, 15, 18, 0.82); font-size: 13px; }
   #hbBar button { padding: 6px 10px; font-size: 13px; }
   #hbBar #hbTitle { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; }
+  html.hb-pip, html.hb-pip body { overflow: hidden; }
+  html.hb-pip #wrap { position: fixed; inset: 0; z-index: 45; aspect-ratio: auto; border-radius: 0; }
+  html.hb-pip #hbBar { top: auto; bottom: 0; gap: 4px; padding: 4px; background: rgba(14, 15, 18, 0.6); }
+  html.hb-pip #hbBar button { flex: 1 1 0; min-width: 0; padding: 5px 0; font-size: 15px; }
+  html.hb-pip #hbBar #hbTitle { display: none; }
   .multi-cam-caption .lbl { opacity: 0.6; }
   .multi-cam-caption select.role, .multi-table select.role { font-size: 12px; padding: 2px 4px; }
   .multi-cam-caption button.retry, .multi-cam-caption button.rot, .multi-cam-caption button.flip { font-size: 12px; padding: 1px 8px; margin-left: 2px; }
@@ -279,7 +286,7 @@
 </head>
 <body>
 
-<div id="hbBar" hidden><button id="hbBack">‹ Back</button><button id="hbMouse" aria-pressed="false">Hand mouse</button><span id="hbTitle"></span><button id="hbClose">✕ Close</button></div>
+<div id="hbBar" hidden><button id="hbBack" title="Back a page">‹</button><button id="hbMouse" aria-pressed="false" title="The hand mouse on or off">Hand mouse</button><span id="hbTitle"></span><button id="hbApp" title="Hand Tracker full screen, for its settings (the website stays open)">⚙</button><button id="hbClose" title="Close the website">✕ Close</button></div>
 <header>
   <h1>Hand Landmark Tracker</h1>
   <span id="buildInfo"></span>
@@ -476,7 +483,8 @@
             <div id="remoteUrls"></div>
             <div class="remote-row">Takes are saved by themselves, in the export card's formats, in <code id="remoteFolder"></code> <button id="remoteFolderBtn">Change…</button></div>
             <div class="remote-row"><label title="Each camera's video (its picture with the hands drawn) is saved with the take, beside its motion capture"><input type="checkbox" id="remoteVideo" checked /> Each camera's video too</label>
-              <label title="Sound from this computer's microphone, in each camera's video"><input type="checkbox" id="remoteSound" checked /> with sound</label></div>
+              <label title="Sound from this computer's microphone, in each camera's video"><input type="checkbox" id="remoteSound" checked /> with sound</label>
+              <label title="How much of each camera's picture detail its video keeps, and so its size: small files is under half the size of standard, high about twice, best about four times">Quality <select id="remoteQuality"><option value="low">small files</option><option value="standard">standard</option><option value="high">high</option><option value="best">best</option></select></label></div>
             <label class="remote-row" id="remoteAutostartRow" hidden><input type="checkbox" id="remoteAutostart" /> Open Hand Tracker when this computer starts, waiting for the phone (for a computer with no screen)</label>
           </div>
         </div>
@@ -501,7 +509,7 @@
       <!-- On the phone (Android app): controlling the phone itself (phone-link-ui.js). -->
       <div id="selfControl" hidden>
         <div class="section-label">Control this phone</div>
-        <div class="note">Your hand moves a pointer over any app, like the hand mouse on a PC: a quick curl of your index finger taps, curl and hold it to drag (to scroll or swipe), a quick curl of your middle finger is a long press. Gesture actions can press Back, Home, Recents, volume and media keys, or type. It keeps going with Hand Tracker in the background: a small camera window stays in a corner (its × stops it).</div>
+        <div class="note">Your hand moves a pointer over any app, like the hand mouse on a PC: a quick curl of your index finger taps, curl it and move your hand to swipe or drag (the swipe follows your hand), a quick curl of your middle finger is a long press. Gesture actions can press Back, Home, Recents, volume and media keys, or type. It keeps going with Hand Tracker in the background: a small camera window stays in a corner (its × stops it).</div>
         <div class="toolbar">
           <button id="selfOverlay">1. Allow display over other apps</button>
           <button id="selfAccess">2. Turn on hand control in Accessibility</button>
@@ -517,7 +525,7 @@
       <!-- The iPhone and iPad app: the hand mouse works websites in a browser inside the app (phone-link-ui.js). -->
       <div id="handBrowser" hidden>
         <div class="section-label">Hand browser</div>
-        <div class="note">iPhones and iPads don't let an app tap inside other apps, so here the hand mouse works websites: open one, and your hand moves a pointer over it, below the camera. A quick curl of your index finger taps, curl and hold it to drag, a quick curl of your middle finger right-clicks; gesture actions can scroll, press keys and type. To work every app on this iPhone, a computer with Hand Tracker can be its Bluetooth mouse (see the README).</div>
+        <div class="note">iPhones and iPads don't let an app tap inside other apps, so here the hand mouse works websites: open one and it fills the screen, the camera in a small window in a corner, and your hand moves a pointer over it. A quick curl of your index finger taps, curl it and move your hand to swipe the page, a quick curl of your middle finger right-clicks; gesture actions can scroll, press keys and type. The small window's ⚙ brings Hand Tracker back full screen. To work every app on this iPhone, a computer with Hand Tracker can be its Bluetooth mouse (see the README).</div>
         <div class="toolbar">
           <input id="hbUrl" type="url" inputmode="url" placeholder="Website or search" autocapitalize="off" autocomplete="off" spellcheck="false" />
           <button id="hbOpen" class="primary">Open</button>
@@ -525,7 +533,7 @@
         <div id="hbStatus" class="note"></div>
       </div>
       <div class="toolbar">
-        <button id="mouseToggle" aria-pressed="false" title="Move the pointer by moving your hand. A quick curl of your index finger clicks (curl and hold to drag); a quick curl of your middle finger right-clicks. Curl both, or make a fist, to hold the pointer still while you move your hand back. Keeps working with this window minimized. Ctrl+Alt+M turns it on and off from anywhere.">Hand mouse: OFF<kbd>Ctrl+Alt+M</kbd></button>
+        <button id="mouseToggle" aria-pressed="false" title="Move the pointer by moving your hand. A quick curl of your index finger clicks; curl it and move straight away to swipe (scroll) what's under the pointer, or curl, hold still for half a second, then move to drag. A quick curl of your middle finger right-clicks. Curl both, or make a fist, to hold the pointer still while you move your hand back. Keeps working with this window minimized. Ctrl+Alt+M turns it on and off from anywhere.">Hand mouse: OFF<kbd>Ctrl+Alt+M</kbd></button>
         <label>Hand <select id="mouseHand"><option value="Right">right</option><option value="Left">left</option><option value="either">either</option></select></label>
         <label title="How far you move your hand to cross the screen">Moves
           <select id="mouseReach"><option value="0.4">small</option><option value="0.55" selected>medium</option><option value="0.7">large</option></select>

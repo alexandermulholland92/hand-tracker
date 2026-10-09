@@ -8,7 +8,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         window = UIWindow(windowScene: windowScene)
-        window?.rootViewController = HandTrackerViewController() // Capacitor's, with the hand browser (HandBrowser.swift)
+        window?.rootViewController = HandTrackerHost() // Capacitor's screen, with the hand browser (HandBrowser.swift)
         window?.makeKeyAndVisible()
 
         SceneDelegateProxy.shared.scene(scene, willConnectTo: session, options: connectionOptions)

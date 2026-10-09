@@ -247,6 +247,14 @@
   let videoOn = true, soundOn = true;
   $("videoBtn").addEventListener("click", () => command("settings", { settings: { video: !videoOn } }));
   $("soundBtn").addEventListener("click", () => command("settings", { settings: { sound: !soundOn } }));
+  // ...and its quality: how much of the picture's detail is kept, and so how big the files are.
+  $("qualitySel").addEventListener("change", () => command("settings", { settings: { videoQuality: $("qualitySel").value } }));
+  const QUALITY_NOTES = {
+    low: " Small files: under half the size of Standard, with a softer picture.",
+    standard: "",
+    high: " High: sharper, about twice the size of Standard.",
+    best: " Best: the sharpest, about four times the size of Standard.",
+  };
 
   // ---------- Sentry mode (sentry.js on the computer) ----------
   // Hidden: tapping the page's title five times (or Ctrl+Alt+S) shows it, on every page the
@@ -979,9 +987,14 @@
         $(id).disabled = sending || !!s.recording;
       }
       $("soundBtn").disabled = $("soundBtn").disabled || !videoOn;
+      // (A rig from before the quality setting doesn't say it.)
+      const q = typeof s.videoQuality === "string" && s.videoQuality in QUALITY_NOTES ? s.videoQuality : null;
+      $("qualityRow").hidden = !q;
+      if (q && document.activeElement !== $("qualitySel")) $("qualitySel").value = q;
+      $("qualitySel").disabled = sending || !!s.recording || !videoOn;
       $("videoNote").textContent = !videoOn
         ? "Takes are motion capture only."
-        : `Each camera's video is saved with the take, in the Takes list below${soundOn ? ", with sound from the computer's microphone" : ""}.`;
+        : `Each camera's video is saved with the take, in the Takes list below${soundOn ? ", with sound from the computer's microphone" : ""}.${(q && QUALITY_NOTES[q]) || ""}`;
     }
     $("screenPanel").hidden = typeof s.screenPictures !== "boolean";
     if (typeof s.screenPictures === "boolean") {
