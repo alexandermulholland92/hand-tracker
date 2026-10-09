@@ -28,6 +28,9 @@ function check(name, ok, detail = "") {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Frames a second the tracking must reach: GitHub's runners have no graphics card (Chrome draws
+// WebGL in software there, and MediaPipe runs at about 2 a second), so there it only has to run.
+const MIN_FPS = process.env.CI ? 1 : 5;
 
 // The test page: a box to type into at the top, and below it one big button (wherever the
 // pointer is, a click lands on it), logging what reaches it.
@@ -76,17 +79,17 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Extension test page</t
     control.on("pageerror", (e) => errors.push(String(e.message || e)));
     await control.goto(`chrome-extension://${id}/control.html`);
     let fps = 0;
-    for (let i = 0; i < 60 && fps < 5; i++) {
+    for (let i = 0; i < 60 && fps < MIN_FPS; i++) {
       await sleep(500);
       fps = await control.evaluate(() => HandTracker.getFPS());
     }
-    check("The control page tracks the camera with MediaPipe under an extension's rules", fps >= 5 && !errors.length, `${fps} fps; errors: ${JSON.stringify(errors.slice(0, 3))}`);
+    check("The control page tracks the camera with MediaPipe under an extension's rules", fps >= MIN_FPS && !errors.length, `${fps} fps; errors: ${JSON.stringify(errors.slice(0, 3))}`);
 
     // The test page in front: the control page in a background tab keeps tracking.
     await page.bringToFront();
     await sleep(3000);
     const hidden = await control.evaluate(() => ({ state: document.visibilityState, fps: HandTracker.getFPS() }));
-    check("With another tab in front, the control page keeps tracking", hidden.state === "hidden" && hidden.fps >= 5, JSON.stringify(hidden));
+    check("With another tab in front, the control page keeps tracking", hidden.state === "hidden" && hidden.fps >= MIN_FPS, JSON.stringify(hidden));
 
     // The hand mouse, fed synthetic hands (as scripts/check.js does), works the page in front.
     const r = await control.evaluate(async () => {
