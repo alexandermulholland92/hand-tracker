@@ -40,6 +40,30 @@ function check(name, ok, detail = "") {
     after.ready && /^2\./.test(after.versions.depthai) && /^3\.12\./.test(after.versions.python),
     after.ready ? `depthai ${after.versions.depthai}, OpenCV ${after.versions.opencv}, NumPy ${after.versions.numpy}, Python ${after.versions.python}; ${Math.round((Date.now() - started) / 1000)} s, ${lines} progress lines` : after.reason);
 
+  // The faster (6-core) hand models: downloaded and checked as a camera's first start does, and
+  // each one taking and giving the very same as its 4-core model (what HandTrackerEdge reads).
+  const said = [];
+  const fast = await oak.fastModels((m) => said.push(m.message)).catch((err) => (said.push(err.message), false));
+  const { spawnSync } = require("child_process");
+  const shapes = spawnSync(oak.paths.python, ["-c", `
+import depthai as dai, json, sys
+out = {}
+for f in sys.argv[1:]:
+    b = dai.OpenVINO.Blob(f)
+    out[f.split("/")[-1].split("\\\\")[-1]] = {"shaves": b.numShaves, "in": {n: [t.dims, str(t.dataType)] for n, t in b.networkInputs.items()},
+        "out": {n: [t.dims, str(t.dataType)] for n, t in b.networkOutputs.items()}}
+print(json.dumps(out))`, ...["palm_detection", "hand_landmark_full", "hand_landmark_lite"].flatMap((m) => [4, 6].map((n) => path.join(oak.paths.models, `${m}_sh${n}.blob`)))], { encoding: "utf8" });
+  let blobs = {};
+  try {
+    blobs = JSON.parse(shapes.stdout);
+  } catch {}
+  const same = ["palm_detection", "hand_landmark_full", "hand_landmark_lite"].every((m) => {
+    const a = blobs[`${m}_sh4.blob`], b = blobs[`${m}_sh6.blob`];
+    return a && b && a.shaves === 4 && b.shaves === 6 && JSON.stringify(a.in) === JSON.stringify(b.in) && JSON.stringify(a.out) === JSON.stringify(b.out);
+  });
+  check("The faster hand models download (checked), and each takes and gives the very same as its 4-core model, with 6 of the camera's cores",
+    fast === true && same, JSON.stringify({ fast, said, blobs: same ? Object.keys(blobs) : blobs, err: shapes.stderr && shapes.stderr.slice(-300) }));
+
   // depthai looks for cameras over USB (and the network): none here, but it must be able to look.
   const list = await oak.runBridge(["--list"]).catch((err) => ({ status: "error", message: err.message }));
   check("depthai can look for OAK cameras", list.status === "devices" && Array.isArray(list.devices), JSON.stringify(list));

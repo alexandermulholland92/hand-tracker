@@ -59,3 +59,9 @@ Sentry mode's "Ignore pets and animals" uses MediaPipe Tasks Vision (`@mediapipe
 installed from npm) and its EfficientDet-Lite0 object detector trained on COCO
 (`models/efficientdet_lite0.tflite`, as published by Google for MediaPipe's object detector), both
 by Google under the Apache License 2.0.
+
+OAK cameras' 6-core hand models (`palm_detection_sh6.blob`, `hand_landmark_full_sh6.blob`,
+`hand_landmark_lite_sh6.blob`, on this project's oak-models-1 release, downloaded with a checksum
+the first time an OAK camera starts) are MediaPipe's palm detection (v0.8.5) and hand landmark
+(v0.8.9) models by Google, under the Apache License 2.0, converted for the camera by
+`scripts/build-oak-models.py`.

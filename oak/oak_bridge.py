@@ -349,6 +349,15 @@ def run(args):
     if missing:
         status("error", message="The OAK models are missing (" + ", ".join(missing) + "). Run the OAK setup again.")
         return 2
+
+    # The hand models compiled for 6 of the camera's cores where they're downloaded (electron/
+    # oak.js FAST_MODELS: the same outputs, found faster), else the 4-core ones.
+    def model(name):
+        six = os.path.join(models, f"{name}_sh6.blob")
+        return six if os.path.isfile(six) else os.path.join(models, f"{name}_sh4.blob")
+
+    pd_model, lm_model = model("palm_detection"), model(f"hand_landmark_{args.lm}")
+    fast = lm_model.endswith("_sh6.blob")
     warnings = []
     detect = os.path.join(models, DETECT_MODEL) if args.detect else None
     if detect and not os.path.isfile(detect):
@@ -359,8 +368,8 @@ def run(args):
     import depthai as dai
 
     common = dict(
-        pd_model=os.path.join(models, "palm_detection_sh4.blob"),
-        lm_model=os.path.join(models, f"hand_landmark_{args.lm}_sh4.blob"),
+        pd_model=pd_model,
+        lm_model=lm_model,
         pp_model=os.path.join(models, "PDPostProcessing_top2_sh1.blob"),
         use_world_landmarks=True,
         solo=not args.two_hands,
@@ -396,12 +405,14 @@ def run(args):
         # (a look at every frame then): 60 asked -> 4.7 a second, 39 -> 6.6, 15 -> 11.7. With
         # objects looked for 3 times a second, 20 -> 20.0 and 25 -> 22.9 (depth only: 25 ->
         # 20.0, 30 -> 17.8). Its rates vary with what's in view: 24 was never far off the best.
+        # With the 6-core models, side by side at 24: 23.7 and 23.5 (4-core: 19.6, 22.6; 8-core:
+        # 21.4, 20.7), and asked for more, 24 -> 19.5, 18.4; 28 -> 18.8, 22.4; 32 -> 22.5, 24.7.
         # (The lite model's rates are the tracker's own.) 60 asked for holds only where nothing
         # else shares the processor: no depth, no objects.
         def pick_fps(self, asked, depth):
             busy = depth or extras.get("detect")
             if args.lm == "full":
-                best = 24 if busy else 26
+                best = (30 if fast else 24) if busy else 26
             else:
                 best = 29 if busy else 36
             if asked:
