@@ -55,14 +55,14 @@ for f in sys.argv[1:]:
 print(json.dumps(out))`, ...["palm_detection", "hand_landmark_full", "hand_landmark_lite"].flatMap((m) => [4, 6].map((n) => path.join(oak.paths.models, `${m}_sh${n}.blob`)))], { encoding: "utf8" });
   let blobs = {};
   try {
-    blobs = JSON.parse(shapes.stdout);
+    blobs = JSON.parse(String(shapes.stdout).split(/\r?\n/).filter((l) => l.startsWith("{")).pop()); // (depthai may say something first)
   } catch {}
   const same = ["palm_detection", "hand_landmark_full", "hand_landmark_lite"].every((m) => {
     const a = blobs[`${m}_sh4.blob`], b = blobs[`${m}_sh6.blob`];
     return a && b && a.shaves === 4 && b.shaves === 6 && JSON.stringify(a.in) === JSON.stringify(b.in) && JSON.stringify(a.out) === JSON.stringify(b.out);
   });
   check("The faster hand models download (checked), and each takes and gives the very same as its 4-core model, with 6 of the camera's cores",
-    fast === true && same, JSON.stringify({ fast, said, blobs: same ? Object.keys(blobs) : blobs, err: shapes.stderr && shapes.stderr.slice(-300) }));
+    fast === true && same, JSON.stringify({ fast, said, blobs: same ? Object.keys(blobs) : blobs, ...(same ? {} : { status: shapes.status, error: shapes.error && shapes.error.message, out: String(shapes.stdout).slice(-300), err: String(shapes.stderr).slice(-300) }) }));
 
   // depthai looks for cameras over USB (and the network): none here, but it must be able to look.
   const list = await oak.runBridge(["--list"]).catch((err) => ({ status: "error", message: err.message }));
