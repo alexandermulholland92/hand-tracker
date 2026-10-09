@@ -60,7 +60,7 @@
   const ALERT_GAP_S = 60;
   const STILL_S = 10; // a video stops once it's been still this long
   const MAX_VIDEO_S = 300;
-  const VIDEO_FPS = 15;
+  const VIDEO_FPS = 30;
   const MAX_EVENTS = 50;
   const MAX_ROWS = 9, MAX_COLS = 16;
   const ANIMALS = new Set(["bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe"]);

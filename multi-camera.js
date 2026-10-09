@@ -371,7 +371,7 @@
   const screenShows = () => screenPictures() && document.visibilityState !== "hidden";
   function pictureDue(t, i) {
     if (!t.lastPicture || screenShows()) return true; // (the first one: the tile shows something)
-    if (t.wants > 0 && performance.now() - t.lastPicture >= 60) return true; // its video's being recorded
+    if (t.wants > 0 && performance.now() - t.lastPicture >= 30) return true; // its video's being recorded (up to ~30 a second)
     const w = previewWant;
     const every = !w.on ? Infinity : w.focus !== null ? (w.focus === i ? w.focusMs : Infinity) : w.ms;
     return performance.now() - t.lastPicture >= every - 15;

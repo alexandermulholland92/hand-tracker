@@ -4,7 +4,7 @@
  * camera, and Sentry mode's clips. Unlike video-recorder.js (the Record card's: several views
  * stacked, frames pushed one by one), it takes the picture as it's drawn, at a steady rate.
  *
- *   const rec = CameraVideo.start({ canvas, fps: 15, audio: true | false, preferMp4 });
+ *   const rec = CameraVideo.start({ canvas, fps: 30, audio: true | false, preferMp4 });
  *   rec.elapsed()                          // seconds so far
  *   const clip = await rec.stop();         // { blob, mimeType, ext: "webm" | "mp4", duration, width, height, sound }
  *   CameraVideo.setMicrophone(deviceId)    // which microphone the sound comes from ("" the usual one)
@@ -37,8 +37,12 @@
     return typeof global.MediaRecorder !== "undefined" && !!global.HTMLCanvasElement && !!global.HTMLCanvasElement.prototype.captureStream;
   }
 
+  // A Raspberry Pi (or another ARM Linux board) encodes in software: VP8 costs it much less than
+  // VP9, which matters with several cameras recording at once.
+  const LIGHT = /Linux (aarch64|armv7l|armv8)/.test(global.navigator ? navigator.userAgent : "");
   function pickMime(sound, preferMp4) {
     let list = sound ? MIME : MIME_SILENT;
+    if (LIGHT) list = [...list.filter((t) => t.includes("vp8")), ...list.filter((t) => !t.includes("vp8"))];
     if (preferMp4) list = [...list.filter((t) => t.includes("mp4")), ...list.filter((t) => !t.includes("mp4"))];
     return list.find((t) => global.MediaRecorder.isTypeSupported(t)) || "";
   }
@@ -91,7 +95,7 @@
   function start({ canvas, fps = 15, audio = false, preferMp4 = false }) {
     if (!supported()) throw new Error("This browser can't record video.");
     if (!canvas || !canvas.width || !canvas.height) throw new Error("There's no picture to record yet.");
-    const stream = canvas.captureStream(fps);
+    const stream = canvas.captureStream(fps); // (up to fps: a picture drawn less often is recorded less often)
     const startedAt = performance.now();
     let recorder = null, chunks = [], sound = false, ownTrack = null, stopped = false, mimeType = "";
     const ready = (async () => {

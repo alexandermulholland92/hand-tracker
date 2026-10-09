@@ -405,7 +405,9 @@
     return r;
   }
 
-  // Each camera's video, while a take records (its picture as drawn, with the hands).
+  // Each camera's video, while a take records (its picture as drawn, with the hands), at up to
+  // VIDEO_FPS: a camera gives as many as its tracking does (each picture is drawn with its hands).
+  const VIDEO_FPS = 30;
   function startVideos() {
     stopVideos(false);
     if (!remoteVideo() || !global.CameraVideo || !global.CameraVideo.supported()) return;
@@ -417,7 +419,7 @@
       const view = views[src.i];
       try {
         if (view && view.want) view.want(true);
-        const rec = global.CameraVideo.start({ canvas: src.canvas, fps: 15, audio: remoteSound(), preferMp4: onPhone });
+        const rec = global.CameraVideo.start({ canvas: src.canvas, fps: VIDEO_FPS, audio: remoteSound(), preferMp4: onPhone });
         videos.push({ role: cam.role || cam.name, rec, view });
       } catch (err) {
         if (view && view.want) view.want(false);

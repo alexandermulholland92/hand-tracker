@@ -2042,8 +2042,15 @@ async function checkRemoteRecording(js) {
     out.metadata = saved ? saved.metadata : null;
     // Each camera's video, saved beside the take (named after the role it started with).
     out.videos = ((after.lastTake && after.lastTake.files) || []).filter((f) => /-video-[a-z-]+\.(webm|mp4)$/.test(f)).map((f) => {
-      const b = fs.readFileSync(path.join(process.env.HAND_TRACKER_REMOTE_DIR, f));
-      return { f: f.replace(/^.*(-video-[a-z-]+\.\w+)$/, "$1"), kb: Math.round(b.length / 1024), webm: b.subarray(0, 4).toString("hex") === "1a45dfa3" };
+      const full = path.join(process.env.HAND_TRACKER_REMOTE_DIR, f);
+      const b = fs.readFileSync(full);
+      // Its frames a second, from ffmpeg decoding it: more than the 15 these videos used to be capped at.
+      const run = spawnSync(exporter.ffmpegPath, ["-hide_banner", "-i", full, "-map", "0:v", "-f", "null", "-"], { encoding: "utf8" });
+      const last = String(run.stderr).split(/[\r\n]+/).filter((l) => /^frame=/.test(l)).pop() || "";
+      const frames = Number((last.match(/frame=\s*(\d+)/) || [])[1] || 0);
+      const t = (last.match(/time=(\d+):(\d+):([\d.]+)/) || []).slice(1).map(Number);
+      const seconds = t.length === 3 ? t[0] * 3600 + t[1] * 60 + t[2] : 0;
+      return { f: f.replace(/^.*(-video-[a-z-]+\.\w+)$/, "$1"), kb: Math.round(b.length / 1024), webm: b.subarray(0, 4).toString("hex") === "1a45dfa3", fps: seconds ? Math.round((frames / seconds) * 10) / 10 : 0 };
     });
     // Its name is final at the computer too (other formats exported there keep it).
     out.nameLocked = await js(`document.getElementById("motionName").readOnly && document.getElementById("motionName").value`);
@@ -2092,7 +2099,7 @@ async function checkRemoteRecording(js) {
       out.preview.status === 200 && out.preview.type === "image/jpeg" && out.preview.jpeg && out.preview.kb > 1 &&
       out.full.frames >= 12 && out.full.size && out.full.small && out.full.size.w > out.full.small.w && out.full.fps >= 6 &&
       out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
-      out.videos.map((v) => v.f).sort().join() === "-video-chest.webm,-video-head.webm" && out.videos.every((v) => v.webm && v.kb > 5) &&
+      out.videos.map((v) => v.f).sort().join() === "-video-chest.webm,-video-head.webm" && out.videos.every((v) => v.webm && v.kb > 5 && v.fps > 16) &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
       /^0:\d\d$/.test(out.metadata.length) && out.metadata.length_s > 1 &&
       out.savedHands && out.savedHands.length === 2 && out.savedHands.some((h) => /^Head /.test(h)) && out.savedHands.some((h) => /^Chest /.test(h)) &&
