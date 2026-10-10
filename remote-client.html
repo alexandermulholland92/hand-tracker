@@ -153,7 +153,7 @@
     <div id="camNote"></div>
   </section>
 
-  <section class="panel details" aria-labelledby="detailsTitle">
+  <section class="panel details" id="detailsPanel" aria-labelledby="detailsTitle">
     <h2 id="detailsTitle">Take details</h2>
     <div id="requiredRow" hidden><span>Needed before recording:</span><button type="button" id="requiredBtn" class="small" aria-pressed="true">On</button></div>
     <label>Contributor <input id="contributor" type="text" maxlength="200" autocomplete="off" enterkeyhint="next" /></label>
@@ -178,6 +178,10 @@
     <div id="sentrySettings" hidden>
       <div class="row"><span class="grow">Ignore pets and animals</span><button type="button" id="sentryPets" class="small" aria-pressed="false">Off</button></div>
       <div class="sub">Movement where a cat, dog, bird or other animal is (and no person) doesn't count.</div>
+      <div id="sentryHandsBox">
+        <div class="row"><span class="grow">Track hands while it's on</span><button type="button" id="sentryHands" class="small" aria-pressed="false">Off</button></div>
+        <div class="sub">Off, the cameras carry on without finding hands: more of the computer is left for watching, and the photos and videos have no skeletons. Takes can't be started meanwhile, so the take details are hidden.</div>
+      </div>
       <div class="row"><span class="grow">Boxes on each camera</span><select id="sentryRows" aria-label="Rows of boxes"></select><span>×</span><select id="sentryCols" aria-label="Columns of boxes"></select></div>
       <div class="row"><span class="grow">Sensitivity</span><select id="sentrySens"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
       <div class="row"><span class="grow">Show the boxes here</span><button type="button" id="sentryBoxes" class="small on" aria-pressed="true">On</button></div>

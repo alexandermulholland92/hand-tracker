@@ -21,13 +21,18 @@
  * this); other cameras with an object finder in the app (object-finder.js), run only when
  * something moves.
  *
+ * Hand tracking is off while it's on (the cameras' pictures carry on, with no hands): nobody's
+ * there to track, the processor is left for watching, and no skeletons are drawn on its photos
+ * and videos. A switch on the page tracks them anyway. With them off, the page hides the take
+ * details and a take can't be started from it (one already recording keeps its hands).
+ *
  * How movement is measured: about eight times a second each camera's picture is shrunk to a
  * small grey picture (64 pixels across; an OAK camera makes it itself). After a light blur, a
  * pixel whose brightness changed by more than CHANGE since the last look moved. A box moves
  * when enough of its pixels did (the sensitivity). When most of the whole picture changes at
  * once, that's the light (a lamp, the camera adjusting), not movement.
  *
- *   Sentry.init({ prefs, setPref, views, host, onWantsChange, hostName, link, looking })
+ *   Sentry.init({ prefs, setPref, views, host, onWantsChange, onTrackingChange, hostName, link, looking })
  *     views() -> the cameras now: [{ key, index (its place in remote recording's list), name,
  *       canvas() (the canvas its picture is drawn on: what's recorded), frame() (the picture
  *       tracked), mirrored() (its preview is), rotation() (an OAK camera: the turn its own grey
@@ -36,13 +41,15 @@
  *     host: desktop or mobile (saving into the remote recording folder and deleting Sentry's
  *       files there: host.remote.deleteSentry({ names } or { all }), ntfy)
  *     onWantsChange(): the OAK cameras' options changed (wantsMotion / wantsObjects)
+ *     onTrackingChange(): whether the cameras should track hands changed (wantsTracking)
  *     hostName() -> this computer's name, link() -> its remote recording page (for ntfy's alerts)
  *     looking() -> a page is showing the previews now (while it's off, it measures only then)
  *   Sentry.wantsMotion()   // the OAK cameras should send their grey pictures
  *   Sentry.wantsObjects()  // ... and find objects (ignore pets and animals)
+ *   Sentry.wantsTracking() // the cameras should track hands (not while it's on, unless it's asked to)
  *   Sentry.remoteState()   // for the page: its settings, each camera's boxes, the alerts
  *   await Sentry.command(c) // from the page: { shown, armed, rows, cols, sensitivity,
- *                          //   ignoreAnimals, photo, video, sound, ntfy: { on, server, photo,
+ *                          //   ignoreAnimals, handTracking, photo, video, sound, ntfy: { on, server, photo,
  *                          //   newTopic, test }, box: { camera, cell, off }, watchAll,
  *                          //   deleteAlerts: [alert ids] (their photos and videos too),
  *                          //   deleteAll (every Sentry photo and video in the folder) }
@@ -71,8 +78,9 @@
   // DETECT_GAP_S), so an animal walking in may not be found until up to ~0.45 s later.
   const OAK_LOOSE_STREAK = 4;
   const HEAT_FADE = 0.6; // a box shown moving on the page fades over a few looks
+  const FLAGS = ["shown", "armed", "ignoreAnimals", "handTracking", "photo", "video", "sound"];
 
-  let prefs = {}, setPref = () => {}, viewsOf = () => [], host = null, onWantsChange = () => {}, hostName = () => "", linkOf = () => "", lookingOf = () => true;
+  let prefs = {}, setPref = () => {}, viewsOf = () => [], host = null, onWantsChange = () => {}, onTrackingChange = () => {}, hostName = () => "", linkOf = () => "", lookingOf = () => true;
   let cfg = null;
   let timer = null;
   const per = new Map(); // view key -> { prev, streak, levels, heat, session, lastAlertAt, finding }
@@ -85,6 +93,7 @@
   function defaults() {
     return {
       shown: false, armed: false, rows: 3, cols: 4, sensitivity: "medium", ignoreAnimals: false,
+      handTracking: false, // the hands tracked while it's on
       photo: true, video: true, sound: true,
       ntfy: { on: false, server: "https://ntfy.sh", topic: "", photo: false },
       excluded: {}, // camera key -> { "3x4": [box numbers, in the camera's own picture] }
@@ -95,7 +104,7 @@
     const d = defaults();
     cfg = {
       ...d,
-      ...Object.fromEntries(["shown", "armed", "ignoreAnimals", "photo", "video", "sound"].filter((k) => typeof s[k] === "boolean").map((k) => [k, s[k]])),
+      ...Object.fromEntries(FLAGS.filter((k) => typeof s[k] === "boolean").map((k) => [k, s[k]])),
       rows: clamp(s.rows, 1, MAX_ROWS, d.rows), cols: clamp(s.cols, 1, MAX_COLS, d.cols),
       sensitivity: SENSITIVITY[s.sensitivity] ? s.sensitivity : d.sensitivity,
       ntfy: { ...d.ntfy, ...(s.ntfy || {}) },
@@ -568,11 +577,17 @@
 
   const wantsMotion = () => !!cfg && (cfg.armed || cfg.shown);
   const wantsObjects = () => !!cfg && cfg.armed && cfg.ignoreAnimals;
+  const wantsTracking = () => !cfg || !cfg.armed || cfg.handTracking;
   function notifyWants() {
     const key = `${wantsMotion()}${wantsObjects()}`;
-    if (key === notifyWants.last) return;
-    notifyWants.last = key;
-    onWantsChange();
+    if (key !== notifyWants.last) {
+      notifyWants.last = key;
+      onWantsChange();
+    }
+    if (wantsTracking() !== notifyWants.tracking) {
+      notifyWants.tracking = wantsTracking();
+      onTrackingChange();
+    }
   }
 
   function statusText(views) {
@@ -593,7 +608,7 @@
     const boxes = cfg.rows * cfg.cols;
     return {
       shown: cfg.shown, armed: cfg.armed, rows: cfg.rows, cols: cfg.cols, sensitivity: cfg.sensitivity,
-      ignoreAnimals: cfg.ignoreAnimals, photo: cfg.photo, video: cfg.video, sound: cfg.sound,
+      ignoreAnimals: cfg.ignoreAnimals, handTracking: cfg.handTracking, photo: cfg.photo, video: cfg.video, sound: cfg.sound,
       ntfy: { on: cfg.ntfy.on, server: cfg.ntfy.server, topic: cfg.ntfy.topic, photo: cfg.ntfy.photo },
       note: statusText(views),
       canDelete: !!(host && host.remote && host.remote.deleteSentry), // its photos and videos, from the page
@@ -623,7 +638,8 @@
     if (c.rows !== undefined) cfg.rows = clamp(c.rows, 1, MAX_ROWS, cfg.rows);
     if (c.cols !== undefined) cfg.cols = clamp(c.cols, 1, MAX_COLS, cfg.cols);
     if (SENSITIVITY[c.sensitivity]) cfg.sensitivity = c.sensitivity;
-    for (const k of ["ignoreAnimals", "photo", "video", "sound"]) if (typeof c[k] === "boolean") cfg[k] = c[k];
+    for (const k of ["ignoreAnimals", "handTracking", "photo", "video", "sound"]) if (typeof c[k] === "boolean") cfg[k] = c[k];
+    if (typeof c.handTracking === "boolean") message = cfg.handTracking ? "Hands are tracked while Sentry is on." : "Hands aren't tracked while Sentry is on.";
     if (c.ntfy && typeof c.ntfy === "object") {
       const n = { ...cfg.ntfy };
       if (typeof c.ntfy.on === "boolean") n.on = c.ntfy.on;
@@ -678,17 +694,20 @@
     viewsOf = opts.views || viewsOf;
     host = opts.host || null;
     onWantsChange = opts.onWantsChange || onWantsChange;
+    onTrackingChange = opts.onTrackingChange || onTrackingChange;
     hostName = opts.hostName || hostName;
     linkOf = opts.link || linkOf;
     lookingOf = opts.looking || lookingOf;
     load();
     notifyWants.last = `${wantsMotion()}${wantsObjects()}`;
+    notifyWants.tracking = wantsTracking();
     if (cfg.armed) setArmed(true);
     running();
+    if (!wantsTracking()) onTrackingChange(); // (on when it was left on)
   }
 
   global.Sentry = {
-    init, wantsMotion, wantsObjects, remoteState, command,
+    init, wantsMotion, wantsObjects, wantsTracking, remoteState, command,
     isArmed: () => !!cfg && cfg.armed,
     _test: { shrink, blur, moved, levels, turn, turnBox, withoutAnimals, animalsOnly, serverOnly, sample, events, per, toCamera, config: () => cfg },
   };

@@ -614,7 +614,8 @@
   }
 
   // Several cameras: every camera's tile follows the Overlay button and More settings too.
-  const tileSettings = () => ({ display: { ...display }, overlay: overlayOn, square: squareOn, far: { ...farPrefs }, gloves: glovesOn, readable: readableOn, oak: oakOptions() });
+  // (Sentry mode has the tiles' hand tracking off while it watches, unless it's asked otherwise.)
+  const tileSettings = () => ({ display: { ...display }, overlay: overlayOn, square: squareOn, far: { ...farPrefs }, gloves: glovesOn, readable: readableOn, oak: oakOptions(), tracking: !window.Sentry || Sentry.wantsTracking() });
   function syncTiles() {
     if (window.MultiCamera && MultiCamera.setOptions) MultiCamera.setOptions(tileSettings());
   }
@@ -1758,6 +1759,7 @@
         restartOak();
         syncTiles();
       },
+      onTrackingChange: syncTiles,
       looking: () => RemoteRecordUI.looking(),
       link: () => RemoteRecordUI.tailnetLink(),
       hostName: () => {

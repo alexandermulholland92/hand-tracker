@@ -129,7 +129,7 @@ function cleanSettings(s) {
 // Sentry mode from the page (sentry.js): shown or not, on or off, its settings, a box of a
 // running camera left out or watched again, or every box watched; ntfy's server (a web address),
 // a new topic or a test. Only those, each checked.
-const SENTRY_FLAGS = ["shown", "armed", "ignoreAnimals", "photo", "video", "sound"];
+const SENTRY_FLAGS = ["shown", "armed", "ignoreAnimals", "handTracking", "photo", "video", "sound"];
 function cleanSentry(s) {
   if (!s || typeof s !== "object") return null;
   const out = {};
