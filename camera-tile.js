@@ -39,7 +39,7 @@
   let objects = null; // an OAK camera's last objects found
   const oak = params.get("oak");
   let lastBitmap = null;
-  let pictures = 0; // pictures drawn (an OAK camera's hands can come without theirs)
+  let pictures = 0; // pictures drawn (an OAK camera's hands can come without theirs; a webcam's, each frame)
 
   // What's drawn over the picture: the main window's tags, boxes and far-away search area,
   // as its Show buttons say (setOptions); until they arrive, which hand each is.
@@ -101,6 +101,7 @@
       message.hidden = true;
       HandTracker.onHandLandmarks(({ hands, timestamp }) => {
         latest = hands;
+        pictures++;
         gestures.update(hands);
         // Readable text (only when it's on: one text reader per camera would be a lot for a
         // small computer): text in a mirrored picture shown the right way round.

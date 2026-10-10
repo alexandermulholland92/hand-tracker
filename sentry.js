@@ -23,8 +23,10 @@
  *
  * Hand tracking is off while it's on (the cameras' pictures carry on, with no hands): nobody's
  * there to track, the processor is left for watching, and no skeletons are drawn on its photos
- * and videos. Movement is watched for as ever. A switch on the page tracks them anyway; a take
- * recorded meanwhile has its hands tracked until it stops.
+ * and videos. Movement is watched for as ever. An OAK camera is started again without the
+ * hands' models (multi-camera.js). A switch on the page tracks them anyway. With them off, the
+ * page hides the take details and a take can't be started (one already recording keeps its
+ * hands until it stops).
  *
  * How movement is measured: about eight times a second each camera's picture is shrunk to a
  * small grey picture (64 pixels across; an OAK camera makes it itself). After a light blur, a
@@ -291,14 +293,24 @@
     }
     for (const v of views) {
       const st = stateOf(v.key);
-      let now = null;
+      let now = null, from = "";
       try {
+        // An OAK camera's own grey picture, else the picture shrunk here (an OAK camera
+        // starting, or starting again). The two aren't alike enough to compare: a switch from
+        // one to the other starts afresh.
         const g = v.grey && v.grey();
+        from = g ? "camera" : "here";
         now = g ? turn(g, v.rotation ? v.rotation() : 0) : shrink(v.frame());
       } catch {
         now = null;
       }
-      if (!now) continue;
+      if (from !== st.from) Object.assign(st, { prev: null, streak: 0, from });
+      if (!now) {
+        // No picture now: nothing moves, and the next is a fresh start.
+        Object.assign(st, { prev: null, streak: 0, mask: null, levels: [], heat: [] });
+        endIfStill(v, st);
+        continue;
+      }
       now = blur(now);
       const mask = moved(st.prev, now);
       st.prev = now;
@@ -318,9 +330,14 @@
         if (objects) remember(st, objects, v.rotation ? v.rotation() : 0);
       }
       if (cfg.armed && st.streak >= STREAK) consider(v, st, off, need);
-      if (st.session && performance.now() - st.session.lastMovedAt > STILL_S * 1000) endSession(v.key, st);
-      else if (st.session && st.session.rec && st.session.rec.elapsed() > MAX_VIDEO_S) endSession(v.key, st);
+      endIfStill(v, st);
     }
+  }
+
+  // An alert's video ends once its camera's been still a while, or it's long enough.
+  function endIfStill(v, st) {
+    if (st.session && performance.now() - st.session.lastMovedAt > STILL_S * 1000) endSession(v.key, st);
+    else if (st.session && st.session.rec && st.session.rec.elapsed() > MAX_VIDEO_S) endSession(v.key, st);
   }
 
   // Movement in a watched box: an alert (or more of one going on), unless it's an animal's.
@@ -703,7 +720,6 @@
     notifyWants.tracking = wantsTracking();
     if (cfg.armed) setArmed(true);
     running();
-    if (!wantsTracking()) onTrackingChange(); // (on when it was left on)
   }
 
   global.Sentry = {

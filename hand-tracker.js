@@ -1701,13 +1701,15 @@
   }
 
   // Hand tracking on or off (the picture carries on either way). Back on, the hands are
-  // looked for afresh.
+  // looked for afresh. (Off, nothing of far-away hands' search is left drawn either.)
   function setTracking(value) {
     if (!!value === tracking) return;
     tracking = !!value;
     resetHands();
     restartTracking = true;
-    lastRegion = null;
+    lastRegion = focusRegion = null;
+    lastFocus = { region: null, body: null };
+    farSearch = 0;
   }
 
   function setConfidence({ detection = confidence.detection, tracking = confidence.tracking } = {}) {

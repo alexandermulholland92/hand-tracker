@@ -10,7 +10,7 @@ far from the camera, and, on depth cameras, each hand's distance.
 Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
     python oak_bridge.py --models DIR [--lm lite|full] [--two-hands] [--xyz]
                          [--far both|higher|left|right] [--all-hands] [--fps N] [--device ID]
-                         [--mjpeg auto|on|off] [--detect] [--picture color|depth] [--motion]
+                         [--mjpeg auto|on|off] [--detect] [--picture color|depth] [--motion] [--no-hands]
     (--device: which OAK camera, by its id from --list; the first one found otherwise.
      --mjpeg: the camera sends its pictures as JPEG from its own encoder, about a tenth of the
      data; auto: over USB 2, where the raw pictures of one camera nearly fill the link, and on
@@ -21,7 +21,11 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
      --picture depth: send the depth picture (coloured: near is red, far is blue) instead of the
      colour one, lined up with it; depth cameras only.
      --motion: the camera also makes a small grey picture (64 x 36) each frame, sent along for
-     Sentry mode to measure movement on.)
+     Sentry mode to measure movement on.
+     --no-hands: no hand tracking (Sentry mode, while it doesn't track hands): none of the hands'
+     models run on the camera, only its picture (the same size) and what else is asked for;
+     each frame's "hands" is empty. The depth cameras run only for an object's distance or the
+     depth picture.)
     python oak_bridge.py --check        prints the versions it would use
     python oak_bridge.py --list         prints the OAK cameras found
     python oak_bridge.py --simulate     no camera: a moving synthetic hand, for testing
@@ -192,6 +196,94 @@ def add_extras(dai, pipeline, cam, stereo, extras, tracker):
         out("motion_out", small.out)
 
 
+class PictureOnly:
+    """The camera without hand tracking (--no-hands): its colour picture, the same size as the
+    hand tracker's (and as JPEG from its own encoder or not, as that one), and the extras
+    asked for alongside (add_extras); none of the hands' models run, leaving the camera's
+    processor to the rest. It's what stream() and run() use of a tracker; its frames have no
+    hands. The depth cameras run only for something that uses them (an object's distance, the
+    depth picture), and the frame rate is the one asked for, else 30 (at most 30 alongside the
+    depth cameras or the object finder, as Sentry mode's videos are)."""
+
+    RESOLUTION = (1920, 1080)
+
+    def __init__(self, dai, device, extras, fps=None, depth=False, mjpeg=False, frame_height=640):
+        import mediapipe_utils as mpu
+
+        self.device = device
+        self.mjpeg = mjpeg
+        self.jpeg = None
+        self.xyz = False  # (no hands to measure)
+        sw, sh = self.RESOLUTION
+        _, self.scale_nd = mpu.find_isp_scale_params(frame_height * sw / sh, self.RESOLUTION, is_height=False)
+        self.img_h = int(round(sh * self.scale_nd[0] / self.scale_nd[1]))
+        self.img_w = int(round(sw * self.scale_nd[0] / self.scale_nd[1]))
+        cameras = device.getConnectedCameras()
+        self.has_depth = bool(depth and dai.CameraBoardSocket.LEFT in cameras and dai.CameraBoardSocket.RIGHT in cameras)
+        self.stereo = self.has_depth and bool(extras.get("detect") or extras.get("picture") == "depth")
+        self.internal_fps = min(fps or 30, 30) if self.stereo or extras.get("detect") else fps or 30
+        device.startPipeline(self.create_pipeline(dai, extras))
+        self.q_video = device.getOutputQueue(name="cam_out", maxSize=1, blocking=False)
+
+    def create_pipeline(self, dai, extras):
+        pipeline = dai.Pipeline()
+        pipeline.setOpenVINOVersion(version=dai.OpenVINO.Version.VERSION_2021_4)
+        cam = pipeline.createColorCamera()
+        cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+        cam.setBoardSocket(dai.CameraBoardSocket.RGB)
+        cam.setInterleaved(False)
+        cam.setIspScale(self.scale_nd[0], self.scale_nd[1])
+        cam.setFps(self.internal_fps)
+        cam.setVideoSize(self.img_w, self.img_h)
+        cam.setPreviewSize(self.img_w, self.img_h)
+        cam_out = pipeline.createXLinkOut()
+        cam_out.setStreamName("cam_out")
+        cam_out.input.setQueueSize(1)
+        cam_out.input.setBlocking(False)
+        if self.mjpeg:
+            encoder = pipeline.create(dai.node.VideoEncoder)
+            encoder.setDefaultProfilePreset(self.internal_fps, dai.VideoEncoderProperties.Profile.MJPEG)
+            encoder.setQuality(80)
+            cam.video.link(encoder.input)
+            encoder.bitstream.link(cam_out.input)
+        else:
+            cam.video.link(cam_out.input)
+        stereo = None
+        if self.stereo:
+            # As the hand tracker sets them up: the colour camera at its calibrated focus, so the
+            # depth lines up with its picture.
+            cam.initialControl.setManualFocus(self.device.readCalibration().getLensPosition(dai.CameraBoardSocket.RGB))
+            left = pipeline.createMonoCamera()
+            left.setBoardSocket(dai.CameraBoardSocket.LEFT)
+            left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+            left.setFps(self.internal_fps)
+            right = pipeline.createMonoCamera()
+            right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+            right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+            right.setFps(self.internal_fps)
+            stereo = pipeline.createStereoDepth()
+            stereo.setConfidenceThreshold(230)
+            stereo.setLeftRightCheck(True)
+            stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
+            stereo.setSubpixel(False)
+            left.out.link(stereo.left)
+            right.out.link(stereo.right)
+        add_extras(dai, pipeline, cam, stereo, extras, self)
+        return pipeline
+
+    def next_frame(self):
+        import numpy as np
+
+        frame = self.q_video.get()
+        if self.mjpeg:
+            self.jpeg = bytes(frame.getData())
+            return np.empty((self.img_h, self.img_w, 0), dtype=np.uint8), [], None
+        return frame.getCvFrame(), [], None
+
+    def exit(self):
+        self.device.close()
+
+
 def encode(frame, quality=75):
     import cv2
 
@@ -247,7 +339,8 @@ def simulate(args):
     w, h = 1152, 648
     base = [(0, 0), (-.04, -.03), (-.08, -.07), (-.11, -.10), (-.13, -.13), (-.035, -.12), (-.04, -.17), (-.043, -.20), (-.045, -.23),
             (0, -.125), (0, -.18), (0, -.215), (0, -.245), (.03, -.115), (.035, -.165), (.038, -.195), (.04, -.22), (.055, -.10), (.065, -.135), (.07, -.16), (.075, -.18)]
-    status("running", camera="Simulated OAK camera", width=w, height=h, depth=True, detect=bool(args.detect), picture=args.picture, motion=bool(args.motion))
+    status("running", camera="Simulated OAK camera", width=w, height=h, depth=True, detect=bool(args.detect), picture=args.picture, motion=bool(args.motion),
+           hands=not args.no_hands)
     t0 = time.time()
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     frame[:, :] = (60, 45, 30)
@@ -286,8 +379,10 @@ def simulate(args):
             jpeg = b""
         if args.detect:
             header["objects"] = objects
-        # The synthetic hand is a right hand as MediaPipe labels it for a camera facing you.
-        header["hands"] = [{"lm": lm, "world": world, "label": "Left", "anatomical": False, "score": 0.97, "lm_score": 0.95, "xyz": [120.0, -40.0, 850.0], "gesture": "FIVE"}]
+        # The synthetic hand is a right hand as MediaPipe labels it for a camera facing you
+        # (in the picture either way: with --no-hands it isn't looked for).
+        if not args.no_hands:
+            header["hands"] = [{"lm": lm, "world": world, "label": "Left", "anatomical": False, "score": 0.97, "lm_score": 0.95, "xyz": [120.0, -40.0, 850.0], "gesture": "FIVE"}]
         send(header, jpeg)
         n += 1
         time.sleep(1 / 30)
@@ -342,8 +437,9 @@ class Usb2Cameras:
 
 def run(args):
     models = args.models
-    need = ["palm_detection_sh4.blob", f"hand_landmark_{args.lm}_sh4.blob", "PDPostProcessing_top2_sh1.blob"]
-    if args.far:
+    hands = not args.no_hands
+    need = ["palm_detection_sh4.blob", f"hand_landmark_{args.lm}_sh4.blob", "PDPostProcessing_top2_sh1.blob"] if hands else []
+    if args.far and hands:
         need.append("movenet_singlepose_lightning_U8_transpose.blob")
     missing = [m for m in need if not os.path.isfile(os.path.join(models, m))]
     if missing:
@@ -513,7 +609,10 @@ def run(args):
             device = dai.Device(info, dai.UsbSpeed.HIGH if high else dai.UsbSpeed.SUPER)
             usb = str(device.getUsbSpeed()).split(".")[-1]
             mjpeg = args.mjpeg == "on" or (args.mjpeg == "auto" and (usb in ("LOW", "FULL", "HIGH") or platform.machine().lower() in ("aarch64", "arm64")))
-            tracker = Tracker(**common, **extra, device=device, mjpeg=mjpeg)
+            if hands:
+                tracker = Tracker(**common, **extra, device=device, mjpeg=mjpeg)
+            else:
+                tracker = PictureOnly(dai, device, extras, fps=args.fps, depth=args.xyz, mjpeg=mjpeg)
         except SystemExit:
             if device is not None:
                 device.close()
@@ -530,7 +629,8 @@ def run(args):
                 # Finding objects as well may be more than the camera's processor can take with the
                 # hands' models (or its model may not load): started again without it.
                 extras["detect"] = None
-                warnings.append(f"Finding objects couldn't run alongside the hand tracking on this camera ({text.splitlines()[0][:160] if text else 'no reason given'}).")
+                alongside = " alongside the hand tracking" if hands else ""
+                warnings.append(f"Finding objects couldn't run{alongside} on this camera ({text.splitlines()[0][:160] if text else 'no reason given'}).")
                 status("starting", message="Starting the OAK camera again without finding objects…")
                 time.sleep(2)  # until the camera is let go
                 continue
@@ -559,8 +659,8 @@ def run(args):
         if args.picture == "depth" and "pic_out" not in streams:
             warnings.append("This camera has no depth cameras, so its colour picture is shown.")
         status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h,
-               depth=bool(getattr(tracker, "xyz", False)), id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
-               detect="det_out" in streams, picture="depth" if "pic_out" in streams else "color", motion="motion_out" in streams,
+               depth=bool(getattr(tracker, "xyz", False) or getattr(tracker, "has_depth", False)), id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
+               detect="det_out" in streams, picture="depth" if "pic_out" in streams else "color", motion="motion_out" in streams, hands=hands,
                warning=" ".join(dict.fromkeys(warnings)) or None)
         if retried:
             usb2.add(wanted)
@@ -597,6 +697,7 @@ def main():
     ap.add_argument("--detect", action="store_true", help="also find objects (person, cat, dog...) on the camera")
     ap.add_argument("--picture", choices=["color", "depth"], default="color", help="the picture sent: colour, or depth (depth cameras)")
     ap.add_argument("--motion", action="store_true", help="a small grey picture (64 x 36) with each frame, for Sentry mode")
+    ap.add_argument("--no-hands", action="store_true", help="no hand tracking: only the picture and what else is asked for (Sentry mode)")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--simulate", action="store_true")

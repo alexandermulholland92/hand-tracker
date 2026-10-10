@@ -637,12 +637,6 @@
     setPref("display", display);
     applyDisplay();
   }
-  // What only hands have (Hand box … Body & search area) is hidden while the cameras don't
-  // track hands (Sentry mode); Objects and FPS stay.
-  const HAND_SHOWS = ["box", "skeleton", "side", "scores", "gesture", "distance", "focus"];
-  function showHandSettings(on) {
-    for (const btn of showBar.querySelectorAll("button[data-show]")) if (HAND_SHOWS.includes(btn.dataset.show)) btn.hidden = !on;
-  }
   showBar.addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-show]");
     if (btn) toggleShow(btn.dataset.show);
@@ -1696,7 +1690,7 @@
     else if (key === "o") toggleOverlay();
     else if (key === " " && e.target.tagName !== "BUTTON") togglePause();
     else if (key === "t") setRotation((HandTracker.getRotation() + 90) % 360);
-    else if (SHOW_KEYS[key] && !showBar.querySelector(`button[data-show="${SHOW_KEYS[key]}"]`).hidden) toggleShow(SHOW_KEYS[key]);
+    else if (SHOW_KEYS[key]) toggleShow(SHOW_KEYS[key]);
     else return;
     e.preventDefault();
   });
@@ -1751,29 +1745,31 @@
     MultiCamera.init({
       prefs, setPref, app: window.HandTrackerApp, modelOf: () => Number(modelSelect.value), phone: onPhone,
       onClose: () => showPaused(HandTracker.isPaused()), // (Pause was the tiles' while they ran)
-      onTracking: showHandSettings,
     });
     syncTiles();
     // A phone's browser starting and stopping recording with those cameras (Windows, Mac and Linux app).
     RemoteRecordUI.init({ desktop, mobile, prefs, setPref, app: window.HandTrackerApp });
     // Sentry mode, set up and seen from remote recording's page (hidden there): it watches
     // remote recording's cameras, Several cameras. Only where remote recording is (the apps).
-    if (desktop || mobile) Sentry.init({
-      prefs, setPref,
-      host: desktop || mobile,
-      views: () => (MultiCamera.isActive() ? MultiCamera.sentryViews() : []),
-      onWantsChange: () => {
-        restartOak();
-        syncTiles();
-      },
-      onTrackingChange: syncTiles,
-      looking: () => RemoteRecordUI.looking(),
-      link: () => RemoteRecordUI.tailnetLink(),
-      hostName: () => {
-        const link = RemoteRecordUI.tailnetLink();
-        return link ? new URL(link).hostname.split(".")[0] : "";
-      },
-    });
+    if (desktop || mobile) {
+      Sentry.init({
+        prefs, setPref,
+        host: desktop || mobile,
+        views: () => (MultiCamera.isActive() ? MultiCamera.sentryViews() : []),
+        onWantsChange: () => {
+          restartOak();
+          syncTiles();
+        },
+        onTrackingChange: syncTiles,
+        looking: () => RemoteRecordUI.looking(),
+        link: () => RemoteRecordUI.tailnetLink(),
+        hostName: () => {
+          const link = RemoteRecordUI.tailnetLink();
+          return link ? new URL(link).hostname.split(".")[0] : "";
+        },
+      });
+      syncTiles(); // (the tiles' hands and OAK options as Sentry, left on or shown, wants them)
+    }
     // Capture sessions from a capture-operations dashboard: hidden until Ctrl+Alt+P (on a
     // phone: tapping the version under the title 7 times). So is watching a capture rig live,
     // from a capture-fleet dashboard. (The phone's bridge has the same ops/fleet/saving calls.)

@@ -15,7 +15,8 @@
  *             page), and whether each camera's video (and sound) is recorded with the take, and
  *             at what quality (videoQuality: low, standard, high or best);
  *   cameras — start Several cameras with the cameras picked that are plugged in;
- *   record  — start motion capture (starting the cameras first, if need be);
+ *   record  — start motion capture (starting the cameras first, if need be); not while Sentry
+ *             mode watches with hand tracking off (the page hides the take details then);
  *   stop    — stop it, and save the take into the remote recording folder by itself, in the
  *             export card's formats (a previous take not yet exported is saved the same way
  *             before a new one starts, rather than asking here);
@@ -577,6 +578,7 @@
     }
     if (action === "record") {
       if (recording) return { ok: true, message: "Already recording." };
+      if (global.Sentry && !global.Sentry.wantsTracking()) return { ok: false, message: "Hand tracking is off while Sentry mode watches: turn it on there (Track hands while it's on), or turn Sentry off, to record a take." };
       const missing = missingDetails();
       if (missing.length) return { ok: false, missing, message: `Fill in ${listOf(missing.map((k) => DETAIL_LABELS[k]))} first: each take is named after them.` };
       const need = requirement({ running: cams().isActive() });

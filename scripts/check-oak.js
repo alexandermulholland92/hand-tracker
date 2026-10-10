@@ -1,7 +1,8 @@
 // check-oak.js — OAK camera support on this computer, without a camera: runs the real
 // one-time setup (electron/oak.js: uv, a private Python with depthai, OpenCV and NumPy, the
 // camera models) into an empty folder, then checks that it reports ready, that depthai can
-// look for cameras, and that the helper streams frames (its simulated camera: a moving hand).
+// look for cameras, and that the helper streams frames (its simulated camera: a moving hand),
+// with its extras, and without hand tracking.
 // GitHub runs it on Linux PCs and 64-bit ARM (.github/workflows/check-oak.yml).
 //
 //   node scripts/check-oak.js [folder]     (default: a new temporary folder)
@@ -122,6 +123,62 @@ print(json.dumps(out))`, ...["palm_detection", "hand_landmark_full", "hand_landm
     extra.running && extra.running.detect && extra.running.motion && extra.running.picture === "depth" && labels.has("cat") && labels.has("person") &&
       sized && bottom > 0.02 && top === 0 && extra.every((f) => f.jpeg && f.jpeg[0] === 0xff),
     `${extra.length} frames, objects: ${[...labels].join(", ")}, ${greys.length} grey pictures (64x36: ${sized}), moved most: bottom row ${bottom.toFixed(3)}, top row ${top.toFixed(3)}`);
+
+  // Without hand tracking (Sentry mode with it off): no hands, and the rest as before.
+  const plain = await new Promise((resolve) => {
+    const got = [];
+    const timer = setTimeout(() => oak.stop(), 30000);
+    oak.start({ simulate: true, lm: "lite", detect: true, motion: true, hands: false }, (msg) => {
+      if (msg.status === "running") got.running = msg;
+      if (msg.frame) {
+        got.push(msg);
+        if (got.length === 30) oak.stop();
+      } else if (msg.status === "stopped") {
+        clearTimeout(timer);
+        resolve(got);
+      }
+    });
+  });
+  check("Without hand tracking (Sentry mode), the OAK helper sends no hands, still with its picture, the small grey picture and the objects (simulated camera)",
+    plain.running && plain.running.hands === false && plain.length >= 30 && plain.every((f) => f.frame.hands.length === 0 && f.jpeg && f.jpeg[0] === 0xff) &&
+      plain.some((f) => f.frame.grey) && plain.some((f) => (f.frame.objects || []).length),
+    `${plain.length} frames, ${plain.filter((f) => f.frame.hands.length).length} with hands, ${plain.filter((f) => f.frame.grey).length} grey pictures, running: ${JSON.stringify(plain.running && { hands: plain.running.hands })}`);
+
+  // The pipeline the helper really builds without hand tracking (PictureOnly), in this depthai,
+  // for a stand-in camera (none here): no hands' models on it, the picture the size the hand
+  // tracker's is, the extras asked for, and the depth cameras only for an object's distance.
+  const built = spawnSync(oak.paths.python, ["-W", "ignore", "-c", `
+import json, os, sys
+sys.path.insert(0, os.path.dirname(sys.argv[1]))
+import depthai as dai
+import oak_bridge as ob
+class Calibration:
+    def getLensPosition(self, socket): return 130
+class Device:
+    def __init__(self, depth): self.cams = [dai.CameraBoardSocket.RGB] + ([dai.CameraBoardSocket.LEFT, dai.CameraBoardSocket.RIGHT] if depth else [])
+    def getConnectedCameras(self): return self.cams
+    def readCalibration(self): return Calibration()
+    def startPipeline(self, p): self.pipeline = p
+    def getOutputQueue(self, name, maxSize, blocking): return None
+out = {}
+for name, depth, extras in [("motion", True, {"motion": True}), ("objects", True, {"motion": True, "detect": sys.argv[2]}), ("objects-oak1", False, {"motion": True, "detect": sys.argv[2]})]:
+    d = Device(depth)
+    t = ob.PictureOnly(dai, d, extras, depth=True)
+    nodes = [n[1] for n in d.pipeline.serializeToJson()["pipeline"]["nodes"]]
+    out[name] = {"size": [t.img_w, t.img_h], "stereo": t.stereo, "nodes": sorted(n["name"] for n in nodes),
+                 "streams": sorted(n["properties"].get("streamName", "") for n in nodes if n["name"] == "XLinkOut")}
+ob.OUT.write(json.dumps(out).encode())`, path.join(__dirname, "..", "oak", "oak_bridge.py"), path.join(oak.paths.models, "palm_detection_sh4.blob")], { encoding: "utf8" });
+  let pipes = {};
+  try {
+    pipes = JSON.parse(String(built.stdout).split(/\r?\n/).filter((l) => l.startsWith("{")).pop());
+  } catch {}
+  const p = (k) => pipes[k] || { nodes: [], streams: [] };
+  check("Without hand tracking, the OAK helper's pipeline has none of the hands' models: the picture (1152 x 648), the grey picture, the objects, and the depth cameras only for the objects' distances",
+    ["motion", "objects", "objects-oak1"].every((k) => p(k).size && p(k).size.join("x") === "1152x648" && !p(k).nodes.includes("NeuralNetwork") && !p(k).streams.includes("manager_out")) &&
+      p("motion").streams.join() === "cam_out,motion_out" && !p("motion").stereo && !p("motion").nodes.includes("StereoDepth") &&
+      p("objects").stereo && p("objects").nodes.includes("SpatialDetectionNetwork") && p("objects").streams.join() === "cam_out,det_out,motion_out" &&
+      !p("objects-oak1").stereo && p("objects-oak1").nodes.includes("DetectionNetwork") && !p("objects-oak1").nodes.includes("MonoCamera"),
+    JSON.stringify(Object.keys(pipes).length ? pipes : { status: built.status, error: built.error && built.error.message, out: String(built.stdout).slice(-300), err: String(built.stderr).slice(-600) }));
 
   if (!process.argv[2]) fs.rmSync(dir, { recursive: true, force: true });
   const failed = results.filter((r) => !r.ok).length;

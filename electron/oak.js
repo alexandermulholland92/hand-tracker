@@ -232,14 +232,16 @@ class OakCamera {
   }
 
   // options: { lm: "lite" | "full", twoHands, xyz, far: null | "both" | "higher" | "left" | "right", allHands, device, simulate,
-  //   detect (find objects too), picture: "color" | "depth", motion (each ninth's movement, for Sentry mode), fps }
+  //   detect (find objects too), picture: "color" | "depth", motion (each ninth's movement, for Sentry mode), fps,
+  //   hands (false: no hand tracking, none of the hands' models on the camera: Sentry mode) }
   // (device: which OAK camera, by its id; the first one found otherwise)
   start(options, onMessage) {
     this.stop();
     const started = (this.started = {});
     if (!options.simulate) {
-      // (The models first; this.stop() meanwhile cancels the start.)
-      this.fastModels(onMessage)
+      // (The models first; this.stop() meanwhile cancels the start. Without hand tracking the
+      // hands' models aren't needed: they're fetched the next time it starts with them.)
+      (options.hands === false ? Promise.resolve(false) : this.fastModels(onMessage))
         .then(() => (options.detect ? this.detectModel(onMessage) : false))
         .then((ok) => this.started === started && this.spawn({ ...options, detect: options.detect && ok }, onMessage));
       return;
@@ -258,6 +260,7 @@ class OakCamera {
     if (options.detect) args.push("--detect");
     if (options.picture === "depth") args.push("--picture", "depth");
     if (options.motion) args.push("--motion");
+    if (options.hands === false) args.push("--no-hands");
     if (Number.isInteger(options.fps) && options.fps >= 10 && options.fps <= 60) args.push("--fps", String(options.fps));
     const proc = spawn(this.paths.python, args, { windowsHide: true });
     this.proc = proc;
