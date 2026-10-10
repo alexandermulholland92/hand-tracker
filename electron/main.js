@@ -585,12 +585,12 @@ class SimulatedOak {
     this.onMessage = onMessage;
     onMessage({ status: "running", camera: options.device ? `Simulated OAK ${options.device}` : "Simulated OAK", width: w, height: h, depth: true, id: options.device || "SIMULATED-OAK", usb: "SUPER",
       far: options.far || null, // (the checks see which far-away mode it was started in)
-      detect: !!options.detect, picture: options.picture === "depth" ? "depth" : "color", motion: !!options.motion, fps: options.fps || null });
+      detect: !!options.detect, picture: options.picture === "depth" ? "depth" : "color", motion: !!options.motion, fps: options.fps || null, hands: options.hands !== false });
     this.timer = setInterval(() => {
       const t = (Date.now() - t0) / 1000;
       const cx = 0.5 + 0.2 * Math.sin(t), cy = 0.75;
       const hand = { lm: T.map(([x, y]) => [cx + x, cy + y, 0]), world: T.map(([x, y]) => [x * 0.75, y * 0.75, 0]), label: "Left", anatomical: false, score: 0.97, lm_score: 0.95, xyz: [120, -40, 850] };
-      const frame = { t: Math.round(t * 1000), w, h, fps: 30, hands: [hand] };
+      const frame = { t: Math.round(t * 1000), w, h, fps: 30, hands: options.hands === false ? [] : [hand] };
       // As oak_bridge.py --simulate: a cat walking along the bottom (moving its ninth of the
       // picture) and a person standing at the left.
       const catX = ((t * 0.25) % 1.2) - 0.1;

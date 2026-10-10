@@ -43,6 +43,8 @@
  *   HandTracker.setRotation(0 | 90 | 180 | 270); // turn the picture clockwise before tracking (a camera
  *                                         // mounted on its side or upside down); getCamera() is then turned too
  *   HandTracker.setPaused(true/false);    // freeze the live picture and tracking
+ *   HandTracker.setTracking(true/false);  // hand tracking on or off: off, the picture still comes
+ *                                         // and is drawn, with no hands (Sentry mode)
  *   HandTracker.setFarMode({ enabled, raisedOnly, focus: "both" | "higher" | "left" | "right" });
  *                                         // far-away hands: find the body first, then look for hands
  *                                         // around its wrists (see "Far-away hands")
@@ -210,6 +212,7 @@
   let rotation = 0; // degrees clockwise the picture is turned before tracking: 0, 90, 180 or 270
   let externalCanvas = null; // an external source's picture, turned
   let paused = false; // the live picture and tracking are frozen
+  let tracking = true; // off: the picture is drawn as it comes, and no hands are looked for
   let external = null; // { name, width, height } while hands come from outside (an OAK camera)
   let loopKick = null; // re-arms the capture loop when the window is hidden or shown again
   // Far-away hands: settings, the square MediaPipe was given this frame (fractions of the
@@ -978,8 +981,22 @@
 
   function sendFrame() {
     lastFrame = frameImage();
+    if (!tracking) {
+      pictureOnly(lastFrame);
+      return Promise.resolve();
+    }
     inflight = processFrame(lastFrame).catch(handsFailed);
     return inflight;
+  }
+
+  // Hand tracking off: the picture drawn as it is, MediaPipe not given it (most of the work),
+  // and the callbacks told there are no hands.
+  function pictureOnly(image) {
+    if (switching) return;
+    tickFps();
+    drawStage(image, []);
+    const payload = { hands: [], timestamp: frameTime !== null ? frameTime : performance.now() };
+    for (const cb of callbacks) cb(payload);
   }
 
   async function processFrame(image) {
@@ -1276,6 +1293,7 @@
 
   function externalFrame(image, sw, sh, results, timestamp) {
     if (source !== "external" || !external || paused || !sw || !sh) return;
+    if (!tracking) results = {}; // (the hands it found are let go)
     const turned = rotation === 90 || rotation === 270;
     const w = turned ? sh : sw, h = turned ? sw : sh;
     const resized = w !== external.width || h !== external.height;
@@ -1682,6 +1700,18 @@
     }
   }
 
+  // Hand tracking on or off (the picture carries on either way). Back on, the hands are
+  // looked for afresh. (Off, nothing of far-away hands' search is left drawn either.)
+  function setTracking(value) {
+    if (!!value === tracking) return;
+    tracking = !!value;
+    resetHands();
+    restartTracking = true;
+    lastRegion = focusRegion = null;
+    lastFocus = { region: null, body: null };
+    farSearch = 0;
+  }
+
   function setConfidence({ detection = confidence.detection, tracking = confidence.tracking } = {}) {
     confidence = { detection: Math.min(0.95, Math.max(0.1, Number(detection))), tracking: Math.min(0.95, Math.max(0.1, Number(tracking))) };
     if (hands) hands.setOptions({ minDetectionConfidence: confidence.detection, minTrackingConfidence: confidence.tracking });
@@ -1758,6 +1788,8 @@
     getRotation: () => rotation,
     setPaused,
     isPaused: () => paused,
+    setTracking,
+    isTracking: () => tracking,
     setFarMode,
     getFarMode: () => ({ ...far }),
     getFocus: () => (far.enabled ? { region: lastFocus.region, body: lastFocus.body } : { region: null, body: null }),

@@ -633,7 +633,7 @@ public class RigServerPlugin extends Plugin {
     static JSObject cleanSentry(JSONObject s) {
         if (s == null) return null;
         JSObject out = new JSObject();
-        for (String k : new String[] { "shown", "armed", "ignoreAnimals", "photo", "video", "sound" }) {
+        for (String k : new String[] { "shown", "armed", "ignoreAnimals", "handTracking", "photo", "video", "sound" }) {
             if (s.opt(k) instanceof Boolean) out.put(k, s.optBoolean(k));
         }
         if (s.opt("rows") instanceof Integer && s.optInt("rows") >= 1 && s.optInt("rows") <= 9) out.put("rows", s.optInt("rows"));

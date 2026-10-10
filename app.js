@@ -614,7 +614,8 @@
   }
 
   // Several cameras: every camera's tile follows the Overlay button and More settings too.
-  const tileSettings = () => ({ display: { ...display }, overlay: overlayOn, square: squareOn, far: { ...farPrefs }, gloves: glovesOn, readable: readableOn, oak: oakOptions() });
+  // (Sentry mode has the tiles' hand tracking off while it watches, unless it's asked otherwise.)
+  const tileSettings = () => ({ display: { ...display }, overlay: overlayOn, square: squareOn, far: { ...farPrefs }, gloves: glovesOn, readable: readableOn, oak: oakOptions(), tracking: !window.Sentry || Sentry.wantsTracking() });
   function syncTiles() {
     if (window.MultiCamera && MultiCamera.setOptions) MultiCamera.setOptions(tileSettings());
   }
@@ -1750,21 +1751,25 @@
     RemoteRecordUI.init({ desktop, mobile, prefs, setPref, app: window.HandTrackerApp });
     // Sentry mode, set up and seen from remote recording's page (hidden there): it watches
     // remote recording's cameras, Several cameras. Only where remote recording is (the apps).
-    if (desktop || mobile) Sentry.init({
-      prefs, setPref,
-      host: desktop || mobile,
-      views: () => (MultiCamera.isActive() ? MultiCamera.sentryViews() : []),
-      onWantsChange: () => {
-        restartOak();
-        syncTiles();
-      },
-      looking: () => RemoteRecordUI.looking(),
-      link: () => RemoteRecordUI.tailnetLink(),
-      hostName: () => {
-        const link = RemoteRecordUI.tailnetLink();
-        return link ? new URL(link).hostname.split(".")[0] : "";
-      },
-    });
+    if (desktop || mobile) {
+      Sentry.init({
+        prefs, setPref,
+        host: desktop || mobile,
+        views: () => (MultiCamera.isActive() ? MultiCamera.sentryViews() : []),
+        onWantsChange: () => {
+          restartOak();
+          syncTiles();
+        },
+        onTrackingChange: syncTiles,
+        looking: () => RemoteRecordUI.looking(),
+        link: () => RemoteRecordUI.tailnetLink(),
+        hostName: () => {
+          const link = RemoteRecordUI.tailnetLink();
+          return link ? new URL(link).hostname.split(".")[0] : "";
+        },
+      });
+      syncTiles(); // (the tiles' hands and OAK options as Sentry, left on or shown, wants them)
+    }
     // Capture sessions from a capture-operations dashboard: hidden until Ctrl+Alt+P (on a
     // phone: tapping the version under the title 7 times). So is watching a capture rig live,
     // from a capture-fleet dashboard. (The phone's bridge has the same ops/fleet/saving calls.)

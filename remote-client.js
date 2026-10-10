@@ -6,7 +6,8 @@
  * all four roles; Stereo: a head camera, the others picked too; Freeform: any). Then each
  * camera's live preview, its role, turn and flip, the take details and Start/Stop. Hidden until
  * the title is tapped five times: Sentry mode (watching the cameras for movement, with boxes
- * over each preview to leave parts of the picture out).
+ * over each preview to leave parts of the picture out; while it's on, the hands aren't tracked
+ * unless it's asked to, and the take details are hidden).
  *
  * Where it runs, and how it reaches the computer:
  *   - served by the computer itself (electron/remote-record.js), in any browser: plain requests
@@ -259,10 +260,11 @@
   // ---------- Sentry mode (sentry.js on the computer) ----------
   // Hidden: tapping the page's title five times (or Ctrl+Alt+S) shows it, on every page the
   // computer serves, and hides it again. Then: on or off (on starts the cameras if they're off),
-  // ignoring pets and animals, the boxes over each camera's preview (tap one to leave it out of
-  // what's watched; the grid and the sensitivity for every camera), what an alert saves, the
-  // alerts on this phone (in the Hand Tracker app) and through ntfy, and the alerts themselves,
-  // each with its photo (a slice of the takes folder, as the takes come).
+  // ignoring pets and animals, tracking hands while it's on (off: the take details are hidden),
+  // the boxes over each camera's preview (tap one to leave it out of what's watched; the grid and
+  // the sensitivity for every camera), what an alert saves, the alerts on this phone (in the Hand
+  // Tracker app) and through ntfy, and the alerts themselves, each with its photo (a slice of the
+  // takes folder, as the takes come).
   let sentry = null; // the computer's Sentry state (null: it has none)
   let titleTaps = [];
   // (A Hand Tracker from before Sentry mode was set up here says nothing while it's hidden.)
@@ -303,6 +305,7 @@
   for (let n = 1; n <= 16; n++) $("sentryCols").insertAdjacentHTML("beforeend", `<option value="${n}">${n}</option>`);
   $("sentryBtn").addEventListener("click", () => sentryCommand({ armed: !(sentry && sentry.armed) }, false));
   $("sentryPets").addEventListener("click", () => sentryCommand({ ignoreAnimals: !(sentry && sentry.ignoreAnimals) }));
+  $("sentryHands").addEventListener("click", () => sentryCommand({ handTracking: !(sentry && sentry.handTracking) }, false));
   for (const [id, k] of [["sentryPhoto", "photo"], ["sentryVideo", "video"], ["sentrySound", "sound"]]) {
     $(id).addEventListener("click", () => sentryCommand({ [k]: !(sentry && sentry[k]) }));
   }
@@ -460,6 +463,9 @@
     $("sentrySettings").hidden = !newer;
     if (newer) {
       setToggle("sentryPets", st.ignoreAnimals, sending);
+      // (A Hand Tracker from before this switch tracks hands all the time.)
+      $("sentryHandsBox").hidden = typeof st.handTracking !== "boolean";
+      setToggle("sentryHands", st.handTracking, sending);
       setToggle("sentryPhoto", st.photo, sending);
       setToggle("sentryVideo", st.video, sending);
       setToggle("sentrySound", st.sound, sending || !st.video);
@@ -1020,7 +1026,8 @@
       const box = $(`cam${i}`);
       if (!box) return;
       box.style.order = slots[i];
-      const what = c.error ? `<span class="err">${esc(c.error)}</span>` : c.fps > 0 ? `${c.fps} fps · ${c.hands && c.hands.length ? esc(c.hands.join(" + ")) : "no hands"}` : '<span class="muted">starting…</span>';
+      const hands = c.tracking === false ? "hand tracking off" : c.hands && c.hands.length ? esc(c.hands.join(" + ")) : "no hands";
+      const what = c.error ? `<span class="err">${esc(c.error)}</span>` : c.fps > 0 ? `${c.fps} fps · ${hands}` : '<span class="muted">starting…</span>';
       box.querySelector(".what").innerHTML = `<span class="muted">${esc(c.label || c.name)}</span><br />${what}`;
       const role = box.querySelector("select");
       if (document.activeElement !== role) role.value = c.roleId || "";
@@ -1032,6 +1039,8 @@
     $("grid").classList.toggle("one", cams.length === 1);
     $("missing").textContent = cams.length && empty.length ? `Not connected: ${empty.map((b) => ROLES[b][1]).join(", ")}` : "";
 
+    // Hands not tracked (Sentry mode watching): no takes, so no take details either.
+    $("detailsPanel").hidden = s.tracking === false;
     required = s.detailsRequired !== false;
     $("requiredBtn").textContent = required ? "On" : "Off";
     $("requiredBtn").setAttribute("aria-pressed", String(required));
@@ -1254,8 +1263,9 @@
   });
   $("recBtn").addEventListener("click", () => {
     if (state && state.recording) return command("stop");
-    // Hand Tracker checks too (for every phone), but there's no need to ask it.
-    if (required) {
+    // Hand Tracker checks too (for every phone), but there's no need to ask it. (With the hands
+    // not tracked, it says why there's no take.)
+    if (required && !$("detailsPanel").hidden) {
       const d = readDetails();
       const missing = FIELDS.filter((k) => !d[k]);
       if (missing.length) return say(`Fill in ${markMissing(missing)} first: each take is named after them.`, true);

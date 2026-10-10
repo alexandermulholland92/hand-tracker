@@ -9,7 +9,7 @@
  * The tile page's API, for the page that shows it:
  *   await Tile.ready                          the camera is running
  *   Tile.hands()                              the hands on the last frame
- *   Tile.status()                             { fps, width, height, hands, recording, error }
+ *   Tile.status()                             { fps, width, height, hands, recording, error, tracking }
  *   Tile.startRecording() / Tile.stopRecording() -> the recording (RobotMotion), with
  *     clock_origin_ms: when its first frame was, in ms since 1970 (to line cameras up)
  *   Tile.oakHands(w, h, results, t)           an OAK camera's frame's hands (results as HandTracker takes
@@ -20,13 +20,16 @@
  *   Tile.setView({ rotation, mirror })        turn the picture (and its tracking) clockwise by 0, 90, 180
  *                                             or 270 degrees, and show it mirrored or not (just the look:
  *                                             Left stays the person's left)
- *   Tile.setOptions({ display, overlay, square, far, gloves, readable, paused })
+ *   Tile.setOptions({ display, overlay, square, far, gloves, readable, paused, tracking })
  *                                             the main window's More settings, any of them: what's drawn
  *                                             (the Show buttons, Overlay), Square crop, Far-away hands
  *                                             ({ enabled, focus, raisedOnly }), Black gloves, Readable text,
- *                                             Pause. An OAK camera finds its own hands, so Square crop,
- *                                             Black gloves and Readable text don't apply to it, and its
- *                                             far-away mode is the camera's (multi-camera.js starts it so).
+ *                                             Pause; and hand tracking (off while Sentry mode watches: the
+ *                                             picture carries on, with no hands). An OAK camera finds its
+ *                                             own hands, so Square crop, Black gloves and Readable text
+ *                                             don't apply to it, and its far-away mode is the camera's
+ *                                             (multi-camera.js starts it so); with tracking off, the hands
+ *                                             it finds are let go.
  */
 
 (function (global) {
@@ -36,7 +39,7 @@
   let objects = null; // an OAK camera's last objects found
   const oak = params.get("oak");
   let lastBitmap = null;
-  let pictures = 0; // pictures drawn (an OAK camera's hands can come without theirs)
+  let pictures = 0; // pictures drawn (an OAK camera's hands can come without theirs; a webcam's, each frame)
 
   // What's drawn over the picture: the main window's tags, boxes and far-away search area,
   // as its Show buttons say (setOptions); until they arrive, which hand each is.
@@ -98,6 +101,7 @@
       message.hidden = true;
       HandTracker.onHandLandmarks(({ hands, timestamp }) => {
         latest = hands;
+        pictures++;
         gestures.update(hands);
         // Readable text (only when it's on: one text reader per camera would be a lot for a
         // small computer): text in a mirrored picture shown the right way round.
@@ -122,7 +126,7 @@
     objects: () => objects,
     status: () => {
       const cam = error ? { width: 0, height: 0 } : HandTracker.getCamera();
-      return { fps: error ? 0 : HandTracker.getFPS(), width: cam.width, height: cam.height, hands: latest.map((h) => h.handedness), recording: RobotMotion.isRecording(), error, pictures };
+      return { fps: error ? 0 : HandTracker.getFPS(), width: cam.width, height: cam.height, hands: latest.map((h) => h.handedness), recording: RobotMotion.isRecording(), error, pictures, tracking: HandTracker.isTracking() };
     },
     oakHands: (w, h, results, t) => {
       if (!oak) return null;
@@ -168,8 +172,9 @@
         }
       }
       if (o.paused !== undefined && !!o.paused !== HandTracker.isPaused()) HandTracker.setPaused(!!o.paused);
+      if (o.tracking !== undefined) HandTracker.setTracking(!!o.tracking);
     },
-    options: () => ({ ...options, display: { ...options.display }, square: !oak && HandTracker.isSquareCrop(), gloves: !oak && HandTracker.getGloves(), farMode: HandTracker.getFarMode(), paused: HandTracker.isPaused() }),
+    options: () => ({ ...options, display: { ...options.display }, square: !oak && HandTracker.isSquareCrop(), gloves: !oak && HandTracker.getGloves(), farMode: HandTracker.getFarMode(), paused: HandTracker.isPaused(), tracking: HandTracker.isTracking() }),
     setView: ({ rotation, mirror } = {}) => {
       if (rotation !== undefined) HandTracker.setRotation(rotation);
       if (mirror !== undefined) HandTracker.setMirror(!!mirror);

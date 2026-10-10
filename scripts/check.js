@@ -634,7 +634,10 @@ function checkWifiJoin() {
 // video once it's turned off, both in the remote recording folder. Deleted from the page (two
 // taps): an alert with its photo and video, then every Sentry photo and video there (an older
 // one too), and nothing else. ntfy's test through a stand-in server; pets and animals ignored
-// or not. Also: the previews come about as often as
+// or not. While it's on the hands aren't tracked, but movement still is (the pictures carry on):
+// the page hides the take details and a take can't start; its switch turns the hands on (the
+// details back), and off again; with Sentry off, they're tracked as before. Also: the previews
+// come about as often as
 // full screen; a camera's video stopped at once is still a video; the object finder for
 // ignoring animals loads and runs.
 async function checkSentry(js) {
@@ -787,6 +790,39 @@ async function checkSentry(js) {
     })()`);
     await sleep(2500);
     out.leftOut = await js(`(() => { const st = Sentry._test.per.get(${JSON.stringify(camKey)}); return { armed: Sentry.isArmed(), events: Sentry._test.events.length, session: !!(st && st.session) }; })()`);
+    // On: the hands aren't tracked, but movement still is (the picture carries on); no take
+    // details on the page, and no take. Its switch turns the hands on (the details come back),
+    // then off again.
+    const tracked = () => js(`(async () => {
+      const st = Sentry._test.per.get(${JSON.stringify(camKey)});
+      const drawn = () => MultiCamera._tiles()[0].status.pictures;
+      const before = drawn();
+      let moved = 0;
+      for (let i = 0; i < 20; i++) {
+        moved = Math.max(moved, ...((st && st.levels) || [0]));
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const s = MultiCamera._tiles()[0].status;
+      return { all: MultiCamera.isTracking(), tile: s && s.tracking, fps: s && s.fps, drawn: drawn() - before, moved };
+    })()`);
+    out.handsOff = await tracked();
+    out.noTake = await post("record");
+    Object.assign(out, await pjs(`(async () => {
+      ${PAGE}
+      const out = {};
+      out.detailsHidden = !!(await until(() => $("detailsPanel").hidden && /hand tracking off/.test(document.querySelector("#cam0 .what").textContent)));
+      out.handsSwitch = !$("sentryHandsBox").hidden && $("sentryHands").textContent;
+      $("sentryHands").click();
+      out.handsOn = !!(await until(() => $("sentryHands").classList.contains("on") && !$("detailsPanel").hidden && !/hand tracking off/.test(document.querySelector("#cam0 .what").textContent)));
+      return out;
+    })()`));
+    out.handsOnHere = await tracked();
+    out.handsOffAgain = await pjs(`(async () => {
+      ${PAGE}
+      $("sentryHands").click();
+      return !!(await until(() => !$("sentryHands").classList.contains("on") && $("detailsPanel").hidden));
+    })()`);
+    out.handsOffHere = await tracked();
     // Every box watched again (from the page): the clock is an alert, with its photo on the page.
     Object.assign(out, await pjs(`(async () => {
       ${PAGE}
@@ -808,6 +844,11 @@ async function checkSentry(js) {
       const e = Sentry._test.events[0];
       for (let i = 0; i < 80 && e && !e.video && !e.videoError; i++) await new Promise((r) => setTimeout(r, 125));
       return e ? { name: e.video && e.video.name, error: e.videoError || "", seconds: e.seconds } : null;
+    })()`);
+    out.handsAfterOff = await js(`MultiCamera.isTracking() && MultiCamera._tiles()[0].status.tracking`);
+    out.detailsAfterOff = await pjs(`(async () => {
+      ${PAGE}
+      return !!(await until(() => !$("detailsPanel").hidden));
     })()`);
     out.files = { photo: file(/^Sentry_.+\.jpg$/), video: file(/^Sentry_.+-video\.(webm|mp4)$/) };
     // Deleted from the page: the alert (two taps), with its photo and video; then every Sentry
@@ -865,11 +906,15 @@ async function checkSentry(js) {
   }
   out.ntfy = ntfyGot.map((g) => `${g.method} ${g.title}`);
   const r = out;
-  check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; deleted from the page (an alert with its files, then every Sentry file, nothing else); ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
+  check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; while it's on the hands aren't tracked but movement is, the take details are hidden and no take starts, unless its switch tracks them; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; deleted from the page (an alert with its files, then every Sentry file, nothing else); ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
     !r.error && r.mainPage && r.hiddenState && r.hiddenState.shown === false && r.hiddenAtStart && r.shown && r.direct.every((d) => d.kb > 3) && r.direct[0].bits === r.direct[1].bits && r.direct[3].bits >= r.direct[2].bits * 3 && r.direct[2].bits < r.direct[0].bits &&
       r.test && r.boxes === 144 && r.box.w >= r.box.cellW * 0.7 && r.box.h >= r.box.cellH * 0.6 && parseFloat(r.box.radius) < Math.min(r.box.w, r.box.h) / 2 &&
       r.previewFps >= 8 && r.hot && r.tapped && r.leftOutCell === "15" && r.untapped && r.petsOn && r.petsOff && r.petsState === false &&
       r.armed && r.leftOut.armed && r.leftOut.events === 0 && !r.leftOut.session &&
+      r.handsOff.all === false && r.handsOff.tile === false && r.handsOff.drawn > 0 && r.handsOff.moved > 0 && r.noTake.ok === false && /^Hand tracking is off/.test(r.noTake.message) &&
+      r.detailsHidden && r.handsSwitch === "Off" && r.handsOn && r.handsOnHere.all && r.handsOnHere.tile &&
+      r.handsOffAgain && r.handsOffHere.all === false && r.handsOffHere.tile === false && r.handsOffHere.drawn > 0 && r.handsOffHere.moved > 0 &&
+      r.handsAfterOff === true && r.detailsAfterOff &&
       r.alert && r.event && r.event.photo && r.listed.includes(r.event.camera) && r.off && r.video && r.video.name && r.hiddenAgain && r.hiddenStateAgain === '{"shown":false,"armed":false}' &&
       r.ntfy.length >= 2 && r.ntfy[0] === "POST Sentry: Test" && r.ntfy.slice(1).some((t) => t.startsWith("POST Sentry: ")) &&
       r.files.photo && r.files.photo.head.startsWith("ffd8") && r.files.photo.kb > 5 &&
@@ -1831,11 +1876,36 @@ async function checkSeveralOakCameras(js) {
     out.labels = [...document.querySelectorAll("#multiCamGrid .lbl")].map((l) => l.textContent);
     // Running tiles show their picture, not "Starting the OAK camera…" over it.
     out.messages = [...document.querySelectorAll("#multiCamGrid iframe")].map((f) => getComputedStyle(f.contentDocument.getElementById("message")).display);
+    // Hand tracking off (as Sentry mode has it): each OAK camera is started again without the
+    // hands' models, its picture carrying on, and no take starts meanwhile; back on, started
+    // again with them. A take recording when it goes off keeps its hands until it stops; then
+    // the cameras go without them.
+    const pics = () => MultiCamera._tiles().map((t) => t.status.pictures);
+    const tracked = () => MultiCamera._tiles().map((t) => t.status.tracking + ":" + t.cameraHands + ":" + t.status.hands.length).join();
+    const running = () => MultiCamera._tiles().every((t) => t.status && t.status.fps > 0 && !t.status.error);
+    const until = async (fn, ms = 20000) => { for (let i = 0; i < ms / 100; i++) { if (fn()) return true; await sleep(100); } return false; };
+    MultiCamera.setOptions({ tracking: false });
+    out.restartedOff = (await until(() => tracked() === "false:false:0,false:false:0" && running())) || tracked();
+    const before = pics();
+    await sleep(1000);
+    out.trackingOff = MultiCamera._tiles().map((t, i) => ({ fps: t.status.fps, drawn: t.status.pictures - before[i] }));
+    out.trackingOffShown = [...document.querySelectorAll("#multiCamGrid .st")].map((e) => e.textContent);
     document.getElementById("multiCamRecord").click();
-    await sleep(1500);
+    await sleep(300);
+    out.noTake = { recording: MultiCamera.isRecording(), note: document.getElementById("multiCamNote").textContent };
+    MultiCamera.setOptions({ tracking: true });
+    out.restartedOn = (await until(() => tracked() === "true:true:1,true:true:1" && running())) || tracked();
+    document.getElementById("multiCamRecord").click();
+    await sleep(800);
+    MultiCamera.setOptions({ tracking: false }); // (Sentry mode turned on meanwhile)
+    await sleep(1200);
+    out.whileRecording = tracked();
     document.getElementById("multiCamRecord").click();
     await sleep(500);
     out.info = document.getElementById("motionInfo").textContent;
+    out.afterRecording = (await until(() => tracked() === "false:false:0,false:false:0" && running())) && tracked();
+    MultiCamera.setOptions({ tracking: true });
+    out.trackingOn = (await until(() => tracked() === "true:true:1,true:true:1" && running())) && tracked();
     out.names = JSON.parse(localStorage.getItem("hand-tracker:prefs")).oakNames || {};
     MultiCamera.close();
     await sleep(300);
@@ -1843,10 +1913,13 @@ async function checkSeveralOakCameras(js) {
     document.getElementById("motionDiscardBtn").click(); // (an unexported capture would make the next one ask first)
     return out;
   })()`).catch((err) => ({ error: String((err && err.message) || err) }));
-  check("Several cameras with Luxonis OAK cameras: the picker lists them; each gets a tile, its hands found on the camera; they record together, hands named by role",
+  check("Several cameras with Luxonis OAK cameras: the picker lists them; each gets a tile, its hands found on the camera; with hand tracking off (Sentry mode) each is started again without the hands' models, its picture carrying on and no take starting (one recording keeps its hands until it stops), and with them once it's back on; they record together, hands named by role",
     r.boxes && r.boxes.filter((b) => b.startsWith("oak:")).length === 2 &&
       r.tiles.length === 2 && r.tiles.every((t) => t.fps > 0 && t.hands.length === 1 && !t.error) && r.tiles.map((t) => t.role).join() === "head,chest" &&
       r.messages.every((d) => d === "none") &&
+      r.restartedOff === true && r.trackingOff.every((t) => t.fps > 0 && t.drawn > 0) && r.trackingOffShown.every((t) => /hand tracking off/.test(t)) &&
+      r.noTake.recording === false && /^Hand tracking is off/.test(r.noTake.note) && r.restartedOn === true &&
+      r.whileRecording === "true:true:1,true:true:1" && r.afterRecording === "false:false:0,false:false:0" && r.trackingOn === "true:true:1,true:true:1" &&
       r.labels.every((l) => /Luxonis Simulated OAK SIMULATED-OAK-[AB] · depth/.test(l)) && r.names["SIMULATED-OAK-A"] === "Simulated OAK SIMULATED-OAK-A" &&
       /Head \w+/.test(r.info) && /Chest \w+/.test(r.info) && r.closed,
     JSON.stringify(r));
