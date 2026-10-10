@@ -102,6 +102,7 @@
       "electron/tak-convert.ps1",
       "electron/input-helper.ps1",
       "electron/input-helper-mac",
+      "electron/input-helper-linux.py",
       "oak/**"
     ],
     "win": {

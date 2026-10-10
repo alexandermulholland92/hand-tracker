@@ -4,9 +4,11 @@
  *
  * Windows: input-helper.ps1, a small PowerShell process using Windows' own SendInput
  * (nothing to install). macOS: input-helper-mac (built from input-helper-mac.m with the app),
- * once Hand Tracker is allowed under Privacy & Security → Accessibility. Linux: xdotool
- * (sudo apt install xdotool), which works with X11 desktops; Wayland desktops don't let apps
- * move the pointer or type into other apps.
+ * once Hand Tracker is allowed under Privacy & Security → Accessibility. Linux with an X11
+ * desktop: xdotool (sudo apt install xdotool). Linux with a Wayland desktop (Raspberry Pi
+ * OS's, GNOME's, KDE's), where no app may move the pointer or type into other apps:
+ * input-helper-linux.py, a virtual mouse and keyboard made with the kernel's uinput, which the
+ * desktop takes like plugged-in ones (the .deb lets whoever is logged in at the screen use it).
  *
  *   const input = new InputDriver();
  *   await input.start();                 // resolves when ready; rejects with a readable reason
@@ -26,6 +28,7 @@ const path = require("path");
 const unpacked = (file) => path.join(__dirname, file).replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
 const SCRIPT = unpacked("input-helper.ps1");
 const MAC_HELPER = unpacked("input-helper-mac");
+const LINUX_HELPER = unpacked("input-helper-linux.py");
 
 // Key names -> [Windows virtual-key code, xdotool key name].
 const KEYS = {
@@ -46,6 +49,20 @@ for (let c = 0; c < 26; c++) KEYS[String.fromCharCode(97 + c)] = [0x41 + c, Stri
 for (let d = 0; d <= 9; d++) KEYS[String(d)] = [0x30 + d, String(d)];
 for (let f = 1; f <= 24; f++) KEYS[`f${f}`] = [0x6f + f, `F${f}`];
 const MODIFIERS = new Set(["ctrl", "control", "shift", "alt", "win", "windows", "meta", "super", "cmd"]);
+
+// Key names -> Linux key codes (the kernel's input-event-codes.h), for input-helper-linux.py.
+const LINUX_KEYS = {
+  enter: 28, return: 28, esc: 1, escape: 1, tab: 15, space: 57, backspace: 14, delete: 111, del: 111,
+  insert: 110, home: 102, end: 107, pageup: 104, pagedown: 109, up: 103, down: 108, left: 105, right: 106,
+  ctrl: 29, control: 29, shift: 42, alt: 56, win: 125, windows: 125, meta: 125, super: 125, cmd: 125,
+  capslock: 58, printscreen: 99, menu: 127,
+  volumeup: 115, volumedown: 114, mute: 113, playpause: 164, nexttrack: 163, prevtrack: 165, stop: 166,
+  ";": 39, "=": 13, ",": 51, "-": 12, ".": 52, "+": 13, plus: 13, "/": 53, "`": 41, "[": 26, "\\": 43, "]": 27, "'": 40,
+};
+for (const [row, first] of [["qwertyuiop", 16], ["asdfghjkl", 30], ["zxcvbnm", 44]]) [...row].forEach((c, i) => (LINUX_KEYS[c] = first + i));
+for (let d = 1; d <= 9; d++) LINUX_KEYS[String(d)] = d + 1;
+LINUX_KEYS["0"] = 11;
+for (let f = 1; f <= 24; f++) LINUX_KEYS[`f${f}`] = f <= 10 ? 58 + f : f <= 12 ? 76 + f : 170 + f;
 
 // Key names -> Mac virtual key codes; "media N" for a media key (input-helper-mac.m); null where
 // a Mac keyboard has no such key. Win (and Cmd, Meta, Super) is Command, Alt is Option.
@@ -227,10 +244,6 @@ class XdotoolDriver {
         this.ready = null;
         return reject(new Error("Controlling the mouse and keyboard needs xdotool: sudo apt install xdotool"));
       }
-      if (process.env.WAYLAND_DISPLAY && !process.env.DISPLAY) {
-        this.ready = null;
-        return reject(new Error("This is a Wayland desktop, which doesn't let apps move the pointer or type into other apps. Log in with an X11 (Xorg) session to use this."));
-      }
       resolve();
     });
     return this.ready;
@@ -285,9 +298,37 @@ class XdotoolDriver {
   stop() {}
 }
 
+// A Wayland desktop: no app may move the pointer or type into other apps there (xdotool only
+// reaches the X server Wayland keeps for older apps, so it seemed to work and did nothing), so a
+// virtual mouse and keyboard do it (input-helper-linux.py, with the kernel's uinput).
+class UinputDriver extends HelperDriver {
+  constructor() {
+    super("python3", [LINUX_HELPER], (k) => LINUX_KEYS[k]);
+  }
+  start() {
+    if (this.ready) return this.ready;
+    try {
+      fs.accessSync("/dev/uinput", fs.constants.W_OK);
+    } catch {
+      const user = require("os").userInfo().username;
+      return Promise.reject(new Error(`This is a Wayland desktop, where apps can't move the pointer or type into other apps themselves, so Hand Tracker uses a virtual mouse and keyboard, which needs permission for /dev/uinput. Hand Tracker's package gives it to whoever is logged in at the screen when it's installed: reinstall it (sudo apt install --reinstall hand-tracker), or for now run: sudo setfacl -m u:${user}:rw /dev/uinput`));
+    }
+    return super.start();
+  }
+  // The helper takes a point as shares of the whole desktop (every screen together), as its
+  // mouse gives positions like a drawing tablet's.
+  move(x, y) {
+    const displays = require("electron").screen.getAllDisplays();
+    const x0 = Math.min(...displays.map((d) => d.bounds.x)), y0 = Math.min(...displays.map((d) => d.bounds.y));
+    const x1 = Math.max(...displays.map((d) => d.bounds.x + d.bounds.width)), y1 = Math.max(...displays.map((d) => d.bounds.y + d.bounds.height));
+    this.send(`move ${((x - x0) / Math.max(1, x1 - x0 - 1)).toFixed(5)} ${((y - y0) / Math.max(1, y1 - y0 - 1)).toFixed(5)}`);
+  }
+}
+
 class InputDriver {
   constructor() {
-    const Driver = { win32: WindowsDriver, darwin: MacDriver, linux: XdotoolDriver }[process.platform];
+    const wayland = process.platform === "linux" && (process.env.XDG_SESSION_TYPE === "wayland" || !!process.env.WAYLAND_DISPLAY);
+    const Driver = { win32: WindowsDriver, darwin: MacDriver, linux: wayland ? UinputDriver : XdotoolDriver }[process.platform];
     this.driver = Driver ? new Driver() : null;
   }
   start() {
@@ -321,4 +362,4 @@ class InputDriver {
   }
 }
 
-module.exports = { InputDriver, parseCombo, KEYS, MAC_KEYS, MODIFIERS };
+module.exports = { LINUX_KEYS, InputDriver, parseCombo, KEYS, MAC_KEYS, MODIFIERS };

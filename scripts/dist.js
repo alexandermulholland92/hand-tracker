@@ -9,8 +9,8 @@
  *   node scripts/dist.js mac --x64         macOS (.dmg) for Intel Macs (or --arm64: Apple silicon)
  * The Mac app is signed ad hoc (no Apple Developer ID), so macOS asks before opening it the first
  * time (see the README); it carries electron/input-helper-mac, built here first.
- * The .deb's install and removal scripts are electron-builder's own plus build/linux/*-oak.sh
- * (the USB rule OAK cameras need).
+ * The .deb's install and removal scripts are electron-builder's own plus build/linux/*-*.sh
+ * (the USB rule OAK cameras need, and the virtual mouse and keyboard's rule for Wayland desktops).
  */
 const { spawnSync } = require("child_process");
 const fs = require("fs");
@@ -57,7 +57,7 @@ if (swapFfmpeg) {
 }
 
 // A script given to electron-builder replaces its own (which links the app into /usr/bin and
-// sets up Chromium's sandbox), so ours are its own with the OAK camera part added. (In them,
+// sets up Chromium's sandbox), so ours are its own with our parts added. (In them,
 // "$" + "{Name}" is one of electron-builder's template values: the OAK parts don't use that.)
 function linuxScripts() {
   const templates = path.join(path.dirname(require.resolve("app-builder-lib/package.json")), "templates", "linux");
@@ -65,9 +65,11 @@ function linuxScripts() {
   const out = [];
   for (const [name, option] of [["after-install", "afterInstall"], ["after-remove", "afterRemove"]]) {
     const own = fs.readFileSync(path.join(templates, `${name}.tpl`), "utf8");
-    const oak = fs.readFileSync(path.join(__dirname, "..", "build", "linux", `${name}-oak.sh`), "utf8");
+    // build/linux/<name>-*.sh: the OAK cameras' rule, and the virtual mouse and keyboard's.
+    const linux = path.join(__dirname, "..", "build", "linux");
+    const ours = fs.readdirSync(linux).filter((f) => f.startsWith(`${name}-`) && f.endsWith(".sh")).sort().map((f) => fs.readFileSync(path.join(linux, f), "utf8"));
     const file = path.join(dir, `${name}.tpl`);
-    fs.writeFileSync(file, `${own.trimEnd()}\n\n${oak}`.replace(/\r\n/g, "\n"));
+    fs.writeFileSync(file, [own.trimEnd(), ...ours].join("\n\n").replace(/\r\n/g, "\n"));
     out.push(`-c.deb.${option}="${file}"`);
   }
   return out;

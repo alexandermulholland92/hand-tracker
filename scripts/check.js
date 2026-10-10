@@ -138,6 +138,7 @@ const STEPS = [
   ["web-mouse", [], ({ js }) => checkWebMouse(js)],
   ["iphone-mouse", [], ({ js }) => checkIphoneMouse(js)],
   ["mac-app", [], () => checkMacApp()],
+  ["linux-input", [], () => checkLinuxInput()],
   ["external-source", [], checkExternalSource],
   ["duplicate-hands", [], checkDuplicateHands],
   ["minimized", [], checkMinimized],
@@ -961,6 +962,39 @@ function checkMacApp() {
       ["NSCameraUsageDescription", "NSMicrophoneUsageDescription"].every((k) => out.info.includes(k)) && out.signed === "-" && out.hardened === false &&
       out.unpacked && out.sourceLeftOut && out.uv.length === 2 && out.driverHere &&
       (out.distElsewhere === "skipped" || (out.distElsewhere.status === 1 && /on a Mac/.test(out.distElsewhere.says))),
+    JSON.stringify(out));
+}
+
+// Linux with a Wayland desktop (a Raspberry Pi's): the virtual mouse and keyboard
+// (input-helper-linux.py). Every key has its Linux key code; the helper takes the Windows
+// helper's commands, compiles, and is carried outside app.asar (Python runs it); the .deb's rule
+// lets whoever is logged in at the screen use /dev/uinput (logind's uaccess, numbered before
+// logind's own 73- rules, which apply it) and goes with the app. (Run on a Pi itself, it's
+// checked moving the pointer there.)
+function checkLinuxInput() {
+  const root = path.join(__dirname, "..");
+  const { KEYS, LINUX_KEYS } = require("../electron/input.js");
+  const helper = path.join(root, "electron", "input-helper-linux.py");
+  const helperSrc = fs.readFileSync(helper, "utf8");
+  const windowsSrc = fs.readFileSync(path.join(root, "electron", "input-helper.ps1"), "utf8");
+  const build = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).build;
+  const install = fs.readFileSync(path.join(root, "build", "linux", "after-install-uinput.sh"), "utf8");
+  const remove = fs.readFileSync(path.join(root, "build", "linux", "after-remove-uinput.sh"), "utf8");
+  const rule = /cat > \/lib\/udev\/rules\.d\/(\d+)-hand-tracker-uinput\.rules <<'RULES'\n([\s\S]*?)\nRULES/.exec(install.replace(/\r\n/g, "\n"));
+  const windowsCommands = [...windowsSrc.matchAll(/case "([a-z]+)":/g)].map((m) => m[1]);
+  const py = ["python3", "python"].map((c) => spawnSync(c, ["-c", `import py_compile; py_compile.compile(r"${helper}", doraise=True)`], { encoding: "utf8" })).find((r) => !r.error);
+  const out = {
+    missing: Object.keys(KEYS).filter((k) => !Number.isInteger(LINUX_KEYS[k]) || LINUX_KEYS[k] < 1 || LINUX_KEYS[k] > 255),
+    combo: ["ctrl", "shift", "s", "win", "f12", "enter"].map((k) => LINUX_KEYS[k]),
+    commandsMissing: windowsCommands.filter((c) => !new RegExp(`"${c}"`).test(helperSrc)),
+    compiles: py ? py.status === 0 : "no python here",
+    unpacked: build.asarUnpack.includes("electron/input-helper-linux.py"),
+    rule: rule ? { number: Number(rule[1]), uaccess: /KERNEL=="uinput"/.test(rule[2]) && /TAG\+="uaccess"/.test(rule[2]) } : null,
+    removed: /rm -f \/lib\/udev\/rules\.d\/\d+-hand-tracker-uinput\.rules/.test(remove),
+  };
+  check("Linux with a Wayland desktop: every key has its Linux key code, the virtual mouse and keyboard's helper takes the Windows helper's commands, compiles and is carried outside app.asar, and the .deb lets whoever is logged in at the screen use /dev/uinput (a rule logind applies, removed with the app)",
+    out.missing.length === 0 && out.combo.join() === "29,42,31,125,88,28" && windowsCommands.length >= 10 && out.commandsMissing.length === 0 &&
+      out.compiles !== false && out.unpacked && out.rule && out.rule.number < 73 && out.rule.uaccess && out.removed,
     JSON.stringify(out));
 }
 
