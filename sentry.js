@@ -23,8 +23,8 @@
  *
  * Hand tracking is off while it's on (the cameras' pictures carry on, with no hands): nobody's
  * there to track, the processor is left for watching, and no skeletons are drawn on its photos
- * and videos. A switch on the page tracks them anyway. With them off, the page hides the take
- * details and a take can't be started from it (one already recording keeps its hands).
+ * and videos. Movement is watched for as ever. A switch on the page tracks them anyway; a take
+ * recorded meanwhile has its hands tracked until it stops.
  *
  * How movement is measured: about eight times a second each camera's picture is shrunk to a
  * small grey picture (64 pixels across; an OAK camera makes it itself). After a light blur, a

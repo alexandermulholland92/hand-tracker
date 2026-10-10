@@ -637,6 +637,12 @@
     setPref("display", display);
     applyDisplay();
   }
+  // What only hands have (Hand box … Body & search area) is hidden while the cameras don't
+  // track hands (Sentry mode); Objects and FPS stay.
+  const HAND_SHOWS = ["box", "skeleton", "side", "scores", "gesture", "distance", "focus"];
+  function showHandSettings(on) {
+    for (const btn of showBar.querySelectorAll("button[data-show]")) if (HAND_SHOWS.includes(btn.dataset.show)) btn.hidden = !on;
+  }
   showBar.addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-show]");
     if (btn) toggleShow(btn.dataset.show);
@@ -1690,7 +1696,7 @@
     else if (key === "o") toggleOverlay();
     else if (key === " " && e.target.tagName !== "BUTTON") togglePause();
     else if (key === "t") setRotation((HandTracker.getRotation() + 90) % 360);
-    else if (SHOW_KEYS[key]) toggleShow(SHOW_KEYS[key]);
+    else if (SHOW_KEYS[key] && !showBar.querySelector(`button[data-show="${SHOW_KEYS[key]}"]`).hidden) toggleShow(SHOW_KEYS[key]);
     else return;
     e.preventDefault();
   });
@@ -1745,6 +1751,7 @@
     MultiCamera.init({
       prefs, setPref, app: window.HandTrackerApp, modelOf: () => Number(modelSelect.value), phone: onPhone,
       onClose: () => showPaused(HandTracker.isPaused()), // (Pause was the tiles' while they ran)
+      onTracking: showHandSettings,
     });
     syncTiles();
     // A phone's browser starting and stopping recording with those cameras (Windows, Mac and Linux app).

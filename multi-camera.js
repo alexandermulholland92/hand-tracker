@@ -25,7 +25,8 @@
  * computer like a Raspberry Pi does with four cameras, and the hands don't need them. They're
  * then only drawn as often as remote recording's previews need them.
  *
- *   MultiCamera.init({ prefs, setPref, app: HandTrackerApp, modelOf: () => 0 | 1, phone });
+ *   MultiCamera.init({ prefs, setPref, app: HandTrackerApp, modelOf: () => 0 | 1, phone, onTracking });
+ *     onTracking(on): whether hands are tracked now changed (off: the tiles run with tracking off)
  *   MultiCamera.setOptions({ display, overlay, square, far, gloves, paused, oak, tracking })   // the main window's
  *     More settings, any of them, for every tile now and every tile started later (Tile.setOptions;
  *     an OAK camera is started again with a new far-away setting or new OAK camera options, oak:
@@ -49,7 +50,7 @@
   const MAX_CAMERAS = 4;
   const STATUS_MS = 500;
 
-  let prefs = {}, setPref = () => {}, app = null, modelOf = () => 1, phone = false, onClose = () => {};
+  let prefs = {}, setPref = () => {}, app = null, modelOf = () => 1, phone = false, onClose = () => {}, onTracking = () => {};
   let tileOptions = {}; // the main window's More settings, for every tile (setOptions)
   let els = {};
   let tiles = []; // { name, deviceId, role, view: { rotation, mirror }, label, frame, el, oak (its id, for an OAK camera), oakState }
@@ -210,6 +211,7 @@
     });
     tiles.forEach(showView);
     tiles.forEach(applyOptions);
+    notifyTracking();
     layout();
     showPictures();
     if (tiles.some((t) => t.oak)) startOakTiles(tiles.filter((t) => t.oak));
@@ -302,6 +304,7 @@
     }
     // An OAK camera's far-away mode and options are its own: started again with the new ones.
     if (farChanged) for (const t of tiles.filter((x) => x.oak && x.oakState !== "starting")) restartOak(t);
+    notifyTracking();
   }
   // Far-away hands as an OAK camera's helper takes it.
   const oakFar = (far) => (far && far.enabled ? { far: far.focus || "both", allHands: far.raisedOnly === false } : { far: null, allHands: false });
@@ -322,6 +325,15 @@
       const api = tileApi(t);
       if (api && api.setOptions) api.setOptions({ tracking: tracking() });
     }
+    notifyTracking();
+  }
+  // The main window told whether hands are tracked now (with no tiles, its own camera's are).
+  let trackingSaid = true;
+  function notifyTracking() {
+    const now = !tiles.length || tracking();
+    if (now === trackingSaid) return;
+    trackingSaid = now;
+    onTracking(now);
   }
 
   const tileApi = (t) => {
@@ -467,6 +479,7 @@
     inPlace(false);
     HandTracker.setPaused(false);
     tileOptions.paused = false; // the next tiles start tracking
+    notifyTracking();
     onClose();
     if (restoreOak && keepOak !== true) {
       restoreOak = false;
@@ -621,6 +634,7 @@
     modelOf = opts.modelOf || modelOf;
     phone = !!opts.phone;
     onClose = opts.onClose || onClose;
+    onTracking = opts.onTracking || onTracking;
     els = {
       dialog: $("multiCamDialog"), pickList: $("multiCamPicks"), pickNote: $("multiCamPickNote"), start: $("multiCamStart"), cancel: $("multiCamCancel"),
       card: $("multiCamCard"), grid: $("multiCamGrid"), record: $("multiCamRecord"), closeBtn: $("multiCamClose"), note: $("multiCamNote"),
