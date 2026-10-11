@@ -14,7 +14,8 @@
 # The Pi's Wi-Fi is one or the other: on a network, or the hotspot. (Its chip can't be both at
 # once: on a second interface beside a network, the hotspot shows up but no phone can join it.)
 # The hotspot comes on once the Pi has been without a network for about half a minute (at boot,
-# or out of range), on 2.4 GHz channel 6. While no phone is on it, every three minutes the Pi
+# or out of range) and none it knows can be joined (a network it knows still in range, which it
+# dropped off, is joined again first), on 2.4 GHz channel 6. While no phone is on it, every three minutes the Pi
 # looks for a network it knows, and joins it if one is in range (the hotspot goes off); while a
 # phone is on it, it stays. A phone on the hotspot can have the Pi join a network (Remote
 # recording's Wi-Fi), and then reaches it there, or over Tailscale.
@@ -83,6 +84,7 @@ cat > "$BIN" <<'SCRIPT'
 # (from hotspot-setup.sh). Run at boot, every 30 seconds ("check"), and when wlan0 joins or
 # leaves a network.
 #   hand-tracker-hotspot         the hotspot on, once wlan0 has been without a network for a while
+#                                and no network it knows (in range) can be joined
 #   hand-tracker-hotspot now     the hotspot on now, if wlan0 isn't on a network
 #   hand-tracker-hotspot check   that, and with no phone on the hotspot, every three minutes, a
 #                                network the Pi knows joined if one is in range
@@ -144,6 +146,13 @@ fi
 case "$(nmcli -g GENERAL.STATE device show "$IF" 2>/dev/null)" in [4-9]0\ *) exit 0 ;; esac
 [ -f "$SINCE" ] || echo "$now" > "$SINCE"
 if [ "${1:-}" = now ] || [ $(( now - $(cat "$SINCE") )) -ge 25 ]; then
+  # A network it knows may still be in range: it dropped off and NetworkManager gave up on it
+  # (a router's hiccup while it reconnected, say). Joined again, rather than three minutes of
+  # hotspot first; once, then the hotspot (it looks again every three minutes).
+  if [ -n "$(known)" ] && join_known; then
+    rm -f "$SINCE"
+    exit 0
+  fi
   hotspot_on "no network"
 fi
 SCRIPT
