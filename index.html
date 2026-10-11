@@ -430,6 +430,10 @@
       <label title="How many frames a second the camera takes. Automatic: as many as the camera's own processor keeps up with, given all it's doing (an OAK-D finding two hands with depth and Sentry's pet filter: 24 asked for, about 15 to 23 made, depending on what's in view). Asked for more, it would start frames it can't finish and slow right down. 60 holds only without depth and object finding; with them, the camera stays at the rate it keeps up with.">Frame rate
         <select id="oakFps"><option value="">Automatic</option><option value="60">60</option></select>
       </label>
+      <label title="Night vision, on a camera with an infrared light (OAK-D Pro, OAK-D Pro W): its infrared light on, and its black-and-white camera's picture used for everything (the hands, objects, Sentry mode, videos), which sees in the dark. Automatic: on once it's been too dark for the colour camera for a few seconds, off once it's been light again for a while (the camera starts again each time, a few seconds). Cameras without an infrared light stay in colour.">Night vision
+        <select id="oakNight"><option value="auto">Automatic</option><option value="on">On</option><option value="off">Off</option></select>
+      </label>
+      <button id="oakDots" aria-pressed="false" title="With night vision, the camera's infrared dot projector on too: the distances (depth) are better in the dark, but the picture has a pattern of dots on it.">Infrared dots: OFF</button>
     </div>
     <div class="toolbar show-bar" id="showBar" title="What's drawn on the picture (and in recorded video)">
       <span class="bar-label">Show</span>

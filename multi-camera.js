@@ -461,7 +461,9 @@
       if (t.oakWith !== JSON.stringify(oakStart())) setTimeout(() => tiles.includes(t) && syncOak(), 0); // (changed while it started)
       // Remembered by model, so the picker can name it next time.
       if (s.camera && (prefs.oakNames || {})[s.id] !== s.camera) setPref("oakNames", { ...(prefs.oakNames || {}), [s.id]: s.camera });
-      t.label = `Luxonis ${s.camera || "OAK camera"}${s.depth ? " · depth" : ""}${s.usb === "HIGH" ? " · USB 2" : ""}`;
+      t.label = `Luxonis ${s.camera || "OAK camera"}${s.depth ? " · depth" : ""}${s.night ? " · night vision" : ""}${s.usb === "HIGH" ? " · USB 2" : ""}`;
+      t.night = !!s.night;
+      t.infrared = !!s.infrared;
       t.el.querySelector(".lbl").textContent = t.label;
     } else if (s.status === "error" || s.status === "stopped") {
       t.oakState = s.status;

@@ -15,7 +15,7 @@
  *                                         // last small grey picture { w, h, data } (Sentry mode)
  *   OakSource.decodeGrey(header.grey)     // a frame's grey picture as { w, h, data: Uint8Array }
  *   OakSource.onFrameInfo(cb)             // cb({ objects, grey, t }) each frame
- *   OakSource.cameraOptions(settings.oak) // { detect, picture, motion, fps } as the helper takes them
+ *   OakSource.cameraOptions(settings.oak) // { detect, picture, motion, fps, night, dots } as the helper takes them
  *   OakSource.silentNote(ports)           // what to say of OAK cameras plugged in that didn't answer
  *                                         // (also for "Several cameras", multi-camera.js)
  */
@@ -90,6 +90,9 @@
       picture: oak.picture === "depth" ? "depth" : "color",
       motion: !!oak.motion,
       fps: Number(oak.fps) > 0 ? Number(oak.fps) : undefined,
+      // Night vision (OAK-D Pro: its infrared light): Automatic unless set; its dot projector too, if asked.
+      night: ["auto", "on", "off"].includes(oak.night) ? oak.night : "auto",
+      dots: !!oak.dots,
     };
   }
 

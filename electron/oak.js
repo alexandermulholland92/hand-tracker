@@ -233,7 +233,8 @@ class OakCamera {
 
   // options: { lm: "lite" | "full", twoHands, xyz, far: null | "both" | "higher" | "left" | "right", allHands, device, simulate,
   //   detect (find objects too), picture: "color" | "depth", motion (each ninth's movement, for Sentry mode), fps,
-  //   hands (false: no hand tracking, none of the hands' models on the camera: Sentry mode) }
+  //   hands (false: no hand tracking, none of the hands' models on the camera: Sentry mode),
+  //   night: "auto" | "on" | "off" (night vision by the camera's infrared light, OAK-D Pro), dots (its dot projector too) }
   // (device: which OAK camera, by its id; the first one found otherwise)
   start(options, onMessage) {
     this.stop();
@@ -262,6 +263,8 @@ class OakCamera {
     if (options.motion) args.push("--motion");
     if (options.hands === false) args.push("--no-hands");
     if (Number.isInteger(options.fps) && options.fps >= 10 && options.fps <= 60) args.push("--fps", String(options.fps));
+    if (["auto", "on", "off"].includes(options.night)) args.push("--night", options.night);
+    if (options.dots) args.push("--ir-dots");
     const proc = spawn(this.paths.python, args, { windowsHide: true });
     this.proc = proc;
     let buf = Buffer.alloc(0), err = "";

@@ -144,6 +144,24 @@ print(json.dumps(out))`, ...["palm_detection", "hand_landmark_full", "hand_landm
       plain.some((f) => f.frame.grey) && plain.some((f) => (f.frame.objects || []).length),
     `${plain.length} frames, ${plain.filter((f) => f.frame.hands.length).length} with hands, ${plain.filter((f) => f.frame.grey).length} grey pictures, running: ${JSON.stringify(plain.running && { hands: plain.running.hands })}`);
 
+  // Night vision asked for: the simulated camera has no infrared light, so it stays in colour and says so.
+  const nightAsked = await new Promise((resolve) => {
+    let running = null;
+    const timer = setTimeout(() => oak.stop(), 30000);
+    oak.start({ simulate: true, lm: "lite", night: "on", dots: true }, (msg) => {
+      if (msg.status === "running") {
+        running = msg;
+        oak.stop();
+      } else if (msg.status === "stopped") {
+        clearTimeout(timer);
+        resolve(running);
+      }
+    });
+  });
+  check("Night vision asked of a camera without an infrared light: it stays in colour and says why (simulated camera)",
+    nightAsked && nightAsked.night === false && nightAsked.infrared === false && /no infrared light/.test(nightAsked.warning || ""),
+    JSON.stringify(nightAsked && { night: nightAsked.night, infrared: nightAsked.infrared, warning: nightAsked.warning }));
+
   // The pipeline the helper really builds without hand tracking (PictureOnly), in this depthai,
   // for a stand-in camera (none here): no hands' models on it, the picture the size the hand
   // tracker's is, the extras asked for, and the depth cameras only for an object's distance.
@@ -167,6 +185,16 @@ for name, depth, extras in [("motion", True, {"motion": True}), ("objects", True
     nodes = [n[1] for n in d.pipeline.serializeToJson()["pipeline"]["nodes"]]
     out[name] = {"size": [t.img_w, t.img_h], "stereo": t.stereo, "nodes": sorted(n["name"] for n in nodes),
                  "streams": sorted(n["properties"].get("streamName", "") for n in nodes if n["name"] == "XLinkOut")}
+# Night vision (an OAK-D Pro): the left camera at 720P with room for all its pictures, the right one
+# at its size for depth, the colour camera only to watch the light (Automatic).
+d = Device(True)
+t = ob.PictureOnly(dai, d, {"motion": True, "detect": sys.argv[2]}, depth=True, night=True, meter=True)
+nodes = [n[1] for n in d.pipeline.serializeToJson()["pipeline"]["nodes"]]
+monos = [n["properties"] for n in nodes if n["name"] == "MonoCamera"]
+out["night"] = {"size": [t.img_w, t.img_h], "stereo": t.stereo, "nodes": sorted(n["name"] for n in nodes),
+                "streams": sorted(n["properties"].get("streamName", "") for n in nodes if n["name"] == "XLinkOut"),
+                "monos": sorted([m.get("resolution"), m.get("numFramesPool")] for m in monos),
+                "colourFps": [n["properties"].get("fps") for n in nodes if n["name"] == "ColorCamera"]}
 ob.OUT.write(json.dumps(out).encode())`, path.join(__dirname, "..", "oak", "oak_bridge.py"), path.join(oak.paths.models, "palm_detection_sh4.blob")], { encoding: "utf8" });
   let pipes = {};
   try {
@@ -179,6 +207,13 @@ ob.OUT.write(json.dumps(out).encode())`, path.join(__dirname, "..", "oak", "oak_
       p("objects").stereo && p("objects").nodes.includes("SpatialDetectionNetwork") && p("objects").streams.join() === "cam_out,det_out,motion_out" &&
       !p("objects-oak1").stereo && p("objects-oak1").nodes.includes("DetectionNetwork") && !p("objects-oak1").nodes.includes("MonoCamera"),
     JSON.stringify(Object.keys(pipes).length ? pipes : { status: built.status, error: built.error && built.error.message, out: String(built.stdout).slice(-300), err: String(built.stderr).slice(-600) }));
+
+  const night = p("night");
+  check("Night vision's pipeline (no hand tracking, objects and depth): the left camera's picture (1280 x 720, room for all its pictures), the right camera at its size for depth, the colour camera only to watch the light, and the same streams plus the light's",
+    night.size && night.size.join("x") === "1280x720" && night.stereo && night.nodes.filter((n) => n === "MonoCamera").length === 2 && night.nodes.filter((n) => n === "ColorCamera").length === 1 &&
+      night.streams.join() === "cam_out,det_out,meter,motion_out" && (night.monos || []).length === 2 && night.monos.every((m) => m[0] === night.monos[0][0]) &&
+      night.monos.some((m) => m[1] >= 10) && (night.colourFps || [])[0] <= 10,
+    JSON.stringify(night));
 
   if (!process.argv[2]) fs.rmSync(dir, { recursive: true, force: true });
   const failed = results.filter((r) => !r.ok).length;

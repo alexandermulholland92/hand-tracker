@@ -503,9 +503,10 @@
 
   // ---------- A Luxonis OAK camera as the source (Windows, Mac and Linux app) ----------
   // OAK cameras' own options (More settings → OAK camera): find objects, the depth picture,
-  // the frame rate. Remembered; a camera running is started again with them. Sentry mode also
-  // has them send a small grey picture, and find objects for "ignore pets and animals".
-  const oakPrefs = { detect: false, picture: "color", fps: 0, ...(prefs.oakOptions && typeof prefs.oakOptions === "object" ? prefs.oakOptions : {}) };
+  // the frame rate, night vision (and its infrared dots). Remembered; a camera running is
+  // started again with them. Sentry mode also has them send a small grey picture, and find
+  // objects for "ignore pets and animals".
+  const oakPrefs = { detect: false, picture: "color", fps: 0, night: "auto", dots: false, ...(prefs.oakOptions && typeof prefs.oakOptions === "object" ? prefs.oakOptions : {}) };
   const oakOptions = () => ({
     ...oakPrefs,
     detect: oakPrefs.detect || !!(window.Sentry && Sentry.wantsObjects()),
@@ -517,6 +518,8 @@
     setToggle($("oakDetect"), oakPrefs.detect, "Find objects");
     $("oakPicture").value = oakPrefs.picture;
     $("oakFps").value = oakPrefs.fps ? String(oakPrefs.fps) : "";
+    $("oakNight").value = ["on", "off"].includes(oakPrefs.night) ? oakPrefs.night : "auto";
+    setToggle($("oakDots"), !!oakPrefs.dots, "Infrared dots");
   }
   function saveOakOptions() {
     setPref("oakOptions", oakPrefs);
@@ -534,6 +537,14 @@
   });
   $("oakFps").addEventListener("change", () => {
     oakPrefs.fps = Number($("oakFps").value) || 0;
+    saveOakOptions();
+  });
+  $("oakNight").addEventListener("change", () => {
+    oakPrefs.night = ["on", "off"].includes($("oakNight").value) ? $("oakNight").value : "auto";
+    saveOakOptions();
+  });
+  $("oakDots").addEventListener("click", () => {
+    oakPrefs.dots = !oakPrefs.dots;
     saveOakOptions();
   });
   async function useOak() {
@@ -556,7 +567,8 @@
   OakSource.onStatus((s) => {
     if (s.status === "running") {
       stageMessage.hidden = true;
-      const also = [s.detect ? "objects found on the camera too (Show → Objects)" : "", s.picture === "depth" ? "showing the depth picture" : ""].filter(Boolean);
+      const also = [s.detect ? "objects found on the camera too (Show → Objects)" : "", s.picture === "depth" ? "showing the depth picture" : "",
+        s.night ? "night vision (its infrared light and black-and-white camera)" : ""].filter(Boolean);
       showSourceNote(`${s.camera || "OAK camera"}: hands found on the camera${s.depth ? ", with each hand's distance (Show → Distance)" : ""}${also.length ? `; ${also.join("; ")}` : ""}.` +
         (s.usb === "HIGH" ? " It's connected over USB 2, so pictures come a little slower: if it's a USB 3 camera, another cable or port may help." : "") +
         (s.warning ? ` ${s.warning}` : ""));

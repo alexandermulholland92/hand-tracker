@@ -585,7 +585,9 @@ class SimulatedOak {
     this.onMessage = onMessage;
     onMessage({ status: "running", camera: options.device ? `Simulated OAK ${options.device}` : "Simulated OAK", width: w, height: h, depth: true, id: options.device || "SIMULATED-OAK", usb: "SUPER",
       far: options.far || null, // (the checks see which far-away mode it was started in)
-      detect: !!options.detect, picture: options.picture === "depth" ? "depth" : "color", motion: !!options.motion, fps: options.fps || null, hands: options.hands !== false });
+      detect: !!options.detect, picture: options.picture === "depth" ? "depth" : "color", motion: !!options.motion, fps: options.fps || null, hands: options.hands !== false,
+      // (an infrared camera, as an OAK-D Pro: night vision as asked, Automatic taken to be light)
+      infrared: true, night: options.night === "on", nightMode: options.night || "off", dots: !!options.dots });
     this.timer = setInterval(() => {
       const t = (Date.now() - t0) / 1000;
       const cx = 0.5 + 0.2 * Math.sin(t), cy = 0.75;

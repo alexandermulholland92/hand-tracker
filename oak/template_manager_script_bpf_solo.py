@@ -345,6 +345,7 @@ send_new_frame_to_branch = 0
 
 cfg_pre_pd = ImageManipConfig()
 cfg_pre_pd.setResizeThumbnail(128, 128, 0, 0, 0)
+cfg_pre_pd.setFrameType(ImgFrame.Type.BGR888p)
 
 id_wrist = 0
 id_index_mcp = 5
@@ -399,6 +400,7 @@ while True:
             cfg_pre_pd = ImageManipConfig()
             cfg_pre_pd.setWarpTransformFourPoints(point2fList, False)
             cfg_pre_pd.setResize(128, 128)
+            cfg_pre_pd.setFrameType(ImgFrame.Type.BGR888p)
             send_new_frame_to_branch = 1
         else:
             ${_TRACE1} (f"Body pre focusing zone: None")
@@ -457,6 +459,7 @@ while True:
     cfg = ImageManipConfig()
     cfg.setCropRotatedRect(rr, True)
     cfg.setResize(lm_input_size, lm_input_size)
+    cfg.setFrameType(ImgFrame.Type.BGR888p)
     node.io['pre_lm_manip_cfg'].send(cfg)
     nb_lm_inf += 1
     ${_TRACE2} ("Manager sent config to pre_lm manip")

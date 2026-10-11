@@ -11,6 +11,7 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
     python oak_bridge.py --models DIR [--lm lite|full] [--two-hands] [--xyz]
                          [--far both|higher|left|right] [--all-hands] [--fps N] [--device ID]
                          [--mjpeg auto|on|off] [--detect] [--picture color|depth] [--motion] [--no-hands]
+                         [--night auto|on|off] [--ir-dots]
     (--device: which OAK camera, by its id from --list; the first one found otherwise.
      --mjpeg: the camera sends its pictures as JPEG from its own encoder, about a tenth of the
      data; auto: over USB 2, where the raw pictures of one camera nearly fill the link, and on
@@ -25,7 +26,15 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
      --no-hands: no hand tracking (Sentry mode, while it doesn't track hands): none of the hands'
      models run on the camera, only its picture (the same size) and what else is asked for;
      each frame's "hands" is empty. The depth cameras run only for an object's distance or the
-     depth picture.)
+     depth picture.
+     --night: night vision, on a camera with an infrared light (OAK-D Pro, OAK-D Pro W): its
+     infrared flood light on, and its black-and-white left camera's picture instead of the colour
+     one's, for everything (the hands, objects, Sentry's motion, depth lined up with it). auto: on
+     once it's been too dark for the colour camera for a few seconds, off once it's been light
+     again for a while (the camera is started again each time, a few seconds); the "running"
+     status says which ("night"). A camera without an infrared light stays in colour.
+     --ir-dots: with night vision, the infrared dot projector on too: better depth in the dark,
+     but a pattern of dots on the picture.)
     python oak_bridge.py --check        prints the versions it would use
     python oak_bridge.py --list         prints the OAK cameras found
     python oak_bridge.py --simulate     no camera: a moving synthetic hand, for testing
@@ -119,6 +128,79 @@ def depth_picture(disparity, max_disparity, w, h):
     return img
 
 
+# Night vision (--night): the left black-and-white camera at 720P, the colour picture's shape, by
+# the camera's infrared flood light. At half its most, a dark room's picture needed ISO 103
+# instead of 1549 (an OAK-D Pro W). Automatic goes by the colour camera: dark once it's at its
+# highest sensitivity (its exposure is at its longest by then) for NIGHT_AFTER_S; light again once
+# its exposure times its sensitivity is under LIGHT_AT (a fifth brighter than its limit at 30 ms)
+# for DAY_AFTER_S, looked at a few times a second while night vision is on (the infrared light
+# doesn't get through its filter). A normally lit room needs ISO ~1300 at 30 ms (39,000): it
+# stays in colour, but once in night vision it stays there.
+NIGHT_SIZE = (1280, 720)
+NIGHT_FLOOD = 0.5
+NIGHT_DOTS = 0.5
+DARK_ISO = 1500
+LIGHT_AT = 36000
+NIGHT_AFTER_S, DAY_AFTER_S = 8, 20
+NIGHT_METER_FPS = 10
+
+
+def has_infrared(device):
+    try:
+        return bool(device.getIrDrivers())
+    except Exception:
+        return False
+
+
+def set_infrared(device, night, dots):
+    """The infrared flood light on with night vision (and the dot projector, if asked), else off."""
+    try:
+        device.setIrFloodLightIntensity(NIGHT_FLOOD if night else 0.0)
+        device.setIrLaserDotProjectorIntensity(NIGHT_DOTS if night and dots else 0.0)
+    except Exception as err:
+        print(f"Infrared light: {err}", file=sys.stderr)
+
+
+def night_geometry(t):
+    """A tracker's picture size and padding for night vision's camera (1280 x 720)."""
+    t.img_w, t.img_h = NIGHT_SIZE
+    t.frame_size = t.img_w
+    t.pad_w, t.pad_h = 0, (t.img_w - t.img_h) // 2
+    t.crop_w = 0
+
+
+class NightCamera:
+    """Night vision's camera as the trackers take a camera (its preview and video): the left
+    black-and-white camera at 720P (its picture is grey; the hands' models get their crops of it
+    as colour). With meter, the colour camera runs too, a few times a second at a tiny size, only
+    to tell when it's light again (its pictures' exposure, on the "meter" stream)."""
+
+    def __init__(self, dai, pipeline, fps, meter):
+        self.night = True
+        self.resolution = dai.MonoCameraProperties.SensorResolution.THE_720_P
+        self.socket = dai.CameraBoardSocket.LEFT
+        self.mono = pipeline.createMonoCamera()
+        self.mono.setBoardSocket(self.socket)
+        self.mono.setResolution(self.resolution)
+        self.mono.setFps(fps)
+        # Its one output feeds everything the colour camera's two do (the video, and each model's
+        # crop, which holds a picture while it waits for its instructions): with its usual 3
+        # pictures, far-away hands' four took them all and it stopped after a few frames.
+        self.mono.setNumFramesPool(10)
+        self.preview = self.video = self.mono.out
+        if meter:
+            colour = pipeline.createColorCamera()
+            colour.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+            colour.setBoardSocket(dai.CameraBoardSocket.RGB)
+            colour.setPreviewSize(64, 36)
+            colour.setFps(NIGHT_METER_FPS)
+            x = pipeline.createXLinkOut()
+            x.setStreamName("meter")
+            x.input.setBlocking(False)
+            x.input.setQueueSize(1)
+            colour.preview.link(x.input)
+
+
 DETECT_GAP_S = 0.33
 # On the camera (a Script node): only every frame DETECT_GAP_S after the last one sent goes on.
 DETECT_EVERY = f"""
@@ -207,17 +289,21 @@ class PictureOnly:
 
     RESOLUTION = (1920, 1080)
 
-    def __init__(self, dai, device, extras, fps=None, depth=False, mjpeg=False, frame_height=640):
+    def __init__(self, dai, device, extras, fps=None, depth=False, mjpeg=False, frame_height=640, night=False, meter=False):
         import mediapipe_utils as mpu
 
         self.device = device
         self.mjpeg = mjpeg
         self.jpeg = None
+        self.video_msg = None
         self.xyz = False  # (no hands to measure)
+        self.night, self.meter = night, meter
         sw, sh = self.RESOLUTION
         _, self.scale_nd = mpu.find_isp_scale_params(frame_height * sw / sh, self.RESOLUTION, is_height=False)
         self.img_h = int(round(sh * self.scale_nd[0] / self.scale_nd[1]))
         self.img_w = int(round(sw * self.scale_nd[0] / self.scale_nd[1]))
+        if night:
+            night_geometry(self)
         cameras = device.getConnectedCameras()
         self.has_depth = bool(depth and dai.CameraBoardSocket.LEFT in cameras and dai.CameraBoardSocket.RIGHT in cameras)
         self.stereo = self.has_depth and bool(extras.get("detect") or extras.get("picture") == "depth")
@@ -228,14 +314,17 @@ class PictureOnly:
     def create_pipeline(self, dai, extras):
         pipeline = dai.Pipeline()
         pipeline.setOpenVINOVersion(version=dai.OpenVINO.Version.VERSION_2021_4)
-        cam = pipeline.createColorCamera()
-        cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-        cam.setBoardSocket(dai.CameraBoardSocket.RGB)
-        cam.setInterleaved(False)
-        cam.setIspScale(self.scale_nd[0], self.scale_nd[1])
-        cam.setFps(self.internal_fps)
-        cam.setVideoSize(self.img_w, self.img_h)
-        cam.setPreviewSize(self.img_w, self.img_h)
+        if self.night:
+            cam = NightCamera(dai, pipeline, self.internal_fps, self.meter)
+        else:
+            cam = pipeline.createColorCamera()
+            cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+            cam.setBoardSocket(dai.CameraBoardSocket.RGB)
+            cam.setInterleaved(False)
+            cam.setIspScale(self.scale_nd[0], self.scale_nd[1])
+            cam.setFps(self.internal_fps)
+            cam.setVideoSize(self.img_w, self.img_h)
+            cam.setPreviewSize(self.img_w, self.img_h)
         cam_out = pipeline.createXLinkOut()
         cam_out.setStreamName("cam_out")
         cam_out.input.setQueueSize(1)
@@ -251,20 +340,25 @@ class PictureOnly:
         stereo = None
         if self.stereo:
             # As the hand tracker sets them up: the colour camera at its calibrated focus, so the
-            # depth lines up with its picture.
-            cam.initialControl.setManualFocus(self.device.readCalibration().getLensPosition(dai.CameraBoardSocket.RGB))
-            left = pipeline.createMonoCamera()
-            left.setBoardSocket(dai.CameraBoardSocket.LEFT)
-            left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-            left.setFps(self.internal_fps)
+            # depth lines up with its picture (night vision: the left camera is its camera, at
+            # its size, and the depth lines up with that).
+            if self.night:
+                left, resolution = cam.mono, cam.resolution
+            else:
+                cam.initialControl.setManualFocus(self.device.readCalibration().getLensPosition(dai.CameraBoardSocket.RGB))
+                resolution = dai.MonoCameraProperties.SensorResolution.THE_400_P
+                left = pipeline.createMonoCamera()
+                left.setBoardSocket(dai.CameraBoardSocket.LEFT)
+                left.setResolution(resolution)
+                left.setFps(self.internal_fps)
             right = pipeline.createMonoCamera()
             right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
-            right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+            right.setResolution(resolution)
             right.setFps(self.internal_fps)
             stereo = pipeline.createStereoDepth()
             stereo.setConfidenceThreshold(230)
             stereo.setLeftRightCheck(True)
-            stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
+            stereo.setDepthAlign(cam.socket if self.night else dai.CameraBoardSocket.RGB)
             stereo.setSubpixel(False)
             left.out.link(stereo.left)
             right.out.link(stereo.right)
@@ -275,6 +369,7 @@ class PictureOnly:
         import numpy as np
 
         frame = self.q_video.get()
+        self.video_msg = frame  # (how dark it is, from its exposure: night vision's Automatic)
         if self.mjpeg:
             self.jpeg = bytes(frame.getData())
             return np.empty((self.img_h, self.img_w, 0), dtype=np.uint8), [], None
@@ -340,7 +435,8 @@ def simulate(args):
     base = [(0, 0), (-.04, -.03), (-.08, -.07), (-.11, -.10), (-.13, -.13), (-.035, -.12), (-.04, -.17), (-.043, -.20), (-.045, -.23),
             (0, -.125), (0, -.18), (0, -.215), (0, -.245), (.03, -.115), (.035, -.165), (.038, -.195), (.04, -.22), (.055, -.10), (.065, -.135), (.07, -.16), (.075, -.18)]
     status("running", camera="Simulated OAK camera", width=w, height=h, depth=True, detect=bool(args.detect), picture=args.picture, motion=bool(args.motion),
-           hands=not args.no_hands)
+           hands=not args.no_hands, night=False, infrared=False,
+           warning="This camera has no infrared light, so it can't use night vision." if args.night == "on" else None)
     t0 = time.time()
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     frame[:, :] = (60, 45, 30)
@@ -491,6 +587,18 @@ def run(args):
     import numpy as np
 
     class Tracker(Base):
+        def __init__(self, night=False, **kw):
+            self.night = night
+            super().__init__(**kw)
+
+        # Night vision: its camera (NightCamera) and its picture's size, in the colour camera's place.
+        def camera_geometry(self):
+            if self.night:
+                night_geometry(self)
+
+        def create_night_camera(self, pipeline):
+            return NightCamera(dai, pipeline, self.internal_fps, meter=args.night == "auto") if self.night else None
+
         # Objects, the depth picture and the motion picture, alongside the hands (add_extras).
         def extend_pipeline(self, pipeline, cam, stereo):
             add_extras(dai, pipeline, cam, stereo, extras, self)
@@ -524,7 +632,32 @@ def run(args):
             hand.landmarks_f = lm
             return hand
 
-    def stream(tracker, mjpeg):
+    # Night vision's Automatic (auto): how dark it is, each frame. In colour, from the colour
+    # camera's own pictures; in night vision, from its pictures on the "meter" stream. -> "night"
+    # or "day" once it's time to change over, else None.
+    def night_watch(tracker, night, auto):
+        if not auto:
+            return lambda: None
+        meter = tracker.device.getOutputQueue(name="meter", maxSize=1, blocking=False) if night else None
+        since = [None]
+
+        def look():
+            msg = meter.tryGet() if night else getattr(tracker, "video_msg", None)
+            if msg is not None:
+                try:
+                    iso = msg.getSensitivity()
+                    exposure = msg.getExposureTime().total_seconds() * 1000
+                except Exception:
+                    return None
+                change = exposure * iso < LIGHT_AT if night else iso >= DARK_ISO
+                since[0] = (since[0] or time.time()) if change else None
+            if since[0] and time.time() - since[0] >= (DAY_AFTER_S if night else NIGHT_AFTER_S):
+                return "day" if night else "night"
+            return None
+
+        return look
+
+    def stream(tracker, mjpeg, watch=lambda: None):
         depth = bool(getattr(tracker, "xyz", False))
         t0 = time.time()
         last = time.time()
@@ -591,9 +724,14 @@ def run(args):
                 header["grey"] = grey  # (only when the camera made a new one)
             jpeg = picture if "pic_out" in queues and picture else tracker.jpeg if mjpeg else encode(frame)
             send(header, jpeg)
+            change = watch()
+            if change:
+                return change
+        return None
 
     usb2 = Usb2Cameras(models)
     wanted, retried = args.device, False
+    night = args.night == "on"
     while True:
         device, high = None, retried
         try:
@@ -609,10 +747,17 @@ def run(args):
             device = dai.Device(info, dai.UsbSpeed.HIGH if high else dai.UsbSpeed.SUPER)
             usb = str(device.getUsbSpeed()).split(".")[-1]
             mjpeg = args.mjpeg == "on" or (args.mjpeg == "auto" and (usb in ("LOW", "FULL", "HIGH") or platform.machine().lower() in ("aarch64", "arm64")))
+            infrared = has_infrared(device) and dai.CameraBoardSocket.LEFT in device.getConnectedCameras()
+            if night and not infrared:
+                night = False
+                if args.night == "on":
+                    warnings.append("This camera has no infrared light, so it can't use night vision.")
             if hands:
-                tracker = Tracker(**common, **extra, device=device, mjpeg=mjpeg)
+                tracker = Tracker(**common, **extra, device=device, mjpeg=mjpeg, night=night)
             else:
-                tracker = PictureOnly(dai, device, extras, fps=args.fps, depth=args.xyz, mjpeg=mjpeg)
+                tracker = PictureOnly(dai, device, extras, fps=args.fps, depth=args.xyz, mjpeg=mjpeg, night=night, meter=args.night == "auto")
+            if infrared:
+                set_infrared(device, night, args.ir_dots)
         except SystemExit:
             if device is not None:
                 device.close()
@@ -661,11 +806,12 @@ def run(args):
         status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h,
                depth=bool(getattr(tracker, "xyz", False) or getattr(tracker, "has_depth", False)), id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
                detect="det_out" in streams, picture="depth" if "pic_out" in streams else "color", motion="motion_out" in streams, hands=hands,
-               warning=" ".join(dict.fromkeys(warnings)) or None)
+               night=night, infrared=infrared, warning=" ".join(dict.fromkeys(warnings)) or None)
         if retried:
             usb2.add(wanted)
+        change = None
         try:
-            stream(tracker, mjpeg)
+            change = stream(tracker, mjpeg, night_watch(tracker, night, args.night == "auto" and infrared))
         except (BrokenPipeError, KeyboardInterrupt):
             pass
         except RuntimeError:
@@ -680,6 +826,11 @@ def run(args):
                 tracker.exit()
             except Exception:
                 pass
+        if change:
+            # Night vision's Automatic: started again the other way (the camera resets first).
+            night = change == "night"
+            status("starting", message="It's dark: switching to night vision…" if night else "It's light again: switching back to colour…")
+            continue
         return 0
 
 
@@ -698,6 +849,8 @@ def main():
     ap.add_argument("--picture", choices=["color", "depth"], default="color", help="the picture sent: colour, or depth (depth cameras)")
     ap.add_argument("--motion", action="store_true", help="a small grey picture (64 x 36) with each frame, for Sentry mode")
     ap.add_argument("--no-hands", action="store_true", help="no hand tracking: only the picture and what else is asked for (Sentry mode)")
+    ap.add_argument("--night", choices=["auto", "on", "off"], default="off", help="night vision by the camera's infrared light (OAK-D Pro)")
+    ap.add_argument("--ir-dots", action="store_true", help="night vision: the infrared dot projector on too (better depth; dots on the picture)")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--simulate", action="store_true")

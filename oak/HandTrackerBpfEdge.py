@@ -239,6 +239,9 @@ class HandTrackerBpf:
                 self.frame_size = self.img_w
                 self.crop_w = 0
         
+            if hasattr(self, "camera_geometry"):
+                # (Hand Tracker's oak_bridge.py: night vision's black-and-white camera, its own size.)
+                self.camera_geometry()
             print(f"Internal camera image size: {self.img_w} x {self.img_h} - pad_h: {self.pad_h}")
 
         else:
@@ -282,24 +285,31 @@ class HandTrackerBpf:
         pipeline.setOpenVINOVersion(version = dai.OpenVINO.Version.VERSION_2021_4)
         self.pd_input_length = 128
 
-        # ColorCamera
-        print("Creating Color Camera...")
-        cam = pipeline.createColorCamera()
-        if self.resolution[0] == 1920:
-            cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+        # Hand Tracker (oak_bridge.py): night vision's camera instead, when it's asked for: a
+        # black-and-white camera by infrared light, standing in for the colour camera's preview
+        # and video (and lined up with the depth).
+        night = self.create_night_camera(pipeline) if hasattr(self, "create_night_camera") else None
+        if night is not None:
+            cam = night
         else:
-            cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_4_K)
-        cam.setBoardSocket(dai.CameraBoardSocket.RGB)
-        cam.setInterleaved(False)
-        cam.setIspScale(self.scale_nd[0], self.scale_nd[1])
-        cam.setFps(self.internal_fps)
+            # ColorCamera
+            print("Creating Color Camera...")
+            cam = pipeline.createColorCamera()
+            if self.resolution[0] == 1920:
+                cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+            else:
+                cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_4_K)
+            cam.setBoardSocket(dai.CameraBoardSocket.RGB)
+            cam.setInterleaved(False)
+            cam.setIspScale(self.scale_nd[0], self.scale_nd[1])
+            cam.setFps(self.internal_fps)
 
-        if self.crop:
-            cam.setVideoSize(self.frame_size, self.frame_size)
-            cam.setPreviewSize(self.frame_size, self.frame_size)
-        else: 
-            cam.setVideoSize(self.img_w, self.img_h)
-            cam.setPreviewSize(self.img_w, self.img_h)
+            if self.crop:
+                cam.setVideoSize(self.frame_size, self.frame_size)
+                cam.setPreviewSize(self.frame_size, self.frame_size)
+            else: 
+                cam.setVideoSize(self.img_w, self.img_h)
+                cam.setPreviewSize(self.img_w, self.img_h)
 
         if not self.laconic:
             cam_out = pipeline.createXLinkOut()
@@ -326,13 +336,19 @@ class HandTrackerBpf:
             calib_data = self.device.readCalibration()
             calib_lens_pos = calib_data.getLensPosition(dai.CameraBoardSocket.RGB)
             print(f"RGB calibration lens position: {calib_lens_pos}")
-            cam.initialControl.setManualFocus(calib_lens_pos)
+            if night is None:
+                cam.initialControl.setManualFocus(calib_lens_pos)
 
-            mono_resolution = dai.MonoCameraProperties.SensorResolution.THE_400_P
-            left = pipeline.createMonoCamera()
-            left.setBoardSocket(dai.CameraBoardSocket.LEFT)
-            left.setResolution(mono_resolution)
-            left.setFps(self.internal_fps)
+            # (Night vision: the left camera is its camera already, at its size; the depth is
+            # lined up with it.)
+            mono_resolution = night.resolution if night is not None else dai.MonoCameraProperties.SensorResolution.THE_400_P
+            if night is not None:
+                left = night.mono
+            else:
+                left = pipeline.createMonoCamera()
+                left.setBoardSocket(dai.CameraBoardSocket.LEFT)
+                left.setResolution(mono_resolution)
+                left.setFps(self.internal_fps)
 
             right = pipeline.createMonoCamera()
             right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
@@ -343,7 +359,7 @@ class HandTrackerBpf:
             stereo.setConfidenceThreshold(230)
             # LR-check is required for depth alignment
             stereo.setLeftRightCheck(True)
-            stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
+            stereo.setDepthAlign(night.socket if night is not None else dai.CameraBoardSocket.RGB)
             stereo.setSubpixel(False)  # subpixel True brings latency
             # MEDIAN_OFF necessary in depthai 2.7.2. 
             # Otherwise : [critical] Fatal error. Please report to developers. Log: 'StereoSipp' '533'
@@ -538,6 +554,7 @@ class HandTrackerBpf:
             video_frame = np.zeros((self.img_h, self.img_w, 3), dtype=np.uint8)
         else:
             in_video = self.q_video.get()
+            self.video_msg = in_video  # (Hand Tracker's oak_bridge.py: how dark it is, from its exposure)
             if self.mjpeg:
                 self.jpeg = bytes(in_video.getData())
                 video_frame = np.empty((self.img_h, self.img_w, 0), dtype=np.uint8)

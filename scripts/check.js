@@ -1887,6 +1887,9 @@ async function checkOakOptions(js) {
     $("oakDetect").click();
     $("oakPicture").value = "depth";
     $("oakPicture").dispatchEvent(new Event("change"));
+    $("oakNight").value = "on";
+    $("oakNight").dispatchEvent(new Event("change"));
+    $("oakDots").click();
     out.saved = JSON.parse(localStorage.getItem("hand-tracker:prefs")).oakOptions;
     await HandTrackerApp.useOak();
     for (let i = 0; i < 100 && !(OakSource.isActive() && (OakSource.objects() || []).length); i++) await sleep(100);
@@ -1908,28 +1911,33 @@ async function checkOakOptions(js) {
     document.querySelector('[data-show="objects"]').click();
     // OAK cameras in tiles get the same options.
     const seen = [];
-    const off = desktop.oak.onStreamStatus((s) => s.status === "running" && seen.push(s.id + ":" + s.detect + ":" + s.picture));
+    const off = desktop.oak.onStreamStatus((s) => s.status === "running" && seen.push(s.id + ":" + s.detect + ":" + s.picture + ":" + s.nightMode + ":" + s.dots));
     await MultiCamera.start(["oak:SIMULATED-OAK-A"]);
     for (let i = 0; i < 100 && !(MultiCamera._tiles()[0] && MultiCamera._tiles()[0].status && MultiCamera._tiles()[0].status.hands.length); i++) await sleep(200);
     await sleep(400);
     const tile = document.querySelector("#multiCamGrid iframe").contentWindow.Tile;
-    out.tile = { started: seen, objects: (tile.objects() || []).map((o) => o.label) };
+    out.tile = { started: seen, objects: (tile.objects() || []).map((o) => o.label), label: document.querySelector("#multiCamGrid .lbl").textContent };
     off();
     MultiCamera.close();
     await sleep(2800);
     $("oakDetect").click();
     $("oakPicture").value = "color";
     $("oakPicture").dispatchEvent(new Event("change"));
+    $("oakNight").value = "auto";
+    $("oakNight").dispatchEvent(new Event("change"));
+    $("oakDots").click();
+    out.reset = JSON.parse(localStorage.getItem("hand-tracker:prefs")).oakOptions;
     await HandTrackerApp.backToCamera();
     return out;
   })()`).catch((err) => ({ error: String((err && err.message) || err) }));
-  check("OAK camera options: Find objects draws each object found on the camera (what, how far), Show → Objects hides them; the depth picture replaces the colour one; the note says so; remembered",
-    r.shown && r.saved && r.saved.detect === true && r.saved.picture === "depth" &&
+  check("OAK camera options: Find objects draws each object found on the camera (what, how far), Show → Objects hides them; the depth picture replaces the colour one; night vision and its infrared dots; the note says so; remembered",
+    r.shown && r.saved && r.saved.detect === true && r.saved.picture === "depth" && r.saved.night === "on" && r.saved.dots === true && /night vision/.test(r.note) &&
+      r.reset && r.reset.night === "auto" && r.reset.dots === false &&
       r.objects && r.objects.includes("person 3.5m") && r.stage.yellow > 200 && r.hidden < 20 &&
       r.stage.centre[0] > 150 && r.stage.centre[1] < 90 && /objects found on the camera/.test(r.note) && /depth picture/.test(r.note),
     JSON.stringify({ ...r, tile: undefined }));
-  check("OAK camera options reach OAK cameras in tiles (started with them; their objects found)",
-    r.tile && r.tile.started.includes("SIMULATED-OAK-A:true:depth") && r.tile.objects.includes("person"),
+  check("OAK camera options reach OAK cameras in tiles (started with them, night vision too, which the tile says; their objects found)",
+    r.tile && r.tile.started.includes("SIMULATED-OAK-A:true:depth:on:true") && r.tile.objects.includes("person") && /night vision/.test(r.tile.label),
     JSON.stringify(r.tile || r));
 }
 
