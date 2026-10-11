@@ -80,7 +80,17 @@
         save(load().filter((_, j) => j !== i));
         show();
       });
-      li.append(name, go, remove);
+      if (btPossible) {
+        const viaBt = document.createElement("button");
+        viaBt.type = "button";
+        viaBt.className = "quiet";
+        viaBt.textContent = "Bluetooth";
+        viaBt.setAttribute("aria-label", `${label(c)} over Bluetooth`);
+        viaBt.addEventListener("click", () => openBluetooth(c.host));
+        li.append(name, go, viaBt, remove);
+      } else {
+        li.append(name, go, remove);
+      }
       ul.appendChild(li);
     });
     if (!$("host").value && list.length) $("host").placeholder = label(list[0]);
@@ -92,6 +102,13 @@
   const cap = window.Capacitor;
   const inAndroidApp = !!(cap && cap.isNativePlatform && cap.isNativePlatform());
   const inApp = inDesktopApp || inAndroidApp;
+
+  // Over Bluetooth instead (Web Bluetooth: Chrome, and the Windows, Mac and Linux app): its page
+  // here, connecting to it by name.
+  const btPossible = !!(navigator.bluetooth && window.isSecureContext !== false);
+  function openBluetooth(name) {
+    location.href = `remote-client.html?bt=${encodeURIComponent(name || "")}`;
+  }
 
   function open(c) {
     save([c, ...load().filter((x) => label(x) !== label(c))].slice(0, MAX_SAVED));
@@ -118,5 +135,9 @@
     open(c);
   });
 
+  if (btPossible && $("btCard")) {
+    $("btCard").hidden = false;
+    $("btOpen").addEventListener("click", () => openBluetooth(""));
+  }
   show();
 })();

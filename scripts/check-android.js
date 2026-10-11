@@ -913,7 +913,7 @@ async function checkRemoteFromPhone(win, js) {
   fs.writeFileSync(path.join(takesDir, "Phone-Take_1s_2026-10-02_12-00-00.json"), JSON.stringify({ format_version: 2, hands: [] }));
   const server = new RemoteRecordServer({
     keyStore: null, host: "rig-test", hotspot: () => null, takes: () => takesDir,
-    page: (name) => fs.readFileSync(path.join(ROOT, name === "js" ? "remote-client.js" : "remote-client.html"), "utf8"),
+    page: (name) => fs.readFileSync(path.join(ROOT, name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8"),
     ask: async (action, extra) => {
       asked.push(action);
       if (action === "mode") state.mode = extra.mode;

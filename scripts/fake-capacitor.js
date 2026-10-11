@@ -360,7 +360,7 @@
     const ev = events();
     const pending = new Map();
     let server = null, asked = 0;
-    const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : "remote-client.html"), "utf8");
+    const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8");
     const ask = (action, extra) => new Promise((resolve) => {
       const id = ++asked;
       pending.set(id, resolve);

@@ -5,15 +5,18 @@
  * link (frames, the handshake, each request and answer sealed with the session's key) over
  * whatever carries the bytes; only the browser's own crypto (Web Crypto).
  *
- *   const link = BtLinkClient.create({ password, info, write })
- *     info: INFO's value ({ name, salt, iter }); write(bytes) -> Promise: a frame to RX
+ *   const link = BtLinkClient.create({ password, key, info, write })
+ *     info: INFO's value ({ name, salt, iter }); write(bytes) -> Promise: a frame to RX;
+ *     key: the password's key (K) kept from before, instead of the password
  *   link.received(bytes)                 each notification from TX
  *   await link.open()                    the handshake (again after a disconnect)
  *   await link.request({ method, path, body })  -> { status, type, bytes }
  *     (throws { password: true } for the wrong password)
  *   BtLinkClient.SERVICE / INFO / RX / TX  the GATT service's and characteristics' UUIDs
- *   BtLinkClient.connect({ password, onGone })  (Web Bluetooth) asks for a device near by, connects,
- *     -> { name, request, close }
+ *   BtLinkClient.connect({ password, keys, onGone })  (Web Bluetooth) asks for a device near by,
+ *     connects -> { name, request, close, saved: { salt, key } }; keys: { [salt]: key } kept from
+ *     before (each computer's password's key, base64: what to keep, rather than the password);
+ *     throws { needPassword: true } for a computer with none kept and no password given
  */
 
 (function (global) {
@@ -30,6 +33,7 @@
   const enc = new TextEncoder(), dec = new TextDecoder();
   const random = (n) => global.crypto.getRandomValues(new Uint8Array(n));
   const fromB64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  const toB64 = (b) => btoa(String.fromCharCode(...b));
   const concat = (parts) => {
     const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
     let at = 0;
@@ -80,8 +84,8 @@
     return { head: JSON.parse(dec.decode(buf.subarray(4, 4 + n))), body: buf.subarray(4 + n) };
   }
 
-  function create({ password, info, write }) {
-    let K = null, S = null, session = 0, opening = null, nextId = 1 + Math.floor(Math.random() * 60000);
+  function create({ password, key = null, info, write }) {
+    let K = key, S = null, session = 0, opening = null, nextId = 1 + Math.floor(Math.random() * 60000);
     const waiting = new Map(); // message -> { resolve, reject, parts }
     const newId = () => (nextId = (nextId % 65000) + 1);
 
@@ -150,11 +154,11 @@
       return { status: r.head.s, type: r.head.t || "", bytes: r.head.z ? await inflate(r.body) : r.body };
     }
 
-    return { received, open, request, forget: () => (S = null) };
+    return { received, open, request, forget: () => (S = null), key: () => K };
   }
 
   // Web Bluetooth: a device near by offering the link (the browser asks which), connected.
-  async function connect({ password, onGone = () => {} }) {
+  async function connect({ password, keys = {}, onGone = () => {} }) {
     if (!global.navigator || !navigator.bluetooth) throw new Error("This browser can't use Bluetooth (Chrome on Android, Windows or Mac can).");
     const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE] }] });
     device.addEventListener("gattserverdisconnected", () => onGone());
@@ -162,12 +166,24 @@
     const service = await server.getPrimaryService(SERVICE);
     const [infoC, rx, tx] = await Promise.all([service.getCharacteristic(INFO), service.getCharacteristic(RX), service.getCharacteristic(TX)]);
     const info = JSON.parse(dec.decode(new Uint8Array((await infoC.readValue()).buffer)));
+    const kept = info.salt && keys ? keys[info.salt] : null;
+    if (!kept && !password) {
+      device.gatt.disconnect();
+      throw Object.assign(new Error("Its password, please."), { needPassword: true, name: info.name || device.name || "" });
+    }
     let queue = Promise.resolve();
-    const link = create({ password, info, write: (f) => (queue = queue.then(() => rx.writeValueWithResponse(f))) });
+    const link = create({ password, key: !password && kept ? fromB64(kept) : null, info, write: (f) => (queue = queue.then(() => rx.writeValueWithResponse(f))) });
     tx.addEventListener("characteristicvaluechanged", (e) => link.received(new Uint8Array(e.target.value.buffer.slice(e.target.value.byteOffset, e.target.value.byteOffset + e.target.value.byteLength))));
     await tx.startNotifications();
     await link.open();
-    return { name: info.name || device.name || "", request: link.request, close: () => device.gatt.disconnect() };
+    // (The password's checked by the first request: one that opens with the session's key.)
+    try {
+      await link.request({ path: "/api/state" });
+    } catch (err) {
+      device.gatt.disconnect();
+      throw err;
+    }
+    return { name: info.name || device.name || "", request: link.request, close: () => device.gatt.disconnect(), saved: { salt: info.salt, key: toB64(link.key()) } };
   }
 
   const api = { create, connect, SERVICE, INFO, RX, TX };

@@ -16,7 +16,13 @@
  *   - in the Android app and the Windows, Mac and Linux app, as remote-client.html?rig=<name>:<port>
  *     (from remote.html): the app makes the requests (Remote.rigRequest on Android,
  *     desktop.rig.request on Windows, Mac and Linux), since a page can't reach a device on your
- *     network by itself; a key comes with the address the same way and is kept per computer.
+ *     network by itself; a key comes with the address the same way and is kept per computer;
+ *   - over Bluetooth Low Energy (bt-link-client.js, Web Bluetooth: the website in Chrome, the
+ *     Windows, Mac and Linux app), as remote-client.html?bt=<its name> from remote.html, or offered
+ *     when a computer can't be reached over the network: each request over the link, sealed with
+ *     a key made from its password (kept here as that key only, per computer). Bluetooth is slow
+ *     (a few KB a second): its state is asked for less often, and a camera's picture only when
+ *     its box is tapped.
  */
 
 (() => {
@@ -28,7 +34,11 @@
   const onPhoneApp = !!(cap && cap.isNativePlatform && cap.isNativePlatform());
   const nativeRemote = rig && onPhoneApp ? (typeof cap.registerPlugin === "function" ? cap.registerPlugin("Remote") : cap.Plugins && cap.Plugins.Remote) : null;
   const desktopRig = rig && window.desktop && window.desktop.rig ? window.desktop.rig : null;
-  if (rig) $("back").hidden = false;
+  // Bluetooth: asked for (?bt=<its name>), or offered when the computer can't be reached.
+  const btName = params.get("bt");
+  const btPossible = !!(window.BtLinkClient && navigator.bluetooth && window.isSecureContext !== false);
+  let bt = null; // { name, request, close } while connected
+  if (rig || btName !== null) $("back").hidden = false;
 
   // The key from the QR code's address (#k=…), kept for next time (per computer in the apps)
   // and taken out of the address bar.
@@ -49,6 +59,11 @@
 
   // One request to the computer -> { status, type, bytes, json() }.
   async function call(path, { method = "GET", body = null } = {}) {
+    if (bt) {
+      const r = await bt.request({ path, method, body });
+      return answer(r.status, r.type, r.bytes);
+    }
+    if (btName !== null) throw Object.assign(new Error("bluetooth"), { bluetooth: true });
     if (desktopRig) {
       const r = await desktopRig.request({ rig, path, method, body, key });
       return answer(r.status, r.type, r.body instanceof Uint8Array ? r.body : new Uint8Array(r.body || []));
@@ -987,11 +1002,75 @@
     $("wifiBtn").disabled = !!w.connecting;
   }
 
+  // ---------- over Bluetooth ----------
+  // Each computer's password's key, by its salt (what's kept, rather than the password).
+  const KEYS = "hand-tracker-bluetooth-keys";
+  const keys = () => {
+    try {
+      return JSON.parse(localStorage.getItem(KEYS) || "{}") || {};
+    } catch {
+      return {};
+    }
+  };
+  function showBluetooth(why) {
+    $("btPanel").hidden = !btPossible || !!bt;
+    if ($("btPanel").hidden) return;
+    $("btNote").textContent = why || "";
+  }
+  async function connectBluetooth() {
+    const password = $("btPassword").value;
+    $("btConnect").disabled = true;
+    $("btDevices").textContent = "";
+    say("Looking for it over Bluetooth…");
+    try {
+      // (The Windows, Mac and Linux app: which device it is, by name; or a list here to pick from.)
+      if (window.desktop && desktop.bluetooth) desktop.bluetooth.prefer(btName || (rig ? rig.replace(/:\d+$/, "") : ""));
+      bt = await BtLinkClient.connect({
+        password: password || null,
+        keys: keys(),
+        onGone: () => {
+          bt = null;
+          showBluetooth("The Bluetooth connection ended: connect again.");
+          say("");
+        },
+      });
+      try {
+        localStorage.setItem(KEYS, JSON.stringify({ ...keys(), [bt.saved.salt]: bt.saved.key }));
+      } catch {}
+      $("btPassword").value = "";
+      $("btPanel").hidden = true;
+      say(`Connected to ${bt.name} over Bluetooth.`);
+      for (const l of loops) l.want = false;
+    } catch (err) {
+      bt = null;
+      if (err.needPassword) say(`${err.name || "It"} needs its password (on a Raspberry Pi, its hotspot's).`, true);
+      else if (err.password) say("That isn't its password (on a Raspberry Pi, its hotspot's).", true);
+      else if (err.name === "NotFoundError") say("No Hand Tracker was picked over Bluetooth.", true);
+      else say(`Bluetooth: ${err.message}`, true);
+    } finally {
+      $("btConnect").disabled = false;
+    }
+  }
+  $("btConnect").addEventListener("click", connectBluetooth);
+  // (The Windows, Mac and Linux app: Hand Tracker computers near by, to pick from.)
+  if (window.desktop && desktop.bluetooth) {
+    desktop.bluetooth.onDevices((list) => {
+      $("btDevices").innerHTML = list.map((d) => `<button type="button" data-btid="${esc(d.id)}">${esc(d.name || d.id)}</button>`).join("");
+    });
+    $("btDevices").addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-btid]");
+      if (b) {
+        desktop.bluetooth.choose(b.dataset.btid);
+        $("btDevices").textContent = "";
+      }
+    });
+  }
+
   // ---------- the page ----------
   let lastNoticeAt = null;
   function render() {
     const s = state;
-    $("title").textContent = s.host ? `Hand Tracker on ${s.host}` : "Hand Tracker";
+    $("title").textContent = (s.host ? `Hand Tracker on ${s.host}` : "Hand Tracker") + (bt ? " (Bluetooth)" : "");
     document.title = s.recording ? `● ${clock(s.elapsed_s)} · Hand Tracker` : "Hand Tracker remote";
     const cams = s.cameras || [];
     const running = cams.filter((c) => c.fps > 0).length;
@@ -1141,6 +1220,7 @@
     const box = e.target.closest(".boxes button");
     if (box) return tapBox(box);
     const pic = e.target.closest(".cam .pic");
+    if (pic && bt) return (loops[Number(pic.parentElement.id.slice(3))] || {}).want = true;
     if (pic) return openFull(Number(pic.parentElement.id.slice(3)));
     const b = e.target.closest("button");
     const c = b && state && (state.cameras || [])[Number(b.dataset.i)];
@@ -1168,8 +1248,17 @@
         await sleep(500);
         continue;
       }
+      // Over Bluetooth a picture takes seconds: only when its box is tapped (asked again a few
+      // times if the computer has none new yet).
+      if (bt && !loop.want) {
+        if (img.hidden) note.textContent = "Over Bluetooth: tap for its picture";
+        await sleep(300);
+        continue;
+      }
+      if (bt) loop.want = typeof loop.want === "number" ? loop.want - 1 : 4;
       try {
         const asked = performance.now();
+        if (bt) note.textContent = "Getting its picture…";
         const res = await api(`/api/preview?i=${i}`);
         if (res.status === 200 && !loop.stop) {
           const next = URL.createObjectURL(new Blob([res.bytes], { type: "image/jpeg" }));
@@ -1179,6 +1268,7 @@
           img.hidden = false;
           note.hidden = true;
           shape(img);
+          loop.want = false;
           // (The computer waits for each new picture; one that doesn't is asked at most this often.)
           await sleep(Math.max(0, PREVIEW_EVERY_MS - (performance.now() - asked)));
         } else {
@@ -1273,9 +1363,17 @@
         render();
         if ($("message").className === "err" && /reach|code/.test($("message").textContent)) say("");
       } catch (err) {
-        say(err.auth ? needsKey() : unreachable(), true);
+        if (err.bluetooth) {
+          showBluetooth(`Connect to ${btName || "a computer"} over Bluetooth: Hand Tracker on it needs remote recording on. Its password is kept here (as a key) after the first time.`);
+          if (!$("message").textContent) say("");
+        } else {
+          say(err.auth ? needsKey() : unreachable(), true);
+          // Out of reach over the network: Bluetooth instead (if it's near by).
+          if (!err.auth && rig && !bt) showBluetooth(`Can't reach ${rig.replace(/:\d+$/, "")} over the network. If it's near by, connect over Bluetooth instead.`);
+        }
       }
-      await sleep(document.hidden ? 3000 : 1000);
+      // (Bluetooth is slow: its state less often.)
+      await sleep(document.hidden ? (bt ? 6000 : 3000) : bt ? 2000 : 1000);
     }
   }
 

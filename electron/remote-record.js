@@ -598,6 +598,7 @@ class RemoteRecordServer extends EventEmitter {
       return this.send(res, 200, this.page("html"), "text/html; charset=utf-8");
     }
     if (req.method === "GET" && url.pathname === "/remote-client.js") return this.send(res, 200, this.page("js"), "text/javascript; charset=utf-8");
+    if (req.method === "GET" && url.pathname === "/bt-link-client.js") return this.send(res, 200, this.page("bt"), "text/javascript; charset=utf-8");
     if (!url.pathname.startsWith("/api/")) return this.send(res, 404, { error: "Not found" });
     if (!this.authorized(req)) return this.send(res, 401, { error: "This page's key isn't the one Hand Tracker shows now." });
     const address = this.relayed(req) ? "Bluetooth" : String(req.socket.remoteAddress || "").replace(/^::ffff:/, "");

@@ -141,6 +141,7 @@ const STEPS = [
   ["mac-app", [], () => checkMacApp()],
   ["linux-input", [], () => checkLinuxInput()],
   ["bluetooth-link", [], () => checkBluetoothLink()],
+  ["bluetooth-page", [], () => checkBluetoothPage()],
   ["clip-mp4", [], () => checkClipMp4()],
   ["external-source", [], checkExternalSource],
   ["duplicate-hands", [], checkDuplicateHands],
@@ -1072,6 +1073,102 @@ async function checkBluetoothLink() {
       out.wrong === "password" && out.two.join() === "200,200" &&
       out.direct.join() === "401,200,401" && out.network.join() === "true,false,false,false" && out.helper.compiles !== false && out.helper.unpacked,
     JSON.stringify(out));
+}
+
+// The remote recording page over Bluetooth (remote-client.html?bt=…), as in Chrome or the
+// desktop app, against the real link and server: a stand-in Web Bluetooth device in the page
+// carries its frames (to here, and back as notifications). The Bluetooth panel asks for the
+// password; the wrong one is said; the right one connects, the page shows the computer (over
+// Bluetooth), its buttons work, a camera's picture comes when its box is tapped; the password
+// isn't kept, only its key, and with that the page connects again without it.
+async function checkBluetoothPage() {
+  const { BluetoothLink, makeSecret } = require("../electron/bluetooth-link.js");
+  const { RemoteRecordServer } = require("../electron/remote-record.js");
+  const out = {};
+  const secret = { ...makeSecret("correct horse 42"), from: "set" };
+  const asked = [];
+  const server = new RemoteRecordServer({ keyStore: null, page: () => "", ask: async (action, extra) => (asked.push(action), { ok: true, message: `did ${action}` }) });
+  let win = null;
+  const send = (frame) => win && !win.isDestroyed() && win.webContents.executeJavaScript(`window.__btNotify && window.__btNotify("${frame.toString("base64")}")`).catch(() => {});
+  const link = new BluetoothLink({ name: "check-rig", secret: () => secret, relay: (r) => server.relay(r), send });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let camera = null;
+  try {
+    await server.start();
+    const jpeg = require("electron").nativeImage.createFromBitmap(Buffer.alloc(64 * 48 * 4, 120), { width: 64, height: 48 }).toJPEG(70);
+    server.setState({ running: true, recording: false, cameras: [{ index: 0, name: "Cam", label: "Cam", roleId: "head", role: "Head", fps: 30, hands: [], rotation: 0, mirror: false }], mode: "freeform", requirement: { ok: true } });
+    server.setPreview(0, jpeg);
+    camera = setInterval(() => server.setPreview(0, jpeg), 300); // (a camera's new pictures)
+    win = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { backgroundThrottling: false } }); // (the app's own pages: its session)
+    // The page's writes come here (as console lines), each a frame from the device.
+    win.webContents.on("console-message", (e) => {
+      const m = /^BTW:([A-Za-z0-9+/=]+)$/.exec(e.message || "");
+      if (m) link.received("/dev/check-phone", Buffer.from(m[1], "base64"), 247);
+    });
+    // A stand-in Web Bluetooth (before the page's scripts): one device offering the link.
+    win.webContents.on("dom-ready", () => win.webContents.executeJavaScript(`(() => {
+      const INFO = ${JSON.stringify(link.info().toString())};
+      const listeners = [];
+      const tx = { addEventListener: (t, f) => listeners.push(f), startNotifications: async () => tx };
+      window.__btNotify = (b64) => {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        for (const f of listeners) f({ target: { value: new DataView(bytes.buffer) } });
+      };
+      window.__btRequests = 0;
+      const ch = (uuid) => uuid.startsWith("48540002") ? { readValue: async () => new DataView(new TextEncoder().encode(INFO).buffer) }
+        : uuid.startsWith("48540003") ? { writeValueWithResponse: async (f) => console.log("BTW:" + btoa(String.fromCharCode(...new Uint8Array(f.buffer || f)))) } : tx;
+      const device = { name: "check-rig", addEventListener: () => {}, gatt: { connect: async () => ({ getPrimaryService: async () => ({ getCharacteristic: async (u) => ch(u) }) }), disconnect: () => {} } };
+      Object.defineProperty(navigator, "bluetooth", { configurable: true, value: { requestDevice: async () => (window.__btRequests++, device) } });
+      return true;
+    })()`).catch(() => {}));
+    await win.loadURL("app://hand-tracker/remote-client.html?bt=check-rig");
+    const pjs = (code) => withLimit(win.webContents.executeJavaScript(code), "the remote page over Bluetooth");
+    const PAGE = `
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      const until = async (fn, ms = 20000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+    `;
+    Object.assign(out, await pjs(`(async () => {
+      ${PAGE}
+      localStorage.removeItem("hand-tracker-bluetooth-keys"); // (from scratch)
+      const out = { panel: !!(await until(() => !$("btPanel").hidden)), note: $("btNote").textContent };
+      $("btPassword").value = "wrong horse 42";
+      $("btConnect").click();
+      out.wrong = await until(() => /isn't its password/.test($("message").textContent) && $("message").textContent);
+      $("btPassword").value = "correct horse 42";
+      $("btConnect").click();
+      out.title = await until(() => /Hand Tracker on .+ [(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent);
+      out.panelGone = $("btPanel").hidden;
+      out.kept = localStorage.getItem("hand-tracker-bluetooth-keys") || "";
+      out.camera = await until(() => document.querySelector("#cam0 .pic span") && /tap for its picture/.test(document.querySelector("#cam0 .pic span").textContent) && document.querySelector("#cam0 img").hidden);
+      document.querySelector("#cam0 .pic").click();
+      out.picture = !!(await until(() => !document.querySelector("#cam0 img").hidden && document.querySelector("#cam0 img").naturalWidth === 64));
+      out.full = !!document.getElementById("full") && !document.getElementById("full").hidden;
+      return out;
+    })()`));
+    await pjs(`document.getElementById("offBtn").click(), true`);
+    await sleep(1500);
+    out.asked = asked.slice();
+    // A new page: the key kept, no password typed, connects.
+    await win.loadURL("app://hand-tracker/remote-client.html?bt=check-rig");
+    Object.assign(out, { again: await pjs(`(async () => {
+      ${PAGE}
+      await until(() => !$("btPanel").hidden);
+      $("btConnect").click();
+      return { title: await until(() => /[(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent), requests: window.__btRequests };
+    })()`) });
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    clearInterval(camera);
+    if (win) win.destroy();
+    server.stop();
+  }
+  check("The remote recording page over Bluetooth: its panel asks for the password, the wrong one is said, the right one connects (the page shows the computer, over Bluetooth); its buttons work; a camera's picture comes when its box is tapped (not full screen); only the password's key is kept, and with it the page connects again without the password",
+    !out.error && out.panel && /over Bluetooth/.test(out.note) && out.wrong && /\(Bluetooth\)/.test(out.title || "") && out.panelGone &&
+      out.kept && !out.kept.includes("correct horse") && /"[A-Za-z0-9+/=]{20,}":"[A-Za-z0-9+/=]{40,}"/.test(out.kept) &&
+      out.camera && out.picture && !out.full && out.asked.includes("close") && out.again && /\(Bluetooth\)/.test(out.again.title || ""),
+    JSON.stringify({ ...out, kept: out.kept ? `${out.kept.length} chars` : out.kept }));
 }
 
 // A camera clip as the browser's recorder makes it (a fragmented MP4) is saved a plain MP4: the
@@ -2676,7 +2773,7 @@ async function checkRemoteTakes() {
   fs.writeFileSync(path.join(dir, `${ANA}.mcap`), Buffer.from([0x89, 0x4d, 0x43, 0x41, 0x50]));
   fs.writeFileSync(path.join(dir, "notes.txt"), "not a take");
   fs.writeFileSync(path.join(path.dirname(dir), "outside.json"), "{}");
-  const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : "remote-client.html"), "utf8");
+  const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8");
   const server = new RemoteRecordServer({ keyStore: null, page, ask: async () => ({ ok: true, message: "" }), host: "rig-test", hotspot: () => null, takes: () => dir });
   server.setState({
     kind: "rig", running: false, recording: false, mode: "freeform", requirement: { ok: true, missing: [], message: "" }, detailsRequired: true,
@@ -2770,7 +2867,7 @@ async function checkRemoteHotspotWifi() {
       return { ok: true, message: `Joining ${ssid}…` };
     },
   };
-  const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : "remote-client.html"), "utf8");
+  const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8");
   const ask = async () => ({ ok: true, message: "" });
   const postTo = (base, body, key) => fetch(base + "/api/command", { method: "POST", headers: { "Content-Type": "application/json", ...(key ? { "X-Key": key } : {}) }, body: JSON.stringify(body) });
   const out = {};

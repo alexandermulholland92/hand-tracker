@@ -37,7 +37,8 @@ const PAGES = new Map([
 ]);
 // Keys that work even while the app is minimized: the hand mouse and the floating keyboard on/off.
 const SHORTCUTS = { mouse: "CommandOrControl+Alt+M", keyboard: "CommandOrControl+Alt+K" };
-const ALLOWED_PERMISSIONS = new Set(["media", "fullscreen", "clipboard-sanitized-write"]);
+// (bluetooth: remote recording over Bluetooth, remote-client.js, from the app's own pages only.)
+const ALLOWED_PERMISSIONS = new Set(["media", "fullscreen", "clipboard-sanitized-write", "bluetooth"]);
 // Motion capture exports, and remote recording's and Sentry mode's videos and photos.
 const SAVE_EXTENSIONS = new Set(["json", "csv", "bvh", "glb", "c3d", "trc", "npz", "mcap", "webm", "mp4", "jpg"]);
 const readFile = promisify(fs.readFile); // callback fs is asar-aware in packaged builds
@@ -162,6 +163,39 @@ function serveAppFiles() {
       return new Response("Not found", { status: 404 });
     }
   });
+}
+
+// Web Bluetooth (remote recording over Bluetooth: remote-client.js): the device a page asks for is
+// the one with the name it gave (desktop.bluetooth.prefer: a computer's name), else the page lists
+// those found to pick from (desktop.bluetooth.choose); nothing picked in 30 s is none.
+const btPicks = new Map(); // webContents id -> { name, callback, timer }
+function btDone(id, deviceId) {
+  const w = btPicks.get(id);
+  if (!w) return;
+  clearTimeout(w.timer);
+  btPicks.delete(id);
+  if (w.callback) w.callback(deviceId);
+}
+function bluetoothPicker() {
+  app.on("web-contents-created", (_e, wc) => {
+    wc.on("select-bluetooth-device", (event, devices, callback) => {
+      event.preventDefault();
+      if (!isAppUrl(wc.getURL())) return callback("");
+      const w = btPicks.get(wc.id) || { name: "" };
+      w.callback = callback;
+      if (!w.timer) w.timer = setTimeout(() => btDone(wc.id, ""), 30000);
+      btPicks.set(wc.id, w);
+      const named = w.name && devices.find((d) => String(d.deviceName || "").toLowerCase() === w.name);
+      if (named) return btDone(wc.id, named.deviceId);
+      wc.send("bluetooth:devices", devices.map((d) => ({ id: d.deviceId, name: d.deviceName || "" })));
+    });
+    wc.on("destroyed", () => btDone(wc.id, ""));
+  });
+  ipcMain.on("bluetooth:prefer", (event, name) => {
+    btDone(event.sender.id, "");
+    btPicks.set(event.sender.id, { name: String(name || "").toLowerCase().split(".")[0].slice(0, 40) });
+  });
+  ipcMain.on("bluetooth:choose", (event, id) => btDone(event.sender.id, String(id || "")));
 }
 
 function restrictPermissions() {
@@ -822,7 +856,7 @@ function registerRemoteIpc() {
   rigBluetooth = new RigBluetooth({ dataDir: app.getPath("userData"), name: os.hostname(), relay: (r) => remoteRecord.relay(r) });
   remoteRecord = new RemoteRecordServer({
     keyStore,
-    page: (name) => fs.readFileSync(path.join(APP_ROOT, name === "js" ? "remote-client.js" : "remote-client.html"), "utf8"),
+    page: (name) => fs.readFileSync(path.join(APP_ROOT, name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8"),
     ask,
     onWantPreviews: (on) => toWindow("remote:want-previews", on),
     wifi: createWifi(), // a phone on the hotspot (or over Tailscale) can change the Wi-Fi
@@ -1226,6 +1260,7 @@ app.whenReady().then(() => {
   if (!isPrimaryInstance) return;
   serveAppFiles();
   restrictPermissions();
+  bluetoothPicker();
   registerIpc();
   registerPcIpc();
   registerOakIpc();

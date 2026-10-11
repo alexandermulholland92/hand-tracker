@@ -227,6 +227,17 @@ contextBridge.exposeInMainWorld("desktop", {
 
   // Remote recording (remote-record.js): a phone's browser starts and stops motion capture
   // here. status: { on, port, addresses, urls: [{ kind, url, keyed }], viewer }.
+  // Web Bluetooth's device (remote recording over Bluetooth, remote-client.js): the one named
+  // (a computer's name), else one of those found, listed for the page to pick from.
+  bluetooth: {
+    prefer: (name) => ipcRenderer.send("bluetooth:prefer", String(name || "")),
+    choose: (id) => ipcRenderer.send("bluetooth:choose", String(id || "")),
+    onDevices: (cb) => {
+      const listener = (_event, list) => cb(Array.isArray(list) ? list : []);
+      ipcRenderer.on("bluetooth:devices", listener);
+      return () => ipcRenderer.removeListener("bluetooth:devices", listener);
+    },
+  },
   remote: {
     status: () => ipcRenderer.invoke("remote:status"),
     start: () => ipcRenderer.invoke("remote:start"),
