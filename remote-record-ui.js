@@ -31,8 +31,8 @@
  *             its settings, each camera's boxes, on and off (on, it starts the cameras if
  *             they're off: it watches them, with hand tracking off unless it's asked to track).
  * With each take, each camera's video is recorded too (with sound from this computer's
- * microphone), saved beside the take's motion capture as <take>-video-<role>.webm (.mp4 on a
- * phone): the phone's Takes list has them too.
+ * microphone), saved beside the take's motion capture as <take>-video-<role>.mp4 (.webm where
+ * the browser can't make MP4): the phone's Takes list has them too.
  * Only cameras that are plugged in get a tile. Nothing starts by itself: the cameras only run once the phone (or someone here) asks.
  * While the phone's page is open, each camera's picture with its hands drawn goes to it, up to
  * about 15 times a second (fewer if making them would take much of this computer's time).
@@ -428,7 +428,7 @@
       const view = views[src.i];
       try {
         if (view && view.want) view.want(true);
-        const rec = global.CameraVideo.start({ canvas: src.canvas, fps: VIDEO_FPS, audio: remoteSound(), preferMp4: onPhone, quality: remoteQuality() });
+        const rec = global.CameraVideo.start({ canvas: src.canvas, fps: VIDEO_FPS, audio: remoteSound(), preferMp4: true, quality: remoteQuality() });
         videos.push({ role: cam.role || cam.name, rec, view });
       } catch (err) {
         if (view && view.want) view.want(false);
@@ -460,7 +460,7 @@
       const slug = String(role).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "camera";
       try {
         const data = new Uint8Array(await clip.blob.arrayBuffer());
-        const res = await host.remote.saveTake({ baseName, files: [{ format: clip.ext, suffix: `-video-${slug}`.slice(0, 24), ext: clip.ext, data }] });
+        const res = await host.remote.saveTake({ baseName, files: [{ format: clip.ext, suffix: `-video-${slug}`.slice(0, 24), ext: clip.ext, data, mimeType: clip.mimeType }] });
         const r = (res.results || [])[0];
         if (r && r.ok) saved.push(r.path.split(/[\\/]/).pop());
       } catch {

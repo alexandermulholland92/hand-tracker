@@ -408,7 +408,7 @@
       try {
         const canvas = v.canvas();
         if (v.want) v.want(true);
-        st.session.rec = global.CameraVideo.start({ canvas, fps: VIDEO_FPS, audio: !!cfg.sound, preferMp4: !!global.mobile });
+        st.session.rec = global.CameraVideo.start({ canvas, fps: VIDEO_FPS, audio: !!cfg.sound, preferMp4: true });
       } catch (err) {
         st.session.videoError = errText(err);
       }
@@ -470,7 +470,7 @@
     try {
       const clip = await s.rec.stop();
       if (!clip.blob.size) throw new Error("nothing was recorded");
-      const saved = await saveFile(s.name, "-video", clip.ext, clip.blob);
+      const saved = await saveFile(s.name, "-video", clip.ext, clip.blob, clip.mimeType);
       if (s.event) {
         s.event.video = saved;
         s.event.seconds = Math.round(clip.duration);
@@ -513,11 +513,12 @@
   }
 
   // Saved into the remote recording folder (the desktop app, the phone app), else downloaded.
+  // (mimeType: a video's, as recorded; the desktop app makes it a plain MP4 with AAC sound.)
   // -> { name }
-  async function saveFile(baseName, suffix, ext, blob) {
+  async function saveFile(baseName, suffix, ext, blob, mimeType) {
     const data = new Uint8Array(await blob.arrayBuffer());
     if (host && host.remote && host.remote.saveTake) {
-      const res = await host.remote.saveTake({ baseName, files: [{ format: ext, suffix, ext, data }] });
+      const res = await host.remote.saveTake({ baseName, files: [{ format: ext, suffix, ext, data, ...(mimeType ? { mimeType } : {}) }] });
       const r = (res.results || [])[0];
       if (!r || !r.ok) throw new Error((r && r.error) || "It couldn't be saved.");
       return { name: r.path.split(/[\\/]/).pop(), dir: res.dir };

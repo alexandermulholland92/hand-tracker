@@ -139,6 +139,7 @@ const STEPS = [
   ["iphone-mouse", [], ({ js }) => checkIphoneMouse(js)],
   ["mac-app", [], () => checkMacApp()],
   ["linux-input", [], () => checkLinuxInput()],
+  ["clip-mp4", [], () => checkClipMp4()],
   ["external-source", [], checkExternalSource],
   ["duplicate-hands", [], checkDuplicateHands],
   ["minimized", [], checkMinimized],
@@ -665,7 +666,7 @@ async function checkSentry(js) {
     const f = fs.readdirSync(dir).filter((n) => !before.has(n)).find((n) => re.test(n));
     if (!f) return null;
     const b = fs.readFileSync(path.join(dir, f));
-    return { f, kb: Math.round(b.length / 1024), head: b.subarray(0, 4).toString("hex") };
+    return { f, kb: Math.round(b.length / 1024), head: b.subarray(0, 4).toString("hex"), ...(f.endsWith(".mp4") ? clipInfo(path.join(dir, f)) : {}) };
   };
   const OLD = "Sentry_Old-Camera_2020-01-02_03-04-05.jpg", KEEP = "Kept-take_check-sentry.jpg";
   try {
@@ -919,7 +920,7 @@ async function checkSentry(js) {
       r.alert && r.event && r.event.photo && r.listed.includes(r.event.camera) && r.off && r.video && r.video.name && r.hiddenAgain && r.hiddenStateAgain === '{"shown":false,"armed":false}' &&
       r.ntfy.length >= 2 && r.ntfy[0] === "POST Sentry: Test" && r.ntfy.slice(1).some((t) => t.startsWith("POST Sentry: ")) &&
       r.files.photo && r.files.photo.head.startsWith("ffd8") && r.files.photo.kb > 5 &&
-      r.files.video && r.files.video.kb > 5 && (r.files.video.head === "1a45dfa3" || r.files.video.f.endsWith(".mp4")) &&
+      r.files.video && r.files.video.kb > 5 && r.files.video.f.endsWith(".mp4") && r.files.video.plain && r.files.video.video === "h264" && ["aac", "none"].includes(r.files.video.sound) &&
       r.badId && r.badId.error === "Which Sentry setting?" && r.delShown && r.delArmed && r.delGone && /^The alert deleted \(2 files\)/.test(r.delMessage) && r.allArmed && r.allGone &&
       r.afterDelete.photo === null && r.afterDelete.video === null && !r.afterDelete.old && r.afterDelete.kept && r.afterDelete.events === 0 &&
       r.finder && r.finder.ok,
@@ -971,6 +972,53 @@ function checkMacApp() {
 // lets whoever is logged in at the screen use /dev/uinput (logind's uaccess, numbered before
 // logind's own 73- rules, which apply it) and goes with the app. (Run on a Pi itself, it's
 // checked moving the pointer there.)
+// A camera clip as the browser's recorder makes it (a fragmented MP4) is saved a plain MP4: the
+// sound made AAC when it's Opus (Linux's recorder has no AAC), the picture copied as it was.
+async function checkClipMp4() {
+  const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "ht-clip-"));
+  const make = (name, sound) => {
+    const f = path.join(dir, name);
+    spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+      "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", ...sound, "-movflags", "frag_keyframe+empty_moov+default_base_moof", f]);
+    return f;
+  };
+  const opus = make("opus.mp4", ["-c:a", "libopus"]), aac = make("aac.mp4", ["-c:a", "aac"]);
+  const before = { opus: clipInfo(opus), aac: clipInfo(aac) };
+  const done = { opus: await exporter.finishClip(opus, "video/mp4;codecs=avc1.42000c,opus"), aac: await exporter.finishClip(aac, "video/mp4;codecs=avc1.42000c,mp4a.40.2") };
+  const after = { opus: clipInfo(opus), aac: clipInfo(aac) };
+  const broken = path.join(dir, "broken.mp4");
+  fs.writeFileSync(broken, Buffer.from("not a video"));
+  const kept = { redone: await exporter.finishClip(broken, "video/mp4;codecs=avc1,opus"), same: fs.readFileSync(broken, "utf8") === "not a video", parts: fs.readdirSync(dir).filter((n) => n.endsWith(".part")) };
+  fs.rmSync(dir, { recursive: true, force: true });
+  check("A camera clip as the recorder makes it (fragmented MP4) is saved a plain MP4 with AAC sound (Opus made AAC, the picture copied); one ffmpeg can't read is left as it was",
+    before.opus.fragmented && before.opus.sound === "opus" && before.aac.fragmented && done.opus && done.aac &&
+      ["opus", "aac"].every((k) => after[k].plain && after[k].sound === "aac" && after[k].video === before[k].video && Math.abs(after[k].seconds - before[k].seconds) < 0.1) &&
+      !kept.redone && kept.same && kept.parts.length === 0,
+    JSON.stringify({ before, done, after, kept }));
+}
+
+// A video file's layout (top-level MP4 boxes: plain is moov before mdat, no moof), its picture
+// and sound codecs and length, as ffmpeg reads them.
+function clipInfo(file) {
+  const b = fs.readFileSync(file);
+  const boxes = [];
+  for (let i = 0; i + 8 <= b.length && boxes.length < 400; ) {
+    const n = b.readUInt32BE(i);
+    boxes.push(b.toString("latin1", i + 4, i + 8));
+    if (n < 8) break;
+    i += n;
+  }
+  const info = String(spawnSync(exporter.ffmpegPath, ["-hide_banner", "-i", file], { encoding: "utf8" }).stderr);
+  const t = (info.match(/Duration: (\d+):(\d+):([\d.]+)/) || []).slice(1).map(Number);
+  return {
+    plain: boxes[0] === "ftyp" && boxes.indexOf("moov") > 0 && boxes.indexOf("moov") < boxes.indexOf("mdat") && !boxes.includes("moof"),
+    fragmented: boxes.includes("moof"),
+    video: (info.match(/Video: (\w+)/) || [])[1] || "none",
+    sound: (info.match(/Audio: (\w+)/) || [])[1] || "none",
+    seconds: t.length === 3 ? t[0] * 3600 + t[1] * 60 + t[2] : 0,
+  };
+}
+
 function checkLinuxInput() {
   const root = path.join(__dirname, "..");
   const { KEYS, LINUX_KEYS } = require("../electron/input.js");
@@ -2202,7 +2250,8 @@ async function checkRemoteRecording(js) {
       const frames = Number((last.match(/frame=\s*(\d+)/) || [])[1] || 0);
       const t = (last.match(/time=(\d+):(\d+):([\d.]+)/) || []).slice(1).map(Number);
       const seconds = t.length === 3 ? t[0] * 3600 + t[1] * 60 + t[2] : 0;
-      return { f: f.replace(/^.*(-video-[a-z-]+\.\w+)$/, "$1"), kb: Math.round(b.length / 1024), webm: b.subarray(0, 4).toString("hex") === "1a45dfa3", fps: seconds ? Math.round((frames / seconds) * 10) / 10 : 0 };
+      const { plain, video, sound } = clipInfo(full);
+      return { f: f.replace(/^.*(-video-[a-z-]+\.\w+)$/, "$1"), kb: Math.round(b.length / 1024), plain, video, sound, fps: seconds ? Math.round((frames / seconds) * 10) / 10 : 0 };
     });
     // Its name is final at the computer too (other formats exported there keep it).
     out.nameLocked = await js(`document.getElementById("motionName").readOnly && document.getElementById("motionName").value`);
@@ -2252,7 +2301,7 @@ async function checkRemoteRecording(js) {
       out.preview.status === 200 && out.preview.type === "image/jpeg" && out.preview.jpeg && out.preview.kb > 1 &&
       out.full.frames >= 12 && out.full.size && out.full.small && out.full.size.w > out.full.small.w && out.full.fps >= 6 &&
       out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
-      out.videos.map((v) => v.f).sort().join() === "-video-chest.webm,-video-head.webm" && out.videos.every((v) => v.webm && v.kb > 5 && v.fps > 16) &&
+      out.videos.map((v) => v.f).sort().join() === "-video-chest.mp4,-video-head.mp4" && out.videos.every((v) => v.plain && v.video === "h264" && ["aac", "none"].includes(v.sound) && v.kb > 5 && v.fps > 16) &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
       /^0:\d\d$/.test(out.metadata.length) && out.metadata.length_s > 1 &&
       out.savedHands && out.savedHands.length === 2 && out.savedHands.some((h) => /^Head /.test(h)) && out.savedHands.some((h) => /^Chest /.test(h)) &&

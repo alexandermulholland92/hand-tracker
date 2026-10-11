@@ -1,10 +1,10 @@
 /**
  * camera-video.js — records one camera's picture, with sound from a microphone if asked, into a
- * clip (WebM; MP4 on a phone, which plays everywhere there): remote recording's video of each
- * camera, and Sentry mode's clips. Unlike video-recorder.js (the Record card's: several views
+ * clip (MP4 where the browser can make one, which plays everywhere; WebM where it can't, as in
+ * Firefox): remote recording's video of each camera, and Sentry mode's clips. Unlike video-recorder.js (the Record card's: several views
  * stacked, frames pushed one by one), it takes the picture as it's drawn, at a steady rate.
  *
- *   const rec = CameraVideo.start({ canvas, fps: 30, audio: true | false, preferMp4, quality });
+ *   const rec = CameraVideo.start({ canvas, fps: 30, audio: true | false, preferMp4: true, quality });
  *     (quality: "low" | "standard" | "high" | "best", how much of the picture's detail is kept,
  *     and so how big the file is: CameraVideo.QUALITIES; standard if not given)
  *   rec.elapsed()                          // seconds so far
@@ -24,6 +24,9 @@
     "video/webm;codecs=vp8,opus",
     "video/webm",
     "video/mp4;codecs=avc1,mp4a.40.2",
+    // Linux's recorder has no AAC: its MP4's sound is Opus, which the desktop app turns into AAC
+    // as it saves the clip (exporter.finishClip), as some players (Apple's) don't play Opus.
+    "video/mp4;codecs=avc1,opus",
     "video/mp4",
   ];
   const MIME_SILENT = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4;codecs=avc1", "video/mp4"];

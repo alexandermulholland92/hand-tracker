@@ -969,6 +969,8 @@ function registerIpc() {
       const out = exporter.uniquePath(dir, base + suffix, ext);
       try {
         await fs.promises.writeFile(out, typeof file.data === "string" ? file.data : Buffer.from(file.data));
+        // A camera's clip as recorded (mimeType given): a plain MP4 with AAC sound.
+        if (ext === "mp4" && typeof file.mimeType === "string") await exporter.finishClip(out, file.mimeType);
         exportedPaths.add(out);
         results.push({ format, ok: true, path: out, size: (await fs.promises.stat(out)).size });
       } catch (err) {

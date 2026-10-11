@@ -84,6 +84,32 @@ function runFfmpeg(args, duration, onProgress) {
   });
 }
 
+// A clip from the browser's recorder (remote recording's camera videos, Sentry's), made a plain
+// MP4 that plays everywhere: the recorder writes it a piece at a time (a fragmented MP4, which
+// some players, Apple's among them, don't take well), and on Linux with Opus sound, as Linux's
+// recorder has no AAC. The picture is copied as it is (a fraction of a second); only Opus sound
+// is made again, as AAC. Left as it was if ffmpeg can't. -> true if it was redone
+async function finishClip(file, mimeType) {
+  if (!(await isAvailable())) return false;
+  const part = `${file}.part`;
+  const sound = /opus/i.test(String(mimeType || "")) ? ["-c:a", "aac", "-b:a", "96k"] : ["-c:a", "copy"];
+  const args = ["-hide_banner", "-loglevel", "error", "-y", "-i", file, "-map", "0", "-c:v", "copy", ...sound, "-movflags", "+faststart", "-f", "mp4", part];
+  try {
+    await new Promise((resolve, reject) => {
+      const proc = spawn(ffmpegPath, args, { windowsHide: true });
+      let stderr = "";
+      proc.stderr.on("data", (d) => (stderr = (stderr + d).slice(-2000)));
+      proc.on("error", reject);
+      proc.on("close", (code) => (code === 0 ? resolve() : reject(new Error(stderr.trim().split(/\r?\n/).pop() || `ffmpeg exited with code ${code}`))));
+    });
+    await fs.promises.rename(part, file);
+    return true;
+  } catch {
+    await fs.promises.rm(part, { force: true }).catch(() => {});
+    return false;
+  }
+}
+
 const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
 
 function sanitizeBaseName(name) {
@@ -257,4 +283,4 @@ async function convertForPlayback(inputPath, outDir, onProgress) {
   return out;
 }
 
-module.exports = { FORMATS, exportVideo, convertFile, probe, convertForPlayback, cancel, isAvailable, sanitizeBaseName, uniquePath, ffmpegPath };
+module.exports = { FORMATS, exportVideo, convertFile, probe, convertForPlayback, finishClip, cancel, isAvailable, sanitizeBaseName, uniquePath, ffmpegPath };
