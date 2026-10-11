@@ -126,7 +126,46 @@
     command("scan", {}, { quiet: true });
   }
   $("scanBtn").addEventListener("click", scan);
+  // Each OAK camera's own settings, opened under its row (Settings): it starts again with them if
+  // it's running (not while recording).
+  const openOak = new Set();
+  const OAK_CHOICES = {
+    model: ["Hand model", [["lite", "Lite"], ["full", "Full"]]],
+    hands: ["Hands", [[1, "One"], [2, "Two"]]],
+    fps: ["Frame rate", [[0, "Automatic"], [60, "60"]]],
+    picture: ["Picture", [["color", "Colour"], ["depth", "Depth"]]],
+    night: ["Night vision", [["auto", "Automatic"], ["on", "On"], ["off", "Off"]]],
+  };
+  const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", dots: "Infrared dots (better depth in the dark, dots on the picture)" };
+  function oakSettingsHtml(c, disabled) {
+    const o = c.oak, id = esc(c.id), dis = disabled ? " disabled" : "";
+    const choice = (k) => `<div class="row"><span class="grow">${OAK_CHOICES[k][0]}</span><select data-oakid="${id}" data-oakset="${k}"${dis}>` +
+      OAK_CHOICES[k][1].map(([v, t]) => `<option value="${v}"${String(o[k]) === String(v) ? " selected" : ""}>${t}</option>`).join("") + "</select></div>";
+    const sw = (k) => `<div class="row"><span class="grow">${OAK_SWITCHES[k]}</span><button type="button" class="small${o[k] ? " on" : ""}" data-oakid="${id}" data-oakset="${k}" aria-pressed="${!!o[k]}"${dis}>${o[k] ? "On" : "Off"}</button></div>`;
+    const depth = o.hasDepth !== false, infrared = o.infrared !== false;
+    return `<div class="oakset" id="oakset-${id}">` + choice("model") + choice("hands") + (depth ? sw("depth") : "") + choice("fps") + sw("detect") + (depth ? choice("picture") : "") +
+      (infrared ? choice("night") + sw("dots") : "") +
+      `<div class="sub">${infrared ? (o.infrared === null ? "Night vision needs an infrared light (OAK-D Pro); Automatic turns it on when it's dark. " : "Night vision: Automatic turns it on when it's dark. ") : "This camera has no infrared light, so no night vision. "}` +
+      "Changed while the camera runs, it starts again with them (a few seconds).</div></div>";
+  }
+  $("camRows").addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.oakopen) {
+      if (openOak.has(b.dataset.oakopen)) openOak.delete(b.dataset.oakopen);
+      else openOak.add(b.dataset.oakopen);
+      shownRows = "";
+      if (state) renderCameras(state);
+    } else if (b.dataset.oakset) {
+      command("oak", { oak: { id: b.dataset.oakid, options: { [b.dataset.oakset]: b.getAttribute("aria-pressed") !== "true" } } });
+    }
+  });
   $("camRows").addEventListener("change", (e) => {
+    if (e.target.dataset.oakset) {
+      const k = e.target.dataset.oakset, v = e.target.value;
+      command("oak", { oak: { id: e.target.dataset.oakid, options: { [k]: k === "hands" || k === "fps" ? Number(v) : v } } });
+      return;
+    }
     const id = e.target.dataset.id;
     if (!id) return;
     if (e.target.matches("input[type=checkbox]")) command("pick", { pick: { id, use: e.target.checked } }, { quiet: true });
@@ -139,13 +178,17 @@
     // Shown while the cameras run too (which ones they are), to change once they're stopped.
     const busy = !!(s.running || s.recording || s.pending);
     // Rebuilt only when something changed (so a select being used isn't swapped under a finger).
-    const sig = JSON.stringify(list) + busy;
+    // An OAK camera's settings can be changed while the cameras run, not while recording.
+    const fixed = !!s.recording || sending;
+    const sig = JSON.stringify(list) + busy + fixed + [...openOak].join();
     if (sig !== shownRows && !$("camRows").contains(document.activeElement)) {
       shownRows = sig;
       $("camRows").innerHTML = list.map((c) =>
         `<div class="camrow"><label><input type="checkbox" data-id="${esc(c.id)}"${c.use ? " checked" : ""}${c.present && !busy ? "" : " disabled"} /> ` +
         `<span>${esc(c.label)}${c.present ? "" : ' <span class="gone">not plugged in</span>'}</span></label>` +
-        `<select data-id="${esc(c.id)}" aria-label="Role of ${esc(c.label)}"${busy ? " disabled" : ""}>${roleOptions(c.role)}</select></div>`).join("");
+        `<select data-id="${esc(c.id)}" aria-label="Role of ${esc(c.label)}"${busy ? " disabled" : ""}>${roleOptions(c.role)}</select>` +
+        (c.oak ? `<button type="button" class="small" data-oakopen="${esc(c.id)}" aria-expanded="${openOak.has(c.id)}" aria-controls="oakset-${esc(c.id)}" aria-label="Settings of ${esc(c.label)}">⚙</button>` : "") +
+        "</div>" + (c.oak && openOak.has(c.id) ? oakSettingsHtml(c, fixed) : "")).join("");
     }
     const note = $("camNote");
     note.className = "";

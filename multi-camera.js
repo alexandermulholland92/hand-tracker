@@ -44,6 +44,10 @@
  *   MultiCamera.setRole(i, role); MultiCamera.setView(i, { rotation, mirror })
  *   MultiCamera.setScreenPictures(on); MultiCamera.screenPictures()   // OAK pictures on this screen (remembered)
  *   MultiCamera.setPreviewWant({ on, focus, ms, focusMs })             // remote recording's previews: how often each is made
+ *   MultiCamera.oakSettings(id)              // an OAK camera's own settings ("oak:<id>"): { model, hands, depth, fps,
+ *                                            //   detect, picture, night, dots }, and what it has (infrared, depth: null till known)
+ *   MultiCamera.setOakSettings(id, changes)  // any of those, remembered for that camera; one running starts again with them
+ *                                            //   (null: its own settings forgotten, the main window's again)
  */
 
 (function (global) {
@@ -303,18 +307,54 @@
   }
   // Far-away hands as an OAK camera's helper takes it.
   const oakFar = (far) => (far && far.enabled ? { far: far.focus || "both", allHands: far.raisedOnly === false } : { far: null, allHands: false });
-  // What an OAK camera's helper is started with now: whether it finds hands (not with hand
-  // tracking off), its far-away mode (only with hands) and its own options, which run on it.
-  function oakStart() {
-    const hands = tracking();
-    return { ...(hands ? oakFar(tileOptions.far) : { far: null, allHands: false }), ...OakSource.cameraOptions(tileOptions.oak), hands };
+  // Each OAK camera's own settings, set on remote recording's page and remembered by its id
+  // ("oak:<id>"): only those changed there; the rest are the main window's (its model, both
+  // hands, depth, More settings → OAK camera).
+  const OAK_OWN = {
+    model: (v) => ["lite", "full"].includes(v), hands: (v) => [1, 2].includes(v), depth: (v) => typeof v === "boolean", fps: (v) => [0, 60].includes(v),
+    detect: (v) => typeof v === "boolean", picture: (v) => ["color", "depth"].includes(v), night: (v) => ["auto", "on", "off"].includes(v), dots: (v) => typeof v === "boolean",
+  };
+  const oakOwn = (id) => ((prefs && prefs.oakCameraOptions) || {})[id] || {};
+  // Its settings as they are: { model, hands, depth, fps, detect, picture, night, dots }.
+  function oakSettingsOf(id) {
+    const own = oakOwn(id), main = tileOptions.oak || {};
+    const o = { model: modelOf() === 1 ? "full" : "lite", hands: 2, depth: true, fps: Number(main.fps) || 0, detect: !!main.chosenDetect, picture: main.picture === "depth" ? "depth" : "color",
+      night: ["on", "off"].includes(main.night) ? main.night : "auto", dots: !!main.dots };
+    for (const k of Object.keys(OAK_OWN)) if (OAK_OWN[k](own[k])) o[k] = own[k];
+    return o;
+  }
+  // What an OAK camera's helper is started with now: its model, one or two hands and depth,
+  // whether it finds hands (not with hand tracking off), its far-away mode (only with hands) and
+  // its OAK options, which run on it (Sentry mode's needs added: its small grey picture, and the
+  // objects for "ignore pets and animals").
+  function oakStart(t) {
+    const hands = tracking(), o = oakSettingsOf(t.deviceId), main = tileOptions.oak || {};
+    const options = OakSource.cameraOptions({ ...main, fps: o.fps, detect: o.detect || !!main.needObjects, picture: o.picture, night: o.night, dots: o.dots });
+    return { lm: o.model, twoHands: o.hands !== 1, xyz: o.depth, ...(hands ? oakFar(tileOptions.far) : { far: null, allHands: false }), ...options, hands };
   }
   // An OAK camera keeps what it was started with: one that's running (or failed) is started
   // again when that changes (the hands, with hand tracking off or on; far-away hands; its
-  // options). One waiting its turn or starting isn't: it starts with them, or once it runs.
+  // settings). One waiting its turn or starting isn't: it starts with them, or once it runs.
   function syncOak() {
-    const now = JSON.stringify(oakStart());
-    for (const t of tiles) if (t.oak && t.oakWith && t.oakState !== "starting" && !t.restarting && t.oakWith !== now) restartOak(t);
+    for (const t of tiles) if (t.oak && t.oakWith && t.oakState !== "starting" && !t.restarting && t.oakWith !== JSON.stringify(oakStart(t))) restartOak(t);
+  }
+  // Remote recording's page: an OAK camera's own settings, and what it's known to have (from its
+  // last start: an infrared light for night vision, depth cameras), null until it's been started.
+  function oakSettings(id) {
+    const kind = ((prefs && prefs.oakKinds) || {})[String(id).replace(/^oak:/, "")] || {};
+    return { ...oakSettingsOf(id), infrared: typeof kind.infrared === "boolean" ? kind.infrared : null, hasDepth: typeof kind.depth === "boolean" ? kind.depth : null };
+  }
+  function setOakSettings(id, changes = {}) {
+    const all = { ...((prefs && prefs.oakCameraOptions) || {}) };
+    if (changes === null) delete all[id];
+    else {
+      const own = { ...oakOwn(id) };
+      for (const k of Object.keys(OAK_OWN)) if (k in changes && OAK_OWN[k](changes[k])) own[k] = changes[k];
+      all[id] = own;
+    }
+    setPref("oakCameraOptions", all);
+    syncOak();
+    return oakSettings(id);
   }
   async function restartOak(t) {
     t.oakState = "starting";
@@ -380,10 +420,10 @@
       await api.ready.catch(() => {});
       if (!tiles.includes(t)) return;
       t.oakState = "starting";
-      const start = oakStart();
+      const start = oakStart(t);
       t.oakWith = JSON.stringify(start);
       try {
-        await desktop.oak.streamStart(t.oak, { lm: model === 1 ? "full" : "lite", twoHands: true, xyz: true, ...start });
+        await desktop.oak.streamStart(t.oak, start);
       } catch (err) {
         t.oakState = "error";
         api.oakStatus({ status: "error", message: errText(err) });
@@ -458,9 +498,12 @@
     if (s.status === "running") {
       t.oakState = "running";
       t.cameraHands = s.hands !== false; // (what the camera itself was started with)
-      if (t.oakWith !== JSON.stringify(oakStart())) setTimeout(() => tiles.includes(t) && syncOak(), 0); // (changed while it started)
-      // Remembered by model, so the picker can name it next time.
+      if (t.oakWith !== JSON.stringify(oakStart(t))) setTimeout(() => tiles.includes(t) && syncOak(), 0); // (changed while it started)
+      // Remembered by model, so the picker can name it next time; and what it has (an infrared
+      // light, depth cameras), for its settings on remote recording's page.
       if (s.camera && (prefs.oakNames || {})[s.id] !== s.camera) setPref("oakNames", { ...(prefs.oakNames || {}), [s.id]: s.camera });
+      const kind = { infrared: !!s.infrared, depth: !!s.depth };
+      if (JSON.stringify((prefs.oakKinds || {})[s.id]) !== JSON.stringify(kind)) setPref("oakKinds", { ...(prefs.oakKinds || {}), [s.id]: kind });
       t.label = `Luxonis ${s.camera || "OAK camera"}${s.depth ? " · depth" : ""}${s.night ? " · night vision" : ""}${s.usb === "HIGH" ? " · USB 2" : ""}`;
       t.night = !!s.night;
       t.infrared = !!s.infrared;
@@ -563,6 +606,7 @@
         return {
           index: i, name: t.name, roleId: t.role || "", role: CameraRoles.label(t.role) || "", label: t.label, rotation: t.view.rotation, mirror: t.view.mirror,
           fps: st ? st.fps : 0, hands: st ? st.hands : [], tracking: st ? st.tracking !== false : tracking(), error: st ? st.error || "" : "",
+          ...(t.oak ? { oak: true, night: !!t.night } : {}),
         };
       }),
       note: els.note ? els.note.textContent : "",
@@ -692,7 +736,8 @@
 
   global.MultiCamera = {
     init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
+    oakSettings, setOakSettings,
     isActive: () => tiles.length > 0, isRecording: () => recording, isTracking: tracking,
-    _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null, cameraHands: t.oak ? t.cameraHands : undefined })),
+    _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null, cameraHands: t.oak ? t.cameraHands : undefined, oakWith: t.oak ? t.oakWith : undefined })),
   };
 })(window);

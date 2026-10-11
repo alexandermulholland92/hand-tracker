@@ -127,6 +127,7 @@ const STEPS = [
   ["oak-pictures-off", [], ({ js }) => checkOakPicturesOff(js)],
   ["oak-tile-retry", [], ({ js }) => checkOakTileRetry(js)],
   ["remote-recording", [], ({ js }) => checkRemoteRecording(js)],
+  ["remote-oak-settings", [], ({ js }) => checkRemoteOakSettings(js)],
   ["remote-launcher", ["remote-recording"], ({ js }) => checkRemoteLauncher(js)], // downloads the take it saved
   ["remote-hotspot-wifi", [], () => checkRemoteHotspotWifi()],
   ["wifi-join", [], () => checkWifiJoin()],
@@ -2095,6 +2096,152 @@ async function checkOakPicturesOff(js) {
 // those plugged in) and recording, sees each camera's preview, moves a camera to another role's
 // block, turns and flips one, fills in the take details, stops (the take saves itself, named
 // after the details and its length, which its metadata holds too) and stops the cameras.
+// Each OAK camera's own settings on remote recording's page (two stand-in OAK cameras): a
+// Settings button on each OAK camera's row opens them; set there, the camera starts with them
+// (the other with the usual ones); changed while the cameras run, only that camera starts again;
+// not while recording; anything else asked for is refused by the computer.
+async function checkRemoteOakSettings(js) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = {};
+  let win = null, wasOn = true, base = "", key = "";
+  const post = (action, extra = {}) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...extra }) });
+  const state = async () => (await fetch(base + "/api/state", { headers: { "X-Key": key } })).json();
+  const A = "oak:SIMULATED-OAK-A", B = "oak:SIMULATED-OAK-B";
+  const oakOf = (st, id) => ((st.available && st.available.cameras) || []).find((c) => c.id === id);
+  const startedWith = () => js(`MultiCamera._tiles().map((t) => t.oakWith ? JSON.parse(t.oakWith) : null)`);
+  try {
+    const setup = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      if (MultiCamera.isActive()) MultiCamera.close();
+      await sleep(500);
+      let s = await desktop.remote.status();
+      const wasOn = s.on;
+      if (!s.on) document.getElementById("remoteToggle").click();
+      for (let i = 0; i < 50 && !s.on; i++) { await sleep(100); s = await desktop.remote.status(); }
+      for (const id of ["${A}", "${B}"]) MultiCamera.setOakSettings(id, null); // (from scratch)
+      return { status: s, wasOn };
+    })()`);
+    wasOn = setup.wasOn;
+    const keyed = (setup.status.urls || []).find((u) => u.keyed);
+    key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
+    base = `http://127.0.0.1:${setup.status.port}`;
+    await post("scan");
+    let st = null;
+    for (let i = 0; i < 100 && !(st && st.available && st.available.at && !st.available.scanning); i++) {
+      await sleep(200);
+      st = await state();
+    }
+    for (const c of st.available.cameras) await post("pick", { pick: { id: c.id, use: c.id === A || c.id === B } });
+    await post("mode", { mode: "freeform" });
+    st = await state();
+    out.before = { a: oakOf(st, A) && oakOf(st, A).oak, webcam: (st.available.cameras.find((c) => !c.id.startsWith("oak:")) || {}).oak };
+    // The computer refuses anything else.
+    out.refused = [
+      (await post("oak", { oak: { id: A, options: { night: "sideways" } } })).status,
+      (await post("oak", { oak: { id: "webcam", options: { night: "on" } } })).status,
+      (await post("oak", { oak: { id: A, options: { hands: 3 } } })).status,
+    ];
+
+    win = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-oak-settings", backgroundThrottling: false } });
+    await win.loadURL(`${base}/#k=${key}`);
+    const pjs = (code) => withLimit(win.webContents.executeJavaScript(code), "the remote page, OAK settings");
+    const PAGE = `
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      const until = async (fn, ms = 15000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+      const block = (id) => document.getElementById("oakset-" + id);
+      const pick = (id, k) => block(id) && block(id).querySelector('[data-oakset="' + k + '"]');
+      const choose = async (id, k, v) => { const el = await until(() => pick(id, k) && !pick(id, k).disabled && pick(id, k)); el.value = String(v); el.dispatchEvent(new Event("change", { bubbles: true })); await sleep(400); };
+      const flip = async (id, k) => { const el = await until(() => pick(id, k) && !pick(id, k).disabled && pick(id, k)); el.click(); await sleep(400); };
+    `;
+    // Camera A's settings set on the page, with the cameras off.
+    Object.assign(out, await pjs(`(async () => {
+      ${PAGE}
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+      await until(() => /Hand Tracker on/.test($("title").textContent) && document.querySelector('[data-oakopen="${A}"]'));
+      const out = { buttons: [...document.querySelectorAll("#camRows [data-oakopen]")].map((b) => b.dataset.oakopen).sort() };
+      document.querySelector('[data-oakopen="${A}"]').click();
+      out.opened = !!(await until(() => block("${A}")));
+      out.rows = [...block("${A}").querySelectorAll("[data-oakset]")].map((e) => e.dataset.oakset);
+      await choose("${A}", "night", "on");
+      await flip("${A}", "dots");
+      await choose("${A}", "hands", 1);
+      await flip("${A}", "depth");
+      await choose("${A}", "model", "full");
+      out.message = $("message").textContent;
+      return out;
+    })()`));
+    for (let i = 0; i < 30; i++) {
+      st = await state();
+      const o = oakOf(st, A).oak;
+      if (o.night === "on" && o.dots && o.hands === 1 && o.depth === false && o.model === "full") break;
+      await sleep(200);
+    }
+    out.set = { a: oakOf(st, A).oak, b: oakOf(st, B).oak };
+    // Started: each with its own.
+    await post("cameras");
+    for (let i = 0; i < 150; i++) {
+      st = await state();
+      if (st.running && (st.cameras || []).length === 2 && st.cameras.every((c) => c.fps > 0)) break;
+      await sleep(200);
+    }
+    await sleep(500);
+    out.started = await startedWith();
+    out.nightShown = (st.cameras || []).map((c) => c.night);
+    // Changed while they run: only that camera starts again.
+    const runningSeen = await js(`(() => { window.__oakRunning = []; window.__oakOff = desktop.oak.onStreamStatus((s) => s.status === "running" && window.__oakRunning.push(s.id)); return true; })()`);
+    await pjs(`(async () => {
+      ${PAGE}
+      document.querySelector('[data-oakopen="${B}"]').click();
+      await until(() => block("${B}"));
+      await choose("${B}", "night", "off");
+      return true;
+    })()`);
+    for (let i = 0; i < 100; i++) {
+      const w = await startedWith();
+      if (w.some((x) => x && x.night === "off")) break;
+      await sleep(200);
+    }
+    await sleep(3500);
+    out.changed = await startedWith();
+    out.restarted = runningSeen ? await js(`(() => { window.__oakOff(); return window.__oakRunning; })()`) : null;
+    // Not while recording.
+    await post("settings", { settings: { detailsRequired: false } });
+    await post("record");
+    for (let i = 0; i < 50 && !(await state()).recording; i++) await sleep(200);
+    out.whileRecording = await (await post("oak", { oak: { id: A, options: { night: "off" } } })).json();
+    await post("stop");
+    for (let i = 0; i < 100 && (await state()).recording; i++) await sleep(200);
+  } catch (err) {
+    out.error = String((err && err.message) || err);
+  } finally {
+    if (win) win.destroy();
+    if (base) {
+      await post("close").catch(() => {});
+      await post("settings", { settings: { detailsRequired: true } }).catch(() => {});
+    }
+    await js(`(async () => {
+      for (const id of ["${A}", "${B}"]) MultiCamera.setOakSettings(id, null);
+      if (!${wasOn} && (await desktop.remote.status()).on) document.getElementById("remoteToggle").click();
+      return true;
+    })()`).catch(() => {});
+  }
+  const [sa, sb] = (out.started || []).slice().sort((x, y) => (x && x.night === "on" ? -1 : 1));
+  const ch = out.changed || [];
+  check("Remote recording's page: each OAK camera has its own settings (a Settings button on its row: hand model, hands, depth, frame rate, objects, picture, night vision and infrared dots); set there, it starts with them and the other with the usual ones; changed while they run, only that one starts again; not while recording; anything else is refused",
+    !out.error && out.buttons && out.buttons.join() === [A, B].join() && out.opened && ["model", "hands", "depth", "fps", "detect", "picture", "night", "dots"].every((k) => out.rows.includes(k)) &&
+      out.before.a && out.before.a.night === "auto" && out.before.a.hands === 2 && out.before.a.depth === true && out.before.webcam === undefined &&
+      out.refused.join() === "400,400,400" &&
+      out.set.a.night === "on" && out.set.a.dots === true && out.set.a.hands === 1 && out.set.a.depth === false && out.set.a.model === "full" &&
+      out.set.b.night === "auto" && out.set.b.hands === 2 && out.set.b.depth === true &&
+      sa && sb && sa.night === "on" && sa.dots === true && sa.twoHands === false && sa.xyz === false && sa.lm === "full" && sb.night === "auto" && sb.twoHands === true && sb.xyz === true &&
+      (out.nightShown || []).includes(true) &&
+      ch.some((x) => x && x.night === "off") && ch.some((x) => x && x.night === "on" && x.lm === "full") &&
+      Array.isArray(out.restarted) && out.restarted.length === 1 && out.restarted[0] === B.slice(4) &&
+      out.whileRecording && out.whileRecording.ok === false && /Stop recording/.test(out.whileRecording.message),
+    JSON.stringify(out));
+}
+
 async function checkRemoteRecording(js) {
   const out = {};
   const setup = await js(`(async () => {

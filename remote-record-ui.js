@@ -336,7 +336,9 @@
     return list.map((c) => {
       const i = starting.indexOf(c.id);
       const role = i >= 0 ? roles[i] : saved[c.id] && !used.has(saved[c.id]) ? saved[c.id] : "";
-      return { id: c.id, label: c.label, present: c.present, use: picked.includes(c.id), role };
+      // An OAK camera's own settings (and what it has, once it's run), for the page to show and change.
+      const oak = c.id.startsWith("oak:") && cams().oakSettings ? { oak: cams().oakSettings(c.id) } : {};
+      return { id: c.id, label: c.label, present: c.present, use: picked.includes(c.id), role, ...oak };
     });
   }
 
@@ -568,6 +570,15 @@
       setPref("remoteDetailsRequired", st.detailsRequired);
       return { ok: true, message: detailsRequired() ? "The take details are needed before recording." : "The take details are optional now." };
     }
+    if (action === "oak") {
+      // One OAK camera's own settings: remembered for it; running, it starts again with them.
+      const o = data.oak || {};
+      if (!cams().setOakSettings) return { ok: false, message: "This Hand Tracker has no OAK cameras." };
+      if (recording) return { ok: false, message: "Stop recording first." };
+      cams().setOakSettings(o.id, o.options || {});
+      const running = cams().isActive() && pickedIds().includes(o.id);
+      return { ok: true, message: running ? `${labelOf(o.id)} starts again with its new settings (a few seconds).` : `Saved: ${labelOf(o.id)} starts with these.` };
+    }
     if (pending) return { ok: false, message: `Busy: ${pending}` };
     if (action === "cameras") {
       if (cams().isActive()) return { ok: true, message: "The cameras are already running." };
@@ -649,10 +660,10 @@
     $("remoteRec").hidden = false;
     remote.onStatus(show);
     remote.onWantPreviews(setPreviews);
-    remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st, sentry }) => {
+    remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st, sentry, oak }) => {
       let result;
       try {
-        result = await carryOut(action, { details: d, camera, pick: p, mode, settings: st, sentry });
+        result = await carryOut(action, { details: d, camera, pick: p, mode, settings: st, sentry, oak });
       } catch (err) {
         result = { ok: false, message: errText(err) };
       }

@@ -587,7 +587,7 @@ class SimulatedOak {
       far: options.far || null, // (the checks see which far-away mode it was started in)
       detect: !!options.detect, picture: options.picture === "depth" ? "depth" : "color", motion: !!options.motion, fps: options.fps || null, hands: options.hands !== false,
       // (an infrared camera, as an OAK-D Pro: night vision as asked, Automatic taken to be light)
-      infrared: true, night: options.night === "on", nightMode: options.night || "off", dots: !!options.dots });
+      infrared: true, night: options.night === "on", nightMode: options.night || "off", dots: !!options.dots, lm: options.lm || "lite", twoHands: !!options.twoHands, xyz: !!options.xyz });
     this.timer = setInterval(() => {
       const t = (Date.now() - t0) / 1000;
       const cx = 0.5 + 0.2 * Math.sin(t), cy = 0.75;

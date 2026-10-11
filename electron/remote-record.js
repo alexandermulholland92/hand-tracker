@@ -39,7 +39,8 @@
  * { id, use, role }), "mode" ("ego", "stereo" or "freeform") or "settings" ({ detailsRequired, screenPictures,
  * video, sound, videoQuality }: whether the take details are needed, whether the OAK cameras' pictures
  * are drawn on its screen, and each camera's video with a take, its sound and its quality),
- * or "sentry" (Sentry mode's settings, boxes and on/off: cleanSentry).
+ * "sentry" (Sentry mode's settings, boxes and on/off: cleanSentry) or "oak" (one OAK camera's own
+ * settings: cleanOak).
  * onWantPreviews({ on, focus }): a page is (or stopped) looking at the previews; focus: the
  * camera one is looking at full screen (null for none), which then comes bigger
  * (/api/preview?i=N&full=1). Each preview request waits for that camera's next picture.
@@ -67,7 +68,7 @@ const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it t
 const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
-const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "sentry"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "sentry", "oak"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
 const ROLES = ["", "head", "chest", "wrist_left", "wrist_right"];
@@ -108,6 +109,16 @@ function cleanPick(p) {
   if (typeof p.use === "boolean") out.use = p.use;
   if (ROLES.includes(p.role)) out.role = p.role;
   return out;
+}
+// One OAK camera's own settings, from a request: which ("oak:<id>"), and any of its hand model,
+// one or two hands, depth, frame rate, finding objects, picture, night vision and infrared dots.
+const OAK_CHOICES = { model: ["lite", "full"], hands: [1, 2], fps: [0, 60], picture: ["color", "depth"], night: ["auto", "on", "off"] };
+function cleanOak(o) {
+  if (!o || typeof o !== "object" || typeof o.id !== "string" || !/^oak:[A-Za-z0-9._-]{1,64}$/.test(o.id) || !o.options || typeof o.options !== "object") return null;
+  const options = {};
+  for (const [k, allowed] of Object.entries(OAK_CHOICES)) if (allowed.includes(o.options[k])) options[k] = o.options[k];
+  for (const k of ["depth", "detect", "dots"]) if (typeof o.options[k] === "boolean") options[k] = o.options[k];
+  return Object.keys(options).length ? { id: o.id, options } : null;
 }
 const cleanMode = (m) => (MODES.includes(m) ? m : null);
 // A Wi-Fi network to join: its name (1 to 32 bytes) and password (none, or 8 to 63 characters).
@@ -589,7 +600,7 @@ class RemoteRecordServer extends EventEmitter {
         body += chunk;
         if (body.length > 8192) return this.send(res, 413, { error: "Too long" });
       }
-      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null, sentry = null;
+      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null, sentry = null, oak = null;
       try {
         const msg = JSON.parse(body);
         action = String(msg.action || "");
@@ -601,6 +612,7 @@ class RemoteRecordServer extends EventEmitter {
         wifi = cleanWifi(msg.wifi);
         takes = cleanTakes(msg.takes);
         sentry = cleanSentry(msg.sentry);
+        oak = cleanOak(msg.oak);
       } catch {
         return this.send(res, 400, { error: "Not JSON" });
       }
@@ -610,6 +622,7 @@ class RemoteRecordServer extends EventEmitter {
       if (action === "mode" && !mode) return this.send(res, 400, { error: "Which mode?" });
       if (action === "settings" && !settings) return this.send(res, 400, { error: "Which setting?" });
       if (action === "sentry" && !sentry) return this.send(res, 400, { error: "Which Sentry setting?" });
+      if (action === "oak" && !oak) return this.send(res, 400, { error: "Which OAK camera setting?" });
       // Takes this page has safely: deleted here (checked file by file).
       if (action === "deleteTakes") {
         if (!this.takes) return this.send(res, 404, { error: "No takes here." });
@@ -628,6 +641,7 @@ class RemoteRecordServer extends EventEmitter {
       if (mode) extra.mode = mode;
       if (settings) extra.settings = settings;
       if (sentry) extra.sentry = sentry;
+      if (oak) extra.oak = oak;
       const result = await this.ask(action, extra);
       return this.send(res, 200, result || { ok: true });
     }
@@ -635,4 +649,4 @@ class RemoteRecordServer extends EventEmitter {
   }
 }
 
-module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_ADDR, cleanDetails, cleanCamera, cleanPick, cleanWifi, cleanSentry, crc32, RIG_HOST, RIG_PATH };
+module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_ADDR, cleanDetails, cleanCamera, cleanPick, cleanWifi, cleanSentry, cleanOak, crc32, RIG_HOST, RIG_PATH };

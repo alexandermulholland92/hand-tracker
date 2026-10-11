@@ -51,6 +51,13 @@
   .camrow .gone { color: var(--err); font-size: 13px; }
   .camrow select, .tools select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 6px; }
   .camrow select { flex: none; max-width: 45%; }
+  .camrow button[data-oakopen] { flex: none; }
+  .camrow button[data-oakopen][aria-expanded="true"] { background: var(--accent); color: #111; }
+  .oakset { margin: 0 0 8px 28px; padding: 6px 0 2px 10px; border-left: 2px solid var(--line); }
+  .oakset .row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin: 0 0 6px; }
+  .oakset .row .grow { flex: 1 1 auto; }
+  .oakset select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 5px 6px; }
+  .oakset .sub { font-size: 13px; color: var(--muted); margin: 2px 0 4px; }
   .details label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 9px; }
   .details input { display: block; width: 100%; margin-top: 3px; font: inherit; font-size: 16px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; }
   .details input:focus { outline: 2px solid var(--accent); outline-offset: 0; }

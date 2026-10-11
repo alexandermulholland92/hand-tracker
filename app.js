@@ -507,9 +507,13 @@
   // started again with them. Sentry mode also has them send a small grey picture, and find
   // objects for "ignore pets and animals".
   const oakPrefs = { detect: false, picture: "color", fps: 0, night: "auto", dots: false, ...(prefs.oakOptions && typeof prefs.oakOptions === "object" ? prefs.oakOptions : {}) };
+  // (chosenDetect: Find objects as chosen; needObjects: Sentry mode needs them whatever a
+  // camera's own setting, MultiCamera.oakSettings.)
   const oakOptions = () => ({
     ...oakPrefs,
     detect: oakPrefs.detect || !!(window.Sentry && Sentry.wantsObjects()),
+    chosenDetect: !!oakPrefs.detect,
+    needObjects: !!(window.Sentry && Sentry.wantsObjects()),
     motion: !!(window.Sentry && Sentry.wantsMotion()),
   });
   const oakSettings = () => ({ model: Number(modelSelect.value), hands: Number(handsSelect.value), far: { ...farPrefs }, oak: oakOptions() });
