@@ -102,7 +102,7 @@
       "electron/tak-convert.ps1",
       "electron/input-helper.ps1",
       "electron/input-helper-mac",
-      "electron/input-helper-linux.py",
+      "electron/input-helper-linux.py", "electron/bluetooth-helper-linux.py",
       "oak/**"
     ],
     "win": {

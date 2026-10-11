@@ -490,6 +490,8 @@
               <label title="Sound from this computer's microphone, in each camera's video"><input type="checkbox" id="remoteSound" checked /> with sound</label>
               <label title="How much of each camera's picture detail its video keeps, and so its size: small files is under half the size of standard, high about twice, best about four times">Quality <select id="remoteQuality"><option value="low">small files</option><option value="standard">standard</option><option value="high">high</option><option value="best">best</option></select></label></div>
             <label class="remote-row" id="remoteAutostartRow" hidden><input type="checkbox" id="remoteAutostart" /> Open Hand Tracker when this computer starts, waiting for the phone (for a computer with no screen)</label>
+            <div class="remote-row" id="remoteBtRow" hidden title="Phones, the website and other computers can reach this page over Bluetooth too, when there's no network between them, with this password (a Raspberry Pi set up with pi/bluetooth-setup.sh uses its hotspot's)">Bluetooth: <span id="remoteBtStatus"></span>
+              <input id="remoteBtPassword" type="password" minlength="8" maxlength="63" placeholder="Bluetooth password" autocomplete="new-password" /> <button id="remoteBtSet">Set</button></div>
           </div>
         </div>
       </div>

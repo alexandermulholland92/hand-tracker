@@ -703,6 +703,26 @@
         push();
       });
     }
+    // Bluetooth (where this computer has it): how it is, and its password (on a Raspberry Pi set
+    // up with pi/bluetooth-setup.sh, its hotspot's).
+    const showBluetooth = (b) => {
+      $("remoteBtRow").hidden = !(b && b.available);
+      if (!b || !b.available) return;
+      const pw = b.password === "hotspot" ? "with the hotspot's password" : "with its password";
+      $("remoteBtStatus").textContent = b.on ? `on, ${pw}` : b.error || (b.password ? `on with remote recording, ${pw}` : "set a password to turn it on");
+    };
+    if (remote.bluetooth) {
+      remote.bluetooth().then(showBluetooth).catch(() => {});
+      remote.onBluetooth(showBluetooth);
+      $("remoteBtSet").addEventListener("click", async () => {
+        try {
+          showBluetooth(await remote.setBluetoothPassword($("remoteBtPassword").value));
+          $("remoteBtPassword").value = "";
+        } catch (err) {
+          $("remoteBtStatus").textContent = errText(err);
+        }
+      });
+    }
     $("remoteAutostart").addEventListener("change", async (e) => {
       try {
         const turnedOn = await remote.setAutostart(e.target.checked);

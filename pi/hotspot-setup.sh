@@ -175,6 +175,24 @@ else
 fi
 undo_earlier
 
+# Bluetooth (pi/bluetooth-setup.sh) uses the hotspot's password: a new one is its too.
+if [ -z "${UPDATE:-}" ] && [ -n "${SUDO_USER:-}" ]; then
+  BT_SECRET="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.config/Hand Tracker/bluetooth.json"
+  if [ -f "$BT_SECRET" ] && grep -q '"from": *"hotspot"' "$BT_SECRET"; then
+    PW="$PW" SECRET="$BT_SECRET" python3 - <<'PY'
+import base64, hashlib, json, os
+salt = os.urandom(16)
+key = hashlib.pbkdf2_hmac("sha256", os.environ["PW"].encode(), salt, 100000, 32)
+with open(os.environ["SECRET"] + ".tmp", "w") as f:
+    json.dump({"salt": base64.b64encode(salt).decode(), "iter": 100000, "key": base64.b64encode(key).decode(), "from": "hotspot"}, f)
+os.chmod(os.environ["SECRET"] + ".tmp", 0o600)
+os.replace(os.environ["SECRET"] + ".tmp", os.environ["SECRET"])
+PY
+    chown "$SUDO_USER:" "$BT_SECRET"
+    echo "Bluetooth's password is the new one too (restart Hand Tracker for it)."
+  fi
+fi
+
 # The saved Wi-Fi networks join on wlan0.
 nmcli -t -f NAME,TYPE connection show | awk -F: -v con="$CON" '$2 == "802-11-wireless" && $1 != con {print $1}' | while read -r n; do
   if [ -z "$(nmcli -g connection.interface-name connection show "$n")" ]; then

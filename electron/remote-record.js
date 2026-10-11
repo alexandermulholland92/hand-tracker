@@ -319,6 +319,11 @@ function hotspotAddress() {
 // The same /24 (a phone on the hotspot, by the address it came from).
 const sameNet = (a, b) => String(a).split(".").slice(0, 3).join(".") === String(b).split(".").slice(0, 3).join(".");
 
+// This computer's Bluetooth network (pi/bluetooth-setup.sh makes it, for Android phones): its
+// address. A phone on it gets in with the Bluetooth password (X-Bluetooth-Password), not the key.
+const BLUETOOTH_ADDR = "10.43.0.1";
+const BLUETOOTH_OK_MS = 10 * 60 * 1000; // a phone's password, once checked, for this long
+
 // This computer's addresses a phone could use: the local network's first, then Tailscale's,
 // which works from anywhere the phone has Tailscale on.
 function addresses() {
@@ -329,7 +334,7 @@ function addresses() {
       const [p, q] = a.address.split(".").map(Number);
       const local = p === 10 || (p === 172 && q >= 16 && q <= 31) || (p === 192 && q === 168);
       if (!isTailscale(a.address) && !local) continue;
-      const kind = a.address === HOTSPOT_ADDR ? "Hotspot" : isTailscale(a.address) ? "Tailscale" : /^(wl|wi-?fi|wlan)/i.test(name) ? "Wi-Fi" : "local network";
+      const kind = a.address === HOTSPOT_ADDR ? "Hotspot" : a.address === BLUETOOTH_ADDR ? "Bluetooth" : isTailscale(a.address) ? "Tailscale" : /^(wl|wi-?fi|wlan)/i.test(name) ? "Wi-Fi" : "local network";
       out.push({ address: a.address, kind });
     }
   }
@@ -356,8 +361,13 @@ function tailscaleName() {
 const newKey = () => crypto.randomBytes(16).toString("base64url");
 
 class RemoteRecordServer extends EventEmitter {
-  constructor({ keyStore, page, host = os.hostname(), ask, onWantPreviews = () => {}, hotspot = hotspotAddress, wifi = null, takes = null }) {
+  constructor({ keyStore, page, host = os.hostname(), ask, onWantPreviews = () => {}, hotspot = hotspotAddress, wifi = null, takes = null, bluetoothPassword = null }) {
     super();
+    // Bluetooth: requests the link relays (bluetooth.js) carry this, known only in this app;
+    // phones on the Bluetooth network give the password (bluetoothPassword(text) -> its check).
+    this.relayToken = crypto.randomBytes(24).toString("hex");
+    this.bluetoothPassword = bluetoothPassword;
+    this.bluetoothOk = new Map(); // address -> until when its password holds
     this.takes = takes ? new Takes(takes) : null;
     this.hotspot = hotspot;
     this.wifi = wifi;
@@ -509,11 +519,55 @@ class RemoteRecordServer extends EventEmitter {
 
   // Over Tailscale, or on this computer's own hotspot: trusted without the key (addressed to
   // this computer by its own name or address). On the hotspot: to its address, from a phone on it.
+  // Over Bluetooth too: relayed by the link (which checked the password), or from a phone on the
+  // Bluetooth network that gives the password.
   trusted(req) {
     const local = String(req.socket.localAddress || "").replace(/^::ffff:/, "");
     const remote = String(req.socket.remoteAddress || "").replace(/^::ffff:/, "");
     const hotspot = this.hotspot();
-    return (tailnetPeer(req.socket.localAddress, req.socket.remoteAddress) || (!!hotspot && local === hotspot && sameNet(remote, hotspot))) && this.ownHost(req);
+    return (tailnetPeer(req.socket.localAddress, req.socket.remoteAddress) || (!!hotspot && local === hotspot && sameNet(remote, hotspot)) ||
+      this.relayed(req) || this.bluetoothPeer(req, local, remote)) && this.ownHost(req);
+  }
+
+  // A request the Bluetooth link relayed (from this computer itself, with its token).
+  relayed(req) {
+    const remote = String(req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+    if (remote !== "127.0.0.1" && remote !== "::1") return false;
+    const given = Buffer.from(String(req.headers["x-ht-relay"] || ""));
+    const token = Buffer.from(this.relayToken);
+    return given.length === token.length && crypto.timingSafeEqual(given, token);
+  }
+
+  // A phone on this computer's Bluetooth network, with the Bluetooth password (checked once in a while).
+  bluetoothPeer(req, local, remote) {
+    if (!this.bluetoothPassword || local !== BLUETOOTH_ADDR || !sameNet(remote, BLUETOOTH_ADDR)) return false;
+    const given = String(req.headers["x-bluetooth-password"] || "");
+    const ok = this.bluetoothOk.get(remote);
+    if (ok && ok.until > Date.now() && ok.password === given) return true;
+    if (!given || !this.bluetoothPassword(given)) return false;
+    this.bluetoothOk.set(remote, { password: given, until: Date.now() + BLUETOOTH_OK_MS });
+    return true;
+  }
+
+  // One request from the Bluetooth link, to this server (as a phone's would be): -> { status, type, body }.
+  relay({ method, path: where, body, peer }) {
+    if (!this.server) return Promise.resolve({ status: 503, type: "application/json", body: Buffer.from('{"error":"Remote recording is off."}') });
+    return new Promise((resolve, reject) => {
+      const data = body ? Buffer.from(body) : null;
+      const req = http.request({
+        host: "127.0.0.1", port: this.port, path: where, method,
+        headers: { Host: "localhost", "X-HT-Relay": this.relayToken, "X-HT-Peer": String(peer || "").slice(-17), ...(data ? { "Content-Type": "application/json", "Content-Length": data.length } : {}) },
+      }, (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode, type: res.headers["content-type"] || "", body: Buffer.concat(chunks) }));
+        res.on("error", reject);
+      });
+      req.on("error", reject);
+      req.setTimeout(60000, () => req.destroy(new Error("No answer")));
+      if (data) req.write(data);
+      req.end();
+    });
   }
 
   authorized(req) {
@@ -546,7 +600,7 @@ class RemoteRecordServer extends EventEmitter {
     if (req.method === "GET" && url.pathname === "/remote-client.js") return this.send(res, 200, this.page("js"), "text/javascript; charset=utf-8");
     if (!url.pathname.startsWith("/api/")) return this.send(res, 404, { error: "Not found" });
     if (!this.authorized(req)) return this.send(res, 401, { error: "This page's key isn't the one Hand Tracker shows now." });
-    const address = String(req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+    const address = this.relayed(req) ? "Bluetooth" : String(req.socket.remoteAddress || "").replace(/^::ffff:/, "");
     const wasGone = !this.viewer || this.viewer.gone || this.viewer.address !== address;
     this.viewer = { address, seen: Date.now() };
     if (wasGone) this.emitStatus();
@@ -649,4 +703,4 @@ class RemoteRecordServer extends EventEmitter {
   }
 }
 
-module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_ADDR, cleanDetails, cleanCamera, cleanPick, cleanWifi, cleanSentry, cleanOak, crc32, RIG_HOST, RIG_PATH };
+module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_ADDR, BLUETOOTH_ADDR, cleanDetails, cleanCamera, cleanPick, cleanWifi, cleanSentry, cleanOak, crc32, RIG_HOST, RIG_PATH };

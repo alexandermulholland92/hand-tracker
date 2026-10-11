@@ -22,6 +22,8 @@ const { OpsClient } = require("./ops");
 const { FleetClient } = require("./fleet");
 const { PhoneLinkServer } = require("./phone-link");
 const { RemoteRecordServer, RIG_HOST, RIG_PATH } = require("./remote-record");
+const { RigBluetooth } = require("./bluetooth");
+const { checkPassword: checkBluetoothPassword } = require("./bluetooth-link");
 const { createWifi } = require("./wifi");
 
 const APP_ROOT = path.join(__dirname, "..");
@@ -84,6 +86,7 @@ const exportedPaths = new Set(); // files this session wrote; the only ones "sho
 // Opened at login for remote recording (remote-record.js): no camera until the phone asks.
 const remoteStandby = process.argv.includes("--remote-standby");
 let remoteRecord = null;
+let rigBluetooth = null; // remote recording over Bluetooth (bluetooth.js), on with it
 // Imported videos converted to MP4 for playback: id -> { file, owner: webContents id }. Only these are served under /__media/.
 const mediaFiles = new Map();
 let mediaDir = null;
@@ -814,6 +817,9 @@ function registerRemoteIpc() {
       });
       toWindow("remote:command", { ...extra, id, action });
     });
+  // Over Bluetooth too, where this computer has it (Linux, for now) and a password is set: each
+  // request the link carries goes to the remote recording server here.
+  rigBluetooth = new RigBluetooth({ dataDir: app.getPath("userData"), name: os.hostname(), relay: (r) => remoteRecord.relay(r) });
   remoteRecord = new RemoteRecordServer({
     keyStore,
     page: (name) => fs.readFileSync(path.join(APP_ROOT, name === "js" ? "remote-client.js" : "remote-client.html"), "utf8"),
@@ -821,12 +827,30 @@ function registerRemoteIpc() {
     onWantPreviews: (on) => toWindow("remote:want-previews", on),
     wifi: createWifi(), // a phone on the hotspot (or over Tailscale) can change the Wi-Fi
     takes: () => remoteFolder(), // its takes: listed, downloaded, and deleted once downloaded
+    bluetoothPassword: (text) => checkBluetoothPassword(rigBluetooth.secret(), text), // a phone on the Bluetooth network
   });
   remoteRecord.on("status", (s) => toWindow("remote:status", s));
+  rigBluetooth.on("status", (s) => toWindow("remote:bluetooth", s));
+  const startBluetooth = () => (rigBluetooth.available() && remoteRecord.server ? rigBluetooth.start().catch(() => {}) : null);
   const fromApp = (event) => event.senderFrame && isAppUrl(event.senderFrame.url);
   handle("remote:status", () => remoteRecord.status());
-  handle("remote:start", () => remoteRecord.start());
-  handle("remote:stop", () => remoteRecord.stop());
+  handle("remote:start", async () => {
+    const s = await remoteRecord.start();
+    startBluetooth();
+    return s;
+  });
+  handle("remote:stop", () => {
+    rigBluetooth.stop();
+    return remoteRecord.stop();
+  });
+  // Bluetooth: how it is ({ available, on, error, address, password: null | "hotspot" | "set" }),
+  // and its password set here (8 to 63 characters; kept as its key only).
+  handle("remote:bluetooth", () => rigBluetooth.status());
+  handle("remote:set-bluetooth-password", (event, password) => {
+    const s = rigBluetooth.setPassword(password);
+    startBluetooth();
+    return s;
+  });
   handle("remote:new-key", () => remoteRecord.newKey());
   handle("remote:settings", () => ({ standby: remoteStandby, folder: remoteFolder(), autostart: { available: autostart.available(), on: autostart.get() } }));
   handle("remote:set-autostart", (event, on) => autostart.set(!!on));
@@ -1232,6 +1256,7 @@ app.on("will-quit", () => {
   if (natnet.client) natnet.client.stop();
   if (phoneLink) phoneLink.stop();
   if (webLink) webLink.stop();
+  if (rigBluetooth) rigBluetooth.stop();
   if (remoteRecord) remoteRecord.stop();
   if (mediaDir) fs.rmSync(mediaDir, { recursive: true, force: true });
 });

@@ -235,6 +235,14 @@ contextBridge.exposeInMainWorld("desktop", {
     // { standby (opened at login, waiting for the phone), folder, autostart: { available, on } }
     settings: () => ipcRenderer.invoke("remote:settings"),
     setAutostart: (on) => ipcRenderer.invoke("remote:set-autostart", on),
+    // Over Bluetooth: { available, on, error, address, password: null | "hotspot" | "set" }; its password set.
+    bluetooth: () => ipcRenderer.invoke("remote:bluetooth"),
+    setBluetoothPassword: (password) => ipcRenderer.invoke("remote:set-bluetooth-password", password),
+    onBluetooth: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("remote:bluetooth", listener);
+      return () => ipcRenderer.removeListener("remote:bluetooth", listener);
+    },
     chooseFolder: () => ipcRenderer.invoke("remote:choose-folder"),
     // A take saved without asking where: { baseName, files } -> { dir, results }
     saveTake: ({ baseName, files }) => ipcRenderer.invoke("files:save-remote", { baseName, files }),

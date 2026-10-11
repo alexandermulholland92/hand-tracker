@@ -140,6 +140,7 @@ const STEPS = [
   ["iphone-mouse", [], ({ js }) => checkIphoneMouse(js)],
   ["mac-app", [], () => checkMacApp()],
   ["linux-input", [], () => checkLinuxInput()],
+  ["bluetooth-link", [], () => checkBluetoothLink()],
   ["clip-mp4", [], () => checkClipMp4()],
   ["external-source", [], checkExternalSource],
   ["duplicate-hands", [], checkDuplicateHands],
@@ -973,6 +974,106 @@ function checkMacApp() {
 // lets whoever is logged in at the screen use /dev/uinput (logind's uaccess, numbered before
 // logind's own 73- rules, which apply it) and goes with the app. (Run on a Pi itself, it's
 // checked moving the pointer there.)
+// Remote recording over Bluetooth Low Energy (electron/bluetooth-link.js, the computer's end;
+// bt-link-client.js, a phone's or the website's), through the real remote recording server, the
+// link's notifications going to every device listening (as Bluetooth's do): the right password
+// gets a session, each request sealed and relayed (the server lets it in as from its hotspot), a
+// long answer in frames that fit the link; the wrong password is told so; another device near
+// by reads nothing of it and can't use its session; the server takes the link's token only from
+// itself, and a phone on the Bluetooth network only with the password.
+async function checkBluetoothLink() {
+  const { BluetoothLink, makeSecret, checkPassword } = require("../electron/bluetooth-link.js");
+  const { RemoteRecordServer } = require("../electron/remote-record.js");
+  const BtLinkClient = require("../bt-link-client.js");
+  const out = {};
+  const secret = { ...makeSecret("correct horse 42"), from: "set" };
+  const server = new RemoteRecordServer({ keyStore: null, page: () => "", ask: async (action) => ({ ok: true, message: `did ${action}` }),
+    bluetoothPassword: (text) => checkPassword(secret, text) });
+  const devices = new Map(); // device -> client (every notification goes to each)
+  const MTU = 185;
+  const sent = [];
+  const link = new BluetoothLink({ name: "check-rig", secret: () => secret, relay: (r) => server.relay(r),
+    send: (frame) => {
+      sent.push(frame.length);
+      for (const c of devices.values()) c.received(new Uint8Array(frame));
+    } });
+  const info = JSON.parse(link.info().toString());
+  const client = (dev, password) => {
+    const c = BtLinkClient.create({ password, info, write: async (f) => link.received(dev, Buffer.from(f), MTU) });
+    devices.set(dev, c);
+    return c;
+  };
+  try {
+    await server.start();
+    // (Filler that doesn't deflate much: the answer still needs many frames.)
+    const filler = require("crypto").randomBytes(15000).toString("base64");
+    server.setState({ running: false, cameras: [], filler });
+    out.info = { name: info.name, salt: !!info.salt, iter: info.iter, key: "key" in info };
+    const a = client("/org/bluez/hci0/dev_AA", "correct horse 42");
+    const r = await a.request({ path: "/api/state" });
+    const st = JSON.parse(new TextDecoder().decode(r.bytes));
+    out.state = { status: r.status, type: r.type, host: !!st.host, filler: st.filler === filler, framesMax: Math.max(...sent), frames: sent.length };
+    // An answer that deflates (the page's usual state): a few frames, as it was.
+    server.setState({ running: false, cameras: [], note: "camera ".repeat(3000) });
+    sent.length = 0;
+    const small = await a.request({ path: "/api/state" });
+    out.deflated = { frames: sent.length, whole: JSON.parse(new TextDecoder().decode(small.bytes)).note === "camera ".repeat(3000) };
+    server.setState({ running: false, cameras: [], filler });
+    const cmd = await a.request({ method: "POST", path: "/api/command", body: JSON.stringify({ action: "scan" }) });
+    out.command = { status: cmd.status, body: JSON.parse(new TextDecoder().decode(cmd.bytes)) };
+    // Another device near by: its notifications are A's too, but it can't read them, nor use A's session.
+    const heard = [];
+    devices.set("/org/bluez/hci0/dev_EVE", { received: (b) => heard.push(b) });
+    const before = heard.length;
+    await a.request({ path: "/api/state" });
+    const sealed = Buffer.concat(heard.slice(before).map((b) => Buffer.from(b.subarray(6))));
+    out.overheard = { frames: heard.length - before, plainHost: sealed.includes(Buffer.from(String(st.host))), plainFiller: sealed.includes(Buffer.from(filler.slice(500, 524))) };
+    const stolen = [];
+    devices.set("/org/bluez/hci0/dev_EVE", { received: (b) => b[0] === 4 && stolen.push(new TextDecoder().decode(b.subarray(6))) });
+    const f = Buffer.from(heard[heard.length - 1]);
+    f[0] = 3;
+    link.received("/org/bluez/hci0/dev_EVE", f, MTU);
+    out.stolen = [...stolen]; // (what it heard back, before anyone else's)
+    // The wrong password: told so.
+    const b = client("/org/bluez/hci0/dev_BB", "wrong horse 42");
+    out.wrong = await b.request({ path: "/api/state" }).then(() => "let in", (err) => (err.password ? "password" : err.message));
+    // A second device with the right one: its own session, both work.
+    const c = client("/org/bluez/hci0/dev_CC", "correct horse 42");
+    out.two = [(await c.request({ path: "/api/state" })).status, (await a.request({ path: "/api/state" })).status];
+    // The server: the link's token only from itself; the Bluetooth network only with the password.
+    const base = `http://127.0.0.1:${server.port}`;
+    out.direct = [
+      (await fetch(base + "/api/state")).status,
+      (await fetch(base + "/api/state", { headers: { "X-HT-Relay": server.relayToken } })).status,
+      (await fetch(base + "/api/state", { headers: { "X-HT-Relay": "0".repeat(48) } })).status,
+    ];
+    const req = (password) => ({ headers: { "x-bluetooth-password": password } });
+    out.network = [
+      server.bluetoothPeer(req("correct horse 42"), "10.43.0.1", "10.43.0.7"),
+      server.bluetoothPeer(req("wrong horse 42"), "10.43.0.1", "10.43.0.8"),
+      server.bluetoothPeer(req("correct horse 42"), "192.168.1.5", "192.168.1.9"),
+      server.bluetoothPeer(req(""), "10.43.0.1", "10.43.0.9"),
+    ];
+    // The Linux helper (BlueZ) is carried outside app.asar (Python runs it) and compiles.
+    const helper = path.join(__dirname, "..", "electron", "bluetooth-helper-linux.py");
+    const py = ["python3", "python"].map((cmd) => spawnSync(cmd, ["-c", `import py_compile; py_compile.compile(r"${helper}", doraise=True)`], { encoding: "utf8" })).find((x) => !x.error);
+    out.helper = { compiles: py ? py.status === 0 : "no python here", unpacked: JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")).build.asarUnpack.includes("electron/bluetooth-helper-linux.py") };
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    server.stop();
+  }
+  check("Remote recording over Bluetooth: the right password gets a session, each request sealed and relayed to the server (as from its hotspot), a long answer in frames that fit; the wrong password is told so; another device near by reads none of it and can't use its session; two devices at once; the server takes the link's token only from itself, the Bluetooth network only with the password",
+    !out.error && out.info.name === "check-rig" && out.info.salt && out.info.iter >= 100000 && !out.info.key &&
+      out.state.status === 200 && /json/.test(out.state.type) && out.state.host && out.state.filler && out.state.framesMax <= MTU - 3 && out.state.frames > 80 &&
+      out.deflated.whole && out.deflated.frames <= 3 &&
+      out.command.status === 200 && out.command.body.ok === true && /did scan/.test(out.command.body.message) &&
+      out.overheard.frames > 80 && !out.overheard.plainHost && !out.overheard.plainFiller && out.stolen.join() === "session" &&
+      out.wrong === "password" && out.two.join() === "200,200" &&
+      out.direct.join() === "401,200,401" && out.network.join() === "true,false,false,false" && out.helper.compiles !== false && out.helper.unpacked,
+    JSON.stringify(out));
+}
+
 // A camera clip as the browser's recorder makes it (a fragmented MP4) is saved a plain MP4: the
 // sound made AAC when it's Opus (Linux's recorder has no AAC), the picture copied as it was.
 async function checkClipMp4() {
