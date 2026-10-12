@@ -498,6 +498,30 @@ def find_device(dai, wanted, wait):
 
 
 USB2_MESSAGE = "The OAK camera didn't keep working in USB 3 mode (its cable or its port): starting it in USB 2 mode."
+CRASH_MESSAGE = "The OAK camera's own software crashed (not its cable or its USB)."
+CRASHED = 6  # the exit code then
+
+
+def crash_reports():
+    """The crash reports depthai has kept ({ path: when }): it writes one when it closes a camera
+    whose own software crashed, so a new one says the camera crashed rather than its USB link
+    dropping (both reach here as the same X_LINK_ERROR). Its folder: DEPTHAI_CRASHDUMP if set, else
+    its cache's (on Linux ~/.cache/depthai/crashdumps)."""
+    home = os.path.expanduser("~")
+    folders = [os.environ.get("DEPTHAI_CRASHDUMP", ""),
+               os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(home, ".cache"), "depthai", "crashdumps"),
+               os.path.join(os.environ.get("LOCALAPPDATA", ""), "depthai", "crashdumps") if os.environ.get("LOCALAPPDATA") else "",
+               os.path.join(home, "Library", "Caches", "depthai", "crashdumps")]
+    found = {}
+    for folder in filter(os.path.isdir, folders):
+        for root, _, files in os.walk(folder):
+            for name in files:
+                if name.endswith(".json"):
+                    try:
+                        found[os.path.join(root, name)] = os.path.getmtime(os.path.join(root, name))
+                    except OSError:
+                        pass
+    return found
 
 
 class Usb2Cameras:
@@ -734,6 +758,7 @@ def run(args):
     night = args.night == "on"
     while True:
         device, high = None, retried
+        reports = crash_reports()  # (those from before this start)
         try:
             info = find_device(dai, wanted, 20 if retried else 10)
             if info is None:
@@ -815,6 +840,22 @@ def run(args):
         except (BrokenPipeError, KeyboardInterrupt):
             pass
         except RuntimeError:
+            # Closed first: depthai keeps a crashed camera's report as it closes it.
+            try:
+                tracker.exit()
+            except Exception:
+                pass
+            new = []
+            for _ in range(7):  # (written as it closes; given up to 3 s more)
+                new = [p for p, at in crash_reports().items() if reports.get(p) != at]
+                if new:
+                    break
+                time.sleep(0.5)
+            if new:
+                # Its own software crashed: not its USB (so not USB 2 from now on); the app may
+                # start it again.
+                status("error", message=CRASH_MESSAGE, crashed=True, report=new[0])
+                return CRASHED
             # The camera dropped off in USB 3 mode (X_LINK_ERROR): it's started again in USB 2 mode.
             if usb != "SUPER" or retried:
                 raise

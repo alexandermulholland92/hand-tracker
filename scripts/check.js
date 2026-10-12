@@ -127,6 +127,7 @@ const STEPS = [
   ["oak-options", [], ({ js }) => checkOakOptions(js)],
   ["oak-pictures-off", [], ({ js }) => checkOakPicturesOff(js)],
   ["oak-tile-retry", [], ({ js }) => checkOakTileRetry(js)],
+  ["oak-crash-again", [], ({ js }) => checkOakCrashAgain(js)],
   ["remote-recording", [], ({ js }) => checkRemoteRecording(js)],
   ["remote-oak-settings", [], ({ js }) => checkRemoteOakSettings(js)],
   ["remote-launcher", ["remote-recording"], ({ js }) => checkRemoteLauncher(js)], // downloads the take it saved
@@ -3129,6 +3130,55 @@ async function checkRemoteSettingsPage() {
       out.did.join("|") === "save Field 2 long enough|forget Home|hotspot true|resetCameras|reboot|powerOff" &&
       out.back.hash === "" && out.back.main && !out.back.settings && out.back.fits,
     JSON.stringify(out));
+}
+
+// An OAK camera whose own software crashes: started again by itself while Sentry mode is on (3
+// times in 10 minutes, then left off, saying so); not while it's off (Sentry mode stood in for).
+async function checkOakCrashAgain(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const tile = () => MultiCamera._tiles()[0] || {};
+    const note = () => document.querySelector("#multiCamGrid iframe").contentDocument.getElementById("message").textContent;
+    const retry = () => document.querySelector("#multiCamGrid button.retry");
+    const had = window.Sentry;
+    const watch = async (ms) => {
+      const seen = { runs: 0, notes: [] };
+      let was = "";
+      for (let t = 0; t < ms; t += 25) {
+        const now = tile().oakState;
+        if (now === "running" && was !== "running") seen.runs++;
+        was = now;
+        const n = (() => { try { return note(); } catch { return ""; } })();
+        if (/Starting it again/.test(n) && !seen.notes.includes(n)) seen.notes.push(n);
+        await sleep(25);
+      }
+      seen.again = tile().again;
+      seen.error = tile().status && tile().status.error;
+      seen.retryShown = !!retry() && !retry().hidden;
+      return seen;
+    };
+    const out = {};
+    try {
+      window.Sentry = Object.assign(Object.create(had || {}), { isArmed: () => true });
+      await MultiCamera.start(["oak:SIMULATED-OAK-CRASHES"]);
+      out.armed = await watch(19000);
+      MultiCamera.close();
+      await sleep(500);
+      window.Sentry = Object.assign(Object.create(had || {}), { isArmed: () => false });
+      await MultiCamera.start(["oak:SIMULATED-OAK-CRASHES-OFF"]);
+      out.off = await watch(6000);
+    } finally {
+      window.Sentry = had;
+      MultiCamera.close();
+      await sleep(300);
+    }
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  const a = r.armed || {}, o = r.off || {};
+  check("Several cameras: an OAK camera whose own software crashes is started again by itself while Sentry mode is on (3 times in 10 minutes, then left off, saying so, with Try again); not while it's off",
+    a.runs === 4 && a.again === 3 && /own software crashed/.test(a.notes[0] || "") && /left off/.test(a.error || "") && a.retryShown &&
+      o.runs === 1 && o.again === 0 && /own software crashed/.test(o.error || "") && o.retryShown,
+    JSON.stringify(r));
 }
 
 // An OAK camera that didn't start: its tile says why and has Try again, which starts it.

@@ -492,11 +492,39 @@
     for (const t of tiles) t.el.classList.toggle("no-picture", !!t.oak && !screenPictures());
   }
 
+  // An OAK camera that ran and whose helper then stops by itself (the camera's own software
+  // crashing, say) while Sentry mode is on or a take records is started again AGAIN_AFTER_MS
+  // later (not one that never started: unplugged, say): up to AGAIN_TRIES
+  // times in AGAIN_WINDOW_MS, then it's left stopped, saying so.
+  const AGAIN_TRIES = 3, AGAIN_WINDOW_MS = 10 * 60 * 1000, AGAIN_AFTER_MS = 3000;
+  const keepGoing = () => recording || !!(global.Sentry && global.Sentry.isArmed && global.Sentry.isArmed());
+  function startAgain(t, s) {
+    const now = Date.now(), api = tileApi(t);
+    t.again = (t.again || []).filter((at) => now - at < AGAIN_WINDOW_MS);
+    const why = t.oakError || `The OAK camera stopped${s.detail ? `: ${s.detail}` : "."}`;
+    if (t.again.length >= AGAIN_TRIES) {
+      t.oakState = s.status;
+      if (api && api.oakStatus) api.oakStatus({ ...s, message: `${why} It was started again ${AGAIN_TRIES} times in ${AGAIN_WINDOW_MS / 60000} minutes, so it's left off.` });
+      return;
+    }
+    t.again.push(now);
+    t.oakState = "starting";
+    t.restarting = true;
+    t.grey = t.objects = null; // (Sentry mode measures afresh once the camera's back)
+    if (api && api.oakStatus) api.oakStatus({ status: "starting", message: `${why} Starting it again…` });
+    setTimeout(() => {
+      t.restarting = false;
+      if (tiles.includes(t) && t.oakState === "starting") startOakTiles([t]);
+    }, AGAIN_AFTER_MS);
+  }
+
   function onOakStatus(s) {
     const t = tiles.find((x) => x.oak === s.id);
     if (!t) return;
+    if (s.status === "stopped" && s.code && t.ran && !t.restarting && keepGoing()) return startAgain(t, s);
     if (s.status === "running") {
       t.oakState = "running";
+      t.ran = true;
       t.cameraHands = s.hands !== false; // (what the camera itself was started with)
       if (t.oakWith !== JSON.stringify(oakStart(t))) setTimeout(() => tiles.includes(t) && syncOak(), 0); // (changed while it started)
       // Remembered by model, so the picker can name it next time; and what it has (an infrared
@@ -511,8 +539,11 @@
     } else if (s.status === "error" || s.status === "stopped") {
       t.oakState = s.status;
     }
+    if (s.status === "running" || s.status === "starting") t.oakError = "";
+    else if (s.status === "error") t.oakError = s.message || "";
     const api = tileApi(t);
-    if (api && api.oakStatus) api.oakStatus(s);
+    // (Its helper having said why before it stopped: that, rather than how it stopped.)
+    if (api && api.oakStatus) api.oakStatus(s.status === "stopped" && s.code && t.oakError ? { ...s, message: t.oakError } : s);
   }
 
   // keepOak: another set of tiles comes next (the main window's OAK camera isn't taken back yet).
@@ -738,6 +769,6 @@
     init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
     oakSettings, setOakSettings,
     isActive: () => tiles.length > 0, isRecording: () => recording, isTracking: tracking,
-    _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null, cameraHands: t.oak ? t.cameraHands : undefined, oakWith: t.oak ? t.oakWith : undefined })),
+    _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null, cameraHands: t.oak ? t.cameraHands : undefined, oakWith: t.oak ? t.oakWith : undefined, oakState: t.oakState, again: (t.again || []).length })),
   };
 })(window);

@@ -646,6 +646,18 @@ class SimulatedOak {
       if (options.motion) frame.motion = [0, 0, 0, 0, 0, 0, 0, 1, 2].map((_, i) => (i >= 6 && catX >= 0 && catX < 1 && Math.floor(catX * 3) === i - 6 ? 0.3 : 0));
       onMessage({ frame, jpeg });
     }, 33);
+    // A camera whose id has CRASHES crashes after a second each time it runs, as oak_bridge.py
+    // says a camera whose own software crashed did (for the checks' starting it again).
+    if (/CRASHES/.test(options.device || "")) {
+      const timer = this.timer;
+      setTimeout(() => {
+        if (this.timer !== timer) return;
+        clearInterval(timer);
+        this.timer = null;
+        onMessage({ status: "error", message: "The OAK camera's own software crashed (not its cable or its USB).", crashed: true });
+        onMessage({ status: "stopped", code: 6, detail: "" });
+      }, 1000);
+    }
   }
 
   stop() {
