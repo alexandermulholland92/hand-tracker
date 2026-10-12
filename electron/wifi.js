@@ -92,7 +92,10 @@ function createWifi() {
   let connecting = null;
   let last = null;
   const seen = new Map(); // network name -> its security, from the last list
-  nmcli(["--version"], 5000).then(() => (ok = true), () => (ok = false));
+  nmcli(["--version"], 5000).then(() => {
+    ok = true;
+    lookAtHotspot().catch(() => {}); // (its hotspot, known from the start)
+  }, () => (ok = false));
 
   // The Wi-Fi device (wlan0 on a Pi).
   async function device() {

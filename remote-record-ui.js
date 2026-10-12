@@ -592,6 +592,11 @@
       if (recording) return { ok: false, message: "Stop recording first." };
       return remote.reboot();
     }
+    if (action === "powerOff") {
+      if (!remote.powerOff || !system || !system.powerOff) return { ok: false, message: "This device can't be turned off from here." };
+      if (recording) return { ok: false, message: "Stop recording first." };
+      return remote.powerOff();
+    }
     if (pending) return { ok: false, message: `Busy: ${pending}` };
     if (action === "resetCameras") {
       // The cameras stopped, their USB off and on (as unplugging them), then the ones that ran

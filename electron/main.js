@@ -890,7 +890,12 @@ function registerRemoteIpc() {
   // checks (HAND_TRACKER_SYSTEM_SIMULATE) only note what was asked, in global.__systemAsked.
   const simulateSystem = !!process.env.HAND_TRACKER_SYSTEM_SIMULATE;
   global.__systemAsked = [];
-  handle("remote:system", () => (simulateSystem ? { reboot: "yes", cameraReset: "power" } : systemControl.capabilities()));
+  handle("remote:system", () => (simulateSystem ? { reboot: "yes", powerOff: "yes", cameraReset: "power" } : systemControl.capabilities()));
+  handle("remote:power-off", () => {
+    if (!simulateSystem) return systemControl.powerOff();
+    global.__systemAsked.push("powerOff");
+    return { ok: true, message: "Turning off… (simulated)" };
+  });
   handle("remote:reboot", () => {
     if (!simulateSystem) return systemControl.reboot();
     global.__systemAsked.push("reboot");

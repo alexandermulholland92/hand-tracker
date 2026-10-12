@@ -2622,6 +2622,7 @@ async function checkRemoteRecording(js) {
     for (let i = 0; i < 60 && (await state()).pending; i++) await sleep(250);
     out.resetNotice = ((await state()).notice || {}).message || "";
     out.reboot = await (await post("reboot")).json();
+    out.powerOff = await (await post("powerOff")).json();
     out.systemAsked = global.__systemAsked.slice();
     out.backAfterClose = await js(`(() => { const card = document.getElementById("multiCamCard"), wrap = document.getElementById("wrap"); return !card.classList.contains("in-place") && card.nextElementSibling !== wrap && getComputedStyle(wrap).display !== "none"; })()`);
     await post("mode", { mode: "freeform" });
@@ -2654,7 +2655,7 @@ async function checkRemoteRecording(js) {
       out.stereo.mode === "stereo" && out.stereo.need.ok && !out.stereo.running &&
       out.inPlace.inPlace && out.inPlace.beforeView && !out.inPlace.viewShown && out.backAfterClose &&
       out.system && out.system.reboot === "yes" && out.system.cameraReset === "power" && out.resetCams.ok && /simulated/.test(out.resetNotice) &&
-      out.reboot.ok && out.systemAsked.join() === "resetCameras,reboot" &&
+      out.reboot.ok && out.powerOff.ok && out.systemAsked.join() === "resetCameras,reboot,powerOff" &&
       out.refused.ok === false && (out.refused.missing || []).join() === "location,task" && /Fill in Location and Task first/.test(out.refused.message) && out.refusedStarted === false &&
       out.record.ok && out.changedDetails.ok === false && out.changedDetails.locked && out.lockedDetails.locked === true &&
       out.lockedDetails.details.location === "Lab 2" && out.lockedDetails.details.task === "Pick up cup" && out.unlocked.locked === false && out.unlocked.cleared && /^Sam-Smith_Lab-2_Pick-up-cup_/.test(out.nameLocked) &&
@@ -2934,7 +2935,7 @@ async function checkRemoteSettingsPage() {
   const ask = async (action) => (did.push([action]), { ok: true, message: `did ${action}` });
   const server = new RemoteRecordServer({ keyStore: null, page, ask, wifi, hotspot: () => "127.0.0.1", host: "pi", takes: () => fs.mkdtempSync(path.join(require("os").tmpdir(), "hand-tracker-check-settings-")) });
   server.setState({ running: false, recording: false, cameras: [], mode: "freeform", requirement: { ok: true }, video: true, sound: true, videoQuality: "high", screenPictures: true,
-    system: { reboot: "yes", cameraReset: "power" }, available: { at: 1, scanning: false, note: "", cameras: [] } });
+    system: { reboot: "yes", powerOff: "yes", cameraReset: "power" }, available: { at: 1, scanning: false, note: "", cameras: [] } });
   const out = {};
   let win = null;
   try {
@@ -2977,6 +2978,10 @@ async function checkRemoteSettingsPage() {
       out.rebootAsks = $("rebootBtn").textContent;
       $("rebootBtn").click();
       out.rebootSaid = await until(() => /did reboot/.test($("setMessage").textContent) && $("setMessage").textContent);
+      $("powerOffBtn").click();
+      out.offAsks = $("powerOffBtn").textContent;
+      $("powerOffBtn").click();
+      out.offSaid = await until(() => /did powerOff/.test($("setMessage").textContent) && $("setMessage").textContent);
       $("settingsBack").click();
       await until(() => seen("mainPage"));
       out.back = { hash: location.hash, main: seen("mainPage"), settings: seen("settingsPage"), fits: document.documentElement.scrollWidth <= innerWidth + 1 };
@@ -2990,12 +2995,12 @@ async function checkRemoteSettingsPage() {
   }
   out.did = did.map((d) => d.join(" ")).filter((d) => d !== "scan");
   const b = out.before || {}, o = out.open || {};
-  check("The device settings page: the link under Sentry opens it, with Video, Pictures on its screen, Wi-Fi and Restart (gone from the main page); saved networks listed, one saved (not joined) and one forgotten after a second tap; hotspot mode on after a second tap, staying until switched back; Restart cameras and Restart asked once more, then asked of the computer; back to the cameras",
+  check("The device settings page: the link under Sentry opens it, with Video, Pictures on its screen, Wi-Fi and Restart (gone from the main page); saved networks listed, one saved (not joined) and one forgotten after a second tap; hotspot mode on after a second tap, staying until switched back; Restart cameras, Restart and Turn off asked once more, then asked of the computer; back to the cameras",
     !out.error && b.link && !b.video && !b.wifi && !b.restart && o.hash === "#settings" && !o.main && o.video && o.screen && o.wifi && o.restart && /pi/.test(o.host) &&
       o.saved.join() === "Home,Lab" && /comes on when it isn't on a network/.test(o.hotspot) && o.hotspotBtn === "Hotspot mode" &&
       out.savedAfter.join() === "Lab,Field 2" && /Tap again/i.test(out.forgetAsks) && /tap again/i.test(out.hotspotAsks) && out.forced === "Back to Wi-Fi" &&
-      /tap again/i.test(out.resetAsks) && out.resetSaid && /Restart pi\? Tap again/.test(out.rebootAsks) && out.rebootSaid &&
-      out.did.join("|") === "save Field 2 long enough|forget Home|hotspot true|resetCameras|reboot" &&
+      /tap again/i.test(out.resetAsks) && out.resetSaid && /Restart pi\? Tap again/.test(out.rebootAsks) && out.rebootSaid && /Turn off pi\? Tap again/.test(out.offAsks) && out.offSaid &&
+      out.did.join("|") === "save Field 2 long enough|forget Home|hotspot true|resetCameras|reboot|powerOff" &&
       out.back.hash === "" && out.back.main && !out.back.settings && out.back.fits,
     JSON.stringify(out));
 }

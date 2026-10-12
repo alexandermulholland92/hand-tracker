@@ -1000,20 +1000,25 @@
     $("restartPanel").hidden = !sys || (!sys.reboot && !sys.cameraReset);
     if ($("restartPanel").hidden) return;
     $("resetCamsRow").hidden = !sys.cameraReset;
-    $("rebootRow").hidden = !sys.reboot;
+    $("rebootRow").hidden = !sys.reboot && !sys.powerOff;
+    $("rebootBtn").hidden = !sys.reboot;
+    $("powerOffBtn").hidden = !sys.powerOff;
     const host = hostName();
     if (!$("rebootBtn").dataset.armed) $("rebootBtn").textContent = `Restart ${host}`;
+    if (!$("powerOffBtn").dataset.armed) $("powerOffBtn").textContent = `Turn off ${host}`;
     $("resetCamsBtn").disabled = !!s.recording || !!s.pending;
-    $("rebootBtn").disabled = !!s.recording;
+    $("rebootBtn").disabled = $("powerOffBtn").disabled = !!s.recording;
     const notes = [];
     if (sys.cameraReset === "soft") notes.push("Restart cameras only resets them on the USB for now; a camera that's stopped answering needs its power off and on: run sudo bash restart-setup.sh on it once (pi/restart-setup.sh).");
     if (sys.cameraReset === "power") notes.push("On a Raspberry Pi 5 all its own USB ports go off and on together (a keyboard or hub on them too).");
-    if (sys.reboot === "setup") notes.push("To restart it from here, run sudo bash restart-setup.sh on it once (pi/restart-setup.sh).");
+    if (sys.reboot === "setup" || sys.powerOff === "setup") notes.push("To restart it or turn it off from here, run sudo bash restart-setup.sh on it (pi/restart-setup.sh).");
+    if (sys.powerOff) notes.push("Turned off, it stays off until its power is turned on again (a Raspberry Pi 5: its power button, or unplug it and plug it back in): this page can't turn it on.");
     if (s.recording) notes.push("Stop recording first.");
     $("restartNote").textContent = notes.join(" ");
   }
   $("resetCamsBtn").addEventListener("click", (e) => tapAgain(e.currentTarget, "The cameras stop: tap again", () => command("resetCameras")));
   $("rebootBtn").addEventListener("click", (e) => tapAgain(e.currentTarget, `Restart ${hostName()}? Tap again`, () => command("reboot")));
+  $("powerOffBtn").addEventListener("click", (e) => tapAgain(e.currentTarget, `Turn off ${hostName()}? Tap again`, () => command("powerOff")));
 
   // ---------- the computer's Wi-Fi (from its own hotspot, or over Tailscale) ----------
   // Hand Tracker lists the networks around it; one tapped asks for its password (a saved one

@@ -256,9 +256,10 @@ contextBridge.exposeInMainWorld("desktop", {
     },
     chooseFolder: () => ipcRenderer.invoke("remote:choose-folder"),
     // This computer restarted, and its cameras' USB turned off and on, from the device settings
-    // page (electron/system-control.js): system() -> { reboot, cameraReset }.
+    // page (electron/system-control.js): system() -> { reboot, powerOff, cameraReset }; turned off.
     system: () => ipcRenderer.invoke("remote:system"),
     reboot: () => ipcRenderer.invoke("remote:reboot"),
+    powerOff: () => ipcRenderer.invoke("remote:power-off"),
     resetCameras: () => ipcRenderer.invoke("remote:reset-cameras"),
     // A take saved without asking where: { baseName, files } -> { dir, results }
     saveTake: ({ baseName, files }) => ipcRenderer.invoke("files:save-remote", { baseName, files }),
