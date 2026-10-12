@@ -1829,11 +1829,13 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeFull(false);
   });
-  // Where the computer numbers its pictures ("image/jpeg; seq=N"), two requests are on their
-  // way at once, each for the picture after the last one asked for: a new one each time, and
-  // about twice as many a second over a link that takes a while each way (up to the camera's
-  // 30). One at a time otherwise (an older Hand Tracker, a phone's own cameras) and over
-  // Bluetooth. The newest picture that has come is shown; an older one coming late isn't.
+  // Where the computer numbers its pictures ("image/jpeg; seq=N"), FULL_AT_ONCE requests are on
+  // their way at once, each for the picture after the last one asked for: a new one each time,
+  // and up to that many times as many a second over a link that takes a while each way (a
+  // phone over Tailscale: ~100 ms; up to the camera's 30). One at a time otherwise (an older
+  // Hand Tracker, a phone's own cameras) and over Bluetooth. The newest picture that has come
+  // is shown; an older one coming late isn't.
+  const FULL_AT_ONCE = 4;
   async function fullLoop(loop) {
     const img = $("fullImg");
     let url = null, frames = 0, since = performance.now();
@@ -1874,7 +1876,7 @@
             const seq = seqOf(res.type);
             if (numbered === null) {
               numbered = seq !== null;
-              if (numbered && !bt) asking(false);
+              if (numbered && !bt) for (let n = 1; n < FULL_AT_ONCE; n++) asking(false);
             }
             if (seq !== null) ask = Math.max(ask, seq);
             show(res.bytes, seq);

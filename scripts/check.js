@@ -2656,8 +2656,8 @@ async function checkRemoteRecording(js) {
       if (r.status === 200) fulls.push(Buffer.from(await r.arrayBuffer()));
     }
     out.full = { frames: fulls.length, small: jpegSize(bytes), size: fulls.length ? jpegSize(fulls[fulls.length - 1]) : null, fps: Math.round((fulls.length * 1000) / (Date.now() - fullFrom)) };
-    // Numbered: two requests on their way at once (as the page asks, each &after= the last one
-    // asked for) get a different picture each, in order, none twice.
+    // Numbered: four requests on their way at once (as the page asks, each &after= the last one
+    // asked for) get a different picture each, none twice.
     const seqs = [];
     let ask = 0;
     const until = Date.now() + 2000;
@@ -2672,10 +2672,10 @@ async function checkRemoteRecording(js) {
         }
       }
     };
-    // (The second once the first has its number, as the page does.)
+    // (The other three once the first has its number, as the page does.)
     const first = asking();
     for (let i = 0; i < 100 && !seqs.length; i++) await sleep(10);
-    await Promise.all([first, asking()]);
+    await Promise.all([first, asking(), asking(), asking()]);
     out.numbered = { got: seqs.length, distinct: new Set(seqs).size, fps: Math.round(seqs.length / 2) };
     await sleep(1500);
     out.stop = await (await post("stop")).json();
