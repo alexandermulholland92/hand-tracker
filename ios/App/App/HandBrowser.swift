@@ -25,6 +25,9 @@ import Capacitor
 class HandTrackerViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(HandBrowserPlugin())
+        // Remote recording on another computer (RemoteLink.swift): over the network, and over Bluetooth.
+        bridge?.registerPluginInstance(RigLinkPlugin())
+        bridge?.registerPluginInstance(BtLinkPlugin())
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "-HTSelfTest") {
             let page = i + 1 < args.count ? args[i + 1] : ""

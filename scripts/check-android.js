@@ -113,8 +113,15 @@ function checkRigRulesMatch() {
     "/api/takes/x", "/api/state?x", "/api/../state", "/", "/remote-client.js"];
   out.differ = [...hosts.filter((h) => javaHost.test(h) !== RIG_HOST.test(h)), ...paths.filter((p) => javaPath.test(p) !== RIG_PATH.test(p))];
   out.samePathText = out.path === RIG_PATH.source.replace(/\\\//g, "/");
-  check("The Android app's rules for reaching a computer (RemotePlugin.java) match the desktop app's (remote-record.js): the same paths, and the same answer for every address and path tried",
-    out.samePathText && !out.differ.length, JSON.stringify({ differ: out.differ, samePathText: out.samePathText }));
+  // The iPhone app's (RemoteLink.swift), written the same way.
+  const swift = fs.readFileSync(path.join(ROOT, "ios/App/App/RemoteLink.swift"), "utf8");
+  const swiftPattern = (name) => {
+    const m = new RegExp(`static let ${name} = "((?:[^"\\\\]|\\\\.)*)"`).exec(swift);
+    return m ? m[1].replace(/\\\\/g, "\\") : null;
+  };
+  out.swiftSame = swiftPattern("RIG") === out.host && swiftPattern("RIG_PATH") === out.path;
+  check("The Android and iPhone apps' rules for reaching a computer (RemotePlugin.java, RemoteLink.swift) match the desktop app's (remote-record.js): the same paths, and the same answer for every address and path tried",
+    out.samePathText && !out.differ.length && out.swiftSame, JSON.stringify({ differ: out.differ, samePathText: out.samePathText, swiftSame: out.swiftSame }));
 }
 
 async function run() {
@@ -146,7 +153,10 @@ async function run() {
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === "media"));
   // npm run check:android -- --only iphone: just the iPhone app's check.
   const only = process.argv.includes("--only") ? String(process.argv[process.argv.indexOf("--only") + 1]) : "";
-  if (/iphone/i.test(only)) return checkIphoneApp();
+  if (/iphone/i.test(only)) {
+    await checkIphoneApp();
+    return checkIphoneRemote();
+  }
 
   // Phone-sized window (a typical 412×915 dp Android screen).
   const win = new BrowserWindow({
@@ -725,6 +735,7 @@ async function run() {
   await checkRemoteBluetoothNetwork(win, js);
   await checkPhoneAsRig(win, js);
   await checkIphoneApp();
+  await checkIphoneRemote();
 }
 
 // The iPhone app (ios/: the same bundle, with Capacitor's iOS bridge, stood in for here with
@@ -801,7 +812,7 @@ async function checkIphoneApp() {
   }
   const st = out.selfTest || {}, pg = out.page || {};
   check("The iPhone app: only its own plugins, the Android-only parts hidden; the hand browser opens a website full screen with the hand-mouse pointer on it and the app as just its camera, and the hand mouse's calls click its link (the next page opens), click into a box and type; the app shows over it and back; Back and Close work; and its self-test (as in the iPhone simulator: full screen, the small window moving off, a drag scrolling) passes",
-    !out.error && st.ok === true && st.plugins.join() === "Filesystem,HandBrowser,Share" && pg.platform === "ios" && pg.label === "Hand mouse" && pg.shown &&
+    !out.error && st.ok === true && st.plugins.join() === "BtLink,Filesystem,HandBrowser,RigLink,Share" && pg.platform === "ios" && pg.label === "Hand mouse" && pg.shown &&
       pg.android.every(Boolean) && pg.noKeyboard && pg.noRemote && pg.opened && pg.mouseOn && /Example Domain/.test(pg.barTitle) && pg.small && pg.appShown && pg.siteShown && pg.followed && pg.typed === "hello" && pg.back && pg.closed &&
       pg.opens.length >= 2 && pg.opens.every(([url, aspect, script]) => /^https:\/\/example\.com\/?$/.test(url) && aspect > 0 && script),
     JSON.stringify(out));
@@ -1011,6 +1022,105 @@ async function checkRemoteFromPhone(win, js) {
     JSON.stringify(out));
 }
 
+// Remote recording from the iPhone app (?fakeplatform=ios): remote.html offers Bluetooth (not a
+// Bluetooth network: an iPhone has none), a computer's address opens its page right here, the
+// app reaching it (RigLink, RemoteLink.swift); and over Bluetooth Low Energy (BtLink, the
+// computer's link electron/bluetooth-link.js running here): its password the first time, the
+// computer asked for by name picked from those near by, a camera's picture when tapped.
+async function checkIphoneRemote() {
+  const { RemoteRecordServer } = require("../electron/remote-record.js");
+  const { BluetoothLink, makeSecret } = require("../electron/bluetooth-link.js");
+  const win = new BrowserWindow({
+    show: false, width: 390, height: 844, useContentSize: true,
+    webPreferences: { preload: path.join(__dirname, "fake-capacitor.js"), contextIsolation: false, sandbox: false, backgroundThrottling: false },
+  });
+  const wc = win.webContents;
+  const js = (code) => wc.executeJavaScript(code, true);
+  const state = {
+    running: true, recording: false, mode: "freeform", requirement: { ok: true, missing: [], message: "" }, detailsRequired: false,
+    details: { contributor: "", location: "", task: "" },
+    cameras: [{ index: 0, name: "Cam 1", roleId: "head", role: "Head", label: "camera 0", rotation: 0, mirror: false, fps: 30, hands: [], error: "" }],
+    available: { at: 1, scanning: false, note: "", cameras: [] },
+  };
+  const server = new RemoteRecordServer({
+    keyStore: null, host: "rig-test", hotspot: () => null,
+    page: (name) => fs.readFileSync(path.join(ROOT, name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8"),
+    ask: async () => ({ ok: true, message: "" }),
+  });
+  server.setState(state);
+  server.setPreview(0, require("electron").nativeImage.createFromBitmap(Buffer.alloc(64 * 48 * 4, 120), { width: 64, height: 48 }).toJPEG(70));
+  const { port } = await server.start();
+  const secret = { ...makeSecret("correct horse 42"), from: "hotspot" };
+  const link = new BluetoothLink({ name: "rig-test", secret: () => secret, relay: (r) => server.relay(r), send: (frame) => !wc.isDestroyed() && wc.send("fake-btlink:notify", frame.toString("base64")) });
+  ipcMain.handle("fake-btlink:info", () => link.info().toString("base64"));
+  ipcMain.handle("fake-btlink:write", (_e, b64) => link.received("/dev/fake-iphone", Buffer.from(b64, "base64"), 185));
+  const navigated = (step) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`No page loaded (still at ${wc.getURL()})`)), 20000);
+    wc.once("did-finish-load", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    Promise.resolve(step()).catch(() => {});
+  });
+  const PAGE = `
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const $ = (id) => document.getElementById(id);
+    const until = async (fn, ms = 15000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+    const shown = (id) => !!$(id) && !$(id).hidden && !$(id).closest("[hidden]");
+  `;
+  const out = {};
+  try {
+    await win.loadURL(`app://${HOST}/remote.html?fakeplatform=ios`);
+    await js(`localStorage.setItem("__fakeBtLe", ${JSON.stringify(JSON.stringify([{ id: "1F0E-OTHER", name: "Other" }, { id: "1F0E-RIG", name: "rig-test" }]))}); localStorage.removeItem("hand-tracker-bluetooth-keys"); true`);
+    out.launcher = await js(`(async () => {
+      ${PAGE}
+      return { platform: Capacitor.getPlatform(), card: shown("btCard"), web: shown("btWeb"), android: shown("btAndroid"), settings: shown("btSettings"), where: $("whereNote").textContent };
+    })()`);
+    await navigated(() => js(`document.getElementById("host").value = ${JSON.stringify(`http://127.0.0.1:${port}/#k=${server.key}`)}; document.querySelector("#connectForm button[type=submit]").click(); true`));
+    out.network = await js(`(async () => {
+      ${PAGE}
+      const title = await until(() => /rig-test/.test($("title").textContent) && $("title").textContent);
+      return { path: location.pathname + location.search, title, riglink: window.__fakeCapacitor.calls.filter((c) => c[0] === "riglink.rigRequest").length };
+    })()`);
+    // Its Bluetooth button (beside the computer saved on remote.html) opens it over Bluetooth.
+    await wc.loadURL(`app://${HOST}/remote.html`);
+    await navigated(() => js(`[...document.querySelectorAll("#saved button")].find((b) => b.textContent === "Bluetooth").click(); true`));
+    out.ble = await js(`(async () => {
+      ${PAGE}
+      const panel = await until(() => shown("btPanel") && shown("btPassword"));
+      $("btPassword").value = "correct horse 42";
+      $("btConnect").click();
+      // (Saved as 127.0.0.1, it's "rig-test" over Bluetooth: picked from the two near by.)
+      const pick = await until(() => [...$("btDevices").querySelectorAll("button")].find((b) => b.textContent === "rig-test"));
+      const listed = [...$("btDevices").querySelectorAll("button")].map((b) => b.textContent);
+      const asked = $("btNote").textContent;
+      if (pick) pick.click();
+      const title = await until(() => /[(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent);
+      if (!title) return { path: decodeURIComponent(location.search), panel: !!panel, title: $("title").textContent, message: $("message").textContent, note: $("btNote").textContent, calls: window.__fakeCapacitor.calls.filter((c) => c[0].startsWith("btlink.")).map((c) => c.join(" ")) };
+      await until(() => document.querySelector("#cam0 .pic span") && /tap for its picture/.test(document.querySelector("#cam0 .pic span").textContent));
+      if (!document.querySelector("#cam0 .pic")) return { title, noCam: true, status: $("status").textContent };
+      document.querySelector("#cam0 .pic").click();
+      const picture = !!(await until(() => !document.querySelector("#cam0 img").hidden && document.querySelector("#cam0 img").naturalWidth === 64));
+      const calls = window.__fakeCapacitor.calls.filter((c) => c[0].startsWith("btlink.")).map((c) => c.join(" "));
+      return { path: decodeURIComponent(location.search), panel: !!panel, listed, asked, title, picture, calls, kept: (localStorage.getItem("hand-tracker-bluetooth-keys") || "").length };
+    })()`);
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    ipcMain.removeHandler("fake-btlink:info");
+    ipcMain.removeHandler("fake-btlink:write");
+    server.stop();
+    win.destroy();
+  }
+  const l = out.launcher || {}, n = out.network || {}, b = out.ble || {};
+  check("Remote recording from the iPhone app: remote.html offers Bluetooth (no Bluetooth network), a computer's address opens its page right here (the app reaching it), and its Bluetooth button connects over Bluetooth Low Energy (picked from those near by when its name there isn't the one saved, its password once, a camera's picture when tapped)",
+    !out.error && l.platform === "ios" && l.card && l.web && !l.android && !l.settings && /opens here/.test(l.where) &&
+      /remote-client\.html\?rig=127\.0\.0\.1/.test(n.path) && n.title === "Hand Tracker on rig-test" && n.riglink > 0 &&
+      /bt=127\.0\.0\.1/.test(b.path) && b.panel && (b.listed || []).join() === "Other,rig-test" && /Which computer/.test(b.asked) && b.title === "Hand Tracker on rig-test (Bluetooth)" && b.picture &&
+      (b.calls || []).includes("btlink.connect 1F0E-RIG") && b.kept > 40,
+    JSON.stringify(out));
+}
+
 // Remote recording from the Android app over a computer's Bluetooth network (BtNet.java; the
 // stand-in plugin's network is set in localStorage "__fakeBtNet"): remote.html says how to join
 // it and opens Bluetooth settings; with the phone on none the computer's page says so; on it, the
@@ -1186,6 +1296,8 @@ async function checkRemoteBluetoothNetwork(win, js) {
     JSON.stringify(out));
 }
 
+// (A check's window closing, with none left, isn't the end: the run says when it's done.)
+app.on("window-all-closed", () => {});
 app.whenReady().then(() =>
   run()
     .catch((err) => check("Check run finished without crashing", false, err.stack || String(err)))

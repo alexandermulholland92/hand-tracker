@@ -55,6 +55,8 @@
 	<string>Hand Tracker follows your hands with the camera: tracking, recording, motion capture and the hand mouse.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Hand Tracker records sound with your videos, if you choose to.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Hand Tracker reaches a computer's remote recording over Bluetooth when there's no network between them.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Hand Tracker reaches the computers on your network that you control or record with.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

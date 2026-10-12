@@ -98,8 +98,8 @@
     if (!$("host").value && list.length) $("host").placeholder = label(list[0]);
   }
 
-  // The apps: the Windows and Linux app's preload gives every window `desktop`; the Android
-  // app is Capacitor's.
+  // The apps: the Windows and Linux app's preload gives every window `desktop`; the Android and
+  // iPhone apps are Capacitor's ("inAndroidApp": either).
   const inDesktopApp = !!(window.desktop && window.desktop.rig);
   const cap = window.Capacitor;
   const inAndroidApp = !!(cap && cap.isNativePlatform && cap.isNativePlatform());
@@ -108,8 +108,10 @@
   // Over Bluetooth instead: Web Bluetooth (Chrome, and the Windows, Mac and Linux app), its page
   // here connecting to it by name; the Android app, over the computer's Bluetooth network (its
   // address there; a computer asked for by name is checked to be the one).
-  const btPossible = !!(navigator.bluetooth && window.isSecureContext !== false);
-  const nativeRemote = inAndroidApp ? (typeof cap.registerPlugin === "function" ? cap.registerPlugin("Remote") : cap.Plugins && cap.Plugins.Remote) : null;
+  // (The iPhone app has Bluetooth Low Energy of its own, RemoteLink.swift, and no Bluetooth network.)
+  const onIphone = inAndroidApp && typeof cap.getPlatform === "function" && cap.getPlatform() === "ios";
+  const btPossible = !!((navigator.bluetooth || onIphone) && window.isSecureContext !== false);
+  const nativeRemote = inAndroidApp && !onIphone ? (typeof cap.registerPlugin === "function" ? cap.registerPlugin("Remote") : cap.Plugins && cap.Plugins.Remote) : null;
   const BT_NET_RIG = "10.43.0.1:47821";
   function openBluetooth(name) {
     location.href = nativeRemote

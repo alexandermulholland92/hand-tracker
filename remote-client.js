@@ -13,12 +13,13 @@
  *   - served by the computer itself (electron/remote-record.js), in any browser: plain requests
  *     to its own address, with the key from the QR code (#k=…, kept in this browser) unless
  *     it's opened over Tailscale;
- *   - in the Android app and the Windows, Mac and Linux app, as remote-client.html?rig=<name>:<port>
- *     (from remote.html): the app makes the requests (Remote.rigRequest on Android,
- *     desktop.rig.request on Windows, Mac and Linux), since a page can't reach a device on your
+ *   - in the Android and iPhone apps and the Windows, Mac and Linux app, as remote-client.html?rig=<name>:<port>
+ *     (from remote.html): the app makes the requests (Remote.rigRequest on Android, RigLink.rigRequest
+ *     on an iPhone, desktop.rig.request on Windows, Mac and Linux), since a page can't reach a device on your
  *     network by itself; a key comes with the address the same way and is kept per computer;
  *   - over Bluetooth Low Energy (bt-link-client.js, Web Bluetooth: the website in Chrome, the
- *     Windows, Mac and Linux app), as remote-client.html?bt=<its name> from remote.html, or offered
+ *     Windows, Mac and Linux app; the iPhone app's own, RemoteLink.swift), as
+ *     remote-client.html?bt=<its name> from remote.html, or offered
  *     when a computer can't be reached over the network: each request over the link, sealed with
  *     a key made from its password (kept here as that key only, per computer). Bluetooth is slow
  *     (a few KB a second): its state is asked for less often, and a camera's picture only when
@@ -40,17 +41,21 @@
   const rig = /^[a-z0-9.\-[\]:]{1,260}$/i.test(params.get("rig") || "") ? params.get("rig") : "";
   const cap = window.Capacitor;
   const onPhoneApp = !!(cap && cap.isNativePlatform && cap.isNativePlatform());
-  const nativeRemote = rig && onPhoneApp ? (typeof cap.registerPlugin === "function" ? cap.registerPlugin("Remote") : cap.Plugins && cap.Plugins.Remote) : null;
+  const onIphone = onPhoneApp && typeof cap.getPlatform === "function" && cap.getPlatform() === "ios";
+  const native = (name) => (typeof cap.registerPlugin === "function" ? cap.registerPlugin(name) : cap.Plugins && cap.Plugins[name]);
+  const nativeRemote = rig && onPhoneApp ? native(onIphone ? "RigLink" : "Remote") : null;
   const desktopRig = rig && window.desktop && window.desktop.rig ? window.desktop.rig : null;
   // Bluetooth: asked for (?bt=<its name>), or offered when the computer can't be reached.
   const btName = params.get("bt");
-  const btPossible = !!(window.BtLinkClient && navigator.bluetooth && window.isSecureContext !== false);
+  // (The iPhone app: its own Bluetooth, below.)
+  const btPossible = !!(window.BtLinkClient && (navigator.bluetooth || onIphone) && window.isSecureContext !== false);
   let bt = null; // { name, request, close } while connected
   // The Android app on a computer's Bluetooth network (its address there, BtNet.java).
   const BT_NET_RIG = "10.43.0.1:47821";
-  const btNet = !!nativeRemote && rig.replace(/:\d+$/, "") === BT_NET_RIG.replace(/:\d+$/, "");
-  // The Android app's own Bluetooth Low Energy (BtLinkPlugin.java), when its Bluetooth network can't be used.
-  const nativeBtLink = btNet && window.BtLinkClient ? (typeof cap.registerPlugin === "function" ? cap.registerPlugin("BtLink") : cap.Plugins && cap.Plugins.BtLink) : null;
+  const btNet = !!nativeRemote && !onIphone && rig.replace(/:\d+$/, "") === BT_NET_RIG.replace(/:\d+$/, "");
+  // The phone apps' own Bluetooth Low Energy: the Android app's (BtLinkPlugin.java) when its
+  // Bluetooth network can't be used; the iPhone app's (RemoteLink.swift), which has no other.
+  const nativeBtLink = (btNet || onIphone) && window.BtLinkClient ? native("BtLink") : null;
   if (rig || btName !== null) $("back").hidden = false;
 
   // The key from the QR code's address (#k=…), kept for next time (per computer in the apps)
@@ -1174,7 +1179,7 @@
   function showBluetooth(why) {
     $("btPanel").hidden = !btPossible || !!bt;
     if ($("btPanel").hidden) return;
-    $("btNote").textContent = why || "";
+    if (!$("btDevices").onclick) $("btNote").textContent = why || ""; // (not while one is being picked)
     $("btJoin").hidden = false;
     $("btNetRow").hidden = true;
   }
@@ -1190,12 +1195,12 @@
         password: password || null,
         keys: keys(),
         // (The Android app: its own Bluetooth; the computer asked for by name, else a list here.)
-        bluetooth: nativeBtLink ? BtLinkClient.capacitorBluetooth(nativeBtLink, { prefer: params.get("want") || "", pick: pickDevice }) : undefined,
+        bluetooth: nativeBtLink ? BtLinkClient.capacitorBluetooth(nativeBtLink, { prefer: params.get("want") || btName || rig.replace(/:\d+$/, ""), pick: pickDevice }) : undefined,
         onGone: () => {
           if (!bt) return; // (not connected yet: the one asking for its password, say)
           bt = null;
           // (The Android app connects again by itself.)
-          if (nativeBtLink) showBtNet("The Bluetooth connection ended: connecting again…", {});
+          if (btNet) showBtNet("The Bluetooth connection ended: connecting again…", {});
           else showBluetooth("The Bluetooth connection ended: connect again.");
           say("");
         },
@@ -1209,7 +1214,7 @@
       for (const l of loops) l.want = false;
     } catch (err) {
       bt = null;
-      if (nativeBtLink) showLePassword(err);
+      if (btNet) showLePassword(err);
       if (err.needPassword) say(`${err.name || "It"} needs its password (on a Raspberry Pi, its hotspot's).`, true);
       else if (err.password) say("That isn't its password (on a Raspberry Pi, its hotspot's).", true);
       else if (err.name === "NotFoundError") say("No Hand Tracker was picked over Bluetooth.", true);
@@ -1271,7 +1276,11 @@
   let leOn = false, leBusy = false, leNextAt = 0, leWhy = "", leSettings = false;
   function pickDevice(devices) {
     return new Promise((resolve) => {
-      showBtNet(`${leWhy} Which computer?`, { settings: leSettings });
+      if (btNet) showBtNet(`${leWhy} Which computer?`, { settings: leSettings });
+      else {
+        $("btPanel").hidden = false;
+        $("btNote").textContent = "Which computer?";
+      }
       $("btDevices").innerHTML = devices.map((d) => `<button type="button" data-leid="${esc(d.id)}">${esc(d.name || d.id)}</button>`).join("");
       $("btDevices").onclick = (e) => {
         const b = e.target.closest("button[data-leid]");
@@ -1667,7 +1676,7 @@
           say(err.auth ? needsKey() : unreachable(), true);
           // Out of reach over the network: Bluetooth instead (if it's near by).
           if (!err.auth && rig && !bt) {
-            if (nativeRemote) await btNetFallback();
+            if (nativeRemote && !onIphone) await btNetFallback();
             else showBluetooth(`Can't reach ${rig.replace(/:\d+$/, "")} over the network. If it's near by, connect over Bluetooth instead.`);
           }
         }

@@ -633,12 +633,18 @@
 
   // registerPlugin (that's @capacitor/core's, which the app doesn't load). With ?fakeplatform=ios,
   // the iPhone app's: Filesystem, Share and HandBrowser only (and ?selftest=1, its self-test).
-  const ios = /[?&]fakeplatform=ios\b/.test(location.search);
+  // (Kept for the window's later pages: remote.html opens remote-client.html, say.)
+  const ios = /[?&]fakeplatform=ios\b/.test(location.search) || sessionStorage.getItem("__fakePlatform") === "ios";
+  if (ios) sessionStorage.setItem("__fakePlatform", "ios");
+  // The iPhone app's RigLink (RemoteLink.swift): the remote recording page's requests, as Remote's.
+  const RigLink = {
+    rigRequest: (o) => (calls.push(["riglink.rigRequest", o.rig, o.path]), Remote.rigRequest(o)),
+  };
   if (/[?&]selftest=1\b/.test(location.search)) window.__htSelfTest = "https://example.com/";
   window.Capacitor = {
     isNativePlatform: () => true,
     getPlatform: () => (ios ? "ios" : "android"),
-    Plugins: ios ? { Filesystem, Share, HandBrowser } : { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch, BtHid, BtLink },
+    Plugins: ios ? { Filesystem, Share, HandBrowser, RigLink, BtLink } : { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch, BtHid, BtLink },
   };
   window.__fakeCapacitor = { files, calls, shared, btHidReports: BtHid._reports, stopPhoneControl: () => PhoneControl._stoppedOutside(), setAccessibility: (on) => PhoneControl._setAccessibility(on) };
 })();
