@@ -1,10 +1,15 @@
 package com.handtracker.app;
 
+import android.Manifest;
 import android.app.Activity;
+import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Network;
 import android.net.Uri;
+import android.os.Build;
+import android.provider.Settings;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
@@ -18,11 +23,14 @@ import androidx.activity.result.ActivityResult;
 import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeWebViewClient;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -68,12 +76,25 @@ import javax.crypto.spec.GCMParameterSpec;
  *       the page for a fresh link
  *   fleetConfigure({ site })
  *       /__fleet/<rig>/<camera>?kind=keyframe|jpeg[&full=1]: that camera's latest picture
- *   rigRequest({ rig: "pi:47821", path, method, body, key }) -> { status, type, body (base64) }
+ *   rigRequest({ rig: "pi:47821", path, method, body, key }) -> { status, type, body (base64), sentPassword }
  *       the app's remote recording page (remote-client.js) asking a computer running Hand
  *       Tracker on the network: plain HTTP (which the app's other requests can't use), and only
- *       that page's own requests
+ *       that page's own requests. To 10.43.0.1, a computer's Bluetooth network (BtNet.java): over
+ *       that network, with its Bluetooth password if one is kept (sentPassword); rejected with
+ *       code BT_NETWORK_OFF when the phone isn't on one
+ *   bluetoothNetwork({ ask }) -> { on, address, device: { name, id } | null, permission, password, blocked }
+ *       whether the phone is on a computer's Bluetooth network, with which computer (ask: the
+ *       Nearby devices permission is asked for, to tell), whether its password is kept, and
+ *       whether a VPN keeps the app off it (blocked; requests then reject with BT_NETWORK_BLOCKED)
+ *   bluetoothSetPassword({ password }) / bluetoothForgetPassword()   that computer's password
+ *   openBluetoothSettings()          Android's Bluetooth settings (to pair, and turn on Internet access)
  */
-@CapacitorPlugin(name = "Remote")
+@CapacitorPlugin(
+    name = "Remote",
+    permissions = {
+        @Permission(alias = "bluetooth", strings = { Manifest.permission.BLUETOOTH_CONNECT }),
+    }
+)
 public class RemotePlugin extends Plugin {
     private static final int CHUNK_BYTES = 4 * 1024 * 1024;
     private static final int KEEP_PARTS = 6;
@@ -209,11 +230,12 @@ public class RemotePlugin extends Plugin {
     private static final int RIG_TIMEOUT_MS = 10000;
     private static final int RIG_MAX_BYTES = 4 * 1024 * 1024;
 
-    // A computer's answer: its status, Content-Type and body.
+    // A computer's answer: its status, Content-Type and body (sentPassword: its Bluetooth password went with it).
     static final class RigAnswer {
         final int status;
         final String type;
         final byte[] body;
+        boolean sentPassword;
 
         RigAnswer(int status, String type, byte[] body) {
             this.status = status;
@@ -222,9 +244,34 @@ public class RemotePlugin extends Plugin {
         }
     }
 
+    // Asked for a computer's Bluetooth network, with the phone on none.
+    static final class BtNetworkOff extends IOException {
+        BtNetworkOff() {
+            super("This phone isn't on a computer's Bluetooth network.");
+        }
+    }
+
+    // On it, but kept off it: a VPN (Tailscale, say) that apps can't step around.
+    static final class BtNetworkBlocked extends IOException {
+        BtNetworkBlocked() {
+            super("A VPN on this phone (such as Tailscale) keeps Hand Tracker off the computer's Bluetooth network.");
+        }
+    }
+
+    // A socket over the Bluetooth network (BtNetworkBlocked when a VPN won't let it).
+    static void bindTo(Network via, Socket socket) throws IOException {
+        try {
+            via.bindSocket(socket);
+        } catch (IOException e) {
+            if (String.valueOf(e.getMessage()).contains("EPERM")) throw new BtNetworkBlocked();
+            throw e;
+        }
+    }
+
     // One request to another computer's Hand Tracker (rig: "name:port"), only the paths remote
     // recording has (RIG_PATH): also for SentryWatchService, which looks for Sentry mode's alerts.
-    static RigAnswer fetchRig(String rig, String path, String method, String body, String key) throws IOException {
+    // To a computer's Bluetooth network (BtNet.ADDR): over it, with its password if one is kept.
+    static RigAnswer fetchRig(Context ctx, String rig, String path, String method, String body, String key) throws IOException {
         Matcher m = RIG.matcher(rig == null ? "" : rig);
         int port = m.matches() ? Integer.parseInt(m.group(5)) : 0;
         if (port < 1 || port > 65535) throw new IOException("That isn't a computer's name and port.");
@@ -233,16 +280,25 @@ public class RemotePlugin extends Plugin {
         if (path == null || !RIG_PATH.matcher(path).matches() || !(post || "GET".equals(method)) || post != "/api/command".equals(path)) throw new IOException("Not a remote recording request.");
         if (body == null) body = "";
         if (body.length() > 8192) throw new IOException("Too long.");
+        Network via = null;
+        String btPassword = null;
+        if (BtNet.ADDR.equals(host)) {
+            via = ctx == null ? null : BtNet.network(ctx, 10000);
+            if (via == null) throw new BtNetworkOff();
+            btPassword = BtNet.password(ctx);
+        }
         byte[] b = body.getBytes(StandardCharsets.UTF_8);
         StringBuilder head = new StringBuilder();
         head.append(method).append(' ').append(path).append(" HTTP/1.1\r\n")
                 .append("Host: ").append(m.group(1)).append(':').append(port).append("\r\n")
                 .append("Connection: close\r\n");
         if (key != null && RIG_KEY.matcher(key).matches()) head.append("X-Key: ").append(key).append("\r\n");
+        if (btPassword != null) head.append("X-Bluetooth-Password: ").append(btPassword).append("\r\n");
         if (post) head.append("Content-Type: application/json\r\nContent-Length: ").append(b.length).append("\r\n");
         head.append("\r\n");
         byte[] all;
         try (Socket socket = new Socket()) {
+            if (via != null) bindTo(via, socket);
             socket.connect(new InetSocketAddress(host, port), RIG_TIMEOUT_MS);
             socket.setSoTimeout(RIG_TIMEOUT_MS);
             OutputStream os = socket.getOutputStream();
@@ -270,23 +326,109 @@ public class RemotePlugin extends Plugin {
         }
         byte[] rest = java.util.Arrays.copyOfRange(all, split + 4, all.length);
         byte[] out = chunked ? dechunk(rest) : length >= 0 && length < rest.length ? java.util.Arrays.copyOf(rest, length) : rest;
-        return new RigAnswer(Integer.parseInt(first[1]), type, out);
+        RigAnswer answer = new RigAnswer(Integer.parseInt(first[1]), type, out);
+        answer.sentPassword = btPassword != null;
+        return answer;
     }
 
     @PluginMethod
     public void rigRequest(PluginCall call) {
         pool.execute(() -> {
             try {
-                RigAnswer a = fetchRig(call.getString("rig", ""), call.getString("path", ""), call.getString("method", "GET"), call.getString("body", ""), call.getString("key", ""));
+                RigAnswer a = fetchRig(getContext(), call.getString("rig", ""), call.getString("path", ""), call.getString("method", "GET"), call.getString("body", ""), call.getString("key", ""));
                 JSObject ret = new JSObject();
                 ret.put("status", a.status);
                 ret.put("type", a.type);
                 ret.put("body", Base64.encodeToString(a.body, Base64.NO_WRAP));
+                ret.put("sentPassword", a.sentPassword);
                 call.resolve(ret);
+            } catch (BtNetworkOff e) {
+                call.reject(e.getMessage(), "BT_NETWORK_OFF");
+            } catch (BtNetworkBlocked e) {
+                call.reject(e.getMessage(), "BT_NETWORK_BLOCKED");
             } catch (Exception e) {
                 call.reject(e.getMessage() == null ? e.toString() : e.getMessage());
             }
         });
+    }
+
+    // ---------- a computer's Bluetooth network (BtNet.java) ----------
+    @PluginMethod
+    public void bluetoothNetwork(PluginCall call) {
+        if (Boolean.TRUE.equals(call.getBoolean("ask", false)) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && getPermissionState("bluetooth") != PermissionState.GRANTED) {
+            requestPermissionForAlias("bluetooth", call, "afterBluetoothPermission");
+            return;
+        }
+        pool.execute(() -> call.resolve(bluetoothNetworkNow()));
+    }
+
+    @PermissionCallback
+    private void afterBluetoothPermission(PluginCall call) {
+        pool.execute(() -> call.resolve(bluetoothNetworkNow()));
+    }
+
+    private JSObject bluetoothNetworkNow() {
+        Context ctx = getContext();
+        Network n = BtNet.network(ctx);
+        BluetoothDevice d = n == null ? null : BtNet.device(ctx);
+        JSObject ret = new JSObject();
+        ret.put("on", n != null);
+        ret.put("address", n == null ? "" : BtNet.address(ctx, n));
+        if (d != null) {
+            JSObject dev = new JSObject();
+            dev.put("name", BtNet.nameOf(d));
+            dev.put("id", d.getAddress());
+            ret.put("device", dev);
+        }
+        ret.put("permission", BtNet.mayAsk(ctx));
+        ret.put("password", n != null && BtNet.password(ctx) != null);
+        boolean blocked = false;
+        if (n != null) {
+            try (Socket test = new Socket()) {
+                bindTo(n, test);
+            } catch (BtNetworkBlocked e) {
+                blocked = true;
+            } catch (IOException ignored) {
+                // (something else: found out by a request)
+            }
+        }
+        ret.put("blocked", blocked);
+        return ret;
+    }
+
+    @PluginMethod
+    public void bluetoothSetPassword(PluginCall call) {
+        String pw = call.getString("password", "");
+        if (!BtNet.okPassword(pw)) {
+            call.reject("A Bluetooth password is 8 to 63 letters, digits, symbols or spaces.");
+            return;
+        }
+        pool.execute(() -> {
+            try {
+                BtNet.setPassword(getContext(), pw);
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("Couldn't keep it securely: " + e.getMessage());
+            }
+        });
+    }
+
+    @PluginMethod
+    public void bluetoothForgetPassword(PluginCall call) {
+        pool.execute(() -> {
+            BtNet.forget(getContext());
+            call.resolve();
+        });
+    }
+
+    @PluginMethod
+    public void openBluetoothSettings(PluginCall call) {
+        try {
+            getActivity().startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Couldn't open Bluetooth settings.");
+        }
     }
 
     private static int indexOf(byte[] data, byte[] what, int from) {
@@ -357,7 +499,7 @@ public class RemotePlugin extends Plugin {
         return getContext().getSharedPreferences("hand-tracker-secrets", Context.MODE_PRIVATE);
     }
 
-    private static SecretKey secretKey() throws Exception {
+    static SecretKey secretKey() throws Exception {
         KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
         ks.load(null);
         if (ks.containsAlias(KEY_ALIAS)) return ((KeyStore.SecretKeyEntry) ks.getEntry(KEY_ALIAS, null)).getSecretKey();

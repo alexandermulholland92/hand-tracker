@@ -9,6 +9,8 @@
  * The address under Hand Tracker's QR code (…/#k=<code>) can be pasted too: its code goes along
  * (the page keeps it for that computer), for a computer reached on the same Wi-Fi rather than
  * over Tailscale.
+ * Over Bluetooth instead: Web Bluetooth (Chrome, and the Windows, Mac and Linux app), or in the
+ * Android app the computer's Bluetooth network (paired in Android's Bluetooth settings).
  */
 
 (function () {
@@ -80,7 +82,7 @@
         save(load().filter((_, j) => j !== i));
         show();
       });
-      if (btPossible) {
+      if (btPossible || nativeRemote) {
         const viaBt = document.createElement("button");
         viaBt.type = "button";
         viaBt.className = "quiet";
@@ -103,11 +105,16 @@
   const inAndroidApp = !!(cap && cap.isNativePlatform && cap.isNativePlatform());
   const inApp = inDesktopApp || inAndroidApp;
 
-  // Over Bluetooth instead (Web Bluetooth: Chrome, and the Windows, Mac and Linux app): its page
-  // here, connecting to it by name.
+  // Over Bluetooth instead: Web Bluetooth (Chrome, and the Windows, Mac and Linux app), its page
+  // here connecting to it by name; the Android app, over the computer's Bluetooth network (its
+  // address there; a computer asked for by name is checked to be the one).
   const btPossible = !!(navigator.bluetooth && window.isSecureContext !== false);
+  const nativeRemote = inAndroidApp ? (typeof cap.registerPlugin === "function" ? cap.registerPlugin("Remote") : cap.Plugins && cap.Plugins.Remote) : null;
+  const BT_NET_RIG = "10.43.0.1:47821";
   function openBluetooth(name) {
-    location.href = `remote-client.html?bt=${encodeURIComponent(name || "")}`;
+    location.href = nativeRemote
+      ? `remote-client.html?rig=${encodeURIComponent(BT_NET_RIG)}${name ? `&want=${encodeURIComponent(name)}` : ""}`
+      : `remote-client.html?bt=${encodeURIComponent(name || "")}`;
   }
 
   function open(c) {
@@ -135,9 +142,25 @@
     open(c);
   });
 
-  if (btPossible && $("btCard")) {
+  if ((btPossible || nativeRemote) && $("btCard")) {
     $("btCard").hidden = false;
     $("btOpen").addEventListener("click", () => openBluetooth(""));
+  }
+  if (nativeRemote && $("btCard")) {
+    $("btWeb").hidden = true;
+    $("btAndroid").hidden = false;
+    $("btSettings").hidden = false;
+    $("btSettings").addEventListener("click", () => nativeRemote.openBluetoothSettings().catch(() => {}));
+    // Whether the phone is on a computer's Bluetooth network now (again on coming back from settings).
+    const showNet = async () => {
+      try {
+        const n = await nativeRemote.bluetoothNetwork({});
+        $("btNow").textContent = n.on ? `This phone is on ${n.device ? n.device.name : "a computer"}'s Bluetooth network.` : "This phone isn't on a computer's Bluetooth network now.";
+        $("btNow").hidden = false;
+      } catch {}
+    };
+    showNet();
+    document.addEventListener("visibilitychange", () => document.hidden || showNet());
   }
   show();
 })();

@@ -144,8 +144,21 @@
   // Remote (RemotePlugin.java): web requests with a cookie jar (the WebView's, on a phone),
   // a sign-in "window" that loads the page (the stand-in dashboards sign in by themselves),
   // secrets in memory, and /__fleet/ pictures served by check-android.js's app:// handler
-  // (it's told the site and the cookie, as the plugin's own handler knows them).
+  // (it's told the site and the cookie, as the plugin's own handler knows them). A computer's
+  // Bluetooth network (BtNet.java) as the check sets it in localStorage "__fakeBtNet" ({ on,
+  // port, device }: 10.43.0.1 is then that port here, its requests marked X-Fake-Bt), with the
+  // passwords kept there too (each page load is a new copy of this).
   const Remote = (() => {
+    const BT_ADDR = "10.43.0.1";
+    const btNet = () => {
+      try {
+        return JSON.parse(localStorage.getItem("__fakeBtNet") || "null") || { on: false };
+      } catch {
+        return { on: false };
+      }
+    };
+    const btSlot = () => `__fakeBtPw:${(btNet().device && btNet().device.id) || "any"}`;
+    const okPassword = (pw) => typeof pw === "string" && pw.length >= 8 && pw.length <= 63 && /^[\x20-\x7e]+$/.test(pw);
     const http = require("http"), https = require("https");
     const { ipcRenderer } = require("electron");
     const ev = events();
@@ -198,14 +211,29 @@
         const { RIG_HOST, RIG_PATH } = require("../electron/remote-record.js");
         const m = RIG_HOST.exec(rig || "");
         if (!m || !RIG_PATH.test(path) || (method === "POST") !== (path === "/api/command")) throw new Error("Not a remote recording request.");
+        let host = m[1].replace(/^\[|\]$/g, ""), port = Number(m[5]);
+        const headers = {};
+        let sentPassword = false;
+        if (host === BT_ADDR) {
+          const net = btNet();
+          if (!net.on) throw Object.assign(new Error("This phone isn't on a computer's Bluetooth network."), { code: "BT_NETWORK_OFF" });
+          if (net.blocked) throw Object.assign(new Error("A VPN on this phone (such as Tailscale) keeps Hand Tracker off the computer's Bluetooth network."), { code: "BT_NETWORK_BLOCKED" });
+          host = "127.0.0.1";
+          port = net.port;
+          headers["X-Fake-Bt"] = "1";
+          const pw = localStorage.getItem(btSlot());
+          if (pw) {
+            headers["X-Bluetooth-Password"] = pw;
+            sentPassword = true;
+          }
+        }
         return new Promise((resolve, reject) => {
-          const headers = {};
           if (/^[A-Za-z0-9_-]{8,64}$/.test(key)) headers["X-Key"] = key;
           if (method === "POST") Object.assign(headers, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
-          const req = http.request({ host: m[1].replace(/^\[|\]$/g, ""), port: Number(m[5]), path, method, headers, timeout: 10000 }, (res) => {
+          const req = http.request({ host, port, path, method, headers, timeout: 10000 }, (res) => {
             const chunks = [];
             res.on("data", (c) => chunks.push(c));
-            res.on("end", () => resolve({ status: res.statusCode, type: String(res.headers["content-type"] || ""), body: Buffer.concat(chunks).toString("base64") }));
+            res.on("end", () => resolve({ status: res.statusCode, type: String(res.headers["content-type"] || ""), body: Buffer.concat(chunks).toString("base64"), sentPassword }));
           });
           req.on("timeout", () => req.destroy(new Error("No answer.")));
           req.on("error", reject);
@@ -237,6 +265,23 @@
       },
       async secretRemove({ key }) {
         secrets.delete(key);
+      },
+      async bluetoothNetwork({ ask = false } = {}) {
+        calls.push(["remote.bluetoothNetwork", !!ask]);
+        const net = btNet();
+        return { on: !!net.on, address: net.on ? "10.43.0.7" : "", device: net.on ? net.device || null : null, permission: true, password: !!(net.on && localStorage.getItem(btSlot())), blocked: !!(net.on && net.blocked) };
+      },
+      async bluetoothSetPassword({ password }) {
+        calls.push(["remote.bluetoothSetPassword"]);
+        if (!okPassword(password)) throw new Error("A Bluetooth password is 8 to 63 letters, digits, symbols or spaces.");
+        localStorage.setItem(btSlot(), password);
+      },
+      async bluetoothForgetPassword() {
+        calls.push(["remote.bluetoothForgetPassword"]);
+        localStorage.removeItem(btSlot());
+      },
+      async openBluetoothSettings() {
+        calls.push(["remote.openBluetoothSettings"]);
       },
       async streamRegister({ id, url }) {
         calls.push(["remote.streamRegister", id, url]);
@@ -533,6 +578,59 @@
     };
   })();
 
+  // BtLink (BtLinkPlugin.java): Bluetooth Low Energy to the check's stand-in computer, whose link
+  // (electron/bluetooth-link.js) runs in check-android.js: the devices near by as the check sets
+  // them in localStorage "__fakeBtLe" ([{ id, name }]); writes go there, notifications come back.
+  const BtLink = (() => {
+    const { ipcRenderer } = require("electron");
+    const ev = events();
+    let connected = "";
+    ipcRenderer.on("fake-btlink:notify", (_e, value) => connected && ev.emit("notification", { id: connected, characteristic: "48540004-6c69-6e6b-8000-68616e647472", value }));
+    const near = () => {
+      try {
+        return JSON.parse(localStorage.getItem("__fakeBtLe") || "[]");
+      } catch {
+        return [];
+      }
+    };
+    const mine = (id) => {
+      if (!connected || id !== connected) throw new Error("Not connected.");
+    };
+    return {
+      addListener: ev.addListener,
+      async scan({ service, ms = 4000 }) {
+        calls.push(["btlink.scan", service]);
+        await new Promise((r) => setTimeout(r, Math.min(ms, 300)));
+        return { devices: near() };
+      },
+      async connect({ id }) {
+        calls.push(["btlink.connect", id]);
+        if (!near().some((d) => d.id === id)) throw new Error("It didn't answer over Bluetooth.");
+        connected = id;
+        return { mtu: 247 };
+      },
+      async read({ id, characteristic }) {
+        mine(id);
+        if (!/^48540002/.test(characteristic)) throw new Error("Bluetooth didn't do that (-1).");
+        return { value: await ipcRenderer.invoke("fake-btlink:info") };
+      },
+      async write({ id, characteristic, value }) {
+        mine(id);
+        if (!/^48540003/.test(characteristic)) throw new Error("Bluetooth didn't do that (-1).");
+        await ipcRenderer.invoke("fake-btlink:write", value);
+      },
+      async notify({ id }) {
+        mine(id);
+      },
+      async disconnect({ id }) {
+        if (id === connected) {
+          connected = "";
+          ev.emit("disconnected", { id });
+        }
+      },
+    };
+  })();
+
   // registerPlugin (that's @capacitor/core's, which the app doesn't load). With ?fakeplatform=ios,
   // the iPhone app's: Filesystem, Share and HandBrowser only (and ?selftest=1, its self-test).
   const ios = /[?&]fakeplatform=ios\b/.test(location.search);
@@ -540,7 +638,7 @@
   window.Capacitor = {
     isNativePlatform: () => true,
     getPlatform: () => (ios ? "ios" : "android"),
-    Plugins: ios ? { Filesystem, Share, HandBrowser } : { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch, BtHid },
+    Plugins: ios ? { Filesystem, Share, HandBrowser } : { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch, BtHid, BtLink },
   };
   window.__fakeCapacitor = { files, calls, shared, btHidReports: BtHid._reports, stopPhoneControl: () => PhoneControl._stoppedOutside(), setAccessibility: (on) => PhoneControl._setAccessibility(on) };
 })();

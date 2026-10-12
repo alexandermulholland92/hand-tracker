@@ -130,7 +130,7 @@ public class SentryWatchService extends Service {
                 if (r == null) continue;
                 String rig = r.optString("rig", ""), key = r.optString("key", "");
                 try {
-                    RemotePlugin.RigAnswer a = RemotePlugin.fetchRig(rig, "/api/state", "GET", "", key);
+                    RemotePlugin.RigAnswer a = RemotePlugin.fetchRig(this, rig, "/api/state", "GET", "", key);
                     if (a.status != 200) continue;
                     JSONObject state = new JSONObject(new String(a.body, StandardCharsets.UTF_8));
                     JSONObject sentry = state.optJSONObject("sentry");
@@ -179,7 +179,7 @@ public class SentryWatchService extends Service {
         if (!photo.isEmpty()) {
             try {
                 String path = "/api/take?f=" + URLEncoder.encode(photo, "UTF-8").replace("+", "%20") + "&at=0";
-                RemotePlugin.RigAnswer a = RemotePlugin.fetchRig(rig, path, "GET", "", key);
+                RemotePlugin.RigAnswer a = RemotePlugin.fetchRig(this, rig, path, "GET", "", key);
                 Bitmap bmp = a.status == 200 ? BitmapFactory.decodeByteArray(a.body, 0, a.body.length) : null;
                 if (bmp != null) b.setLargeIcon(bmp).setStyle(new Notification.BigPictureStyle().bigPicture(bmp).setSummaryText("Movement on " + host));
             } catch (Exception ignored) {

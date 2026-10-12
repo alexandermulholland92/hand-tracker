@@ -53,8 +53,10 @@
   </div>
 
   <div class="card" id="btCard" hidden>
-    <p>No network between them? A computer with remote recording on can be reached over Bluetooth when it's near by (a Raspberry Pi set up with <code>pi/bluetooth-setup.sh</code>, with its hotspot's password).</p>
-    <button type="button" id="btOpen">Connect over Bluetooth</button>
+    <p id="btWeb">No network between them? A computer with remote recording on can be reached over Bluetooth when it's near by (a Raspberry Pi set up with <code>pi/bluetooth-setup.sh</code>, with its hotspot's password).</p>
+    <p id="btAndroid" hidden>No network between them? A computer with remote recording on can be reached over Bluetooth when it's near by (a Raspberry Pi set up with <code>pi/bluetooth-setup.sh</code>, with its hotspot's password, asked for the first time). Faster, with live pictures: pair this phone with it in Bluetooth settings (once) and turn on <b>Internet access</b> for it there (under its ⚙); not while a VPN such as Tailscale is on.</p>
+    <p id="btNow" class="note" hidden></p>
+    <div class="row"><button type="button" id="btOpen">Connect over Bluetooth</button><button type="button" id="btSettings" class="quiet" hidden>Bluetooth settings</button></div>
   </div>
   <div class="card" id="savedCard" hidden>
     <label>Connected before</label>

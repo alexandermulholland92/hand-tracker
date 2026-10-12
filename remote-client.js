@@ -22,7 +22,15 @@
  *     when a computer can't be reached over the network: each request over the link, sealed with
  *     a key made from its password (kept here as that key only, per computer). Bluetooth is slow
  *     (a few KB a second): its state is asked for less often, and a camera's picture only when
- *     its box is tapped.
+ *     its box is tapped;
+ *   - in the Android app, over a computer's Bluetooth network (a Raspberry Pi's, set up with
+ *     pi/bluetooth-setup.sh; this phone paired with it in Android's Bluetooth settings, its
+ *     Internet access on), as remote-client.html?rig=10.43.0.1:47821 from remote.html, or by itself
+ *     when the computer can't be reached over the network and the phone is on its Bluetooth
+ *     network: the app's requests go over that network, with the computer's Bluetooth password
+ *     (asked for here the first time, then kept in the app, per computer). When the phone isn't on
+ *     it, or a VPN (such as Tailscale) keeps the app off it: over Bluetooth Low Energy instead, by
+ *     itself (the app's own Bluetooth, BtLinkPlugin.java, as above).
  */
 
 (() => {
@@ -38,6 +46,11 @@
   const btName = params.get("bt");
   const btPossible = !!(window.BtLinkClient && navigator.bluetooth && window.isSecureContext !== false);
   let bt = null; // { name, request, close } while connected
+  // The Android app on a computer's Bluetooth network (its address there, BtNet.java).
+  const BT_NET_RIG = "10.43.0.1:47821";
+  const btNet = !!nativeRemote && rig.replace(/:\d+$/, "") === BT_NET_RIG.replace(/:\d+$/, "");
+  // The Android app's own Bluetooth Low Energy (BtLinkPlugin.java), when its Bluetooth network can't be used.
+  const nativeBtLink = btNet && window.BtLinkClient ? (typeof cap.registerPlugin === "function" ? cap.registerPlugin("BtLink") : cap.Plugins && cap.Plugins.BtLink) : null;
   if (rig || btName !== null) $("back").hidden = false;
 
   // The key from the QR code's address (#k=…), kept for next time (per computer in the apps)
@@ -69,7 +82,16 @@
       return answer(r.status, r.type, r.body instanceof Uint8Array ? r.body : new Uint8Array(r.body || []));
     }
     if (nativeRemote) {
-      const r = await nativeRemote.rigRequest({ rig, path, method, body: body || "", key });
+      let r;
+      try {
+        r = await nativeRemote.rigRequest({ rig, path, method, body: body || "", key });
+      } catch (err) {
+        if (err && err.code === "BT_NETWORK_OFF") throw Object.assign(new Error("bluetooth network"), { btNetworkOff: true });
+        if (err && err.code === "BT_NETWORK_BLOCKED") throw Object.assign(new Error("bluetooth network"), { btNetworkBlocked: true });
+        throw err;
+      }
+      // (Its Bluetooth password missing, or not the one: asked for here.)
+      if (btNet && r.status === 401) throw Object.assign(new Error("bluetooth password"), { btPassword: true, sent: !!r.sentPassword });
       return answer(r.status, r.type, fromBase64(r.body));
     }
     if (rig) throw new Error("app only");
@@ -1016,6 +1038,8 @@
     $("btPanel").hidden = !btPossible || !!bt;
     if ($("btPanel").hidden) return;
     $("btNote").textContent = why || "";
+    $("btJoin").hidden = false;
+    $("btNetRow").hidden = true;
   }
   async function connectBluetooth() {
     const password = $("btPassword").value;
@@ -1028,9 +1052,14 @@
       bt = await BtLinkClient.connect({
         password: password || null,
         keys: keys(),
+        // (The Android app: its own Bluetooth; the computer asked for by name, else a list here.)
+        bluetooth: nativeBtLink ? BtLinkClient.capacitorBluetooth(nativeBtLink, { prefer: params.get("want") || "", pick: pickDevice }) : undefined,
         onGone: () => {
+          if (!bt) return; // (not connected yet: the one asking for its password, say)
           bt = null;
-          showBluetooth("The Bluetooth connection ended: connect again.");
+          // (The Android app connects again by itself.)
+          if (nativeBtLink) showBtNet("The Bluetooth connection ended: connecting again…", {});
+          else showBluetooth("The Bluetooth connection ended: connect again.");
           say("");
         },
       });
@@ -1043,6 +1072,7 @@
       for (const l of loops) l.want = false;
     } catch (err) {
       bt = null;
+      if (nativeBtLink) showLePassword(err);
       if (err.needPassword) say(`${err.name || "It"} needs its password (on a Raspberry Pi, its hotspot's).`, true);
       else if (err.password) say("That isn't its password (on a Raspberry Pi, its hotspot's).", true);
       else if (err.name === "NotFoundError") say("No Hand Tracker was picked over Bluetooth.", true);
@@ -1051,7 +1081,130 @@
       $("btConnect").disabled = false;
     }
   }
-  $("btConnect").addEventListener("click", connectBluetooth);
+  $("btConnect").addEventListener("click", () => (btNet && !leOn ? setBtNetPassword() : connectBluetooth()));
+
+  // ---------- the Android app, over a computer's Bluetooth network ----------
+  // The panel: its password (password), or the way to its Bluetooth network (offer: from a
+  // computer out of reach; settings: Android's Bluetooth settings).
+  function showBtNet(why, { password = false, offer = false, settings = false } = {}) {
+    $("btPanel").hidden = false;
+    if (!$("btDevices").onclick) $("btDevices").textContent = "";
+    $("btNote").textContent = why;
+    $("btJoin").hidden = !password;
+    $("btNetRow").hidden = !(offer || settings);
+    $("btNetOpen").hidden = !offer;
+    $("btSettings").hidden = !settings;
+  }
+  const openBtNet = () => (location.href = `remote-client.html?rig=${encodeURIComponent(BT_NET_RIG)}&want=${encodeURIComponent(rig.replace(/:\d+$/, ""))}`);
+  $("btNetOpen").addEventListener("click", openBtNet);
+  $("btSettings").addEventListener("click", () => nativeRemote && nativeRemote.openBluetoothSettings().catch(() => {}));
+  let btNetChecked = false; // a password just given: the next answer says whether it's the one
+  async function setBtNetPassword() {
+    const password = $("btPassword").value;
+    if (password.length < 8) return say("Its password is 8 characters or more (on a Raspberry Pi, its hotspot's).", true);
+    $("btConnect").disabled = true;
+    try {
+      await nativeRemote.bluetoothSetPassword({ password });
+      $("btPassword").value = "";
+      btNetChecked = true;
+      say("Checking its password…");
+    } catch (err) {
+      say(err.message, true);
+    } finally {
+      $("btConnect").disabled = false;
+    }
+  }
+  // Which computer the phone's Bluetooth network is with (asked once, with the Nearby devices
+  // permission, so its password is kept for it alone).
+  let btNetInfo = null, btNetAskedAt = 0;
+  async function btNetwork(ask = false) {
+    if (!nativeRemote || !nativeRemote.bluetoothNetwork) return null;
+    if (!ask && btNetInfo && btNetInfo.on && Date.now() - btNetAskedAt < 5000) return btNetInfo;
+    btNetAskedAt = Date.now();
+    try {
+      btNetInfo = await nativeRemote.bluetoothNetwork({ ask });
+    } catch {
+      btNetInfo = null;
+    }
+    return btNetInfo;
+  }
+  const sameName = (a, b) => !!a && !!b && String(a).toLowerCase().split(".")[0] === String(b).toLowerCase().split(".")[0];
+  // Over Bluetooth Low Energy instead (the Android app's own), by itself: the computer asked for by
+  // name, else the only one near by, else a list to pick from; its password the first time.
+  let leOn = false, leBusy = false, leNextAt = 0, leWhy = "", leSettings = false;
+  function pickDevice(devices) {
+    return new Promise((resolve) => {
+      showBtNet(`${leWhy} Which computer?`, { settings: leSettings });
+      $("btDevices").innerHTML = devices.map((d) => `<button type="button" data-leid="${esc(d.id)}">${esc(d.name || d.id)}</button>`).join("");
+      $("btDevices").onclick = (e) => {
+        const b = e.target.closest("button[data-leid]");
+        if (!b) return;
+        $("btDevices").textContent = "";
+        $("btDevices").onclick = null;
+        resolve(devices.find((d) => d.id === b.dataset.leid) || null);
+      };
+    });
+  }
+  function showLePassword(err) {
+    if (err.needPassword || err.password) {
+      showBtNet(`${leWhy} ${err.name && err.needPassword ? err.name : "It"} needs its Bluetooth password (on a Raspberry Pi, its hotspot's). It's kept in this app after the first time.`, { password: true, settings: leSettings });
+    } else {
+      showBtNet(`${leWhy} ${err.none ? "No Hand Tracker with remote recording on was found near by: trying again." : ""}`, { settings: leSettings });
+      leNextAt = Date.now() + 8000;
+    }
+  }
+  async function useLe(why, settings) {
+    if (!nativeBtLink || bt || leBusy || Date.now() < leNextAt || (leOn && !$("btJoin").hidden)) return;
+    leOn = true;
+    leBusy = true;
+    leWhy = why;
+    leSettings = settings;
+    showBtNet(`${why} Looking for it…`, { settings });
+    try {
+      await connectBluetooth();
+    } finally {
+      leBusy = false;
+    }
+  }
+
+  // On it: the answer to each kind of trouble.
+  async function btNetTrouble(err) {
+    if ((err.btNetworkOff || err.btNetworkBlocked) && nativeBtLink) {
+      say("");
+      return useLe(err.btNetworkBlocked
+        ? "A VPN on this phone (such as Tailscale) keeps Hand Tracker off its Bluetooth network, so it's over Bluetooth Low Energy instead (slower: a camera's picture when its box is tapped)."
+        : "Over Bluetooth Low Energy (slower: a camera's picture when its box is tapped). Faster: pair this phone with it in Bluetooth settings and turn on Internet access for it there.", !!err.btNetworkOff);
+    }
+    if (err.btNetworkBlocked) {
+      showBtNet("A VPN on this phone (such as Tailscale) keeps Hand Tracker off the computer's Bluetooth network: pause it while using Bluetooth.", {});
+      return say("");
+    }
+    if (err.btNetworkOff) {
+      showBtNet("This phone isn't on a computer's Bluetooth network. Pair it with the computer in Bluetooth settings (once), then turn on Internet access for it there (under its ⚙). Hand Tracker on the computer needs remote recording on.", { settings: true });
+      return say("");
+    }
+    if (err.btPassword) {
+      leOn = false; // (its Bluetooth network answers: that, not Bluetooth Low Energy)
+      if (err.sent) await nativeRemote.bluetoothForgetPassword().catch(() => {});
+      const net = await btNetwork();
+      const who = net && net.device ? net.device.name : "The computer";
+      showBtNet(`${who} needs its Bluetooth password (on a Raspberry Pi, its hotspot's). It's kept in this app after the first time.`, { password: true });
+      return say(err.sent && btNetChecked ? "That isn't its password (on a Raspberry Pi, its hotspot's)." : "", true);
+    }
+    say(`Can't reach Hand Tracker over this Bluetooth network. Is it running there, with Remote recording on?`, true);
+  }
+  // A computer out of reach over the network: its Bluetooth network instead, by itself when the
+  // phone is on that computer's, else offered.
+  async function btNetFallback() {
+    if (!nativeRemote || btNet) return;
+    const net = await btNetwork();
+    const name = rig.replace(/:\d+$/, "");
+    if (net && net.on && net.device && sameName(net.device.name, name)) {
+      say(`Can't reach ${name} over the network: over its Bluetooth network instead.`);
+      return openBtNet();
+    }
+    showBtNet(`Can't reach ${name} over the network. If it's near by, connect over Bluetooth instead.`, { offer: true });
+  }
   // (The Windows, Mac and Linux app: Hand Tracker computers near by, to pick from.)
   if (window.desktop && desktop.bluetooth) {
     desktop.bluetooth.onDevices((list) => {
@@ -1070,7 +1223,7 @@
   let lastNoticeAt = null;
   function render() {
     const s = state;
-    $("title").textContent = (s.host ? `Hand Tracker on ${s.host}` : "Hand Tracker") + (bt ? " (Bluetooth)" : "");
+    $("title").textContent = (s.host ? `Hand Tracker on ${s.host}` : "Hand Tracker") + (bt || btNet ? " (Bluetooth)" : "");
     document.title = s.recording ? `● ${clock(s.elapsed_s)} · Hand Tracker` : "Hand Tracker remote";
     const cams = s.cameras || [];
     const running = cams.filter((c) => c.fps > 0).length;
@@ -1361,15 +1514,22 @@
       try {
         state = (await api("/api/state")).json();
         render();
-        if ($("message").className === "err" && /reach|code/.test($("message").textContent)) say("");
+        if ($("message").className === "err" && /reach|code|password/.test($("message").textContent)) say("");
+        if (btNet && !bt) btConnected();
+        else if (btNet && bt) await backToNetwork();
       } catch (err) {
-        if (err.bluetooth) {
+        if (btNet && !bt) {
+          await btNetTrouble(err);
+        } else if (err.bluetooth) {
           showBluetooth(`Connect to ${btName || "a computer"} over Bluetooth: Hand Tracker on it needs remote recording on. Its password is kept here (as a key) after the first time.`);
           if (!$("message").textContent) say("");
         } else {
           say(err.auth ? needsKey() : unreachable(), true);
           // Out of reach over the network: Bluetooth instead (if it's near by).
-          if (!err.auth && rig && !bt) showBluetooth(`Can't reach ${rig.replace(/:\d+$/, "")} over the network. If it's near by, connect over Bluetooth instead.`);
+          if (!err.auth && rig && !bt) {
+            if (nativeRemote) await btNetFallback();
+            else showBluetooth(`Can't reach ${rig.replace(/:\d+$/, "")} over the network. If it's near by, connect over Bluetooth instead.`);
+          }
         }
       }
       // (Bluetooth is slow: its state less often.)
@@ -1413,6 +1573,38 @@
     }
     command("record");
   });
+  // Over Bluetooth Low Energy, its Bluetooth network usable now (the VPN off, say): that instead,
+  // faster (looked at every 10 s).
+  let lookedAt = 0;
+  async function backToNetwork() {
+    if (Date.now() - lookedAt < 10000) return;
+    lookedAt = Date.now();
+    const net = await btNetwork();
+    if (!net || !net.on || net.blocked || !bt) return;
+    const was = bt;
+    bt = null;
+    was.close();
+    leOn = false;
+    say("Over its Bluetooth network now (faster).");
+  }
+
+  // On a computer's Bluetooth network: connected (the panel goes; the computer asked for by name
+  // from remote.html, if this is another one, said once).
+  let btNetSaid = false;
+  function btConnected() {
+    leOn = false;
+    $("btPanel").hidden = true;
+    if (btNetChecked) {
+      btNetChecked = false;
+      say(`Connected to ${state.host || "it"} over Bluetooth.`);
+    }
+    const want = params.get("want");
+    if (!btNetSaid && want && state.host && !sameName(want, state.host)) say(`This phone's Bluetooth network is with ${state.host}, not ${want}.`, true);
+    btNetSaid = true;
+  }
+
   showNote();
-  poll();
+  // (On a computer's Bluetooth network: which computer, asked for once, so its password is its own.)
+  if (btNet) btNetwork(true).finally(poll);
+  else poll();
 })();

@@ -13,10 +13,14 @@
  *   await link.request({ method, path, body })  -> { status, type, bytes }
  *     (throws { password: true } for the wrong password)
  *   BtLinkClient.SERVICE / INFO / RX / TX  the GATT service's and characteristics' UUIDs
- *   BtLinkClient.connect({ password, keys, onGone })  (Web Bluetooth) asks for a device near by,
- *     connects -> { name, request, close, saved: { salt, key } }; keys: { [salt]: key } kept from
- *     before (each computer's password's key, base64: what to keep, rather than the password);
- *     throws { needPassword: true } for a computer with none kept and no password given
+ *   BtLinkClient.connect({ password, keys, onGone, bluetooth })  (Web Bluetooth) asks for a device
+ *     near by, connects -> { name, request, close, saved: { salt, key } }; keys: { [salt]: key }
+ *     kept from before (each computer's password's key, base64: what to keep, rather than the
+ *     password); throws { needPassword: true } for a computer with none kept and no password given;
+ *     bluetooth: instead of navigator.bluetooth, such as
+ *   BtLinkClient.capacitorBluetooth(plugin, { prefer, pick })  the phone apps' own Bluetooth (the
+ *     "BtLink" plugin: BtLinkPlugin.java on Android) looking like Web Bluetooth's part used here:
+ *     the device named prefer, or the only one near by, or pick(devices) -> one of them (or null)
  */
 
 (function (global) {
@@ -158,9 +162,9 @@
   }
 
   // Web Bluetooth: a device near by offering the link (the browser asks which), connected.
-  async function connect({ password, keys = {}, onGone = () => {} }) {
-    if (!global.navigator || !navigator.bluetooth) throw new Error("This browser can't use Bluetooth (Chrome on Android, Windows or Mac can).");
-    const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE] }] });
+  async function connect({ password, keys = {}, onGone = () => {}, bluetooth = global.navigator && navigator.bluetooth }) {
+    if (!bluetooth) throw new Error("This browser can't use Bluetooth (Chrome on Android, Windows or Mac can).");
+    const device = await bluetooth.requestDevice({ filters: [{ services: [SERVICE] }] });
     device.addEventListener("gattserverdisconnected", () => onGone());
     const server = await device.gatt.connect();
     const service = await server.getPrimaryService(SERVICE);
@@ -186,7 +190,55 @@
     return { name: info.name || device.name || "", request: link.request, close: () => device.gatt.disconnect(), saved: { salt: info.salt, key: toB64(link.key()) } };
   }
 
-  const api = { create, connect, SERVICE, INFO, RX, TX };
+  // A phone app's Bluetooth (its "BtLink" plugin) as the Web Bluetooth connect() uses.
+  const sameName = (a, b) => !!a && !!b && String(a).toLowerCase().split(".")[0] === String(b).toLowerCase().split(".")[0];
+  function capacitorBluetooth(plugin, { prefer = "", pick = null } = {}) {
+    return {
+      async requestDevice() {
+        const { devices = [] } = await plugin.scan({ service: SERVICE, ms: 4000 });
+        const named = prefer ? devices.filter((d) => sameName(d.name, prefer)) : [];
+        let d = named.length === 1 ? named[0] : !prefer && devices.length === 1 ? devices[0] : null;
+        if (!d && devices.length && pick) d = await pick(devices);
+        if (!d) throw Object.assign(new Error(devices.length ? "No Hand Tracker was picked over Bluetooth." : "No Hand Tracker near by over Bluetooth (with remote recording on)."), { name: "NotFoundError", none: !devices.length });
+        const onValue = [], onGone = [], handles = [];
+        const drop = () => handles.splice(0).forEach((h) => h && h.remove && h.remove());
+        const characteristic = (uuid) => {
+          const ch = {
+            readValue: async () => new DataView(fromB64((await plugin.read({ id: d.id, characteristic: uuid })).value || "").buffer),
+            writeValueWithResponse: (f) => plugin.write({ id: d.id, characteristic: uuid, value: toB64(f instanceof Uint8Array ? f : new Uint8Array(f)) }),
+            startNotifications: async () => (await plugin.notify({ id: d.id, characteristic: uuid }), ch),
+            addEventListener: (type, fn) => {
+              if (type === "characteristicvaluechanged") onValue.push((e) => e.characteristic === uuid && fn({ target: { value: new DataView(fromB64(e.value || "").buffer) } }));
+            },
+          };
+          return ch;
+        };
+        return {
+          id: d.id,
+          name: d.name,
+          addEventListener: (type, fn) => type === "gattserverdisconnected" && onGone.push(fn),
+          gatt: {
+            async connect() {
+              drop();
+              handles.push(await plugin.addListener("notification", (e) => e.id === d.id && onValue.forEach((f) => f(e))));
+              handles.push(await plugin.addListener("disconnected", (e) => {
+                if (e.id !== d.id) return;
+                drop();
+                onGone.forEach((f) => f());
+              }));
+              await plugin.connect({ id: d.id });
+              return { getPrimaryService: async () => ({ getCharacteristic: async (uuid) => characteristic(uuid) }) };
+            },
+            disconnect: () => {
+              plugin.disconnect({ id: d.id }).catch(() => {});
+            },
+          },
+        };
+      },
+    };
+  }
+
+  const api = { create, connect, capacitorBluetooth, SERVICE, INFO, RX, TX };
   global.BtLinkClient = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

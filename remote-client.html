@@ -120,6 +120,7 @@
   .join .quiet { background: #495057; }
   .muted { color: var(--muted); }
   #btDevices button { display: block; width: 100%; margin-top: 6px; text-align: left; }
+  #btNetRow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
   #videoPanel .row, #sentryPanel .row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin: 0 0 6px; }
   #videoPanel .row .grow, #sentryPanel .row .grow { flex: 1 1 auto; }
   #videoPanel select, #sentryPanel select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
@@ -148,7 +149,8 @@
   <section class="panel" id="btPanel" aria-labelledby="btTitle" hidden>
     <h2 id="btTitle">Over Bluetooth</h2>
     <div id="btNote" class="muted"></div>
-    <div class="join"><input id="btPassword" type="password" autocomplete="current-password" maxlength="63" placeholder="Its password (a Pi: its hotspot's)" aria-label="Its Bluetooth password" /><button type="button" id="btConnect">Connect</button></div>
+    <div class="join" id="btJoin"><input id="btPassword" type="password" autocomplete="current-password" maxlength="63" placeholder="Its password (a Pi: its hotspot's)" aria-label="Its Bluetooth password" /><button type="button" id="btConnect">Connect</button></div>
+    <div class="row" id="btNetRow" hidden><button type="button" id="btNetOpen">Over Bluetooth</button><button type="button" id="btSettings" class="quiet">Bluetooth settings</button></div>
     <div id="btDevices"></div>
   </section>
 

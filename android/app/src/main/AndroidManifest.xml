@@ -82,6 +82,8 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Asking Android for a computer's Bluetooth network (BtNet.java). -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <!-- Controlling the phone itself: the pointer over other apps, and tracking with the
          camera while Hand Tracker is in the background (a foreground service, with a notification). -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -99,6 +101,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <!-- Remote recording over Bluetooth Low Energy (BtLinkPlugin.java): finding a computer near by, not where the phone is. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <!-- Saving exports to Documents/Hand Tracker needs this only on Android 9 and 10;
          newer versions let apps write their own files there without asking. -->

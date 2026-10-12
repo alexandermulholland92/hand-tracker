@@ -170,6 +170,11 @@ async function run() {
     fps = await js("HandTracker.getFPS()");
   }
   check("MediaPipe loads from the APK bundle and tracks", fps >= 15, `${fps} fps`);
+  // npm run check:android -- --only remote: just remote recording from the app (once the app's up).
+  if (/remote/i.test(only)) {
+    await checkRemoteFromPhone(win, js);
+    return checkRemoteBluetoothNetwork(win, js);
+  }
   check("Viewer link opens in place and buttons say Save",
     await js("!document.querySelector('a[href=\"viewer.html\"]').hasAttribute('target') && exportBtn.textContent.startsWith('Save') && motionExportBtn.textContent.startsWith('Save')"));
   const build = await js("document.getElementById('buildInfo').textContent");
@@ -717,6 +722,7 @@ async function run() {
   check("A video picked with Choose Recording opens as a video (no motion-data error)", routed.video === 640 && !routed.error && routed.accepts, JSON.stringify(routed));
 
   await checkRemoteFromPhone(win, js);
+  await checkRemoteBluetoothNetwork(win, js);
   await checkPhoneAsRig(win, js);
   await checkIphoneApp();
 }
@@ -1002,6 +1008,181 @@ async function checkRemoteFromPhone(win, js) {
       out.takes && out.takes.listed === 1 && /on this device \(Documents\/Hand Tracker\/Takes from rig-test\)/.test(out.takes.note) &&
       out.takes.saved.join() === "Hand Tracker/Takes from rig-test/Phone-Take_1s_2026-10-02_12-00-00.json" && out.takes.after === 0 && out.takesLeft.length === 0 &&
       out.one && out.one.one && out.one.boxes === 1 && out.one.missing === "Not connected: Chest, Left wrist, Right wrist" && out.one.ratio === "180 / 320" && out.one.h > out.one.w * 1.5,
+    JSON.stringify(out));
+}
+
+// Remote recording from the Android app over a computer's Bluetooth network (BtNet.java; the
+// stand-in plugin's network is set in localStorage "__fakeBtNet"): remote.html says how to join
+// it and opens Bluetooth settings; with the phone on none the computer's page says so; on it, the
+// computer asks for its Bluetooth password (the wrong one is said), the right one connects (the
+// page over Bluetooth), and it's kept: the page connects again without it. A computer out of
+// reach over the network: its Bluetooth network by itself when the phone is on that computer's
+// (by name), else offered; a computer asked for that isn't the one on it is said. The computer
+// is a remote recording server here that takes these requests as from its Bluetooth network.
+// With a VPN keeping the app off that network (or the phone on none), over Bluetooth Low Energy
+// instead, by itself (the app's BtLink plugin; the computer's link, electron/bluetooth-link.js,
+// runs here): its password the first time (only its key kept), the computer asked for by name
+// picked from those near by, a camera's picture when its box is tapped.
+async function checkRemoteBluetoothNetwork(win, js) {
+  const { RemoteRecordServer } = require("../electron/remote-record.js");
+  const { BluetoothLink, makeSecret } = require("../electron/bluetooth-link.js");
+  const wc = win.webContents;
+  const state = {
+    running: false, recording: false, mode: "freeform", requirement: { ok: true, missing: [], message: "" }, detailsRequired: false,
+    details: { contributor: "", location: "", task: "" }, cameras: [],
+    available: { at: 1, scanning: false, note: "", cameras: [{ id: "oak:BT-TEST", label: "Luxonis OAK-D …T-TEST", present: true, use: true, role: "head" }] },
+  };
+  // Its requests marked by the stand-in plugin are from its Bluetooth network (a phone at 10.43.0.7).
+  class BluetoothNetworkServer extends RemoteRecordServer {
+    bluetoothPeer(req) {
+      return !!req.headers["x-fake-bt"] && super.bluetoothPeer(req, "10.43.0.1", "10.43.0.7");
+    }
+  }
+  const tried = [];
+  const server = new BluetoothNetworkServer({
+    keyStore: null, host: "rig-test", hotspot: () => null,
+    bluetoothPassword: (text) => (tried.push(text.length), text === "correct horse 42"),
+    page: (name) => fs.readFileSync(path.join(ROOT, name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8"),
+    ask: async () => ({ ok: true, message: "" }),
+  });
+  server.setState(state);
+  const { port } = await server.start();
+  const out = {};
+  // The computer's Bluetooth Low Energy link, its frames to and from the stand-in plugin.
+  const secret = { ...makeSecret("correct horse 42"), from: "hotspot" };
+  const link = new BluetoothLink({ name: "rig-test", secret: () => secret, relay: (r) => server.relay(r), send: (frame) => !wc.isDestroyed() && wc.send("fake-btlink:notify", frame.toString("base64")) });
+  ipcMain.handle("fake-btlink:info", () => link.info().toString("base64"));
+  ipcMain.handle("fake-btlink:write", (_e, b64) => link.received("/dev/fake-phone", Buffer.from(b64, "base64"), 247));
+  const navigated = (step) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`No page loaded (still at ${wc.getURL()})`)), 20000);
+    wc.once("did-finish-load", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    Promise.resolve(step()).catch(() => {});
+  });
+  const setNet = (net) => js(`localStorage.setItem("__fakeBtNet", ${JSON.stringify(JSON.stringify(net))}); Object.keys(localStorage).filter((k) => k.startsWith("__fakeBtPw:")).length`);
+  const PAGE = `
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const $ = (id) => document.getElementById(id);
+    const until = async (fn, ms = 15000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+    const shown = (id) => !$(id).hidden && !$(id).closest("[hidden]");
+  `;
+  const on = { on: true, port, device: { name: "rig-test", id: "AA:BB:CC:DD:EE:01" } };
+  try {
+    await wc.loadURL(`app://${HOST}/remote.html`);
+    await setNet({ on: false });
+    for (const k of await js(`Object.keys(localStorage).filter((k) => k.startsWith("__fakeBtPw:"))`)) await js(`localStorage.removeItem(${JSON.stringify(k)})`);
+    await wc.loadURL(`app://${HOST}/remote.html`);
+    out.launcher = await js(`(async () => {
+      ${PAGE}
+      await until(() => !$("btNow").hidden);
+      $("btSettings").click();
+      await sleep(200);
+      return { card: shown("btCard"), android: shown("btAndroid"), web: shown("btWeb"), now: $("btNow").textContent, settings: window.__fakeCapacitor.calls.some((c) => c[0] === "remote.openBluetoothSettings") };
+    })()`);
+    await navigated(() => js(`document.getElementById("btOpen").click(); true`));
+    out.off = await js(`(async () => {
+      ${PAGE}
+      await until(() => shown("btPanel") && /Bluetooth Low Energy/.test($("btNote").textContent) && shown("btSettings"));
+      return { url: location.search, note: $("btNote").textContent, settings: shown("btSettings"), password: shown("btJoin"), asked: window.__fakeCapacitor.calls.some((c) => c[0] === "remote.bluetoothNetwork" && c[1]) };
+    })()`);
+    await setNet(on);
+    out.connect = await js(`(async () => {
+      ${PAGE}
+      const asked = await until(() => shown("btJoin") && $("btNote").textContent);
+      $("btPassword").value = "wrong horse 42";
+      $("btConnect").click();
+      const wrong = await until(() => /isn't its password/.test($("message").textContent) && $("message").textContent);
+      $("btPassword").value = "correct horse 42";
+      $("btConnect").click();
+      const title = await until(() => /[(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent);
+      return { asked, wrong, title, message: $("message").textContent, panelGone: $("btPanel").hidden, rows: document.querySelectorAll("#camRows .camrow").length };
+    })()`);
+    out.kept = await js(`Object.keys(localStorage).filter((k) => k.startsWith("__fakeBtPw:")).join()`);
+    // A new page: the password kept, connects without it.
+    await wc.loadURL(`app://${HOST}/remote-client.html?rig=10.43.0.1%3A47821`);
+    out.again = await js(`(async () => {
+      ${PAGE}
+      const title = await until(() => /[(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent);
+      return { title, panel: !$("btPanel").hidden };
+    })()`);
+    // Out of reach over the network, the phone on that computer's Bluetooth network (by name): there by itself.
+    await setNet({ ...on, device: { name: "localhost", id: "AA:BB:CC:DD:EE:01" } });
+    await wc.loadURL(`app://${HOST}/remote-client.html?rig=localhost%3A1`);
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 20000);
+      const look = () => (/10\.43\.0\.1/.test(decodeURIComponent(wc.getURL())) ? (clearTimeout(timer), resolve()) : setTimeout(look, 200));
+      look();
+    });
+    out.auto = await js(`(async () => {
+      ${PAGE}
+      const title = await until(() => /[(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent);
+      const other = await until(() => /not localhost/.test($("message").textContent) && $("message").textContent);
+      return { url: decodeURIComponent(location.search), title, other };
+    })()`);
+    // Another computer out of reach: offered, not by itself.
+    await wc.loadURL(`app://${HOST}/remote-client.html?rig=127.0.0.1%3A1`);
+    out.offer = await js(`(async () => {
+      ${PAGE}
+      await until(() => shown("btNetOpen"));
+      await sleep(1500);
+      return { url: location.search, note: $("btNote").textContent, open: shown("btNetOpen"), password: shown("btJoin") };
+    })()`);
+    await navigated(() => js(`document.getElementById("btNetOpen").click(); true`));
+    out.offered = await js(`(async () => {
+      ${PAGE}
+      const title = await until(() => /[(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent);
+      return { url: decodeURIComponent(location.search), title };
+    })()`);
+    // A VPN keeps the app off the Bluetooth network: Bluetooth Low Energy by itself, to the
+    // computer asked for (two near by), its password the first time.
+    await setNet({ ...on, blocked: true });
+    await js(`localStorage.setItem("__fakeBtLe", ${JSON.stringify(JSON.stringify([{ id: "AA:00:00:00:00:02", name: "Other" }, { id: "AA:00:00:00:00:01", name: "rig-test" }]))}); localStorage.removeItem("hand-tracker-bluetooth-keys"); true`);
+    server.setState({ ...state, running: true, cameras: [{ index: 0, name: "Cam 1", roleId: "head", role: "Head", label: "camera 0", rotation: 0, mirror: false, fps: 30, hands: [], error: "" }] });
+    server.setPreview(0, require("electron").nativeImage.createFromBitmap(Buffer.alloc(64 * 48 * 4, 120), { width: 64, height: 48 }).toJPEG(70));
+    await wc.loadURL(`app://${HOST}/remote-client.html?rig=10.43.0.1%3A47821&want=rig-test`);
+    out.le = await js(`(async () => {
+      ${PAGE}
+      const asked = await until(() => shown("btJoin") && $("btNote").textContent);
+      $("btPassword").value = "correct horse 42";
+      $("btConnect").click();
+      const title = await until(() => /[(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent);
+      const tap = await until(() => document.querySelector("#cam0 .pic span") && /tap for its picture/.test(document.querySelector("#cam0 .pic span").textContent));
+      document.querySelector("#cam0 .pic").click();
+      const picture = !!(await until(() => !document.querySelector("#cam0 img").hidden && document.querySelector("#cam0 img").naturalWidth === 64));
+      const calls = window.__fakeCapacitor.calls.filter((c) => c[0].startsWith("btlink.")).map((c) => c.join(" "));
+      return { asked, title, message: $("message").textContent, panelGone: $("btPanel").hidden, tap: !!tap, picture, calls, kept: (localStorage.getItem("hand-tracker-bluetooth-keys") || "").length };
+    })()`);
+    // Again: the key kept, no password asked.
+    await wc.loadURL(`app://${HOST}/remote-client.html?rig=10.43.0.1%3A47821&want=rig-test`);
+    out.leAgain = await js(`(async () => {
+      ${PAGE}
+      const title = await until(() => /[(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent);
+      return { title, password: shown("btJoin") };
+    })()`);
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    ipcMain.removeHandler("fake-btlink:info");
+    ipcMain.removeHandler("fake-btlink:write");
+    await js(`localStorage.removeItem("__fakeBtLe"); localStorage.removeItem("hand-tracker-bluetooth-keys"); true`).catch(() => {});
+    server.stop();
+    await js(`localStorage.removeItem("__fakeBtNet"); Object.keys(localStorage).filter((k) => k.startsWith("__fakeBtPw:")).forEach((k) => localStorage.removeItem(k)); true`).catch(() => {});
+  }
+  out.tried = tried;
+  const l = out.launcher || {}, off = out.off || {}, c = out.connect || {};
+  check("Remote recording from the app over a computer's Bluetooth network: remote.html says how to join it and opens Bluetooth settings; on none, the computer's page says so; on it, its Bluetooth password is asked for (the wrong one said), the right one connects (over Bluetooth) and is kept; a computer out of reach goes over its Bluetooth network by itself (by name), another one's is offered, and a different computer on it is said; with a VPN keeping the app off it, Bluetooth Low Energy by itself (the computer asked for, its password once, a camera's picture on a tap)",
+    !out.error && l.card && l.android && !l.web && /isn't on/.test(l.now) && l.settings &&
+      /rig=10\.43\.0\.1/.test(decodeURIComponent(off.url || "")) && /Bluetooth Low Energy.*Faster: pair/.test(off.note) && off.settings && !off.password && off.asked &&
+      /rig-test needs its Bluetooth password/.test(c.asked || "") && c.wrong && c.title === "Hand Tracker on rig-test (Bluetooth)" && c.panelGone && /Connected to rig-test over Bluetooth/.test(c.message) && c.rows === 1 &&
+      out.kept === "__fakeBtPw:AA:BB:CC:DD:EE:01" && out.again && out.again.title === "Hand Tracker on rig-test (Bluetooth)" && !out.again.panel &&
+      out.auto && /rig=10\.43\.0\.1:47821&want=localhost/.test(out.auto.url) && out.auto.title && out.auto.other &&
+      out.offer && /rig=127/.test(decodeURIComponent(out.offer.url)) && out.offer.open && !out.offer.password && /Can't reach 127\.0\.0\.1/.test(out.offer.note) &&
+      out.offered && /want=127\.0\.0\.1/.test(out.offered.url) && out.offered.title &&
+      out.le && /VPN/.test(out.le.asked || "") && /needs its Bluetooth password/.test(out.le.asked || "") && out.le.title === "Hand Tracker on rig-test (Bluetooth)" &&
+      out.le.panelGone && out.le.tap && out.le.picture && out.le.calls.includes("btlink.connect AA:00:00:00:00:01") && !out.le.calls.includes("btlink.connect AA:00:00:00:00:02") && out.le.kept > 40 &&
+      out.leAgain && out.leAgain.title === "Hand Tracker on rig-test (Bluetooth)" && !out.leAgain.password,
     JSON.stringify(out));
 }
 
