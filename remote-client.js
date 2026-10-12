@@ -117,8 +117,11 @@
   let sayTimer = null;
   const say = (text, err = false) => {
     clearTimeout(sayTimer);
-    $("message").textContent = text || "";
-    $("message").className = err ? "err" : "";
+    // (On the device settings page too.)
+    for (const id of ["message", "setMessage"]) {
+      $(id).textContent = text || "";
+      $(id).className = err ? "err" : "";
+    }
     if (text && !err) sayTimer = setTimeout(() => say(""), 5000);
   };
 
@@ -941,6 +944,72 @@
     await loadTakes();
   });
 
+  // ---------- the device settings page ----------
+  // Its takes, video, pictures on its screen and Wi-Fi, and restarting it (or its cameras): a page
+  // of its own (#settings), from the link under Sentry; back to the cameras at its top (or the
+  // phone's Back). The cameras' pictures pause meanwhile.
+  let settingsOpen = false;
+  function showSettingsPage(open) {
+    settingsOpen = open;
+    $("mainPage").hidden = open;
+    $("settingsPage").hidden = !open;
+    window.scrollTo(0, 0);
+    if (open) {
+      if (!$("takesPanel").hidden) loadTakes();
+      if (!$("wifiPanel").hidden) loadSaved();
+    }
+  }
+  $("settingsOpen").addEventListener("click", () => {
+    history.pushState({ settings: true }, "", "#settings");
+    showSettingsPage(true);
+  });
+  $("settingsBack").addEventListener("click", () => {
+    if (history.state && history.state.settings) history.back();
+    else {
+      history.replaceState(null, "", location.pathname + location.search);
+      showSettingsPage(false);
+    }
+  });
+  window.addEventListener("popstate", () => showSettingsPage(location.hash === "#settings"));
+
+  // A button for something hard to undo asks once more: it says what, and a second tap within
+  // 4 seconds does it.
+  function tapAgain(btn, question, act) {
+    if (btn.dataset.armed) {
+      clearTimeout(Number(btn.dataset.armed));
+      delete btn.dataset.armed;
+      btn.textContent = btn.dataset.label;
+      return act();
+    }
+    btn.dataset.label = btn.textContent;
+    btn.textContent = question;
+    btn.dataset.armed = String(setTimeout(() => {
+      delete btn.dataset.armed;
+      btn.textContent = btn.dataset.label;
+    }, 4000));
+  }
+
+  // Restarting it, or its cameras (their USB off and on): what it can do, from its state.
+  function renderRestart(s) {
+    const sys = s.system || null;
+    $("restartPanel").hidden = !sys || (!sys.reboot && !sys.cameraReset);
+    if ($("restartPanel").hidden) return;
+    $("resetCamsRow").hidden = !sys.cameraReset;
+    $("rebootRow").hidden = !sys.reboot;
+    const host = hostName();
+    if (!$("rebootBtn").dataset.armed) $("rebootBtn").textContent = `Restart ${host}`;
+    $("resetCamsBtn").disabled = !!s.recording || !!s.pending;
+    $("rebootBtn").disabled = !!s.recording;
+    const notes = [];
+    if (sys.cameraReset === "soft") notes.push("Restart cameras only resets them on the USB for now; a camera that's stopped answering needs its power off and on: run sudo bash restart-setup.sh on it once (pi/restart-setup.sh).");
+    if (sys.cameraReset === "power") notes.push("On a Raspberry Pi 5 all its own USB ports go off and on together (a keyboard or hub on them too).");
+    if (sys.reboot === "setup") notes.push("To restart it from here, run sudo bash restart-setup.sh on it once (pi/restart-setup.sh).");
+    if (s.recording) notes.push("Stop recording first.");
+    $("restartNote").textContent = notes.join(" ");
+  }
+  $("resetCamsBtn").addEventListener("click", (e) => tapAgain(e.currentTarget, "The cameras stop: tap again", () => command("resetCameras")));
+  $("rebootBtn").addEventListener("click", (e) => tapAgain(e.currentTarget, `Restart ${hostName()}? Tap again`, () => command("reboot")));
+
   // ---------- the computer's Wi-Fi (from its own hotspot, or over Tailscale) ----------
   // Hand Tracker lists the networks around it; one tapped asks for its password (a saved one
   // doesn't need it), and the computer joins it. Its hotspot goes off while it's on a network,
@@ -1008,10 +1077,78 @@
       });
     }
   });
+  // The networks it has saved (it joins one by itself when it's in range): listed, forgotten, a
+  // new one saved (not joined now).
+  let savedNets = [];
+  async function loadSaved() {
+    try {
+      const r = await api("/api/wifi");
+      const w = r.json();
+      if (r.status !== 200) throw new Error(w.error || "");
+      savedNets = w.saved || [];
+      $("wifiSaved").innerHTML = savedNets.length
+        ? savedNets.map((n, i) => `<div class="row"><span class="grow">${esc(n)}</span><button type="button" class="small" data-forget="${i}">Forget</button></div>`).join("")
+        : '<div class="muted">None yet.</div>';
+    } catch (err) {
+      $("wifiSaved").innerHTML = `<div class="muted">${esc(err.auth ? needsKey() : err.message || unreachable())}</div>`;
+    }
+  }
+  async function wifiOp(wifi) {
+    try {
+      const res = await post({ action: "wifi", wifi });
+      say(res.message || res.error || "", res.ok === false || !!res.error);
+      return res;
+    } catch (err) {
+      say(err.auth ? needsKey() : unreachable(), true);
+      return { ok: false };
+    }
+  }
+  $("wifiSaved").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-forget]");
+    const ssid = b && savedNets[Number(b.dataset.forget)];
+    if (ssid) tapAgain(b, "Forget it? Tap again", async () => {
+      await wifiOp({ op: "forget", ssid });
+      loadSaved();
+    });
+  });
+  $("wifiAdd").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const ssid = $("wifiAddSsid").value.trim(), password = $("wifiAddPw").value;
+    if (!ssid) return say("Its network name, please.", true);
+    if (password && password.length < 8) return say("A Wi-Fi password is at least 8 characters (or none, for an open network).", true);
+    const res = await wifiOp({ op: "save", ssid, password });
+    if (res.ok) {
+      $("wifiAddSsid").value = "";
+      $("wifiAddPw").value = "";
+      loadSaved();
+    }
+  });
+  // Hotspot mode: its hotspot on, and it stays on until switched back (or it restarts).
+  function renderHotspot(h) {
+    $("hotspotBox").hidden = !h || !h.available;
+    if ($("hotspotBox").hidden) return;
+    const btn = $("hotspotBtn");
+    if (h.forced) {
+      $("hotspotText").textContent = `Hotspot mode: ${h.ssid} stays on until you switch it back`;
+      if (!btn.dataset.armed) btn.textContent = "Back to Wi-Fi";
+    } else {
+      $("hotspotText").textContent = h.on ? `Its hotspot ${h.ssid} is on (no saved network in range)` : `Its hotspot ${h.ssid} comes on when it isn't on a network`;
+      if (!btn.dataset.armed) btn.textContent = "Hotspot mode";
+    }
+    btn.dataset.on = h.forced ? "1" : "";
+    $("hotspotNote").textContent = h.keeper ? (h.forced ? "" : "Hotspot mode keeps the hotspot on, even with a saved network in range, until you switch it back here (or it restarts).")
+      : "Hotspot mode needs its hotspot updated first: run sudo bash hotspot-setup.sh --update on it.";
+  }
+  $("hotspotBtn").addEventListener("click", (e) => {
+    const on = !e.currentTarget.dataset.on;
+    tapAgain(e.currentTarget, on ? "It leaves its Wi-Fi: tap again" : "Back to Wi-Fi? Tap again", () => wifiOp({ op: "hotspot", on }));
+  });
+
   function renderWifi(s) {
     const w = s.wifi;
     $("wifiPanel").hidden = !w;
     if (!w) return;
+    renderHotspot(w.hotspot);
     // What became of the last network asked for, said once.
     const at = w.last ? w.last.at : 0;
     if (lastWifiAt !== null && at && at !== lastWifiAt) {
@@ -1257,6 +1394,9 @@
     renderCameras(s);
     renderWifi(s);
     renderSentry(s);
+    renderRestart(s);
+    $("settingsOpen").hidden = false;
+    $("settingsHost").textContent = s.host ? `On ${s.host}.` : "";
     $("videoPanel").hidden = typeof s.video !== "boolean";
     if (typeof s.video === "boolean") {
       videoOn = s.video;
@@ -1397,7 +1537,7 @@
     const img = document.querySelector(`#cam${i} img`), note = document.querySelector(`#cam${i} .pic span`);
     let url = null;
     while (!loop.stop) {
-      if (document.hidden || full) {
+      if (document.hidden || full || settingsOpen) {
         await sleep(500);
         continue;
       }

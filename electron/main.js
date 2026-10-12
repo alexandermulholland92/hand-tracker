@@ -23,6 +23,7 @@ const { FleetClient } = require("./fleet");
 const { PhoneLinkServer } = require("./phone-link");
 const { RemoteRecordServer, RIG_HOST, RIG_PATH } = require("./remote-record");
 const { RigBluetooth } = require("./bluetooth");
+const systemControl = require("./system-control");
 const { checkPassword: checkBluetoothPassword } = require("./bluetooth-link");
 const { createWifi } = require("./wifi");
 
@@ -884,6 +885,21 @@ function registerRemoteIpc() {
     const s = rigBluetooth.setPassword(password);
     startBluetooth();
     return s;
+  });
+  // This computer restarted, its cameras' USB turned off and on (the device settings page). The
+  // checks (HAND_TRACKER_SYSTEM_SIMULATE) only note what was asked, in global.__systemAsked.
+  const simulateSystem = !!process.env.HAND_TRACKER_SYSTEM_SIMULATE;
+  global.__systemAsked = [];
+  handle("remote:system", () => (simulateSystem ? { reboot: "yes", cameraReset: "power" } : systemControl.capabilities()));
+  handle("remote:reboot", () => {
+    if (!simulateSystem) return systemControl.reboot();
+    global.__systemAsked.push("reboot");
+    return { ok: true, message: "Restarting… (simulated)" };
+  });
+  handle("remote:reset-cameras", () => {
+    if (!simulateSystem) return systemControl.resetCameras();
+    global.__systemAsked.push("resetCameras");
+    return { ok: true, message: "The cameras' USB was turned off and on (simulated).", how: "power", count: 1 };
   });
   handle("remote:new-key", () => remoteRecord.newKey());
   handle("remote:settings", () => ({ standby: remoteStandby, folder: remoteFolder(), autostart: { available: autostart.available(), on: autostart.get() } }));

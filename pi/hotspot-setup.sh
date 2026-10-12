@@ -88,6 +88,7 @@ cat > "$BIN" <<'SCRIPT'
 #   hand-tracker-hotspot now     the hotspot on now, if wlan0 isn't on a network
 #   hand-tracker-hotspot check   that, and with no phone on the hotspot, every three minutes, a
 #                                network the Pi knows joined if one is in range
+# In hotspot mode (remote recording's device settings) the hotspot stays on, whatever's in range.
 IF=wlan0
 CON="Hand Tracker hotspot"
 SINCE=/run/hand-tracker-hotspot.since     # when wlan0 was first seen without a network
@@ -120,6 +121,14 @@ join_known() {
   done < <(known)
   return 1
 }
+
+# Hotspot mode (switched on from remote recording's device settings, which leaves this file in
+# the logged-in person's /run/user): the hotspot stays on whatever networks are in range, until
+# it's switched off there (or the Pi restarts).
+if compgen -G "/run/user/*/hand-tracker-hotspot-mode" >/dev/null; then
+  active || hotspot_on "hotspot mode"
+  exit 0
+fi
 
 if on_network; then
   rm -f "$SINCE"

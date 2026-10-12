@@ -137,11 +137,16 @@
   #sentryBtn.on { background: var(--red, #e03131); }
   .err { color: var(--err); }
   #take { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 14px; font-size: 14px; word-break: break-word; }
+  .settingsLink { display: block; width: 100%; margin-top: 14px; padding: 12px; background: var(--card); border: 1px solid var(--line); color: inherit; text-align: left; font-weight: 600; }
+  #settingsPage h1 { margin-bottom: 2px; }
+  #setMessage { min-height: 1.4em; margin-top: 8px; }
+  #setMessage.err { color: #ff8787; }
+  #wifiSaved .row { margin-top: 6px; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
-<main>
+<main id="mainPage">
   <p id="back" hidden><a href="remote.html">← Computers</a></p>
   <h1 id="title">Hand Tracker</h1>
   <div id="status">Connecting…</div>
@@ -227,6 +232,15 @@
     <div class="fullbar"><span id="fullName"></span><span id="fullRate"></span><button type="button" id="fullClose" aria-label="Back to every camera">✕</button></div>
   </div>
 
+  <button type="button" id="settingsOpen" class="settingsLink" hidden>Device settings ›</button>
+</main>
+
+<main id="settingsPage" hidden>
+  <p><button type="button" id="settingsBack" class="quiet">‹ Cameras</button></p>
+  <h1>Device settings</h1>
+  <div id="settingsHost" class="muted"></div>
+  <div id="setMessage"></div>
+
   <section class="panel" id="takesPanel" aria-labelledby="takesTitle" hidden>
     <h2><span id="takesTitle" class="grow">Takes</span><button type="button" id="takesRefresh" class="small">Refresh</button></h2>
     <label class="takeall"><input type="checkbox" id="takesAll" /> Select all</label>
@@ -256,6 +270,26 @@
     <div id="wifiNow" class="muted"></div>
     <div id="wifiList" hidden></div>
     <div id="wifiNote"></div>
+    <div id="hotspotBox" hidden>
+      <hr />
+      <div class="row"><span class="grow" id="hotspotText">Hotspot</span><button type="button" id="hotspotBtn" class="small">Hotspot mode</button></div>
+      <div class="sub" id="hotspotNote"></div>
+    </div>
+    <hr />
+    <div class="sub">Saved networks: it joins one by itself when it's in range.</div>
+    <div id="wifiSaved"></div>
+    <form id="wifiAdd" class="join" autocomplete="off">
+      <input id="wifiAddSsid" type="text" maxlength="32" spellcheck="false" autocapitalize="off" placeholder="Network name" aria-label="Network name to save" />
+      <input id="wifiAddPw" type="password" maxlength="63" placeholder="Its password" aria-label="Its password" />
+      <button type="submit">Save</button>
+    </form>
+  </section>
+
+  <section class="panel" id="restartPanel" aria-labelledby="restartTitle" hidden>
+    <h2 id="restartTitle">Restart</h2>
+    <div class="row" id="resetCamsRow"><span class="grow">Cameras: their USB off and on, as unplugging them would</span><button type="button" id="resetCamsBtn" class="small">Restart cameras</button></div>
+    <div class="row" id="rebootRow"><span class="grow">This computer</span><button type="button" id="rebootBtn" class="small">Restart</button></div>
+    <div id="restartNote" class="sub"></div>
   </section>
 </main>
 <script src="bt-link-client.js"></script>

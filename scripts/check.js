@@ -65,6 +65,7 @@ dialog.showSaveDialog = async (_win, opts) => ({ canceled: false, filePath: path
 // Luxonis OAK cameras are stood in for by the main process's SimulatedOak: two of them, no
 // camera or Python needed (see "Several cameras with Luxonis OAK cameras").
 process.env.HAND_TRACKER_OAK_SIMULATE = "1";
+process.env.HAND_TRACKER_SYSTEM_SIMULATE = "1"; // (never restarting this computer)
 // Remote recording's takes go here, not into Documents.
 process.env.HAND_TRACKER_REMOTE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-remote-"));
 require("../electron/main.js");
@@ -130,6 +131,7 @@ const STEPS = [
   ["remote-oak-settings", [], ({ js }) => checkRemoteOakSettings(js)],
   ["remote-launcher", ["remote-recording"], ({ js }) => checkRemoteLauncher(js)], // downloads the take it saved
   ["remote-hotspot-wifi", [], () => checkRemoteHotspotWifi()],
+  ["remote-settings-page", [], () => checkRemoteSettingsPage()],
   ["wifi-join", [], () => checkWifiJoin()],
   ["remote-takes", [], () => checkRemoteTakes()],
   ["sentry-math", [], () => checkSentryMath()],
@@ -2613,6 +2615,14 @@ async function checkRemoteRecording(js) {
     out.close = await (await post("close")).json();
     await sleep(300);
     out.closed = !(await state()).running;
+    // The device settings page's Restart cameras (their USB off and on) and Restart (simulated
+    // here: only noted, global.__systemAsked).
+    out.system = (await state()).system;
+    out.resetCams = await (await post("resetCameras")).json();
+    for (let i = 0; i < 60 && (await state()).pending; i++) await sleep(250);
+    out.resetNotice = ((await state()).notice || {}).message || "";
+    out.reboot = await (await post("reboot")).json();
+    out.systemAsked = global.__systemAsked.slice();
     out.backAfterClose = await js(`(() => { const card = document.getElementById("multiCamCard"), wrap = document.getElementById("wrap"); return !card.classList.contains("in-place") && card.nextElementSibling !== wrap && getComputedStyle(wrap).display !== "none"; })()`);
     await post("mode", { mode: "freeform" });
     out.unknown = (await post("explode")).status;
@@ -2643,6 +2653,8 @@ async function checkRemoteRecording(js) {
       out.quality.ok && /at high quality/.test(out.quality.message) && out.qualityState.join() === "high,high" && out.qualityBad === 400 &&
       out.stereo.mode === "stereo" && out.stereo.need.ok && !out.stereo.running &&
       out.inPlace.inPlace && out.inPlace.beforeView && !out.inPlace.viewShown && out.backAfterClose &&
+      out.system && out.system.reboot === "yes" && out.system.cameraReset === "power" && out.resetCams.ok && /simulated/.test(out.resetNotice) &&
+      out.reboot.ok && out.systemAsked.join() === "resetCameras,reboot" &&
       out.refused.ok === false && (out.refused.missing || []).join() === "location,task" && /Fill in Location and Task first/.test(out.refused.message) && out.refusedStarted === false &&
       out.record.ok && out.changedDetails.ok === false && out.changedDetails.locked && out.lockedDetails.locked === true &&
       out.lockedDetails.details.location === "Lab 2" && out.lockedDetails.details.task === "Pick up cup" && out.unlocked.locked === false && out.unlocked.cleared && /^Sam-Smith_Lab-2_Pick-up-cup_/.test(out.nameLocked) &&
@@ -2897,6 +2909,94 @@ async function checkRemoteHotspotWifi() {
     !out.error && out.hotspot.status === 200 && out.hotspot.wifi && out.hotspot.wifi.allowed && out.list.join() === "Lab,Field" &&
       out.badPassword === 400 && out.join.ok && joined.length === 1 && joined[0].join() === "Field,long enough" &&
       out.plainNoKey === 401 && out.plainWifi === null && out.plainList === 403 && out.plainJoin === 403,
+    JSON.stringify(out));
+}
+
+// The device settings page (remote-client.html#settings): the link under Sentry opens it, with
+// the boxes that were under Sentry (Takes, Video, Pictures on its screen, Wi-Fi) and Restart; the
+// Wi-Fi's saved networks are listed, one is saved (not joined) and one forgotten (after a second
+// tap), hotspot mode goes on (after a second tap) and says it stays until switched back; Restart
+// cameras and Restart ask once more, then are asked of the computer; back to the cameras.
+async function checkRemoteSettingsPage() {
+  const { RemoteRecordServer } = require("../electron/remote-record.js");
+  const did = [];
+  let saved = ["Home", "Lab"], forced = false;
+  const wifi = {
+    available: () => true,
+    status: () => ({ connecting: null, last: null, hotspot: { available: true, on: forced, forced, ssid: "Pi-Hotspot", keeper: true } }),
+    list: async () => ({ device: "wlan0", current: { ssid: "Home", signal: 70 }, networks: [], saved: saved.slice(), hotspot: { available: true, on: forced, forced, ssid: "Pi-Hotspot", keeper: true } }),
+    connect: () => ({ ok: true, message: "" }),
+    save: async (ssid, password) => (did.push(["save", ssid, password]), saved.push(ssid), { ok: true, message: `Saved ${ssid}.` }),
+    forget: async (ssid) => (did.push(["forget", ssid]), (saved = saved.filter((n) => n !== ssid)), { ok: true, message: `Forgot ${ssid}.` }),
+    hotspotMode: async (on) => (did.push(["hotspot", on]), (forced = on), { ok: true, message: on ? "Hotspot mode." : "Back to Wi-Fi." }),
+  };
+  const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8");
+  const ask = async (action) => (did.push([action]), { ok: true, message: `did ${action}` });
+  const server = new RemoteRecordServer({ keyStore: null, page, ask, wifi, hotspot: () => "127.0.0.1", host: "pi", takes: () => fs.mkdtempSync(path.join(require("os").tmpdir(), "hand-tracker-check-settings-")) });
+  server.setState({ running: false, recording: false, cameras: [], mode: "freeform", requirement: { ok: true }, video: true, sound: true, videoQuality: "high", screenPictures: true,
+    system: { reboot: "yes", cameraReset: "power" }, available: { at: 1, scanning: false, note: "", cameras: [] } });
+  const out = {};
+  let win = null;
+  try {
+    const { port } = await server.start();
+    win = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { backgroundThrottling: false } });
+    await win.loadURL(`http://127.0.0.1:${port}/`);
+    const pjs = (code) => withLimit(win.webContents.executeJavaScript(code), "the device settings page");
+    Object.assign(out, await pjs(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      const until = async (fn, ms = 15000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+      const seen = (id) => { const e = $(id); return !!e && !e.hidden && !e.closest("[hidden]"); };
+      const out = {};
+      await until(() => seen("settingsOpen"));
+      out.before = { link: seen("settingsOpen"), takes: seen("takesPanel"), video: seen("videoPanel"), wifi: seen("wifiPanel"), restart: seen("restartPanel") };
+      $("settingsOpen").click();
+      await until(() => seen("settingsPage") && $("wifiSaved").textContent.includes("Lab"));
+      out.open = { hash: location.hash, main: seen("mainPage"), video: seen("videoPanel"), screen: seen("screenPanel"), wifi: seen("wifiPanel"), restart: seen("restartPanel"),
+        host: $("settingsHost").textContent, saved: [...$("wifiSaved").querySelectorAll(".row span")].map((e) => e.textContent), hotspot: $("hotspotText").textContent, hotspotBtn: $("hotspotBtn").textContent };
+      $("wifiAddSsid").value = "Field 2";
+      $("wifiAddPw").value = "long enough";
+      $("wifiAdd").querySelector("button[type=submit]").click();
+      await until(() => $("wifiSaved").textContent.includes("Field 2"));
+      const forget = () => [...$("wifiSaved").querySelectorAll("button[data-forget]")].find((b) => b.parentElement.textContent.includes("Home"));
+      forget().click();
+      out.forgetAsks = forget().textContent;
+      await sleep(200);
+      forget().click();
+      await until(() => !$("wifiSaved").textContent.includes("Home"));
+      out.savedAfter = [...$("wifiSaved").querySelectorAll(".row span")].map((e) => e.textContent);
+      $("hotspotBtn").click();
+      out.hotspotAsks = $("hotspotBtn").textContent;
+      $("hotspotBtn").click();
+      out.forced = await until(() => /stays on until you switch it back/.test($("hotspotText").textContent) && $("hotspotBtn").textContent);
+      $("resetCamsBtn").click();
+      out.resetAsks = $("resetCamsBtn").textContent;
+      $("resetCamsBtn").click();
+      out.resetSaid = await until(() => /did resetCameras/.test($("setMessage").textContent) && $("setMessage").textContent);
+      $("rebootBtn").click();
+      out.rebootAsks = $("rebootBtn").textContent;
+      $("rebootBtn").click();
+      out.rebootSaid = await until(() => /did reboot/.test($("setMessage").textContent) && $("setMessage").textContent);
+      $("settingsBack").click();
+      await until(() => seen("mainPage"));
+      out.back = { hash: location.hash, main: seen("mainPage"), settings: seen("settingsPage"), fits: document.documentElement.scrollWidth <= innerWidth + 1 };
+      return out;
+    })()`));
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    if (win) win.destroy();
+    server.stop();
+  }
+  out.did = did.map((d) => d.join(" ")).filter((d) => d !== "scan");
+  const b = out.before || {}, o = out.open || {};
+  check("The device settings page: the link under Sentry opens it, with Video, Pictures on its screen, Wi-Fi and Restart (gone from the main page); saved networks listed, one saved (not joined) and one forgotten after a second tap; hotspot mode on after a second tap, staying until switched back; Restart cameras and Restart asked once more, then asked of the computer; back to the cameras",
+    !out.error && b.link && !b.video && !b.wifi && !b.restart && o.hash === "#settings" && !o.main && o.video && o.screen && o.wifi && o.restart && /pi/.test(o.host) &&
+      o.saved.join() === "Home,Lab" && /comes on when it isn't on a network/.test(o.hotspot) && o.hotspotBtn === "Hotspot mode" &&
+      out.savedAfter.join() === "Lab,Field 2" && /Tap again/i.test(out.forgetAsks) && /tap again/i.test(out.hotspotAsks) && out.forced === "Back to Wi-Fi" &&
+      /tap again/i.test(out.resetAsks) && out.resetSaid && /Restart pi\? Tap again/.test(out.rebootAsks) && out.rebootSaid &&
+      out.did.join("|") === "save Field 2 long enough|forget Home|hotspot true|resetCameras|reboot" &&
+      out.back.hash === "" && out.back.main && !out.back.settings && out.back.fits,
     JSON.stringify(out));
 }
 

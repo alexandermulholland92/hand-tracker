@@ -168,7 +168,15 @@
       // (Pictures on its own screen: OAK cameras only, which a phone doesn't have.)
       mode: modeNow(), requirement: requirement(), screenPictures: onPhone ? undefined : cams().screenPictures(),
       available: { at: scanned.at, scanning: scanned.scanning, note: scanned.note, cameras: available() },
+      system,
     };
+  }
+
+  // This computer restarted, and its cameras' USB turned off and on (the device settings page):
+  // what it can do ({ reboot, cameraReset }, electron/system-control.js), looked at now and then.
+  let system = null;
+  function lookAtSystem() {
+    if (remote && remote.system) remote.system().then((c) => (system = c || null), () => (system = null));
   }
   const push = () => on && remote.setState(state());
   function startState() {
@@ -579,7 +587,33 @@
       const running = cams().isActive() && pickedIds().includes(o.id);
       return { ok: true, message: running ? `${labelOf(o.id)} starts again with its new settings (a few seconds).` : `Saved: ${labelOf(o.id)} starts with these.` };
     }
+    if (action === "reboot") {
+      if (!remote.reboot || !system || !system.reboot) return { ok: false, message: "This device can't be restarted from here." };
+      if (recording) return { ok: false, message: "Stop recording first." };
+      return remote.reboot();
+    }
     if (pending) return { ok: false, message: `Busy: ${pending}` };
+    if (action === "resetCameras") {
+      // The cameras stopped, their USB off and on (as unplugging them), then the ones that ran
+      // started again.
+      if (!remote.resetCameras || !system || !system.cameraReset) return { ok: false, message: "This device's cameras can't be reset from here." };
+      if (recording) return { ok: false, message: "Stop recording first." };
+      const wasRunning = cams().isActive();
+      inBackground("Restarting the cameras…", async () => {
+        if (cams().isActive()) {
+          await stopVideos(false);
+          cams().close();
+          await new Promise((r) => setTimeout(r, 1500)); // (each camera's helper lets go)
+        }
+        const r = await remote.resetCameras();
+        await new Promise((res) => setTimeout(res, r.how === "power" ? 5000 : 2500)); // (back on the USB)
+        await scan();
+        notice = { at: Date.now(), message: r.message };
+        if (!r.ok) throw new Error(r.message);
+        if (wasRunning) await startCameras();
+      });
+      return { ok: true, message: "Restarting the cameras…" };
+    }
     if (action === "cameras") {
       if (cams().isActive()) return { ok: true, message: "The cameras are already running." };
       const need = requirement();
@@ -649,6 +683,8 @@
     host = opts.desktop || opts.mobile || null;
     if (!remote || !$("remoteRec")) return;
     onPhone = !opts.desktop;
+    lookAtSystem();
+    setInterval(lookAtSystem, 60000);
     // On a phone takes always go to Documents/Hand Tracker, and it doesn't open by itself.
     if (onPhone) {
       $("remoteFolderBtn").hidden = true;

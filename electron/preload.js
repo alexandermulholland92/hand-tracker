@@ -255,6 +255,11 @@ contextBridge.exposeInMainWorld("desktop", {
       return () => ipcRenderer.removeListener("remote:bluetooth", listener);
     },
     chooseFolder: () => ipcRenderer.invoke("remote:choose-folder"),
+    // This computer restarted, and its cameras' USB turned off and on, from the device settings
+    // page (electron/system-control.js): system() -> { reboot, cameraReset }.
+    system: () => ipcRenderer.invoke("remote:system"),
+    reboot: () => ipcRenderer.invoke("remote:reboot"),
+    resetCameras: () => ipcRenderer.invoke("remote:reset-cameras"),
     // A take saved without asking where: { baseName, files } -> { dir, results }
     saveTake: ({ baseName, files }) => ipcRenderer.invoke("files:save-remote", { baseName, files }),
     // Sentry mode's photos and videos deleted from it: { names } or { all: true } -> { deleted, failed }

@@ -68,7 +68,7 @@ const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it t
 const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
-const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "sentry", "oak"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "sentry", "oak", "resetCameras", "reboot"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
 const ROLES = ["", "head", "chest", "wrist_left", "wrist_right"];
@@ -122,12 +122,17 @@ function cleanOak(o) {
 }
 const cleanMode = (m) => (MODES.includes(m) ? m : null);
 // A Wi-Fi network to join: its name (1 to 32 bytes) and password (none, or 8 to 63 characters).
+// The Wi-Fi asked of it: join a network now, save one (to join by itself later), forget a saved
+// one, or hotspot mode on or off.
 function cleanWifi(w) {
-  if (!w || typeof w !== "object" || typeof w.ssid !== "string") return null;
-  const ssid = w.ssid, password = typeof w.password === "string" ? w.password : "";
+  if (!w || typeof w !== "object") return null;
+  const op = w.op === undefined ? "join" : w.op;
+  if (op === "hotspot") return typeof w.on === "boolean" ? { op, on: w.on } : null;
+  if (!["join", "save", "forget"].includes(op) || typeof w.ssid !== "string") return null;
+  const ssid = w.ssid, password = op !== "forget" && typeof w.password === "string" ? w.password : "";
   if (!ssid || Buffer.byteLength(ssid) > 32 || /[\u0000-\u001f\u007f]/.test(ssid)) return null;
   if (password && (password.length < 8 || password.length > 63 || /[\u0000-\u001f\u007f]/.test(password))) return null;
-  return { ssid, password };
+  return { op, ssid, password };
 }
 function cleanSettings(s) {
   if (!s || typeof s !== "object") return null;
@@ -687,7 +692,14 @@ class RemoteRecordServer extends EventEmitter {
       if (action === "wifi") {
         if (!wifiHere) return this.send(res, 403, { error: "The Wi-Fi can be changed only from this computer's hotspot or over Tailscale." });
         if (!wifi) return this.send(res, 400, { error: "That isn't a Wi-Fi network's name and password (8 to 63 characters)." });
-        return this.send(res, 200, this.wifi.connect(wifi.ssid, wifi.password));
+        if (wifi.op === "join") return this.send(res, 200, this.wifi.connect(wifi.ssid, wifi.password));
+        try {
+          if (wifi.op === "save") return this.send(res, 200, await this.wifi.save(wifi.ssid, wifi.password));
+          if (wifi.op === "forget") return this.send(res, 200, await this.wifi.forget(wifi.ssid));
+          return this.send(res, 200, await this.wifi.hotspotMode(wifi.on));
+        } catch (err) {
+          return this.send(res, 200, { ok: false, message: String((err && err.message) || err).split("\n")[0] });
+        }
       }
       const extra = {};
       if (details) extra.details = details;

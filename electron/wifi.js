@@ -5,18 +5,30 @@
  *
  *   const wifi = createWifi();   // null where there's no NetworkManager
  *   wifi.available()             // nmcli answered
- *   wifi.status()                // { connecting: ssid | null, last: { ssid, ok, message, at } | null }
- *   await wifi.list()            // { device, current: { ssid, signal } | null, networks: [{ ssid, signal, secure, saved }] }
+ *   wifi.status()                // { connecting: ssid | null, last: { ssid, ok, message, at } | null,
+ *                                //   hotspot: { available, on, forced, ssid, keeper } }
+ *   await wifi.list()            // { device, current: { ssid, signal } | null, networks: [{ ssid, signal, secure, saved }],
+ *                                //   saved: [ssid], hotspot }
  *   wifi.connect(ssid, password) // -> { ok, message } now; joining goes on in the background
+ *   await wifi.save(ssid, password)  // kept, to be joined by itself when it's in range (not now)
+ *   await wifi.forget(ssid)      // a saved one deleted
+ *   await wifi.hotspotMode(on)   // hotspot mode: the hotspot on, and it stays on (whatever's in
+ *                                // range) until switched off or the computer restarts
  *
  * The hotspot's own network (pi/hotspot-setup.sh) isn't listed. The hotspot is the Wi-Fi itself
  * when that isn't on a network, so joining one turns it off (and it comes back if the network
  * can't be joined). A network that couldn't be joined (a wrong password, say) isn't kept.
+ * Hotspot mode is a file in the logged-in person's /run/user (gone when the computer restarts)
+ * that hotspot-setup.sh's keeper looks for (one set up or updated since it had hotspot mode).
  */
 
 const { execFile } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 
 const HOTSPOT = "Hand Tracker hotspot";
+const KEEPER = "/usr/local/sbin/hand-tracker-hotspot";
+const modeFile = () => path.join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid ? process.getuid() : 0}`, "hand-tracker-hotspot-mode");
 
 function nmcli(args, timeout = 20000) {
   return new Promise((resolve, reject) => {
@@ -148,7 +160,83 @@ function createWifi() {
     return { ok: true, message: `Joining ${ssid}… The hotspot goes off while this computer is on it: to keep reaching it, join ${ssid} on this phone too (or use Tailscale). If it can't be joined, the hotspot comes back within a minute.` };
   }
 
-  return { available: () => ok, status: () => ({ connecting, last }), list, connect };
+  // ---------- the hotspot ----------
+  let hot = { available: false, on: false, ssid: "" };
+  const keeper = () => {
+    try {
+      return fs.readFileSync(KEEPER, "utf8").includes("hand-tracker-hotspot-mode");
+    } catch {
+      return false;
+    }
+  };
+  const forced = () => fs.existsSync(modeFile());
+  async function lookAtHotspot() {
+    const ssid = (await nmcli(["-g", "802-11-wireless.ssid", "connection", "show", HOTSPOT]).catch(() => "")).trim();
+    const active = (await nmcli(["-t", "-f", "NAME", "connection", "show", "--active"]).catch(() => "")).split("\n").map((l) => fields(l)[0]);
+    hot = { available: !!ssid, on: active.includes(HOTSPOT), ssid };
+    return hotspot();
+  }
+  const hotspot = () => ({ ...hot, forced: forced(), keeper: keeper() });
+  if (process.platform === "linux") {
+    const t = setInterval(() => ok && lookAtHotspot().catch(() => {}), 15000);
+    if (t.unref) t.unref();
+  }
+
+  async function hotspotMode(on) {
+    await lookAtHotspot();
+    if (!hot.available) return { ok: false, message: "This computer has no hotspot: set one up with pi/hotspot-setup.sh." };
+    if (!keeper()) return { ok: false, message: "Its hotspot needs updating for hotspot mode first: on it, run sudo bash hotspot-setup.sh --update." };
+    const dev = await device();
+    if (on) {
+      const now = (await nmcli(["-g", "GENERAL.CONNECTION", "device", "show", dev]).catch(() => "")).trim();
+      const was = now && now !== HOTSPOT ? { ssid: now } : null;
+      fs.writeFileSync(modeFile(), String(Date.now()));
+      // (In the background: a phone reaching it over the same Wi-Fi loses it now.)
+      nmcli(["--wait", "20", "connection", "up", HOTSPOT, "ifname", dev], 30000).then(lookAtHotspot, () => {});
+      return { ok: true, message: `Hotspot mode: ${was ? `this computer leaves ${was.ssid}, and ` : ""}its hotspot ${hot.ssid} stays on until you switch it back (or it restarts). To keep reaching it, join ${hot.ssid} on this phone (or use Bluetooth).` };
+    }
+    fs.rmSync(modeFile(), { force: true });
+    if (hot.on) nmcli(["connection", "down", HOTSPOT], 30000).then(() => nmcli(["device", "connect", dev], 45000)).catch(() => {}).finally(() => lookAtHotspot().catch(() => {}));
+    return { ok: true, message: "Back to Wi-Fi: this computer joins a saved network in range (its hotspot comes back if there's none). To keep reaching it, join that network on this phone too (or use Tailscale)." };
+  }
+
+  // ---------- saved networks ----------
+  async function save(ssid, password) {
+    const dev = await device();
+    const name = (await saved()).get(ssid);
+    const security = seen.get(ssid) || "";
+    const keyMgmt = /WPA1|WPA2/.test(security) || !/WPA3/.test(security) ? "wpa-psk" : "sae";
+    const secret = password ? ["wifi-sec.key-mgmt", keyMgmt, "wifi-sec.psk", password] : [];
+    if (name) {
+      if (password) await nmcli(["connection", "modify", name, ...secret]);
+      return { ok: true, message: password ? `${ssid} was saved already: its password is the new one.` : `${ssid} is saved already.` };
+    }
+    await nmcli(["connection", "add", "type", "wifi", "ifname", dev, "con-name", ssid, "ssid", ssid, "connection.autoconnect", "yes", ...secret]);
+    return { ok: true, message: `Saved ${ssid}: this computer joins it by itself when it's in range${hot.on ? " (while the hotspot has no phone on it, it looks every three minutes)" : ""}.` };
+  }
+
+  async function forget(ssid) {
+    const names = [];
+    for (const line of (await nmcli(["-t", "-f", "NAME,TYPE,ACTIVE", "connection", "show"])).split("\n")) {
+      const [name, type, active] = fields(line);
+      if (type !== "802-11-wireless" || name === HOTSPOT) continue;
+      const s = (await nmcli(["-g", "802-11-wireless.ssid", "connection", "show", name]).catch(() => "")).trim();
+      if (s === ssid) names.push({ name, active: active === "yes" });
+    }
+    if (!names.length) return { ok: false, message: `${ssid} isn't saved here.` };
+    for (const n of names) await nmcli(["connection", "delete", "id", n.name]);
+    const left = names.some((n) => n.active);
+    return { ok: true, message: `Forgot ${ssid}${left ? ": this computer left it (it joins another saved network in range, or its hotspot comes on)" : ""}.` };
+  }
+
+  async function listAll() {
+    const out = await list();
+    out.saved = [...(await saved()).keys()].sort((a, b) => a.localeCompare(b));
+    out.hotspot = await lookAtHotspot();
+    return out;
+  }
+
+  return { available: () => ok, status: () => ({ connecting, last, hotspot: hotspot() }), list: listAll, connect, save, forget, hotspotMode };
 }
 
-module.exports = { createWifi, fields, joinSteps };
+module.exports = { createWifi, fields, joinSteps, modeFile };
