@@ -29,7 +29,7 @@ public class RigLinkPlugin: CAPPlugin, CAPBridgedPlugin {
     ]
 
     static let RIG = "^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*):(\\d{1,5})$"
-    static let RIG_PATH = "^/api/(state|command|wifi|takes|preview\\?i=[0-3](&full=1)?|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12})$"
+    static let RIG_PATH = "^/api/(state|command|wifi|takes|preview\\?i=[0-3](&full=1(&after=\\d{1,12})?)?|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12})$"
     static let RIG_KEY = "^[A-Za-z0-9_-]{8,64}$"
     static let maxBytes = 4 * 1024 * 1024
     private let queue = DispatchQueue(label: "hand-tracker.rig-link")

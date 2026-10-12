@@ -83,7 +83,7 @@ const VIDEO_QUALITIES = ["low", "standard", "high", "best"]; // (camera-video.js
 // networks, the takes and a slice of one). The one list: main.js and the Android checks' stand-in
 // use it, and the checks compare RemotePlugin.java's copy (Java can't load this) with it.
 const RIG_HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*):(\d{1,5})$/i;
-const RIG_PATH = /^\/api\/(state|command|wifi|takes|preview\?i=[0-3](&full=1)?|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/;
+const RIG_PATH = /^\/api\/(state|command|wifi|takes|preview\?i=[0-3](&full=1(&after=\d{1,12})?)?|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/;
 
 const PAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
 

@@ -189,6 +189,8 @@ function checkRigRulesMatch() {
   const javaHost = new RegExp(out.host), javaPath = new RegExp(out.path);
   const hosts = ["pi:47821", "PI.tail1234.ts.net:47821", "100.101.2.3:47821", "[fd7a::1]:47821", "[FD7A::1]:1", "pi", "pi:", "pi:123456", "-pi:1", "pi-:1", "a..b:1", "pi :1", "pi:1/x"];
   const paths = ["/api/state", "/api/command", "/api/wifi", "/api/takes", "/api/preview?i=0", "/api/preview?i=3&full=1", "/api/preview?i=4", "/api/preview?i=0&full=2",
+    "/api/preview?i=0&full=1&after=0", "/api/preview?i=3&full=1&after=123456789012", "/api/preview?i=0&full=1&after=1234567890123", "/api/preview?i=0&after=5",
+    "/api/preview?i=0&full=1&after=-1", "/api/preview?i=0&full=1&after=", "/api/preview?i=0&full=1&after=1&x=1",
     "/api/take?f=Sam-Smith_2s.json&at=0", "/api/take?f=a%20b%2Fc.mcap&at=2097152", "/api/take?f=a/b.json&at=0", "/api/take?f=a.json", "/api/take?f=a.json&at=-1", "/api/take?f=&at=0",
     "/api/takes/x", "/api/state?x", "/api/../state", "/", "/remote-client.js"];
   out.differ = [...hosts.filter((h) => javaHost.test(h) !== RIG_HOST.test(h)), ...paths.filter((p) => javaPath.test(p) !== RIG_PATH.test(p))];
@@ -202,6 +204,16 @@ function checkRigRulesMatch() {
   out.swiftSame = swiftPattern("RIG") === out.host && swiftPattern("RIG_PATH") === out.path;
   check("The Android and iPhone apps' rules for reaching a computer (RemotePlugin.java, RemoteLink.swift) match the desktop app's (remote-record.js): the same paths, and the same answer for every address and path tried",
     out.samePathText && !out.differ.length && out.swiftSame, JSON.stringify({ differ: out.differ, samePathText: out.samePathText, swiftSame: out.swiftSame }));
+  // Every request the remote page and the list of computers make (each ${…} as 0): ones the apps
+  // let through, or the page asks and the apps refuse it (as full screen's &after= once was).
+  const asked = [];
+  for (const file of ["remote-client.js", "remote-launcher.js"]) {
+    const src = fs.readFileSync(path.join(ROOT, file), "utf8");
+    for (const m of src.matchAll(/["`](\/api\/[^"`]*)["`]/g)) asked.push(m[1].replace(/\$\{[^}]*\}/g, "0"));
+  }
+  const refused = asked.filter((p) => !RIG_PATH.test(p));
+  check("Every request the remote page and the list of computers make to a computer is one the apps allow (full screen's included)",
+    asked.some((p) => p.includes("&after=")) && !refused.length, JSON.stringify({ asked: asked.length, refused }));
 }
 
 async function run() {
