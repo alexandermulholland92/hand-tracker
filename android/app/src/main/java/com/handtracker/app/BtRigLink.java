@@ -469,6 +469,15 @@ final class BtRigLink {
                 mtus.remove(device.getAddress());
                 gone(device.getAddress());
             }
+            // Advertising again (a connection can end it, and not every phone starts it again).
+            if (advertiser != null && on) {
+                try {
+                    advertiser.stopAdvertising(advertised);
+                    advertise(true);
+                } catch (Exception ignored) {
+                    // (Bluetooth off meanwhile)
+                }
+            }
         }
 
         @Override

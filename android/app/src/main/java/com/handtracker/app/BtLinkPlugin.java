@@ -62,7 +62,7 @@ import java.util.UUID;
 )
 public class BtLinkPlugin extends Plugin {
     private static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
-    private static final int CONNECT_MS = 30000; // (a Windows computer can take 15 s or more)
+    private static final int CONNECT_MS = 15000;
     private static final int STEP_MS = 10000;
 
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -118,6 +118,8 @@ public class BtLinkPlugin extends Plugin {
         String service = call.getString("service", "");
         int ms = Math.max(1000, Math.min(15000, call.getInt("ms", 4000)));
         Map<String, String> found = Collections.synchronizedMap(new LinkedHashMap<>());
+        // (Whether it takes connections: a computer can be seen advertising but not answer.)
+        Map<String, Boolean> connectable = Collections.synchronizedMap(new LinkedHashMap<>());
         ScanCallback cb = new ScanCallback() {
             @Override
             public void onScanResult(int type, ScanResult r) {
@@ -131,6 +133,7 @@ public class BtLinkPlugin extends Plugin {
                 }
                 String id = r.getDevice().getAddress();
                 if (name != null || !found.containsKey(id)) found.put(id, name == null ? "" : name);
+                if (!Boolean.TRUE.equals(connectable.get(id))) connectable.put(id, r.isConnectable());
             }
         };
         try {
@@ -152,6 +155,7 @@ public class BtLinkPlugin extends Plugin {
                     JSObject d = new JSObject();
                     d.put("id", e.getKey());
                     d.put("name", e.getValue());
+                    d.put("connectable", !Boolean.FALSE.equals(connectable.get(e.getKey())));
                     list.put(d);
                 }
             }

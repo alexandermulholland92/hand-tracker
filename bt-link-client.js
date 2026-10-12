@@ -200,6 +200,8 @@
         let d = named.length === 1 ? named[0] : !prefer && devices.length === 1 ? devices[0] : null;
         if (!d && devices.length && pick) d = await pick(devices);
         if (!d) throw Object.assign(new Error(devices.length ? "No Hand Tracker was picked over Bluetooth." : "No Hand Tracker near by over Bluetooth (with remote recording on)."), { name: "NotFoundError", none: !devices.length });
+        // (Seen advertising, but not taking connections: said now, rather than after a wait.)
+        if (d.connectable === false) throw Object.assign(new Error(`${d.name || "It"} is near by, but its Bluetooth isn't taking connections now.`), { name: "NetworkError", busy: true });
         const onValue = [], onGone = [], handles = [];
         const drop = () => handles.splice(0).forEach((h) => h && h.remove && h.remove());
         const characteristic = (uuid) => {

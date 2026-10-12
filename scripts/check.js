@@ -1057,6 +1057,9 @@ async function checkBluetoothLink() {
       server.bluetoothPeer(req("correct horse 42"), "192.168.1.5", "192.168.1.9"),
       server.bluetoothPeer(req(""), "10.43.0.1", "10.43.0.9"),
     ];
+    // A phone app's Bluetooth: one seen advertising but not taking connections is said so at once.
+    const busy = BtLinkClient.capacitorBluetooth({ scan: async () => ({ devices: [{ id: "AA:BB:CC:DD:EE:FF", name: "Busy PC", connectable: false }] }) }, { prefer: "Busy PC" });
+    out.busy = await busy.requestDevice().then(() => "picked", (err) => err.message);
     // The Linux helper (BlueZ) is carried outside app.asar (Python runs it) and compiles.
     const helper = path.join(__dirname, "..", "electron", "bluetooth-helper-linux.py");
     const py = ["python3", "python"].map((cmd) => spawnSync(cmd, ["-c", `import py_compile; py_compile.compile(r"${helper}", doraise=True)`], { encoding: "utf8" })).find((x) => !x.error);
@@ -1066,13 +1069,13 @@ async function checkBluetoothLink() {
   } finally {
     server.stop();
   }
-  check("Remote recording over Bluetooth: the right password gets a session, each request sealed and relayed to the server (as from its hotspot), a long answer in frames that fit; the wrong password is told so; another device near by reads none of it and can't use its session; two devices at once; the server takes the link's token only from itself, the Bluetooth network only with the password",
+  check("Remote recording over Bluetooth: the right password gets a session, each request sealed and relayed to the server (as from its hotspot), a long answer in frames that fit; the wrong password is told so; another device near by reads none of it and can't use its session; two devices at once; one seen but not taking connections said so at once; the server takes the link's token only from itself, the Bluetooth network only with the password",
     !out.error && out.info.name === "check-rig" && out.info.salt && out.info.iter >= 100000 && !out.info.key &&
       out.state.status === 200 && /json/.test(out.state.type) && out.state.host && out.state.filler && out.state.framesMax <= MTU - 3 && out.state.frames > 80 &&
       out.deflated.whole && out.deflated.frames <= 3 &&
       out.command.status === 200 && out.command.body.ok === true && /did scan/.test(out.command.body.message) &&
       out.overheard.frames > 80 && !out.overheard.plainHost && !out.overheard.plainFiller && out.stolen.join() === "session" &&
-      out.wrong === "password" && out.two.join() === "200,200" &&
+      out.wrong === "password" && out.two.join() === "200,200" && /Busy PC is near by, but its Bluetooth isn't taking connections/.test(out.busy) &&
       out.direct.join() === "401,200,401" && out.network.join() === "true,false,false,false" && out.helper.compiles !== false && out.helper.unpacked,
     JSON.stringify(out));
 }
