@@ -2509,6 +2509,28 @@ async function checkRemoteRecording(js) {
     const before = await state();
     out.before = { running: before.running, mode: before.mode };
     out.available = a.cameras.map((c) => ({ id: c.id.startsWith("oak:") ? c.id : "webcam", present: c.present, use: c.use, role: c.role }));
+    // The unplugged one can be unticked on the page, and is then off the list.
+    const unplugged = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-remote-unplugged", backgroundThrottling: false } });
+    try {
+      await unplugged.loadURL(`${base}/#k=${key}`);
+      out.untick = await withLimit(unplugged.webContents.executeJavaScript(`(async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+        const box = () => document.querySelector('#camRows input[data-id="oak:SIMULATED-OAK-UNPLUGGED"]');
+        for (let i = 0; i < 150 && !box(); i++) await sleep(100);
+        if (!box()) return { found: false };
+        for (let i = 0; i < 100 && box().disabled; i++) await sleep(100); // (while the page's own scan is sent)
+        const out = { found: true, ticked: box().checked, enabled: !box().disabled, seen: box().getClientRects().length > 0 };
+        box().click();
+        for (let i = 0; i < 50 && box(); i++) await sleep(100);
+        out.gone = !box();
+        return out;
+      })()`), "the remote page, an unplugged camera");
+    } finally {
+      unplugged.destroy();
+    }
+    for (let i = 0; i < 100 && (await state()).available.scanning; i++) await sleep(200); // (the page looked again)
+    out.untickListed = (await state()).available.cameras.some((c) => c.id === "oak:SIMULATED-OAK-UNPLUGGED");
     // Any camera can be picked: the webcam gets a free role (a wrist's), is given the other wrist, then left out again.
     const webcam = a.cameras.find((c) => !c.id.startsWith("oak:"));
     out.pickWebcam = (await (await post("pick", { pick: { id: webcam.id, use: true } })).json()).ok;
@@ -2646,12 +2668,13 @@ async function checkRemoteRecording(js) {
   out.tailnet = [tailnetPeer("100.104.1.2", "::ffff:100.90.3.4"), tailnetPeer("192.168.1.5", "100.90.3.4"), tailnetPeer("100.104.1.2", "192.168.1.9")];
   const probe = new RemoteRecordServer({ keyStore: null, page: () => "", ask: async () => ({}) });
   out.ownHost = [probe.ownHost({ headers: { host: "localhost:47821" } }), probe.ownHost({ headers: { host: "evil.example:47821" } })];
-  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so) and picked, with roles; Ego needs all four roles, Stereo a head camera; Start recording needs all three take details (unless the hidden switch makes them optional; then locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras mirrored like webcams; every camera found is ticked unless unticked before), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself (with each camera's video, named after its role), Stop cameras stops them",
+  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so, and unticked is off the list) and picked, with roles; Ego needs all four roles, Stereo a head camera; Start recording needs all three take details (unless the hidden switch makes them optional; then locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras mirrored like webcams; every camera found is ticked unless unticked before), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself (with each camera's video, named after its role), Stop cameras stops them",
     out.setup.on && out.setup.card && !out.setup.runningBefore && key.length > 10 && out.page && out.noKey === 401 && out.wrongKey === 401 &&
       ["oak:SIMULATED-OAK-A", "oak:SIMULATED-OAK-B"].every((id) => (out.setup.ticked || []).includes(id)) &&
       out.before.running === false && out.script && out.scan &&
       out.available.filter((c) => c.id.startsWith("oak:SIMULATED-OAK-") && c.present && c.use).length === 2 &&
       out.available.some((c) => c.id === "oak:SIMULATED-OAK-UNPLUGGED" && !c.present && c.use) && out.available.some((c) => c.id === "webcam" && c.present && !c.use) &&
+      out.untick && out.untick.ticked && out.untick.enabled && out.untick.seen && out.untick.gone && out.untickListed === false &&
       out.pickWebcam && out.webcam.use && /^wrist_/.test(out.webcam.role) && out.webcam.given === out.webcam.asked && out.webcamOut &&
       out.ego.mode === "ego" && !out.ego.need.ok && out.ego.need.missing.join() === "wrist_left,wrist_right" && out.ego.start.ok === false &&
       /Ego needs the Left wrist and Right wrist cameras/.test(out.ego.start.message) && (out.egoRecord.missing || []).length === 3 &&

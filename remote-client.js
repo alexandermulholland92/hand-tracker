@@ -229,8 +229,10 @@
     const sig = JSON.stringify(list) + busy + fixed + [...openOak].join();
     if (sig !== shownRows && !$("camRows").contains(document.activeElement)) {
       shownRows = sig;
+      // One ticked that isn't plugged in can be unticked (it's then off the list) while the others
+      // run too: it isn't one of them.
       $("camRows").innerHTML = list.map((c) =>
-        `<div class="camrow"><label><input type="checkbox" data-id="${esc(c.id)}"${c.use ? " checked" : ""}${c.present && !busy ? "" : " disabled"} /> ` +
+        `<div class="camrow"><label><input type="checkbox" data-id="${esc(c.id)}"${c.use ? " checked" : ""}${(c.present ? !busy : c.use && !fixed) ? "" : " disabled"} /> ` +
         `<span>${esc(c.label)}${c.present ? "" : ' <span class="gone">not plugged in</span>'}</span></label>` +
         `<select data-id="${esc(c.id)}" aria-label="Role of ${esc(c.label)}"${busy ? " disabled" : ""}>${roleOptions(c.role)}</select>` +
         (c.oak ? `<button type="button" class="small" data-oakopen="${esc(c.id)}" aria-expanded="${openOak.has(c.id)}" aria-controls="oakset-${esc(c.id)}" aria-label="Settings of ${esc(c.label)}">⚙</button>` : "") +
