@@ -18,7 +18,7 @@
   // A plugin, as the app's own bridge has it: Capacitor.Plugins.<name> (registerPlugin belongs
   // to the @capacitor/core package, which this app doesn't load; on a phone it isn't there).
   // null when this app has no such plugin: most are the Android app's alone (the iPhone app
-  // has Filesystem, Share and HandBrowser).
+  // has Filesystem, Share, HandBrowser, RigLink, BtLink and RigServer).
   const available = (name) => (typeof cap.isPluginAvailable === "function" ? cap.isPluginAvailable(name) : !!(cap.Plugins && cap.Plugins[name]));
   const plugin = (name) => (!available(name) ? null : typeof cap.registerPlugin === "function" ? cap.registerPlugin(name) : cap.Plugins[name]);
   const Filesystem = plugin("Filesystem");
@@ -790,8 +790,9 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
   // kept in the Android Keystore; remote-record-ui.js carries out what it's asked.
   function createRigServer() {
     const Rig = plugin("RigServer");
-    const Remote = plugin("Remote");
-    if (!Rig || !Remote) return null;
+    // The key, kept: in the Android app's Keystore (Remote), the iPhone app's Keychain (RigServer.swift's own).
+    const Secrets = plugin("Remote") || Rig;
+    if (!Rig) return null;
     const listeners = { status: new Set(), wantPreviews: new Set(), command: new Set() };
     for (const name of Object.keys(listeners)) {
       Rig.addListener(name, (data) => {
@@ -807,10 +808,10 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
     const on = (name) => (cb) => (listeners[name].add(cb), () => listeners[name].delete(cb));
     const newKey = () => toBase64(crypto.getRandomValues(new Uint8Array(16))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     async function key(fresh) {
-      let k = fresh ? null : (await Remote.secretGet({ key: "remote-rig" }).catch(() => ({}))).value;
+      let k = fresh ? null : (await Secrets.secretGet({ key: "remote-rig" }).catch(() => ({}))).value;
       if (!k) {
         k = newKey();
-        await Remote.secretSet({ key: "remote-rig", value: k });
+        await Secrets.secretSet({ key: "remote-rig", value: k });
       }
       return k;
     }
@@ -821,7 +822,7 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
       stop: () => Rig.stop(),
       newKey: async () => Rig.setKey({ key: await key(true) }),
       settings: async () => ({ standby: false, phone: true, folder: `Documents/${FOLDER}`, autostart: { available: false, on: false } }),
-      // Over Bluetooth Low Energy too (BtRigLink.java), with a Bluetooth password set here.
+      // Over Bluetooth Low Energy too (BtRigLink.java; RigBluetooth.swift), with a Bluetooth password set here.
       bluetooth: () => Rig.bluetooth(),
       setBluetoothPassword: (password) => Rig.setBluetoothPassword({ password }),
       onBluetooth: (cb) => {

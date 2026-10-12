@@ -854,7 +854,8 @@ async function checkIphoneApp() {
       const out = {
         platform: mobile.platform, label: $("pcCard").querySelector(".section-label").textContent,
         shown: !$("pcCard").hidden && !$("handBrowser").hidden, android: [$("linkPhone").hidden, $("selfControl").hidden, $("deviceRow").hidden],
-        noKeyboard: $("keyboardToggle").hidden, noRemote: !mobile.remote && !mobile.link && !mobile.phoneControl && !mobile.natnet,
+        noKeyboard: $("keyboardToggle").hidden, noRemote: !mobile.link && !mobile.phoneControl && !mobile.natnet,
+        rigCard: !!mobile.remote && !$("remoteRec").hidden,
       };
       await mobile.browser.close();
       $("hbUrl").value = "example.com";
@@ -893,9 +894,9 @@ async function checkIphoneApp() {
     win.destroy();
   }
   const st = out.selfTest || {}, pg = out.page || {};
-  check("The iPhone app: only its own plugins, the Android-only parts hidden; the hand browser opens a website full screen with the hand-mouse pointer on it and the app as just its camera, and the hand mouse's calls click its link (the next page opens), click into a box and type; the app shows over it and back; Back and Close work; and its self-test (as in the iPhone simulator: full screen, the small window moving off, a drag scrolling) passes",
-    !out.error && st.ok === true && st.plugins.join() === "BtLink,Filesystem,HandBrowser,RigLink,Share" && pg.platform === "ios" && pg.label === "Hand mouse" && pg.shown &&
-      pg.android.every(Boolean) && pg.noKeyboard && pg.noRemote && pg.opened && pg.mouseOn && /Example Domain/.test(pg.barTitle) && pg.small && pg.appShown && pg.siteShown && pg.followed && pg.typed === "hello" && pg.back && pg.closed &&
+  check("The iPhone app: only its own plugins, the Android-only parts hidden, remote recording on it there (its self-test: the server, the key needed, its state and a command through the app's own requests; its Bluetooth link with the right password and a wrong one); the hand browser opens a website full screen with the hand-mouse pointer on it and the app as just its camera, and the hand mouse's calls click its link (the next page opens), click into a box and type; the app shows over it and back; Back and Close work; and its self-test (as in the iPhone simulator: full screen, the small window moving off, a drag scrolling) passes",
+    !out.error && st.ok === true && st.plugins.join() === "BtLink,Filesystem,HandBrowser,RigLink,RigServer,Share" && pg.platform === "ios" && pg.label === "Hand mouse" && pg.shown &&
+      st.rig && st.rig.ok === true && pg.android.every(Boolean) && pg.noKeyboard && pg.noRemote && pg.rigCard && pg.opened && pg.mouseOn && /Example Domain/.test(pg.barTitle) && pg.small && pg.appShown && pg.siteShown && pg.followed && pg.typed === "hello" && pg.back && pg.closed &&
       pg.opens.length >= 2 && pg.opens.every(([url, aspect, script]) => /^https:\/\/example\.com\/?$/.test(url) && aspect > 0 && script),
     JSON.stringify(out));
 }

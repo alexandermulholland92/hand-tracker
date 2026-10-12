@@ -18,6 +18,8 @@
 		9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582B6822FE993A50072D4E8 /* SceneDelegate.swift */; };
 		4854B0A1000000000000F002 /* HandBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4854B0A1000000000000F001 /* HandBrowser.swift */; };
 		4854B0A1000000000000F004 /* RemoteLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4854B0A1000000000000F003 /* RemoteLink.swift */; };
+		4854B0A1000000000000F006 /* RigServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4854B0A1000000000000F005 /* RigServer.swift */; };
+		4854B0A1000000000000F008 /* RigBluetooth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4854B0A1000000000000F007 /* RigBluetooth.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -33,6 +35,8 @@
 		9582B6822FE993A50072D4E8 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		4854B0A1000000000000F001 /* HandBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandBrowser.swift; sourceTree = "<group>"; };
 		4854B0A1000000000000F003 /* RemoteLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLink.swift; sourceTree = "<group>"; };
+		4854B0A1000000000000F005 /* RigServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RigServer.swift; sourceTree = "<group>"; };
+		4854B0A1000000000000F007 /* RigBluetooth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RigBluetooth.swift; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
@@ -71,6 +75,8 @@
 				9582B6822FE993A50072D4E8 /* SceneDelegate.swift */,
 				4854B0A1000000000000F001 /* HandBrowser.swift */,
 				4854B0A1000000000000F003 /* RemoteLink.swift */,
+				4854B0A1000000000000F005 /* RigServer.swift */,
+				4854B0A1000000000000F007 /* RigBluetooth.swift */,
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
@@ -168,6 +174,8 @@
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 				4854B0A1000000000000F002 /* HandBrowser.swift in Sources */,
 				4854B0A1000000000000F004 /* RemoteLink.swift in Sources */,
+				4854B0A1000000000000F006 /* RigServer.swift in Sources */,
+				4854B0A1000000000000F008 /* RigBluetooth.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

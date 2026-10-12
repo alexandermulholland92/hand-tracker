@@ -328,9 +328,72 @@
         } catch (err) {
           out.error = String((err && err.message) || err);
         }
+        try {
+          out.rig = await rigSelfTest();
+        } catch (err) {
+          out.rig = { error: String((err && err.message) || err) };
+        }
+        out.ok = !!out.ok && !!out.rig.ok;
         console.log("HT-SELFTEST " + JSON.stringify(out));
       })();
     }
+  }
+
+  // The self-test's second part: remote recording on this iPhone (RigServer.swift). Its server,
+  // reached through the app's own requests (RigLink) as another device would reach it: the key
+  // needed, its state, a command (which the page here answers); then its Bluetooth link, with no
+  // Bluetooth (the simulator has none), against bt-link-client.js (the website's and apps' end):
+  // the right password, and a wrong one.
+  async function rigSelfTest() {
+    const r = {};
+    const P = (global.Capacitor && global.Capacitor.Plugins) || {}, remote = global.mobile.remote;
+    if (!remote || !P.RigLink || !P.RigServer) return { error: "No remote recording here" };
+    const st = await remote.start();
+    r.on = st.on;
+    const key = (await P.RigServer.secretGet({ key: "remote-rig" })).value || "";
+    const ask = (path, o = {}) => P.RigLink.rigRequest({ rig: `127.0.0.1:${st.port}`, path, method: "GET", body: "", key: "", ...o });
+    const json = (res) => JSON.parse(res.body ? atob(res.body) : "{}");
+    r.noKey = (await ask("/api/state")).status;
+    const s = await ask("/api/state", { key });
+    const state = json(s);
+    r.state = { status: s.status, kind: state.kind, host: !!state.host };
+    const c = await ask("/api/command", { method: "POST", body: JSON.stringify({ action: "mode", mode: "freeform" }), key });
+    r.command = { status: c.status, ok: json(c).ok };
+    if (!global.BtLinkClient) {
+      await new Promise((resolve, reject) => {
+        const tag = document.createElement("script");
+        tag.src = "bt-link-client.js";
+        tag.onload = resolve;
+        tag.onerror = () => reject(new Error("bt-link-client.js didn't load"));
+        document.head.appendChild(tag);
+      });
+    }
+    const password = "self-test 42";
+    const info = JSON.parse(atob((await P.RigServer.linkTest({ password })).info));
+    const fromB64 = (b) => Uint8Array.from(atob(b), (ch) => ch.charCodeAt(0));
+    const toB64 = (u) => btoa(String.fromCharCode(...u));
+    const clients = [];
+    const handle = await P.RigServer.addListener("linkTestFrame", (e) => clients.forEach((cl) => cl.received(fromB64(e.frame))));
+    const client = (device, pw) => {
+      const cl = global.BtLinkClient.create({ password: pw, info, write: (f) => P.RigServer.linkTestWrite({ device, frame: toB64(f), mtu: 185 }) });
+      clients.push(cl);
+      return cl;
+    };
+    try {
+      const a = client("A", password);
+      const ls = await a.request({ path: "/api/state" });
+      const linked = JSON.parse(new TextDecoder().decode(ls.bytes));
+      r.link = { status: ls.status, kind: linked.kind, iter: info.iter };
+      r.linkCommand = (await a.request({ method: "POST", path: "/api/command", body: JSON.stringify({ action: "mode", mode: "freeform" }) })).status;
+      r.wrong = await client("B", "wrong password 1").request({ path: "/api/state" }).then(() => "let in", (err) => (err.password ? "password" : err.message));
+    } finally {
+      if (handle && handle.remove) handle.remove();
+      await remote.stop();
+    }
+    r.off = !(await remote.status()).on;
+    r.ok = !!r.on && r.noKey === 401 && r.state.status === 200 && r.state.kind === "rig" && r.state.host && r.command.status === 200 && r.command.ok === true &&
+      r.link.status === 200 && r.link.kind === "rig" && r.link.iter >= 100000 && r.linkCommand === 200 && r.wrong === "password" && r.off;
+    return r;
   }
 
   function init({ desktop, mobile, prefs, setPref }) {

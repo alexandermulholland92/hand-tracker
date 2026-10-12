@@ -404,7 +404,8 @@
     const { RemoteRecordServer } = require("../electron/remote-record.js");
     const ev = events();
     const pending = new Map();
-    let server = null, asked = 0, btPassword = false;
+    let server = null, asked = 0, btPassword = false, testLink = null;
+    const kept = new Map(); // (the iPhone app's Keychain)
     const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8");
     const ask = (action, extra) => new Promise((resolve) => {
       const id = ++asked;
@@ -445,6 +446,25 @@
       async setKey({ key }) {
         server.key = key;
         return server.status();
+      },
+      // The iPhone app keeps the key in its Keychain (RigServer.swift's secretGet / secretSet).
+      async secretGet({ key }) {
+        return kept.has(key) ? { value: kept.get(key) } : {};
+      },
+      async secretSet({ key, value }) {
+        kept.set(key, value);
+      },
+      // The iPhone app's self-test of its Bluetooth link with no Bluetooth (RigServer.swift's
+      // linkTest): the link here is bluetooth-link.js's, relayed to this server.
+      async linkTest({ password }) {
+        const { BluetoothLink, makeSecret } = require("../electron/bluetooth-link.js");
+        const secret = makeSecret(password);
+        testLink = new BluetoothLink({ name: "Test phone", secret: () => secret, relay: (r) => server.relay(r), send: (f) => ev.emit("linkTestFrame", { frame: Buffer.from(f).toString("base64") }) });
+        return { info: testLink.info().toString("base64") };
+      },
+      async linkTestWrite({ device, frame, mtu }) {
+        if (!testLink) throw new Error("No link test.");
+        testLink.received(device, Buffer.from(frame, "base64"), mtu);
       },
       async setState({ state }) {
         if (server) server.setState(JSON.parse(state));
@@ -642,7 +662,7 @@
   })();
 
   // registerPlugin (that's @capacitor/core's, which the app doesn't load). With ?fakeplatform=ios,
-  // the iPhone app's: Filesystem, Share and HandBrowser only (and ?selftest=1, its self-test).
+  // the iPhone app's: Filesystem, Share, HandBrowser, RigLink, BtLink and RigServer (and ?selftest=1, its self-test).
   // (Kept for the window's later pages: remote.html opens remote-client.html, say.)
   const ios = /[?&]fakeplatform=ios\b/.test(location.search) || sessionStorage.getItem("__fakePlatform") === "ios";
   if (ios) sessionStorage.setItem("__fakePlatform", "ios");
@@ -654,7 +674,7 @@
   window.Capacitor = {
     isNativePlatform: () => true,
     getPlatform: () => (ios ? "ios" : "android"),
-    Plugins: ios ? { Filesystem, Share, HandBrowser, RigLink, BtLink } : { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch, BtHid, BtLink },
+    Plugins: ios ? { Filesystem, Share, HandBrowser, RigLink, BtLink, RigServer } : { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch, BtHid, BtLink },
   };
   window.__fakeCapacitor = { files, calls, shared, btHidReports: BtHid._reports, stopPhoneControl: () => PhoneControl._stoppedOutside(), setAccessibility: (on) => PhoneControl._setAccessibility(on) };
 })();
