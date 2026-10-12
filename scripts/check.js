@@ -2363,6 +2363,8 @@ async function checkRemoteOakSettings(js) {
       Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
       await until(() => /Hand Tracker on/.test($("title").textContent) && document.querySelector('[data-oakopen="${A}"]'));
       const out = { buttons: [...document.querySelectorAll("#camRows [data-oakopen]")].map((b) => b.dataset.oakopen).sort() };
+      // On the page to be seen (not just there: the Cameras box was once left hidden).
+      out.seen = document.querySelector('[data-oakopen="${A}"]').getClientRects().length > 0;
       document.querySelector('[data-oakopen="${A}"]').click();
       out.opened = !!(await until(() => block("${A}")));
       out.rows = [...block("${A}").querySelectorAll("[data-oakset]")].map((e) => e.dataset.oakset);
@@ -2432,7 +2434,7 @@ async function checkRemoteOakSettings(js) {
   const [sa, sb] = (out.started || []).slice().sort((x, y) => (x && x.night === "on" ? -1 : 1));
   const ch = out.changed || [];
   check("Remote recording's page: each OAK camera has its own settings (a Settings button on its row: hand model, hands, depth, frame rate, objects, picture, night vision and infrared dots); set there, it starts with them and the other with the usual ones; changed while they run, only that one starts again; not while recording; anything else is refused",
-    !out.error && out.buttons && out.buttons.join() === [A, B].join() && out.opened && ["model", "hands", "depth", "fps", "detect", "picture", "night", "dots"].every((k) => out.rows.includes(k)) &&
+    !out.error && out.buttons && out.buttons.join() === [A, B].join() && out.seen && out.opened && ["model", "hands", "depth", "fps", "detect", "picture", "night", "dots"].every((k) => out.rows.includes(k)) &&
       out.before.a && out.before.a.night === "auto" && out.before.a.hands === 2 && out.before.a.depth === true && out.before.webcam === undefined &&
       out.refused.join() === "400,400,400" &&
       out.set.a.night === "on" && out.set.a.dots === true && out.set.a.hands === 1 && out.set.a.depth === false && out.set.a.model === "full" &&

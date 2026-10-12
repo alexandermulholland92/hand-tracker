@@ -221,6 +221,7 @@
     const a = s.available || {};
     const list = a.cameras || [];
     // Shown while the cameras run too (which ones they are), to change once they're stopped.
+    $("camPanel").hidden = false;
     const busy = !!(s.running || s.recording || s.pending);
     // Rebuilt only when something changed (so a select being used isn't swapped under a finger).
     // An OAK camera's settings can be changed while the cameras run, not while recording.
