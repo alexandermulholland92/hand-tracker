@@ -1,10 +1,19 @@
 package com.handtracker.app;
 
+import android.content.Intent;
 import android.os.Bundle;
 import android.view.WindowManager;
 import com.getcapacitor.BridgeActivity;
 
+import java.util.regex.Pattern;
+
 public class MainActivity extends BridgeActivity {
+    // A page of the app's own to open (a notification's: SentryWatchService.java): a computer's
+    // remote recording page, there a Sentry alert's video, or the list of computers.
+    static final String EXTRA_PAGE = "com.handtracker.app.PAGE";
+    private static final Pattern PAGE = Pattern.compile(
+            "^(remote\\.html|remote-client\\.html\\?rig=[A-Za-z0-9._*%-]{1,300}(#alert=\\d{1,15}-[a-z0-9]{1,8}(&take=[A-Za-z0-9._*%-]{1,600})?)?)$");
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         // The app's own native plugins (Capacitor's come from their packages).
@@ -19,5 +28,24 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
         // Tracking and recording shouldn't be cut off by the screen timing out.
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // A video asked for (a take's ▶, an alert's notification) plays once it has come.
+        if (getBridge() != null) getBridge().getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false);
+        if (savedInstanceState == null) openPage(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        openPage(intent);
+    }
+
+    // The page a notification asks for, in place of what's showing (not again from Recents).
+    private void openPage(Intent intent) {
+        String page = intent == null ? null : intent.getStringExtra(EXTRA_PAGE);
+        if (page == null || !PAGE.matcher(page).matches() || getBridge() == null) return;
+        if ((intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0) return;
+        intent.removeExtra(EXTRA_PAGE);
+        String url = getBridge().getLocalUrl() + "/" + page;
+        getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(url));
     }
 }

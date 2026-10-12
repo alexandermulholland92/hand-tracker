@@ -83,7 +83,7 @@ const VIDEO_QUALITIES = ["low", "standard", "high", "best"]; // (camera-video.js
 const RIG_HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*):(\d{1,5})$/i;
 const RIG_PATH = /^\/api\/(state|command|wifi|takes|preview\?i=[0-3](&full=1)?|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/;
 
-const PAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
+const PAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
 // The take details from a request: those three, as short single-line text.
 function cleanDetails(d) {

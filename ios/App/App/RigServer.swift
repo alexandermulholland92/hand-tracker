@@ -55,7 +55,7 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
     static let actions: Set<String> = ["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry"]
     static let roles: Set<String> = ["", "head", "chest", "wrist_left", "wrist_right"]
     static let modes: Set<String> = ["ego", "stereo", "freeform"]
-    static let csp = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'"
+    static let csp = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'"
     static let jsonType = "application/json; charset=utf-8"
 
     private let queue = DispatchQueue(label: "hand-tracker.rig-server", attributes: .concurrent)

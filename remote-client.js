@@ -58,6 +58,20 @@
   const nativeBtLink = (btNet || onIphone) && window.BtLinkClient ? native("BtLink") : null;
   if (rig || btName !== null) $("back").hidden = false;
 
+  // A Sentry alert to show the video of (#alert=<its id>, and its take's name as &take=… for when
+  // it's no longer among the computer's latest alerts): a notification's link (ntfy's, or the
+  // Android app's own, SentryWatchService.java).
+  const alertHash = /[#&]alert=(\d{1,15}-[a-z0-9]{1,8})/.exec(location.hash);
+  const takeHash = /[#&]take=([^&]{1,400})/.exec(location.hash);
+  const decoded = (s) => {
+    try {
+      return decodeURIComponent(s);
+    } catch {
+      return "";
+    }
+  };
+  let wantAlert = alertHash ? { id: alertHash[1], take: takeHash ? decoded(takeHash[1]) : "" } : null;
+
   // The key from the QR code's address (#k=…), kept for next time (per computer in the apps)
   // and taken out of the address bar.
   const KEY_NAME = rig ? `hand-tracker-remote-key:${rig.toLowerCase()}` : "hand-tracker-remote-key";
@@ -69,7 +83,7 @@
   } catch {
     key = fromHash ? fromHash[1] : "";
   }
-  if (fromHash) history.replaceState(null, "", location.pathname + location.search);
+  if (fromHash || wantAlert) history.replaceState(null, "", location.pathname + location.search);
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const fromBase64 = (b64) => Uint8Array.from(atob(b64 || ""), (c) => c.charCodeAt(0));
@@ -610,6 +624,181 @@
     delAll.textContent = isArmed("all") ? `Tap again to delete them all from ${where}` : "Delete every Sentry photo and video";
   }
 
+  // ---------- a video played here: a take's (its ▶ in the takes list) or a Sentry alert's ----------
+  // Its file comes a slice at a time, as a download does (whichever way this page reaches the
+  // computer; over Bluetooth that's slow, and said), then plays over everything; ✕, Escape or
+  // Back closes it. The last one played stays ready. One too big for a phone's memory isn't
+  // played: its take can be downloaded instead.
+  const VIDEO_FILE = /\.(mp4|webm)$/i;
+  const MAX_PLAY = 600e6;
+  // "<take>-video-wrist-left.mp4" -> "Left wrist"; Sentry's "<take>-video.mp4" -> "Video".
+  function videoLabel(name) {
+    const role = (/-video-([a-z0-9-]+)(?: \(\d+\))?\.[a-z0-9]+$/i.exec(name) || [])[1];
+    if (!role) return "Video";
+    const known = ROLES.find(([id]) => id.replace(/_/g, "-") === role.toLowerCase());
+    return known ? known[1] : role.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase());
+  }
+  let player = null; // { stop } while it's open
+  let played = null; // { name, url }: the last video, ready to play again
+  let photoUrl = null;
+  function showPlayer(title) {
+    const wasOpen = !!player;
+    if (player) player.stop = true;
+    const p = { stop: false };
+    player = p;
+    const v = $("playerVideo");
+    v.pause();
+    v.removeAttribute("src");
+    v.load();
+    v.hidden = true;
+    $("playerPhoto").hidden = true;
+    $("playerName").textContent = title;
+    $("playerNote").textContent = "";
+    $("player").hidden = false;
+    if (!wasOpen) {
+      try {
+        history.pushState({ player: true }, "");
+      } catch {}
+    }
+    return p;
+  }
+  function closePlayer(fromHistory) {
+    if (!player) return;
+    player.stop = true;
+    player = null;
+    const v = $("playerVideo");
+    v.pause();
+    v.removeAttribute("src");
+    v.load();
+    $("player").hidden = true;
+    $("playerPhoto").removeAttribute("src");
+    if (photoUrl) URL.revokeObjectURL(photoUrl);
+    photoUrl = null;
+    if (!fromHistory && history.state && history.state.player) history.back();
+  }
+  // (Back closes it; a Back that lands on a player's place in the history, a late one, doesn't.)
+  window.addEventListener("popstate", (e) => {
+    if (!(e.state && e.state.player)) closePlayer(true);
+  });
+  $("playerClose").addEventListener("click", () => closePlayer(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closePlayer(false);
+  });
+  $("playerVideo").addEventListener("error", () => {
+    if (player && $("playerVideo").getAttribute("src")) $("playerNote").textContent = "This device can't play that video: download its take instead.";
+  });
+
+  // The takes listed here if one of them is the one wanted, else as the computer lists them now.
+  async function takeList(wanted) {
+    if (takes.some(wanted)) return takes;
+    try {
+      const r = await api("/api/takes");
+      return r.status === 200 ? r.json().takes || [] : [];
+    } catch {
+      return [];
+    }
+  }
+  const fileOf = async (name) => (await takeList((t) => t.files.some((f) => f.name === name))).flatMap((t) => t.files).find((f) => f.name === name);
+  // A take's file, a slice at a time -> a Blob (null if the player was closed meanwhile).
+  async function fetchFile(p, name, size, type, progress) {
+    const parts = [];
+    let at = 0;
+    while (at < size) {
+      if (p.stop) return null;
+      const r = await api(`/api/take?f=${encodeURIComponent(name)}&at=${at}`);
+      if (r.status !== 200 || !r.bytes.length) throw new Error("it stopped coming");
+      parts.push(r.bytes);
+      at += r.bytes.length;
+      if (progress) progress(at);
+    }
+    return new Blob(parts, { type });
+  }
+  async function playVideo(name, title, size, p = showPlayer(title)) {
+    const v = $("playerVideo"), note = $("playerNote");
+    const show = (url) => {
+      $("playerPhoto").hidden = true;
+      note.textContent = "";
+      v.src = url;
+      v.hidden = false;
+      v.play().catch(() => {}); // (if it may not start by itself: its ▶)
+    };
+    if (played && played.name === name) return show(played.url);
+    if (!size) size = ((await fileOf(name)) || {}).size || 0;
+    if (p.stop) return;
+    if (!size) {
+      note.textContent = `That video isn't on ${hostName()} any more.`;
+      return;
+    }
+    if (size > MAX_PLAY) {
+      note.textContent = `It's ${sizeText(size)}: too big to play here. Download its take instead.`;
+      return;
+    }
+    const slow = bt ? " Over Bluetooth this is slow." : "";
+    note.textContent = `Loading the video… ${sizeText(size)}${slow}`;
+    try {
+      const type = /\.webm$/i.test(name) ? "video/webm" : "video/mp4";
+      const blob = await fetchFile(p, name, size, type, (at) => {
+        if (!p.stop) note.textContent = `Loading the video… ${Math.min(99, Math.round((at / size) * 100))}% of ${sizeText(size)}${slow}`;
+      });
+      if (!blob || p.stop) return;
+      if (played) URL.revokeObjectURL(played.url);
+      played = { name, url: URL.createObjectURL(blob) };
+      show(played.url);
+    } catch (err) {
+      if (!p.stop) note.textContent = err.auth ? needsKey() : `The video didn't come: ${err.message || err}. Try again.`;
+    }
+  }
+  async function showPhoto(p, name) {
+    try {
+      const f = await fileOf(name);
+      const blob = f ? await fetchFile(p, name, f.size, "image/jpeg") : null;
+      if (!blob || p.stop) return;
+      if (photoUrl) URL.revokeObjectURL(photoUrl);
+      photoUrl = URL.createObjectURL(blob);
+      $("playerPhoto").src = photoUrl;
+      $("playerPhoto").hidden = !$("playerVideo").hidden;
+    } catch {
+      // (the note says why there's no video)
+    }
+  }
+
+  // A Sentry alert's video, from a notification: once it's saved (Sentry records while there's
+  // movement, then saves it), with the alert's photo meanwhile; from its take's own files once
+  // the computer no longer lists the alert among its latest.
+  async function openAlert({ id, take }) {
+    const p = showPlayer("Sentry");
+    const note = $("playerNote");
+    let photo = false;
+    for (let tries = 0; !p.stop; tries++) {
+      const sentry = (state && state.sentry) || {};
+      const e = (sentry.events || []).find((x) => x.id === id);
+      if (!e) break;
+      const title = `Sentry: ${e.camera} · ${whenText(e.at)}`;
+      $("playerName").textContent = title;
+      if (e.video) return playVideo(e.video, title, 0, p);
+      if (e.photo && !photo) {
+        photo = true;
+        showPhoto(p, e.photo);
+      }
+      const none = /no video/.test(e.problem || "") || sentry.video === false;
+      if (none || tries >= 150) {
+        note.textContent = none ? "No video was saved for this alert." : "No video came for this alert.";
+        return;
+      }
+      note.textContent = "Sentry is still recording this. Its video plays here once it's saved.";
+      await sleep(2000);
+    }
+    if (p.stop) return;
+    const t = take ? (await takeList((x) => x.id === take)).find((x) => x.id === take) : null;
+    if (p.stop) return;
+    const video = t && t.files.find((f) => VIDEO_FILE.test(f.name));
+    if (t) $("playerName").textContent = `Sentry: ${t.id}`;
+    if (video) return playVideo(video.name, $("playerName").textContent, video.size, p);
+    const still = t && t.files.find((f) => /\.jpg$/i.test(f.name));
+    if (still) showPhoto(p, still.name);
+    note.textContent = t ? "No video was saved for this alert." : `That alert isn't on ${hostName()} any more.`;
+  }
+
   // ---------- the takes on the computer: download them, then delete them from it ----------
   // Hand Tracker lists the takes in its remote recording folder (Hand Tracker on a phone keeps
   // its own, so none are listed there). The ones ticked come to this device a slice at a time
@@ -813,8 +1002,11 @@
       ? takes.map((t) => {
         const kinds = [...new Set(t.files.map((f) => f.name.replace(/^.*\./, "").toUpperCase()))].join(", ");
         const status = got.has(t.id) ? ' · <span class="ok">✓ on this device</span>' : failed.has(t.id) ? ` · <span class="err">${esc(failed.get(t.id))}</span>` : "";
+        // Each of its videos, to play here.
+        const videos = t.files.filter((f) => VIDEO_FILE.test(f.name));
+        const plays = videos.map((f) => `<button type="button" class="small" data-play="${esc(f.name)}"${takesBusy ? " disabled" : ""}>▶ ${esc(videoLabel(f.name))}</button>`).join("");
         return `<div class="takerow"><label><input type="checkbox" data-id="${esc(t.id)}"${picked.has(t.id) ? " checked" : ""}${takesBusy ? " disabled" : ""} /> <span>${esc(t.id)}</span></label>` +
-          `<div class="meta">${esc(whenText(t.at))} · ${esc(sizeText(t.size))} · ${esc(kinds)}${status}</div></div>`;
+          `<div class="meta">${esc(whenText(t.at))} · ${esc(sizeText(t.size))} · ${esc(kinds)}${status}</div>${plays ? `<div class="plays">${plays}</div>` : ""}</div>`;
       }).join("")
       : '<div class="muted">None yet: each take is saved here when recording stops.</div>';
     const all = $("takesAll");
@@ -840,6 +1032,13 @@
     else picked.delete(id);
     takesArmed = 0;
     renderTakes();
+  });
+  $("takeRows").addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest("button[data-play]");
+    if (!b || b.disabled) return;
+    const t = takes.find((x) => x.files.some((f) => f.name === b.dataset.play));
+    const f = t && t.files.find((x) => x.name === b.dataset.play);
+    if (f) playVideo(f.name, `${t.id} · ${videoLabel(f.name)}`, f.size);
   });
   $("takesAll").addEventListener("change", (e) => {
     for (const t of takes) {
@@ -1671,6 +1870,11 @@
       try {
         state = (await api("/api/state")).json();
         render();
+        if (wantAlert) {
+          const a = wantAlert;
+          wantAlert = null;
+          openAlert(a);
+        }
         if ($("message").className === "err" && /reach|code|password/.test($("message").textContent)) say("");
         if (btNet && !bt) btConnected();
         else if (btNet && bt) await backToNetwork();

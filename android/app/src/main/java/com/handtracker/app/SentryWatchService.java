@@ -93,19 +93,41 @@ public class SentryWatchService extends Service {
         nm.createNotificationChannel(loud);
     }
 
-    private PendingIntent openApp(int code) {
-        Intent open = new Intent(this, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+    // The app, at one of its pages (MainActivity.EXTRA_PAGE).
+    private PendingIntent openPage(int code, String page) {
+        Intent open = new Intent(this, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra(MainActivity.EXTRA_PAGE, page);
         return PendingIntent.getActivity(this, code, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
     }
 
+    private static String enc(String s) {
+        try {
+            return URLEncoder.encode(s, "UTF-8").replace("+", "%20");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // A computer's remote recording page in the app (remote-client.js).
+    private static String rigPage(String rig) {
+        return "remote-client.html?rig=" + enc(rig);
+    }
+
+    // Tapped: the computer's remote recording page (the list of computers if it watches several).
     private Notification watchingNotification() {
         Intent stopIt = new Intent(this, SentryWatchService.class).setAction(ACTION_STOP);
         PendingIntent stopPi = PendingIntent.getService(this, 1, stopIt, PendingIntent.FLAG_IMMUTABLE);
+        String page = "remote.html";
+        try {
+            JSONArray rigs = new JSONArray(getSharedPreferences(PREFS, MODE_PRIVATE).getString("rigs", "[]"));
+            if (rigs.length() == 1) page = rigPage(rigs.getJSONObject(0).optString("rig", ""));
+        } catch (Exception ignored) {
+            // the list, then
+        }
         return new Notification.Builder(this, CHANNEL_ON)
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .setContentTitle("Watching for Sentry alerts")
                 .setContentText("From your computers' Sentry mode")
-                .setContentIntent(openApp(0))
+                .setContentIntent(openPage(0, page))
                 .addAction(new Notification.Action.Builder(null, "Stop", stopPi).build())
                 .setOngoing(true)
                 .build();
@@ -164,8 +186,14 @@ public class SentryWatchService extends Service {
         }
     }
 
+    // Tapped: the alert's video, on the computer's page in the app (its photo until it's saved).
     private void notify(String rig, String key, String host, JSONObject e, int n) {
         String camera = e.optString("camera", "A camera");
+        String photo = e.optString("photo", "");
+        if (e.isNull("photo")) photo = "";
+        // Its take's name (its photo's, less the ending), for once the computer no longer lists it.
+        String take = photo.replaceAll("( \\(\\d+\\))?\\.[A-Za-z0-9]+$", "");
+        String page = rigPage(rig) + "#alert=" + e.optString("id") + (take.isEmpty() ? "" : "&take=" + enc(take));
         Notification.Builder b = new Notification.Builder(this, CHANNEL_ALERT)
                 .setSmallIcon(android.R.drawable.ic_dialog_alert)
                 .setContentTitle("Sentry: " + camera)
@@ -174,8 +202,7 @@ public class SentryWatchService extends Service {
                 .setShowWhen(true)
                 .setCategory(Notification.CATEGORY_ALARM)
                 .setAutoCancel(true)
-                .setContentIntent(openApp(100 + n));
-        String photo = e.optString("photo", "");
+                .setContentIntent(openPage(100 + (n % 500), page));
         if (!photo.isEmpty()) {
             try {
                 String path = "/api/take?f=" + URLEncoder.encode(photo, "UTF-8").replace("+", "%20") + "&at=0";

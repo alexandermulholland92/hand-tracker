@@ -657,7 +657,8 @@ async function checkSentry(js) {
     let bytes = 0;
     req.on("data", (c) => (bytes += c.length));
     req.on("end", () => {
-      ntfyGot.push({ method: req.method, path: req.url.split("?")[0], title: new URL(req.url, "http://x").searchParams.get("title"), bytes });
+      const q = new URL(req.url, "http://x").searchParams;
+      ntfyGot.push({ method: req.method, path: req.url.split("?")[0], title: q.get("title"), click: q.get("click") || "", bytes });
       res.setHeader("Content-Type", "application/json");
       res.end("{}");
     });
@@ -852,6 +853,41 @@ async function checkSentry(js) {
       for (let i = 0; i < 80 && e && !e.video && !e.videoError; i++) await new Promise((r) => setTimeout(r, 125));
       return e ? { name: e.video && e.video.name, error: e.videoError || "", seconds: e.seconds } : null;
     })()`);
+    // Its video played on the page: opened as a notification's link does (#alert=<its id>), from
+    // its take's ▶ in the takes list, and by its take's name (an alert no longer listed).
+    const evNow = await js(`(() => { const e = Sentry._test.events[0]; return e ? { id: e.id, take: e.take } : null; })()`);
+    const played = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-sentry", backgroundThrottling: false } });
+    try {
+      const PLAY = `
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const $ = (id) => document.getElementById(id);
+        const until = async (fn, ms = 30000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+        Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+        const playing = async () => {
+          const v = await until(() => !$("player").hidden && !$("playerVideo").hidden && $("playerVideo").readyState >= 1 && $("playerVideo"));
+          return v ? { title: $("playerName").textContent, duration: v.duration, blob: /^blob:/.test(v.src) } : { note: $("playerNote").textContent, title: $("playerName").textContent };
+        };
+      `;
+      const run = (code, what) => withLimit(played.webContents.executeJavaScript(`(async () => { ${PLAY} ${code} })()`), what);
+      await played.loadURL(`${base}/#alert=${evNow.id}`);
+      out.fromAlert = await run("return playing();", "the remote page, an alert's video");
+      out.fromList = await run(`
+        $("playerClose").click();
+        // (Closed, and its place in the history gone, as a person tapping ✕ then on finds it.)
+        const closed = !!(await until(() => $("player").hidden && !(history.state && history.state.player)));
+        $("settingsOpen").click();
+        const b = await until(() => document.querySelector('#takeRows button[data-play^="Sentry_"]'));
+        if (!b) return { closed, rows: $("takeRows").textContent.slice(0, 300) };
+        const label = b.textContent;
+        b.click();
+        return { closed, label, ...(await playing()) };
+      `, "the remote page, a take's video");
+      await played.loadURL("about:blank"); // (the page loaded afresh, not just its #)
+      await played.loadURL(`${base}/#alert=1-zzzzz&take=${encodeURIComponent(evNow.take)}`);
+      out.fromTake = await run("return playing();", "the remote page, an older alert's video");
+    } finally {
+      played.destroy();
+    }
     out.handsAfterOff = await js(`MultiCamera.isTracking() && MultiCamera._tiles()[0].status.tracking`);
     out.detailsAfterOff = await pjs(`(async () => {
       ${PAGE}
@@ -912,8 +948,10 @@ async function checkSentry(js) {
     ntfy.close();
   }
   out.ntfy = ntfyGot.map((g) => `${g.method} ${g.title}`);
+  // (A link only where this computer is on Tailscale: an alert's opens its video.)
+  out.ntfyLinks = ntfyGot.filter((g) => g.click && g.title !== "Sentry: Test").map((g) => g.click);
   const r = out;
-  check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; while it's on the hands aren't tracked but movement is, the take details are hidden and no take starts, unless its switch tracks them; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; deleted from the page (an alert with its files, then every Sentry file, nothing else); ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
+  check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; while it's on the hands aren't tracked but movement is, the take details are hidden and no take starts, unless its switch tracks them; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; that video played on the page (as a notification's link opens it, from the takes list's ▶, and by its take's name once the alert's no longer listed); deleted from the page (an alert with its files, then every Sentry file, nothing else); ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
     !r.error && r.mainPage && r.hiddenState && r.hiddenState.shown === false && r.hiddenAtStart && r.shown && r.direct.every((d) => d.kb > 3) && r.direct[0].bits === r.direct[1].bits && r.direct[3].bits >= r.direct[2].bits * 3 && r.direct[2].bits < r.direct[0].bits &&
       r.test && r.boxes === 144 && r.box.w >= r.box.cellW * 0.7 && r.box.h >= r.box.cellH * 0.6 && parseFloat(r.box.radius) < Math.min(r.box.w, r.box.h) / 2 &&
       r.previewFps >= 8 && r.hot && r.tapped && r.leftOutCell === "15" && r.untapped && r.petsOn && r.petsOff && r.petsState === false &&
@@ -923,6 +961,10 @@ async function checkSentry(js) {
       r.handsOffAgain && r.handsOffHere.all === false && r.handsOffHere.tile === false && r.handsOffHere.drawn > 0 && r.handsOffHere.moved > 0 &&
       r.handsAfterOff === true && r.detailsAfterOff &&
       r.alert && r.event && r.event.photo && r.listed.includes(r.event.camera) && r.off && r.video && r.video.name && r.hiddenAgain && r.hiddenStateAgain === '{"shown":false,"armed":false}' &&
+      r.fromAlert && r.fromAlert.blob && r.fromAlert.duration > 0 && r.fromAlert.title.startsWith(`Sentry: ${r.event.camera} · `) &&
+      r.fromList && r.fromList.closed && r.fromList.label === "▶ Video" && r.fromList.blob && r.fromList.duration > 0 &&
+      r.fromTake && r.fromTake.blob && r.fromTake.duration > 0 &&
+      r.ntfyLinks.every((l) => /#alert=\d{1,15}-[a-z0-9]{1,8}&take=Sentry_/.test(l)) &&
       r.ntfy.length >= 2 && r.ntfy[0] === "POST Sentry: Test" && r.ntfy.slice(1).some((t) => t.startsWith("POST Sentry: ")) &&
       r.files.photo && r.files.photo.head.startsWith("ffd8") && r.files.photo.kb > 5 &&
       r.files.video && r.files.video.kb > 5 && r.files.video.f.endsWith(".mp4") && r.files.video.plain && r.files.video.video === "h264" && ["aac", "none"].includes(r.files.video.sound) &&

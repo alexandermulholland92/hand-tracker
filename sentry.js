@@ -427,7 +427,7 @@
 
   // ---------- an alert: the photo, the page, the phone ----------
   async function raiseAlert(v, session) {
-    const ev = { id: `${session.at.getTime()}-${Math.random().toString(36).slice(2, 7)}`, at: session.at.getTime(), camera: v.name, key: v.key, photo: null, video: null, sent: [] };
+    const ev = { id: `${session.at.getTime()}-${Math.random().toString(36).slice(2, 7)}`, at: session.at.getTime(), camera: v.name, key: v.key, take: session.name, photo: null, video: null, sent: [] };
     events.unshift(ev);
     events.length = Math.min(events.length, MAX_EVENTS);
     session.event = ev;
@@ -543,7 +543,11 @@
     const { server, topic, photo } = cfg.ntfy;
     if (!topic) throw new Error("No ntfy topic.");
     const m = ntfyMessage(ev);
-    const req = { server: String(server || "https://ntfy.sh").replace(/\/+$/, ""), topic, title: m.title, message: m.message, tags: "rotating_light", priority: 4, click: linkOf() || "" };
+    // Tapped, it opens the computer's page with this alert's video (remote-client.js); a test,
+    // just the page.
+    const link = linkOf() || "";
+    const click = link && ev.id ? `${link.replace(/#.*$/, "")}#alert=${ev.id}&take=${encodeURIComponent(ev.take || "")}` : link;
+    const req = { server: String(server || "https://ntfy.sh").replace(/\/+$/, ""), topic, title: m.title, message: m.message, tags: "rotating_light", priority: 4, click };
     if (photo && jpeg) Object.assign(req, { photo: new Uint8Array(await jpeg.arrayBuffer()), filename: `${(ev.photo && ev.photo.name) || "sentry.jpg"}` });
     if (host && host.sentry && host.sentry.ntfy) return host.sentry.ntfy(req);
     // The website: straight to ntfy.sh (the page may only reach that one). As electron/ntfy.js

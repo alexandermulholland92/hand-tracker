@@ -9,7 +9,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark light" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'" />
 <title>Hand Tracker remote</title>
 <style>
   :root { --bg: #111216; --card: #1b1c22; --line: #2c2e36; --text: #e9ecef; --muted: #a3a9b1; --red: #e03131; --green: #2b8a3e; --err: #ff8787; --ok: #69db7c; --accent: #74c0fc; }
@@ -142,6 +142,13 @@
   #setMessage { min-height: 1.4em; margin-top: 8px; }
   #setMessage.err { color: #ff8787; }
   #wifiSaved .row { margin-top: 6px; }
+  /* A take's video (or a Sentry alert's), played over everything. */
+  #player { position: fixed; inset: 0; z-index: 30; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  #player video, #player img { max-width: 100vw; max-height: calc(100vh - 64px); }
+  #playerNote { color: #fff; font-size: 14px; padding: 12px 16px; text-align: center; }
+  #playerNote:empty { display: none; }
+  #playerName { flex: 1 1 auto; font-weight: 600; overflow-wrap: anywhere; }
+  .takerow .plays { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 28px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -292,6 +299,13 @@
     <div id="restartNote" class="sub"></div>
   </section>
 </main>
+
+<div id="player" role="dialog" aria-labelledby="playerName" hidden>
+  <video id="playerVideo" controls playsinline hidden></video>
+  <img id="playerPhoto" alt="" hidden />
+  <div id="playerNote"></div>
+  <div class="fullbar"><span id="playerName"></span><button type="button" id="playerClose" aria-label="Close the video">✕</button></div>
+</div>
 <script src="bt-link-client.js"></script>
 <script src="remote-client.js"></script>
 </body>
