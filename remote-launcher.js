@@ -11,6 +11,8 @@
  * over Tailscale.
  * Over Bluetooth instead: Web Bluetooth (Chrome, and the Windows, Mac and Linux app), or in the
  * Android app the computer's Bluetooth network (paired in Android's Bluetooth settings).
+ * In the apps each computer remembered shows its cameras' previews under its name (a switch for
+ * every computer, and one each).
  */
 
 (function () {
@@ -64,11 +66,39 @@
     $("savedCard").hidden = !list.length;
     const ul = $("saved");
     ul.textContent = "";
+    const gen = ++previewGen;
+    const prefs = previewPrefs();
+    $("previewsAll").hidden = !canPreview;
+    toggle($("previewsAll"), prefs.all);
     list.forEach((c, i) => {
       const li = document.createElement("li");
       const name = document.createElement("span");
       name.className = "name";
       name.textContent = label(c);
+      // Its cameras, small, under its name (in the apps), with a switch of its own.
+      let head = name, pics = null;
+      if (canPreview) {
+        head = document.createElement("div");
+        head.className = "head";
+        const own = document.createElement("button");
+        own.type = "button";
+        own.className = "quiet small";
+        own.dataset.previews = label(c);
+        own.setAttribute("aria-label", `Camera previews of ${label(c)}`);
+        own.hidden = !prefs.all;
+        toggle(own, !prefs.off.includes(label(c)));
+        own.addEventListener("click", () => {
+          const p = previewPrefs();
+          const off = p.off.includes(label(c));
+          setPreviewPrefs({ ...p, off: off ? p.off.filter((x) => x !== label(c)) : [...p.off, label(c)] });
+          show();
+        });
+        head.append(name, own);
+        pics = document.createElement("div");
+        pics.className = "pics";
+        pics.hidden = !prefs.all || prefs.off.includes(label(c));
+        if (!pics.hidden) previewLoop(c, pics, gen);
+      }
       const go = document.createElement("button");
       go.type = "button";
       go.textContent = "Open";
@@ -89,9 +119,9 @@
         viaBt.textContent = "Bluetooth";
         viaBt.setAttribute("aria-label", `${label(c)} over Bluetooth`);
         viaBt.addEventListener("click", () => openBluetooth(c.host));
-        li.append(name, go, viaBt, remove);
+        li.append(head, ...(pics ? [pics] : []), go, viaBt, remove);
       } else {
-        li.append(name, go, remove);
+        li.append(head, ...(pics ? [pics] : []), go, remove);
       }
       ul.appendChild(li);
     });
@@ -123,6 +153,134 @@
     save([c, ...load().filter((x) => label(x) !== label(c))].slice(0, MAX_SAVED));
     const code = c.key ? `#k=${c.key}` : "";
     location.href = inApp ? `remote-client.html?rig=${encodeURIComponent(`${c.host}:${c.port}`)}${code}` : `http://${c.host}:${c.port}/${code}`;
+  }
+
+  // ---------- each computer's cameras, small, under its name ----------
+  // In the apps, which can reach a computer (the Windows, Mac and Linux app's desktop.rig, the
+  // Android app's Remote, the iPhone app's RigLink; a website can't): its running cameras'
+  // previews, about once a second while this page shows, with its code if it has one (as its
+  // page keeps it). One switch for every computer, and one each; both on until turned off
+  // (remembered here). Tapping a picture opens that computer.
+  const PREVIEWS = "hand-tracker-remote-previews";
+  const PREVIEW_EVERY_MS = 1000;
+  const rigLink = onIphone ? (typeof cap.registerPlugin === "function" ? cap.registerPlugin("RigLink") : cap.Plugins && cap.Plugins.RigLink) : nativeRemote;
+  const canPreview = !!(inDesktopApp || rigLink);
+  let previewGen = 0;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  function previewPrefs() {
+    try {
+      const p = JSON.parse(localStorage.getItem(PREVIEWS) || "{}");
+      return { all: p.all !== false, off: Array.isArray(p.off) ? p.off.filter((x) => typeof x === "string") : [] };
+    } catch {
+      return { all: true, off: [] };
+    }
+  }
+  function setPreviewPrefs(p) {
+    try {
+      localStorage.setItem(PREVIEWS, JSON.stringify(p));
+    } catch {
+      // private browsing: just not remembered
+    }
+  }
+  function toggle(b, on) {
+    b.textContent = on ? "Previews: on" : "Previews: off";
+    b.setAttribute("aria-pressed", String(on));
+    b.classList.toggle("on", on);
+  }
+  $("previewsAll").addEventListener("click", () => {
+    const p = previewPrefs();
+    setPreviewPrefs({ ...p, all: !p.all });
+    show();
+  });
+  // One request to a computer, as its page makes them -> { status, bytes }.
+  async function rigGet(c, path) {
+    const rig = `${c.host}:${c.port}`;
+    let key = "";
+    try {
+      key = localStorage.getItem(`hand-tracker-remote-key:${rig.toLowerCase()}`) || "";
+    } catch {}
+    if (inDesktopApp) {
+      const r = await window.desktop.rig.request({ rig, path, method: "GET", body: null, key });
+      return { status: r.status, bytes: r.body instanceof Uint8Array ? r.body : new Uint8Array(r.body || []) };
+    }
+    const r = await rigLink.rigRequest({ rig, path, method: "GET", body: "", key });
+    return { status: r.status, bytes: Uint8Array.from(atob(r.body || ""), (ch) => ch.charCodeAt(0)) };
+  }
+  // A computer's previews while its row shows (until the list is drawn again).
+  async function previewLoop(c, box, gen) {
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = "Looking…";
+    box.append(note);
+    const shown = []; // [{ fig, img, caption, url }]
+    let cams = [], stateAt = 0;
+    const say = (text) => {
+      note.textContent = text;
+      note.hidden = !text;
+    };
+    const clear = () => {
+      for (const s of shown.splice(0)) {
+        if (s.url) URL.revokeObjectURL(s.url);
+        s.fig.remove();
+      }
+    };
+    while (gen === previewGen) {
+      if (document.hidden) {
+        await sleep(500);
+        continue;
+      }
+      const t0 = Date.now();
+      try {
+        if (Date.now() - stateAt > 4000) {
+          const r = await rigGet(c, "/api/state");
+          stateAt = Date.now();
+          if (r.status === 200) {
+            const s = JSON.parse(new TextDecoder().decode(r.bytes));
+            cams = Array.isArray(s.cameras) ? s.cameras : [];
+            say(cams.length ? "" : "Its cameras are off.");
+          } else {
+            cams = [];
+            say(r.status === 401 ? "Open it once (with its code) to see its cameras here." : "Can't reach it now.");
+          }
+          while (shown.length > cams.length) {
+            const gone = shown.pop();
+            if (gone.url) URL.revokeObjectURL(gone.url);
+            gone.fig.remove();
+          }
+          while (shown.length < cams.length) {
+            const fig = document.createElement("figure");
+            const img = document.createElement("img");
+            img.alt = "";
+            const caption = document.createElement("figcaption");
+            fig.append(img, caption);
+            fig.addEventListener("click", () => open(c));
+            box.append(fig);
+            shown.push({ fig, img, caption, url: null });
+          }
+          cams.forEach((cam, i) => (shown[i].caption.textContent = cam.role || cam.name || `Camera ${i + 1}`));
+        }
+        for (let i = 0; i < cams.length && gen === previewGen; i++) {
+          const r = await rigGet(c, `/api/preview?i=${i}`);
+          if (r.status !== 200 || gen !== previewGen || !shown[i]) continue;
+          const url = URL.createObjectURL(new Blob([r.bytes], { type: "image/jpeg" }));
+          const img = shown[i].img;
+          await new Promise((done) => {
+            img.onload = img.onerror = done;
+            img.src = url;
+          });
+          if (shown[i] && shown[i].url) URL.revokeObjectURL(shown[i].url);
+          if (shown[i]) shown[i].url = url;
+        }
+      } catch {
+        cams = [];
+        stateAt = 0;
+        clear();
+        say("Can't reach it now.");
+        await sleep(4000);
+      }
+      await sleep(Math.max(0, PREVIEW_EVERY_MS - (Date.now() - t0)));
+    }
+    clear();
   }
 
   // In the Windows and Linux app this page is a window of its own: no way "back".

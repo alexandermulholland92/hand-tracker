@@ -170,7 +170,7 @@ In the Windows, Mac and Linux app, a phone can start and stop motion capture wit
 
 1. In the **Record** card, turn on **Remote recording**.
 2. Open the computer's remote recording page:
-   - **From the apps**: *Remote recording* at the top of the Android app or the Windows, Mac and Linux app remembers your computers' names; the page opens right there in the app (the app reaches the computer for it).
+   - **From the apps**: *Remote recording* at the top of the Android app or the Windows, Mac and Linux app remembers your computers' names; the page opens right there in the app (the app reaches the computer for it). Under each name are its running cameras' small previews, about once a second (tap one to open it), with a **Previews** switch for that computer and one at the top for all of them (both on until turned off).
    - **Over Tailscale** (from anywhere, no code needed): `http://<the computer's Tailscale name>:47821`, for example `http://pi:47821`, in any browser, or that name in the apps. The card shows the full address. Only your own devices can reach the computer over Tailscale, and it encrypts everything.
    - **On the computer's own hotspot** (a Raspberry Pi set up with `pi/hotspot-setup.sh`, below; no code needed): join its Wi-Fi, then `http://10.42.0.1:47821`.
    - **On the same Wi-Fi**: scan the QR code in the card with a phone's camera, or paste the address under it (it ends in `#k=` and a code) into the apps. The page keeps the code, so next time just open it again. **New code** stops phones that have the old one. This page isn't encrypted on the way, like most devices' own pages on a home network, so use it on a network you trust.
@@ -530,7 +530,7 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `electron/wifi.js` | The computer's Wi-Fi through NetworkManager (Linux), for changing it from the remote recording page |
 | `pi/hotspot-setup.sh` | A Raspberry Pi's own Wi-Fi hotspot, on whenever it isn't on a Wi-Fi network it knows (or in hotspot mode) |
 | `pi/restart-setup.sh`, `electron/system-control.js` | Restarting a computer, and its cameras' USB (off and on), from the device settings page |
-| `remote.html`, `remote-launcher.js` | The website's Remote recording page: opens a computer's remote recording page by its name |
+| `remote.html`, `remote-launcher.js` | The Remote recording page (website and apps): opens a computer's remote recording page by its name; in the apps, each computer's camera previews under its name |
 | `motion-video.js` | Draws a recording's playback into a video (WebCodecs and a small WebM writer) |
 | `natnet-parse.js` | OptiTrack Motive's NatNet protocol (shared by the desktop and Android apps) |
 | `keyboard.html`, `keyboard.js` | The floating keyboard |

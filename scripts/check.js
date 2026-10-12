@@ -2777,6 +2777,7 @@ async function checkRemoteLauncher(js) {
     }
     if (win) {
       await new Promise((r) => (win.webContents.isLoading() ? win.webContents.once("did-finish-load", r) : r()));
+      const launcherUrl = win.webContents.getURL();
       const wjs = (code) => withLimit(win.webContents.executeJavaScript(code, true), "the Remote recording window");
       out.launcher = await wjs(`(() => {
         document.getElementById("host").value = "not a name!";
@@ -2817,6 +2818,34 @@ async function checkRemoteLauncher(js) {
         };
       })()`);
       out.stillOpen = !win.isDestroyed() && win.webContents.getURL().replace(/[?#].*/, "");
+      // Back on the list of computers, with this one's cameras on: each camera's preview under its
+      // name; its own switch, then the one for every computer, hide them (remembered); on again.
+      const key = new URL(keyed.url).hash.replace("#k=", "");
+      const command = (body) => fetch(`http://127.0.0.1:${port}/api/command`, { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+      await command({ action: "mode", mode: "freeform" });
+      out.camerasOn = await command({ action: "cameras" });
+      await win.loadURL(launcherUrl);
+      out.previews = await wjs(`(async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const until = async (fn, ms = 30000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+        Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+        const pics = () => [...document.querySelectorAll("#saved .pics img")].filter((i) => /^blob:/.test(i.src) && i.naturalWidth > 0);
+        const out = { shown: !!(await until(() => pics().length >= 2 && pics())), captions: [...document.querySelectorAll("#saved .pics figcaption")].map((f) => f.textContent) };
+        const own = () => document.querySelector("#saved button[data-previews]");
+        const box = () => document.querySelector("#saved .pics");
+        out.allSwitch = !document.getElementById("previewsAll").hidden && document.getElementById("previewsAll").getAttribute("aria-pressed");
+        out.ownSwitch = own() && own().getAttribute("aria-pressed");
+        own().click();
+        out.ownOff = { hidden: box().hidden, pressed: own().getAttribute("aria-pressed"), kept: JSON.parse(localStorage.getItem("hand-tracker-remote-previews")) };
+        own().click();
+        out.ownOn = !!(await until(() => !box().hidden && pics().length >= 2));
+        document.getElementById("previewsAll").click();
+        out.allOff = { hidden: box().hidden, ownHidden: own().hidden, pressed: document.getElementById("previewsAll").getAttribute("aria-pressed"), kept: JSON.parse(localStorage.getItem("hand-tracker-remote-previews")) };
+        document.getElementById("previewsAll").click();
+        out.allOn = !!(await until(() => !box().hidden && !own().hidden && pics().length >= 2));
+        return out;
+      })()`);
+      await command({ action: "close" });
       win.close();
     }
     out.mainPage = await js("location.pathname");
@@ -2825,17 +2854,20 @@ async function checkRemoteLauncher(js) {
     shell.openExternal = realOpen;
   }
   out.browser = opened;
-  const l = out.launcher || {}, c = out.client || {};
+  const l = out.launcher || {}, c = out.client || {}, p = out.previews || {};
   const t = c.takes || {};
   const savedTake = t.id ? fs.readdirSync(outDir).filter((f) => f.startsWith(t.id)) : [];
   const leftTake = t.id ? fs.readdirSync(process.env.HAND_TRACKER_REMOTE_DIR).filter((f) => f.startsWith(t.id)) : ["?"];
   out.takeFiles = { saved: savedTake, left: leftTake };
-  check("The Remote recording page (as on the website) opens from the header in a window of its own, and the computer's page opens right there (the app reaching it, its code from the pasted address): its cameras and modes, never a browser",
+  check("The Remote recording page (as on the website) opens from the header in a window of its own, and the computer's page opens right there (the app reaching it, its code from the pasted address): its cameras and modes, never a browser; back on the list, its cameras' previews under its name, hidden by its own switch and by the one for every computer (remembered)",
     out.link.shown && out.link.target === "_blank" && l.backHidden && /doesn't look like/.test(l.error) && /opens here/.test(l.where) &&
       c.path === "/remote-client.html" && c.rig === `127.0.0.1:${port}` && c.hash === "" && /^Hand Tracker on /.test(c.title) && /Cameras off/.test(c.status) &&
       c.cameras >= 2 && c.modes === "Ego,Stereo,Freeform" && c.back && c.saved[0] === (port === 47821 ? "127.0.0.1" : `127.0.0.1:${port}`) && c.wifiHidden &&
       out.stillOpen === "app://hand-tracker/remote-client.html" && out.mainPage === "/index.html" && opened.length === 0 &&
-      t.rows >= 1 && /on this device/.test(t.note) && t.del && t.after === t.rows - 1 && savedTake.length >= 1 && leftTake.length === 0,
+      t.rows >= 1 && /on this device/.test(t.note) && t.del && t.after === t.rows - 1 && savedTake.length >= 1 && leftTake.length === 0 &&
+      out.camerasOn && out.camerasOn.ok && p.shown && p.captions.length >= 2 && p.allSwitch === "true" && p.ownSwitch === "true" &&
+      p.ownOff && p.ownOff.hidden && p.ownOff.pressed === "false" && p.ownOff.kept.off.length === 1 && p.ownOn &&
+      p.allOff && p.allOff.hidden && p.allOff.ownHidden && p.allOff.pressed === "false" && p.allOff.kept.all === false && p.allOn,
     JSON.stringify(out));
 }
 

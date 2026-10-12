@@ -8,7 +8,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'" />
 <title>Remote recording · Hand Tracker</title>
 <style>
   * { box-sizing: border-box; }
@@ -30,6 +30,19 @@
   li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; border-top: 1px solid #2a2c33; }
   li:first-child { border-top: 0; }
   li .name { flex: 1 0 100%; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+  /* In the apps: its name with its previews switch, then its cameras' previews (tap: open it). */
+  li .head { flex: 1 0 100%; display: flex; align-items: center; gap: 8px; }
+  li .head .name { flex: 1 1 auto; }
+  button.small, li .head button { flex: none; font-size: 13px; padding: 6px 10px; }
+  button.on { background: #2b8a3e; }
+  .pics { flex: 1 0 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; }
+  .pics figure { margin: 0; cursor: pointer; }
+  .pics img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; border-radius: 6px; }
+  .pics img:not([src]) { visibility: hidden; }
+  .pics figcaption { font-size: 12px; opacity: 0.7; margin-top: 2px; }
+  .pics .note { grid-column: 1 / -1; }
+  .cardhead { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .cardhead label { flex: 1 1 auto; margin: 0; }
   li button { flex: 1 1 0; min-width: 0; }
   .note { font-size: 13px; opacity: 0.7; }
   .note p { margin: 0 0 8px; }
@@ -61,7 +74,7 @@
     <div class="row"><button type="button" id="btOpen">Connect over Bluetooth</button><button type="button" id="btSettings" class="quiet" hidden>Bluetooth settings</button></div>
   </div>
   <div class="card" id="savedCard" hidden>
-    <label>Connected before</label>
+    <div class="cardhead"><label>Connected before</label><button type="button" id="previewsAll" class="quiet small" aria-label="Camera previews of every computer" hidden>Previews: on</button></div>
     <ul id="saved"></ul>
   </div>
 
