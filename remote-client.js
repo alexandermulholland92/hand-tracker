@@ -1829,32 +1829,64 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeFull(false);
   });
+  // Where the computer numbers its pictures ("image/jpeg; seq=N"), two requests are on their
+  // way at once, each for the picture after the last one asked for: a new one each time, and
+  // about twice as many a second over a link that takes a while each way (up to the camera's
+  // 30). One at a time otherwise (an older Hand Tracker, a phone's own cameras) and over
+  // Bluetooth. The newest picture that has come is shown; an older one coming late isn't.
   async function fullLoop(loop) {
     const img = $("fullImg");
     let url = null, frames = 0, since = performance.now();
-    while (!loop.stop) {
-      try {
-        const res = await api(`/api/preview?i=${loop.i}&full=1`);
-        if (loop.stop) break;
-        if (res.status === 200) {
-          const next = URL.createObjectURL(new Blob([res.bytes], { type: "image/jpeg" }));
-          await new Promise((r) => { img.onload = img.onerror = r; img.src = next; });
-          if (url) URL.revokeObjectURL(url);
-          url = next;
-          frames++;
-          const now = performance.now();
-          if (now - since >= 1000) {
-            $("fullRate").textContent = `${Math.round((frames * 1000) / (now - since))} fps`;
-            frames = 0;
-            since = now;
-          }
-        } else {
-          await sleep(100);
+    let numbered = null, ask = 0, shown = 0, pending = null, drawing = false;
+    const seqOf = (type) => {
+      const m = /;\s*seq=(\d+)/.exec(type || "");
+      return m ? Number(m[1]) : null;
+    };
+    async function show(bytes, seq) {
+      pending = { bytes, seq };
+      if (drawing) return;
+      drawing = true;
+      while (pending && !loop.stop) {
+        const p = pending;
+        pending = null;
+        if (p.seq !== null && p.seq <= shown) continue;
+        const next = URL.createObjectURL(new Blob([p.bytes], { type: "image/jpeg" }));
+        await new Promise((r) => { img.onload = img.onerror = r; img.src = next; });
+        if (url) URL.revokeObjectURL(url);
+        url = next;
+        if (p.seq !== null) shown = p.seq;
+        frames++;
+        const now = performance.now();
+        if (now - since >= 1000) {
+          $("fullRate").textContent = `${Math.round((frames * 1000) / (now - since))} fps`;
+          frames = 0;
+          since = now;
         }
-      } catch {
-        await sleep(500);
+      }
+      drawing = false;
+    }
+    async function asking(first) {
+      while (!loop.stop && (first || numbered)) {
+        try {
+          const res = await api(`/api/preview?i=${loop.i}&full=1&after=${ask++}`);
+          if (loop.stop) break;
+          if (res.status === 200) {
+            const seq = seqOf(res.type);
+            if (numbered === null) {
+              numbered = seq !== null;
+              if (numbered && !bt) asking(false);
+            }
+            if (seq !== null) ask = Math.max(ask, seq);
+            show(res.bytes, seq);
+          } else {
+            await sleep(100);
+          }
+        } catch {
+          await sleep(500);
+        }
       }
     }
+    await asking(true);
     if (url) URL.revokeObjectURL(url);
   }
 

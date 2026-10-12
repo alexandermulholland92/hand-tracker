@@ -35,7 +35,8 @@
  * the browser can't make MP4): the phone's Takes list has them too.
  * Only cameras that are plugged in get a tile. Nothing starts by itself: the cameras only run once the phone (or someone here) asks.
  * While the phone's page is open, each camera's picture with its hands drawn goes to it, up to
- * about 15 times a second (fewer if making them would take much of this computer's time).
+ * about 15 times a second, or 30 for the one looked at full screen (fewer if making them would
+ * take much of this computer's time).
  *
  *   RemoteRecordUI.init({ desktop, mobile, prefs, setPref, app: HandTrackerApp });
  * (On the website it only shows the header's link to remote.html, which opens a rig's page.)
@@ -50,8 +51,9 @@
   const PREVIEW_MS = 66; // at most; less often if making them takes long (PREVIEW_SHARE)
   const PREVIEW_SHARE = 0.5; // of the time, at most, spent making previews
   const PREVIEW_WIDTH = 400;
-  // A camera looked at full screen on the page: that one only, bigger and more often.
-  const FOCUS_MS = 66;
+  // A camera looked at full screen on the page: that one only, bigger and more often (up to
+  // about 30 a second, as the camera's own frames).
+  const FOCUS_MS = 33;
   const FOCUS_WIDTH = 960;
 
   let remote = null, prefs = {}, setPref = () => {}, app = null;
@@ -191,7 +193,7 @@
   }
 
   // Each camera's picture (its tracker's canvas, so the hands are drawn), small, while asked
-  // for; or only the one looked at full screen, bigger. Each about 15 times a second.
+  // for, each about 15 times a second; or only the one looked at full screen, bigger, about 30.
   // want: { on, focus } (or just on/off).
   const small = document.createElement("canvas");
   let focus = null;
@@ -209,7 +211,7 @@
     previewTimer = previewsOn ? setTimeout(() => previewRound(run), 0) : null;
   }
   // A round of previews, then the next as soon as allowed: each camera's about 15 times a
-  // second, unless a round takes long (four cameras on a Raspberry Pi): then as often as keeps
+  // second (full screen 30), unless a round takes long (four cameras on a Raspberry Pi): then as often as keeps
   // making them under PREVIEW_SHARE of the time.
   async function previewRound(run) {
     const t0 = performance.now();
@@ -222,6 +224,69 @@
     if (changed) wantPictures();
     previewTimer = setTimeout(() => previewRound(run), Math.max(0, ms - took));
   }
+  // Each preview's JPEG made in a worker (an OffscreenCanvas) where it can be: made here, it
+  // holds up the page for as long (about 20 ms full screen on a Raspberry Pi 5), and the
+  // cameras' frames that come meanwhile are dropped. Else here, on a canvas.
+  let encoder = null, encoderOff = false, encodeId = 0;
+  const encoding = new Map(); // id -> resolve
+  function workerEncoder() {
+    if (encoder || encoderOff) return encoder;
+    if (typeof OffscreenCanvas === "undefined" || typeof createImageBitmap !== "function" || typeof Worker === "undefined") {
+      encoderOff = true;
+      return null;
+    }
+    try {
+      const src = `onmessage = async (e) => {
+        const { id, bmp, w, h, q } = e.data;
+        try {
+          const c = new OffscreenCanvas(w, h);
+          c.getContext("2d").drawImage(bmp, 0, 0, w, h);
+          bmp.close();
+          const b = await c.convertToBlob({ type: "image/jpeg", quality: q });
+          const buf = await b.arrayBuffer();
+          postMessage({ id, buf }, [buf]);
+        } catch (err) {
+          postMessage({ id, error: String(err) });
+        }
+      };`;
+      encoder = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+      encoder.onmessage = (e) => {
+        const done = encoding.get(e.data.id);
+        encoding.delete(e.data.id);
+        if (done) done(e.data);
+      };
+      encoder.onerror = () => {
+        encoderOff = true;
+        for (const done of encoding.values()) done({ error: "the worker stopped" });
+        encoding.clear();
+      };
+    } catch {
+      encoderOff = true;
+      encoder = null;
+    }
+    return encoder;
+  }
+  async function jpegOf(canvas, w, h, quality) {
+    const worker = workerEncoder();
+    if (worker) {
+      try {
+        const bmp = await createImageBitmap(canvas);
+        const id = ++encodeId;
+        const r = await new Promise((resolve) => {
+          encoding.set(id, resolve);
+          worker.postMessage({ id, bmp, w, h, q: quality }, [bmp]);
+        });
+        if (r.buf) return new Uint8Array(r.buf);
+      } catch {
+        // (here instead, this once)
+      }
+    }
+    small.width = w;
+    small.height = h;
+    small.getContext("2d").drawImage(canvas, 0, 0, w, h);
+    const blob = await new Promise((r) => small.toBlob(r, "image/jpeg", quality));
+    return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+  }
   let sending = false;
   async function sendPreviews() {
     if (sending) return;
@@ -230,11 +295,9 @@
       const out = [];
       for (const { i, canvas } of cams().previewSources()) {
         if (!canvas || !canvas.width || !canvas.height || (focus !== null && i !== focus)) continue;
-        small.width = Math.min(focus !== null ? FOCUS_WIDTH : PREVIEW_WIDTH, canvas.width);
-        small.height = Math.round((small.width * canvas.height) / canvas.width);
-        small.getContext("2d").drawImage(canvas, 0, 0, small.width, small.height);
-        const blob = await new Promise((r) => small.toBlob(r, "image/jpeg", focus !== null ? 0.72 : 0.6));
-        if (blob) out.push({ i, jpeg: new Uint8Array(await blob.arrayBuffer()) });
+        const w = Math.min(focus !== null ? FOCUS_WIDTH : PREVIEW_WIDTH, canvas.width);
+        const jpeg = await jpegOf(canvas, w, Math.round((w * canvas.height) / canvas.width), focus !== null ? 0.72 : 0.6);
+        if (jpeg) out.push({ i, jpeg });
       }
       if (out.length) remote.sendPreviews(out);
     } catch {

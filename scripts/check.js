@@ -2656,6 +2656,27 @@ async function checkRemoteRecording(js) {
       if (r.status === 200) fulls.push(Buffer.from(await r.arrayBuffer()));
     }
     out.full = { frames: fulls.length, small: jpegSize(bytes), size: fulls.length ? jpegSize(fulls[fulls.length - 1]) : null, fps: Math.round((fulls.length * 1000) / (Date.now() - fullFrom)) };
+    // Numbered: two requests on their way at once (as the page asks, each &after= the last one
+    // asked for) get a different picture each, in order, none twice.
+    const seqs = [];
+    let ask = 0;
+    const until = Date.now() + 2000;
+    const asking = async () => {
+      while (Date.now() < until) {
+        const r = await get(`/api/preview?i=1&full=1&after=${ask++}`);
+        const m = /^image\/jpeg; seq=(\d+)$/.exec(r.headers.get("content-type") || "");
+        await r.arrayBuffer();
+        if (r.status === 200 && m) {
+          seqs.push(Number(m[1]));
+          ask = Math.max(ask, Number(m[1]));
+        }
+      }
+    };
+    // (The second once the first has its number, as the page does.)
+    const first = asking();
+    for (let i = 0; i < 100 && !seqs.length; i++) await sleep(10);
+    await Promise.all([first, asking()]);
+    out.numbered = { got: seqs.length, distinct: new Set(seqs).size, fps: Math.round(seqs.length / 2) };
     await sleep(1500);
     out.stop = await (await post("stop")).json();
     const after = await state();
@@ -2734,8 +2755,9 @@ async function checkRemoteRecording(js) {
       out.moved.ok && out.turned.ok && out.changed.map((c) => `${c.role}/${c.rotation}/${c.mirror}`).join() === "wrist_right/0/true,chest/90/false" &&
       out.gridAfter.orders.join() === "3,1" && out.gridAfter.missing === "Not connected: Head, Left wrist" && out.gridAfter.shapes.join() === "wide,tall" &&
       out.badCamera === 400 && out.details.ok && out.detailsKept.contributor === "Sam Smith" && out.detailsKept.task === "Pick up cup" &&
-      out.preview.status === 200 && out.preview.type === "image/jpeg" && out.preview.jpeg && out.preview.kb > 1 &&
+      out.preview.status === 200 && /^image\/jpeg; seq=\d+$/.test(out.preview.type) && out.preview.jpeg && out.preview.kb > 1 &&
       out.full.frames >= 12 && out.full.size && out.full.small && out.full.size.w > out.full.small.w && out.full.fps >= 6 &&
+      out.numbered.got >= 12 && out.numbered.distinct === out.numbered.got &&
       out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
       out.videos.map((v) => v.f).sort().join() === "-video-chest.mp4,-video-head.mp4" && out.videos.every((v) => v.plain && v.video === "h264" && ["aac", "none"].includes(v.sound) && v.kb > 5 && v.fps > 16) &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
@@ -2835,12 +2857,13 @@ async function checkRemoteLauncher(js) {
         const box = () => document.querySelector("#saved .pics");
         out.allSwitch = !document.getElementById("previewsAll").hidden && document.getElementById("previewsAll").getAttribute("aria-pressed");
         out.ownSwitch = own() && own().getAttribute("aria-pressed");
+        out.words = [document.getElementById("previewsAll").textContent, own().textContent];
         own().click();
         out.ownOff = { hidden: box().hidden, pressed: own().getAttribute("aria-pressed"), kept: JSON.parse(localStorage.getItem("hand-tracker-remote-previews")) };
         own().click();
         out.ownOn = !!(await until(() => !box().hidden && pics().length >= 2));
         document.getElementById("previewsAll").click();
-        out.allOff = { hidden: box().hidden, ownHidden: own().hidden, pressed: document.getElementById("previewsAll").getAttribute("aria-pressed"), kept: JSON.parse(localStorage.getItem("hand-tracker-remote-previews")) };
+        out.allOff = { hidden: box().hidden, ownHidden: own().hidden, pressed: document.getElementById("previewsAll").getAttribute("aria-pressed"), words: document.getElementById("previewsAll").textContent, kept: JSON.parse(localStorage.getItem("hand-tracker-remote-previews")) };
         document.getElementById("previewsAll").click();
         out.allOn = !!(await until(() => !box().hidden && !own().hidden && pics().length >= 2));
         return out;
@@ -2866,6 +2889,7 @@ async function checkRemoteLauncher(js) {
       out.stillOpen === "app://hand-tracker/remote-client.html" && out.mainPage === "/index.html" && opened.length === 0 &&
       t.rows >= 1 && /on this device/.test(t.note) && t.del && t.after === t.rows - 1 && savedTake.length >= 1 && leftTake.length === 0 &&
       out.camerasOn && out.camerasOn.ok && p.shown && p.captions.length >= 2 && p.allSwitch === "true" && p.ownSwitch === "true" &&
+      (p.words || []).join() === "All previews: on,Previews: on" && p.allOff && p.allOff.words === "All previews: off" &&
       p.ownOff && p.ownOff.hidden && p.ownOff.pressed === "false" && p.ownOff.kept.off.length === 1 && p.ownOn &&
       p.allOff && p.allOff.hidden && p.allOff.ownHidden && p.allOff.pressed === "false" && p.allOff.kept.all === false && p.allOn,
     JSON.stringify(out));

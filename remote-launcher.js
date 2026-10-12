@@ -69,7 +69,7 @@
     const gen = ++previewGen;
     const prefs = previewPrefs();
     $("previewsAll").hidden = !canPreview;
-    toggle($("previewsAll"), prefs.all);
+    toggle($("previewsAll"), prefs.all, "All previews");
     list.forEach((c, i) => {
       const li = document.createElement("li");
       const name = document.createElement("span");
@@ -182,8 +182,9 @@
       // private browsing: just not remembered
     }
   }
-  function toggle(b, on) {
-    b.textContent = on ? "Previews: on" : "Previews: off";
+  // "Previews: on" (a computer's own), "All previews: on" (the one for every computer).
+  function toggle(b, on, what = "Previews") {
+    b.textContent = `${what}: ${on ? "on" : "off"}`;
     b.setAttribute("aria-pressed", String(on));
     b.classList.toggle("on", on);
   }

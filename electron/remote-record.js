@@ -43,7 +43,9 @@
  * settings: cleanOak).
  * onWantPreviews({ on, focus }): a page is (or stopped) looking at the previews; focus: the
  * camera one is looking at full screen (null for none), which then comes bigger
- * (/api/preview?i=N&full=1). Each preview request waits for that camera's next picture.
+ * (/api/preview?i=N&full=1). Each preview request waits for that camera's next picture; each
+ * picture is numbered (its type is "image/jpeg; seq=N"), and a page asking with &after=N gets the
+ * first after that, so it can have a few requests on their way at once (full screen, faster).
  * keyStore: { load() -> key | null, save(key) } (main.js keeps it encrypted by the OS).
  *
  * takes: () => the remote recording folder (or null: none listed). Its takes (each the files
@@ -385,7 +387,10 @@ class RemoteRecordServer extends EventEmitter {
     this.server = null;
     this.port = null;
     this.state = {};
-    this.previews = new Map(); // camera index -> { jpeg, at }
+    this.previews = new Map(); // camera index -> { jpeg, at, seq }
+    this.previewSeq = new Map(); // camera index -> its last picture's number
+    this.focusFrom = new Map(); // camera index -> its first picture's number since full screen
+    this.previewWaiters = new Set(); // requests waiting for a camera's next picture
     this.wantUntil = 0;
     this.focus = null; // the camera a page is looking at full screen
     this.focusUntil = 0;
@@ -492,14 +497,36 @@ class RemoteRecordServer extends EventEmitter {
   }
 
   setPreview(i, jpeg) {
-    if (Number.isInteger(i) && i >= 0 && i < 16 && jpeg && jpeg.length) this.previews.set(i, { jpeg: Buffer.from(jpeg), at: Date.now() });
+    if (!(Number.isInteger(i) && i >= 0 && i < 16 && jpeg && jpeg.length)) return;
+    const seq = (this.previewSeq.get(i) || 0) + 1;
+    this.previewSeq.set(i, seq);
+    this.previews.set(i, { jpeg: Buffer.from(jpeg), at: Date.now(), seq });
+    for (const check of [...this.previewWaiters]) check();
+  }
+
+  // Until camera i's preview is one that's wanted (wanted(preview) -> true), or ms have gone.
+  nextPreview(i, wanted, ms) {
+    if (wanted(this.previews.get(i))) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.previewWaiters.delete(check);
+        resolve();
+      };
+      const check = () => wanted(this.previews.get(i)) && done();
+      const timer = setTimeout(done, ms);
+      this.previewWaiters.add(check);
+    });
   }
 
   setFocus(i) {
     if (this.focus === i) return;
     this.focus = i;
     // Newly full screen: its next picture is the bigger one (not the small one already here).
-    if (i !== null) this.lastSent.set(i, Date.now());
+    if (i !== null) {
+      this.lastSent.set(i, Date.now());
+      this.focusFrom.set(i, (this.previewSeq.get(i) || 0) + 1);
+    }
     if (this.wanting) this.onWantPreviews({ on: true, focus: i });
   }
 
@@ -641,12 +668,20 @@ class RemoteRecordServer extends EventEmitter {
         this.setFocus(i);
       }
       this.setWanting(true);
-      const since = this.lastSent.get(i) || 0;
-      for (let t = 0; t < NEXT_WAIT_MS && !((this.previews.get(i) || {}).at > since); t += 15) await new Promise((r) => setTimeout(r, 15));
-      if (this.previews.get(i)) this.lastSent.set(i, this.previews.get(i).at);
+      // The next picture after the one numbered &after= (full screen: a bigger one), else after
+      // the one last sent to any page.
+      const after = Number(url.searchParams.get("after"));
+      if (url.searchParams.has("after") && Number.isInteger(after) && after >= 0) {
+        const from = full ? Math.max(after + 1, this.focusFrom.get(i) || 0) : after + 1;
+        await this.nextPreview(i, (p) => p && p.seq >= from, NEXT_WAIT_MS);
+      } else {
+        const since = this.lastSent.get(i) || 0;
+        await this.nextPreview(i, (p) => p && p.at > since, NEXT_WAIT_MS);
+        if (this.previews.get(i)) this.lastSent.set(i, this.previews.get(i).at);
+      }
       const p = this.previews.get(i);
       if (!p || Date.now() - p.at > PREVIEW_STALE_MS) return this.send(res, 204, "");
-      return this.send(res, 200, p.jpeg, "image/jpeg");
+      return this.send(res, 200, p.jpeg, `image/jpeg; seq=${p.seq}`);
     }
     if (req.method === "POST" && url.pathname === "/api/command") {
       // From the page itself: JSON (another website's form can't send that without asking
