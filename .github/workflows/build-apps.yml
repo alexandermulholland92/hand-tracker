@@ -111,6 +111,8 @@ jobs:
             helper="$unpacked/electron/input-helper-mac"
             archs=$(lipo -archs "$helper"); [[ "$archs" == *x86_64* && "$archs" == *arm64* ]]
             printf 'ping\npos\n' | "$helper" | tr '\n' ' ' | grep -E "^ready pong pos -?[0-9]+ -?[0-9]+ $"
+            archs=$(lipo -archs "$unpacked/electron/bluetooth-helper-mac"); [[ "$archs" == *x86_64* && "$archs" == *arm64* ]]
+            /usr/libexec/PlistBuddy -c "Print :NSBluetoothAlwaysUsageDescription" "$app/Contents/Info.plist"
             lipo -archs "$unpacked/node_modules/ffmpeg-static/ffmpeg" | grep -qx "$arch"
             test -f "$unpacked/oak/oak_bridge.py"
           done

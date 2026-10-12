@@ -101,7 +101,7 @@
       "electron/bt-hid-linux.py",
       "electron/tak-convert.ps1",
       "electron/input-helper.ps1",
-      "electron/input-helper-mac",
+      "electron/input-helper-mac", "electron/bluetooth-helper-mac", "electron/bluetooth-helper-win.cs",
       "electron/input-helper-linux.py", "electron/bluetooth-helper-linux.py",
       "oak/**"
     ],
@@ -136,7 +136,8 @@
       "extendInfo": {
         "NSCameraUsageDescription": "Hand Tracker follows your hands with the camera.",
         "NSMicrophoneUsageDescription": "Hand Tracker records sound with videos when you ask it to.",
-        "NSLocalNetworkUsageDescription": "Hand Tracker talks to your phone, other computers running Hand Tracker, and motion capture on your network."
+        "NSLocalNetworkUsageDescription": "Hand Tracker talks to your phone, other computers running Hand Tracker, and motion capture on your network.",
+        "NSBluetoothAlwaysUsageDescription": "Hand Tracker lets a phone reach remote recording over Bluetooth when there's no network between them."
       }
     },
     "dmg": {

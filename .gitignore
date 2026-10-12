@@ -158,3 +158,4 @@ __pycache__/
 oak/usb2-cameras.json
 # The Mac input helper (built from electron/input-helper-mac.m by scripts/build-mac-helper.js)
 electron/input-helper-mac
+electron/bluetooth-helper-mac

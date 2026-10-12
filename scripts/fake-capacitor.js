@@ -404,7 +404,7 @@
     const { RemoteRecordServer } = require("../electron/remote-record.js");
     const ev = events();
     const pending = new Map();
-    let server = null, asked = 0;
+    let server = null, asked = 0, btPassword = false;
     const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8");
     const ask = (action, extra) => new Promise((resolve) => {
       const id = ++asked;
@@ -431,6 +431,16 @@
       },
       async status() {
         return server ? server.status() : off;
+      },
+      // Over Bluetooth (BtRigLink.java): its password kept, nothing advertised here.
+      async bluetooth() {
+        return { available: true, on: !!server && !!btPassword, error: "", password: btPassword ? "set" : null };
+      },
+      async setBluetoothPassword({ password }) {
+        if (typeof password !== "string" || password.length < 8 || password.length > 63) throw new Error("A Bluetooth password is 8 to 63 characters.");
+        calls.push(["rig.setBluetoothPassword"]);
+        btPassword = true;
+        return { available: true, on: !!server, error: "", password: "set" };
       },
       async setKey({ key }) {
         server.key = key;

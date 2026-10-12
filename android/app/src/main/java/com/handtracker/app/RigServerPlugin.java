@@ -1,14 +1,20 @@
 package com.handtracker.app;
 
+import android.Manifest;
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.util.Base64;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -43,6 +49,9 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
+
 /**
  * RigServer — remote recording on the phone itself: while it's on, another device (the PC's
  * Hand Tracker, from its Remote recording page, or any browser) starts and stops motion
@@ -59,8 +68,17 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   start({ key }) / stop() / status() / setKey({ key }) -> { on, port, addresses, urls, viewer }
  *   setState({ state: json }); setPreview({ i, jpeg: base64 }); result({ id, result: json })
  *   events: "command" { id, action, details?, settings? }, "wantPreviews" { on, focus }, "status"
+ *   bluetooth() -> { available, on, error, password: null | "set" }; setBluetoothPassword({ password })
+ *       over Bluetooth Low Energy too (BtRigLink.java), while it's on and a Bluetooth password is
+ *       set (8 to 63 characters; kept as its key only, encrypted with the app's Keystore key);
+ *       "bluetooth" events
  */
-@CapacitorPlugin(name = "RigServer")
+@CapacitorPlugin(
+    name = "RigServer",
+    permissions = {
+        @Permission(alias = "bluetooth", strings = { Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT }),
+    }
+)
 public class RigServerPlugin extends Plugin {
     private static final int FIRST_PORT = 47821;
     private static final int PORTS_TRIED = 10;
@@ -139,6 +157,7 @@ public class RigServerPlugin extends Plugin {
             ticker = Executors.newSingleThreadScheduledExecutor();
             ticker.scheduleWithFixedDelay(this::tick, 1, 1, TimeUnit.SECONDS);
         }
+        startBluetooth();
         JSObject st = status();
         notifyListeners("status", st);
         call.resolve(st);
@@ -157,6 +176,7 @@ public class RigServerPlugin extends Plugin {
         }
         if (ticker != null) ticker.shutdownNow();
         ticker = null;
+        stopBluetooth();
         setWanting(false);
         previews.clear();
         viewerAddress = null;
@@ -168,6 +188,163 @@ public class RigServerPlugin extends Plugin {
     @PluginMethod
     public void status(PluginCall call) {
         call.resolve(status());
+    }
+
+    // ---------- over Bluetooth Low Energy (BtRigLink.java) ----------
+    private volatile BtRigLink link;
+    private volatile String btError = "";
+
+    private boolean btAllowed() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S || getPermissionState("bluetooth") == PermissionState.GRANTED;
+    }
+
+    private SharedPreferences btPrefs() {
+        return getContext().getSharedPreferences("hand-tracker-rig-bluetooth", Context.MODE_PRIVATE);
+    }
+
+    // The Bluetooth password's key, kept encrypted with the app's Keystore key.
+    private BtRigLink.Secret btSecret() {
+        String v = btPrefs().getString("secret", null);
+        if (v == null) return null;
+        try {
+            String[] parts = v.split(":", 2);
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(Cipher.DECRYPT_MODE, RemotePlugin.secretKey(), new GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)));
+            JSONObject o = new JSONObject(new String(c.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), StandardCharsets.UTF_8));
+            return new BtRigLink.Secret(o.getString("salt"), o.getInt("iter"), Base64.decode(o.getString("key"), Base64.NO_WRAP));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private JSObject btStatus() {
+        JSObject o = new JSObject();
+        o.put("available", true);
+        o.put("on", link != null && link.on());
+        o.put("error", btError);
+        o.put("password", btPrefs().contains("secret") ? "set" : JSObject.NULL);
+        return o;
+    }
+
+    private void btTell() {
+        notifyListeners("bluetooth", btStatus());
+    }
+
+    private synchronized void startBluetooth() {
+        if (link != null || server == null) return;
+        BtRigLink.Secret secret = btSecret();
+        if (secret == null) {
+            btError = "";
+            btTell();
+            return;
+        }
+        if (!btAllowed()) {
+            btError = "Allow Nearby devices for Hand Tracker (Set the password again to be asked).";
+            btTell();
+            return;
+        }
+        BtRigLink l = new BtRigLink(getContext(), Build.MODEL, secret, this::relay);
+        String why = l.start();
+        btError = why == null ? "" : why;
+        if (why == null) link = l;
+        // (Advertising says it's on a moment later.)
+        pool.execute(() -> {
+            try {
+                Thread.sleep(1500);
+            } catch (InterruptedException ignored) {
+            }
+            btTell();
+        });
+        btTell();
+    }
+
+    private synchronized void stopBluetooth() {
+        if (link != null) link.stop();
+        link = null;
+        btTell();
+    }
+
+    @PluginMethod
+    public void bluetooth(PluginCall call) {
+        call.resolve(btStatus());
+    }
+
+    @PluginMethod
+    public void setBluetoothPassword(PluginCall call) {
+        String pw = call.getString("password", "");
+        if (pw == null || pw.length() < 8 || pw.length() > 63) {
+            call.reject("A Bluetooth password is 8 to 63 characters.");
+            return;
+        }
+        if (!btAllowed()) {
+            requestPermissionForAlias("bluetooth", call, "afterBluetoothPermission");
+            return;
+        }
+        keepBluetoothPassword(call);
+    }
+
+    @PermissionCallback
+    private void afterBluetoothPermission(PluginCall call) {
+        if (!btAllowed()) {
+            call.reject("Hand Tracker needs the Nearby devices permission for Bluetooth.");
+            return;
+        }
+        keepBluetoothPassword(call);
+    }
+
+    private void keepBluetoothPassword(PluginCall call) {
+        String pw = call.getString("password", "");
+        pool.execute(() -> {
+            try {
+                BtRigLink.Secret s = BtRigLink.makeSecret(pw);
+                JSONObject o = new JSONObject();
+                o.put("salt", s.salt);
+                o.put("iter", s.iter);
+                o.put("key", Base64.encodeToString(s.key, Base64.NO_WRAP));
+                Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+                c.init(Cipher.ENCRYPT_MODE, RemotePlugin.secretKey());
+                byte[] sealed = c.doFinal(o.toString().getBytes(StandardCharsets.UTF_8));
+                btPrefs().edit().putString("secret", Base64.encodeToString(c.getIV(), Base64.NO_WRAP) + ":" + Base64.encodeToString(sealed, Base64.NO_WRAP)).apply();
+                stopBluetooth();
+                startBluetooth();
+                call.resolve(btStatus());
+            } catch (Exception e) {
+                call.reject("Couldn't keep it: " + e.getMessage());
+            }
+        });
+    }
+
+    // One request over Bluetooth, to this server as from a phone it trusts (the password was the proof).
+    private BtRigLink.Answer relay(String method, String pathAndQuery, byte[] body) {
+        Request r = new Request();
+        r.method = method;
+        int q = pathAndQuery.indexOf('?');
+        r.path = q < 0 ? pathAndQuery : pathAndQuery.substring(0, q);
+        r.query = q < 0 ? "" : pathAndQuery.substring(q + 1);
+        r.headers.put("host", "localhost");
+        if ("POST".equals(method)) r.headers.put("content-type", "application/json");
+        r.body = body == null ? new byte[0] : body;
+        r.localAddress = "127.0.0.1";
+        r.remoteAddress = "Bluetooth";
+        r.relayed = true;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try {
+            handle(r, out);
+        } catch (Exception e) {
+            return new BtRigLink.Answer(502, "application/json; charset=utf-8", ("{\"error\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}").getBytes(StandardCharsets.UTF_8));
+        }
+        byte[] all = out.toByteArray();
+        int end = find(all, all.length);
+        if (end < 0) return new BtRigLink.Answer(502, "application/json; charset=utf-8", "{\"error\":\"No answer\"}".getBytes(StandardCharsets.UTF_8));
+        String[] lines = new String(all, 0, end, StandardCharsets.ISO_8859_1).split("\r\n");
+        int status = 502;
+        try {
+            status = Integer.parseInt(lines[0].split(" ")[1]);
+        } catch (Exception ignored) {
+        }
+        String type = "";
+        for (String l : lines) if (l.toLowerCase(Locale.ROOT).startsWith("content-type:")) type = l.substring(13).trim();
+        return new BtRigLink.Answer(status, type, java.util.Arrays.copyOfRange(all, end, all.length));
     }
 
     @PluginMethod
@@ -314,6 +491,7 @@ public class RigServerPlugin extends Plugin {
         Map<String, String> headers = new HashMap<>();
         byte[] body = new byte[0];
         String localAddress, remoteAddress;
+        boolean relayed; // over Bluetooth (BtRigLink): its password was the proof
     }
 
     private void serve(Socket socket) {
@@ -423,6 +601,7 @@ public class RigServerPlugin extends Plugin {
     }
 
     private boolean authorized(Request r) {
+        if (r.relayed) return true;
         if (isTailscale(r.localAddress) && isTailscale(r.remoteAddress) && ownHost(r.headers.get("host"))) return true;
         byte[] given = r.headers.getOrDefault("x-key", "").getBytes(StandardCharsets.UTF_8);
         byte[] k = key.getBytes(StandardCharsets.UTF_8);

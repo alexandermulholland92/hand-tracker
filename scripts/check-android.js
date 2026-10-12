@@ -182,6 +182,7 @@ async function run() {
   check("MediaPipe loads from the APK bundle and tracks", fps >= 15, `${fps} fps`);
   // npm run check:android -- --only remote: just remote recording from the app (once the app's up).
   if (/remote/i.test(only)) {
+    await checkPhoneAsRig(win, js);
     await checkRemoteFromPhone(win, js);
     return checkRemoteBluetoothNetwork(win, js);
   }
@@ -836,6 +837,20 @@ async function checkPhoneAsRig(win, js) {
     return { card: !card.hidden, status: s, pair: !document.getElementById("remotePair").hidden, urls: document.getElementById("remoteUrls").textContent, folderBtn: !document.getElementById("remoteFolderBtn").hidden };
   })()`);
   out.on = { card: on.card, on: on.status && on.status.on, pair: on.pair, pasteable: /paste this address/.test(on.urls), folderBtn: on.folderBtn };
+  // Over Bluetooth too, once a Bluetooth password is set (too short a one refused).
+  out.bluetooth = await js(`(async () => {
+    const $ = (id) => document.getElementById(id);
+    const wait = () => new Promise((r) => setTimeout(r, 300));
+    const before = { row: !$("remoteBtRow").hidden, status: $("remoteBtStatus").textContent };
+    $("remoteBtPassword").value = "short";
+    $("remoteBtSet").click();
+    await wait();
+    const short = $("remoteBtStatus").textContent;
+    $("remoteBtPassword").value = "a long enough one";
+    $("remoteBtSet").click();
+    await wait();
+    return { before, short, after: $("remoteBtStatus").textContent, cleared: $("remoteBtPassword").value === "", asked: window.__fakeCapacitor.calls.filter((c) => c[0] === "rig.setBluetoothPassword").length };
+  })()`);
   const keyed = ((on.status && on.status.urls) || []).find((u) => u.keyed);
   const key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
   const base = `http://127.0.0.1:${on.status && on.status.port}`;
@@ -898,8 +913,10 @@ async function checkPhoneAsRig(win, js) {
   }
   out.off = await js(`(async () => { document.getElementById("remoteToggle").click(); await new Promise((r) => setTimeout(r, 300)); return !(await mobile.remote.status()).on; })()`);
   const t = out.take || {};
-  check("Remote recording on the phone: another device lists the phone's cameras (new ones ticked), picks the mode, starts them and recording (the take details needed and locked), sees each camera (bigger full screen), and the take is saved on the phone, named after its details",
+  check("Remote recording on the phone: over Bluetooth too once its password is set (too short refused); another device lists the phone's cameras (new ones ticked), picks the mode, starts them and recording (the take details needed and locked), sees each camera (bigger full screen), and the take is saved on the phone, named after its details",
     !out.error && out.on.card && out.on.on && out.on.pair && out.on.pasteable && !out.on.folderBtn && out.page && out.noKey === 401 &&
+      out.bluetooth.before.row && /set a password/.test(out.bluetooth.before.status) && /8 to 63/.test(out.bluetooth.short) &&
+      out.bluetooth.after === "on, with its password" && out.bluetooth.cleared && out.bluetooth.asked === 1 &&
       out.state.kind === "rig" && !out.state.running && out.state.screenPictures === undefined &&
       out.available.length >= 1 && out.available.every((c) => c.present && c.use && c.byName) &&
       out.mode.ok && out.refused.ok === false && (out.refused.missing || []).length === 3 &&

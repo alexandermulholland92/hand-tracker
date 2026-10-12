@@ -821,6 +821,13 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
       stop: () => Rig.stop(),
       newKey: async () => Rig.setKey({ key: await key(true) }),
       settings: async () => ({ standby: false, phone: true, folder: `Documents/${FOLDER}`, autostart: { available: false, on: false } }),
+      // Over Bluetooth Low Energy too (BtRigLink.java), with a Bluetooth password set here.
+      bluetooth: () => Rig.bluetooth(),
+      setBluetoothPassword: (password) => Rig.setBluetoothPassword({ password }),
+      onBluetooth: (cb) => {
+        const h = Rig.addListener("bluetooth", cb);
+        return () => Promise.resolve(h).then((x) => x && x.remove && x.remove());
+      },
       setAutostart: async () => false,
       chooseFolder: async () => `Documents/${FOLDER}`,
       saveTake: ({ baseName, files }) => saveFiles({ baseName, files }),

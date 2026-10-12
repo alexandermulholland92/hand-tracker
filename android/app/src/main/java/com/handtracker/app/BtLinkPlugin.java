@@ -62,7 +62,7 @@ import java.util.UUID;
 )
 public class BtLinkPlugin extends Plugin {
     private static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
-    private static final int CONNECT_MS = 15000;
+    private static final int CONNECT_MS = 30000; // (a Windows computer can take 15 s or more)
     private static final int STEP_MS = 10000;
 
     private final Handler main = new Handler(Looper.getMainLooper());
