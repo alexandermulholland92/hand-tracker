@@ -26,9 +26,11 @@
   button.quiet { background: #343a40; font-weight: 500; }
   #error { color: #ff8787; font-size: 14px; min-height: 1.4em; margin-top: 6px; }
   ul { list-style: none; margin: 0; padding: 0; }
-  li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid #2a2c33; }
+  /* Each computer: its name on a line of its own, the ways to open it (and Forget) under it. */
+  li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; border-top: 1px solid #2a2c33; }
   li:first-child { border-top: 0; }
-  li .name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  li .name { flex: 1 0 100%; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+  li button { flex: 1 1 0; min-width: 0; }
   .note { font-size: 13px; opacity: 0.7; }
   .note p { margin: 0 0 8px; }
   code { font-size: 13px; }
