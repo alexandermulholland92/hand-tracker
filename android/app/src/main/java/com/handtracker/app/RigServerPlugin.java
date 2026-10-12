@@ -203,7 +203,7 @@ public class RigServerPlugin extends Plugin {
     }
 
     // The Bluetooth password's key, kept encrypted with the app's Keystore key.
-    private BtRigLink.Secret btSecret() {
+    private BtRigProtocol.Secret btSecret() {
         String v = btPrefs().getString("secret", null);
         if (v == null) return null;
         try {
@@ -211,7 +211,7 @@ public class RigServerPlugin extends Plugin {
             Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
             c.init(Cipher.DECRYPT_MODE, RemotePlugin.secretKey(), new GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)));
             JSONObject o = new JSONObject(new String(c.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), StandardCharsets.UTF_8));
-            return new BtRigLink.Secret(o.getString("salt"), o.getInt("iter"), Base64.decode(o.getString("key"), Base64.NO_WRAP));
+            return new BtRigProtocol.Secret(o.getString("salt"), o.getInt("iter"), Base64.decode(o.getString("key"), Base64.NO_WRAP));
         } catch (Exception e) {
             return null;
         }
@@ -232,7 +232,7 @@ public class RigServerPlugin extends Plugin {
 
     private synchronized void startBluetooth() {
         if (link != null || server == null) return;
-        BtRigLink.Secret secret = btSecret();
+        BtRigProtocol.Secret secret = btSecret();
         if (secret == null) {
             btError = "";
             btTell();
@@ -296,7 +296,7 @@ public class RigServerPlugin extends Plugin {
         String pw = call.getString("password", "");
         pool.execute(() -> {
             try {
-                BtRigLink.Secret s = BtRigLink.makeSecret(pw);
+                BtRigProtocol.Secret s = BtRigLink.makeSecret(pw);
                 JSONObject o = new JSONObject();
                 o.put("salt", s.salt);
                 o.put("iter", s.iter);
@@ -315,7 +315,7 @@ public class RigServerPlugin extends Plugin {
     }
 
     // One request over Bluetooth, to this server as from a phone it trusts (the password was the proof).
-    private BtRigLink.Answer relay(String method, String pathAndQuery, byte[] body) {
+    private BtRigProtocol.Answer relay(String method, String pathAndQuery, byte[] body) {
         Request r = new Request();
         r.method = method;
         int q = pathAndQuery.indexOf('?');
@@ -331,11 +331,11 @@ public class RigServerPlugin extends Plugin {
         try {
             handle(r, out);
         } catch (Exception e) {
-            return new BtRigLink.Answer(502, "application/json; charset=utf-8", ("{\"error\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}").getBytes(StandardCharsets.UTF_8));
+            return new BtRigProtocol.Answer(502, "application/json; charset=utf-8", ("{\"error\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}").getBytes(StandardCharsets.UTF_8));
         }
         byte[] all = out.toByteArray();
         int end = find(all, all.length);
-        if (end < 0) return new BtRigLink.Answer(502, "application/json; charset=utf-8", "{\"error\":\"No answer\"}".getBytes(StandardCharsets.UTF_8));
+        if (end < 0) return new BtRigProtocol.Answer(502, "application/json; charset=utf-8", "{\"error\":\"No answer\"}".getBytes(StandardCharsets.UTF_8));
         String[] lines = new String(all, 0, end, StandardCharsets.ISO_8859_1).split("\r\n");
         int status = 502;
         try {
@@ -344,7 +344,7 @@ public class RigServerPlugin extends Plugin {
         }
         String type = "";
         for (String l : lines) if (l.toLowerCase(Locale.ROOT).startsWith("content-type:")) type = l.substring(13).trim();
-        return new BtRigLink.Answer(status, type, java.util.Arrays.copyOfRange(all, end, all.length));
+        return new BtRigProtocol.Answer(status, type, java.util.Arrays.copyOfRange(all, end, all.length));
     }
 
     @PluginMethod

@@ -17,7 +17,7 @@
  */
 
 const { app, BrowserWindow, protocol, session, ipcMain } = require("electron");
-const { execSync, spawnSync } = require("child_process");
+const { execSync, spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -97,6 +97,86 @@ async function pullFiles(js) {
 // (RemotePlugin.java's RIG and RIG_PATH: Java can't load remote-record.js) is the same as the
 // list the desktop app and these checks use: the same paths, word for word, and the same
 // answer for every address and path tried. (Java and JavaScript read these patterns alike.)
+// The phone app's end of the Bluetooth link (BtRigProtocol.java, which BtRigLink.java carries
+// over Bluetooth) speaks the link bt-link-client.js speaks (the website's and the apps' end): run
+// on this computer's Java (Android Studio's, or JAVA_HOME's), a line each way instead of Bluetooth.
+async function checkRigProtocolJava() {
+  const isWin = process.platform === "win32";
+  const home = [process.env.JAVA_HOME, isWin && "C:\\Program Files\\Android\\Android Studio\\jbr", !isWin && "/Applications/Android Studio.app/Contents/jbr/Contents/Home", !isWin && path.join(os.homedir(), "android-studio/jbr")]
+    .find((d) => d && fs.existsSync(path.join(d, "bin", isWin ? "javac.exe" : "javac")));
+  const name = "The phone app as a rig over Bluetooth (BtRigProtocol.java) and bt-link-client.js speak the same link: the password's key made alike, a session, each request and answer sealed, a long answer deflated in frames that fit, a long request in frames, a picture whole; the wrong password told so; two devices at once";
+  if (!home) return check(name, true, "no Java here: skipped");
+  const out = {};
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-rig-java-"));
+  const bin = (t) => path.join(home, "bin", isWin ? `${t}.exe` : t);
+  const javac = spawnSync(bin("javac"), ["-nowarn", "-encoding", "UTF-8", "-d", dir,
+    path.join(ROOT, "android/app/src/main/java/com/handtracker/app/BtRigProtocol.java"),
+    path.join(__dirname, "jvm/org/json/JSONObject.java"), path.join(__dirname, "jvm/com/handtracker/app/RigProtocolHarness.java")], { encoding: "utf8" });
+  out.compiles = javac.status === 0 || String(javac.stderr || javac.error).slice(0, 400);
+  if (javac.status !== 0) return check(name, false, JSON.stringify(out));
+  const BtLinkClient = require("../bt-link-client.js");
+  const password = "correct horse 42";
+  const java = spawn(bin("java"), ["-cp", dir, "com.handtracker.app.RigProtocolHarness", password], { stdio: ["pipe", "pipe", "pipe"] });
+  let info = null, buf = "", frames = 0, frameMax = 0;
+  const clients = [];
+  const gotInfo = new Promise((resolve) => {
+    java.stdout.on("data", (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const [kind, data] = buf.slice(0, i).trim().split(" ");
+        buf = buf.slice(i + 1);
+        if (kind === "info") resolve((info = JSON.parse(Buffer.from(data, "base64").toString())));
+        if (kind === "tx") {
+          const f = Buffer.from(data, "base64");
+          frames++;
+          frameMax = Math.max(frameMax, f.length);
+          for (const c of clients) c.received(new Uint8Array(f)); // (every device hears every notification)
+        }
+      }
+    });
+  });
+  const MTU = 185;
+  const client = (device, pw) => {
+    const c = BtLinkClient.create({ password: pw, info, write: async (f) => { java.stdin.write(`rx ${device} ${MTU} ${Buffer.from(f).toString("base64")}\n`); } });
+    clients.push(c);
+    return c;
+  };
+  const dec = (r) => Buffer.from(r.bytes).toString();
+  try {
+    await Promise.race([gotInfo, sleep(30000).then(() => { throw new Error("No INFO from Java"); })]);
+    out.info = { name: info.name, iter: info.iter, salt: !!info.salt, key: "key" in info };
+    const a = client("AA", password);
+    let t = Date.now();
+    frames = 0;
+    const st = await a.request({ path: "/api/state" });
+    const state = JSON.parse(dec(st));
+    out.state = { status: st.status, type: st.type, kind: state.kind, host: state.host, filler: state.filler.length, frames, frameMax, ms: Date.now() - t };
+    const long = "x".repeat(2000);
+    const cmd = await a.request({ method: "POST", path: "/api/command", body: JSON.stringify({ action: "scan", note: long }) });
+    out.command = { status: cmd.status, echoed: JSON.parse(JSON.parse(dec(cmd)).got).note === long };
+    const pic = await a.request({ path: "/api/preview?i=0" });
+    out.picture = { status: pic.status, type: pic.type, bytes: pic.bytes.length, whole: [...pic.bytes].every((v, i) => v === (i * 31) % 251) };
+    const b = client("BB", "wrong horse 42");
+    out.wrong = await b.request({ path: "/api/state" }).then(() => "let in", (err) => (err.password ? "password" : err.message));
+    // A second device with the password: its own session, both work.
+    const c = client("CC", password);
+    out.two = [(await c.request({ path: "/api/state" })).status, (await a.request({ path: "/api/state" })).status];
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    java.kill();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  check(name,
+    !out.error && out.compiles === true && out.info.name === "java-rig" && out.info.iter >= 100000 && out.info.salt && !out.info.key &&
+      out.state.status === 200 && /json/.test(out.state.type) && out.state.kind === "rig" && out.state.host === "java-rig" && out.state.filler > 2000 &&
+      out.state.frameMax <= MTU - 3 && out.state.frames < 10 &&
+      out.command.status === 200 && out.command.echoed && out.picture.status === 200 && out.picture.type === "image/jpeg" && out.picture.bytes === 5000 && out.picture.whole &&
+      out.wrong === "password" && out.two.join() === "200,200",
+    JSON.stringify(out));
+}
+
 function checkRigRulesMatch() {
   const { RIG_HOST, RIG_PATH } = require("../electron/remote-record.js");
   const java = fs.readFileSync(path.join(ROOT, "android/app/src/main/java/com/handtracker/app/RemotePlugin.java"), "utf8");
@@ -126,6 +206,7 @@ function checkRigRulesMatch() {
 
 async function run() {
   checkRigRulesMatch();
+  await checkRigProtocolJava();
   execSync("node scripts/build-web.js", { cwd: ROOT, stdio: "inherit" });
   // The phone's /__fleet/<rig>/<camera> (RemotePlugin.java serveFleet): the fake Remote
   // plugin (fake-capacitor.js) says which dashboard and which cookie, as the WebView's would be.
