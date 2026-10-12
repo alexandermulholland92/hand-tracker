@@ -62,6 +62,11 @@ app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 // On ARM boards (a Raspberry Pi), use the GPU even if Chromium's list doubts its driver:
 // hand tracking runs on WebGL, and without the GPU it crawls.
 if (process.platform === "linux" && process.arch === "arm64") app.commandLine.appendSwitch("ignore-gpu-blocklist");
+// On Linux, drawing keeps its own pace (60 a second) rather than the screen's: with the screen
+// off (a Raspberry Pi's blanks after 10 minutes), its pace dropped to a frame or two a second,
+// and each camera preview, picture read back and video frame waited up to a second for one, so
+// a Pi rig's previews and videos (Sentry's too) came at about 1 fps (measured on a Pi 5: 1 -> 30).
+if (process.platform === "linux") app.commandLine.appendSwitch("disable-gpu-vsync");
 
 protocol.registerSchemesAsPrivileged([
   { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
