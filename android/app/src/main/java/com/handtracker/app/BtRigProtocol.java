@@ -191,9 +191,16 @@ final class BtRigProtocol {
         return out.toByteArray();
     }
 
-    // A message as frames that fit the link (each at most mtu - 3 bytes, as notifications are).
+    // A notification's most bytes: at most mtu - 3, and filling Bluetooth's 251-byte radio packets
+    // (with its 7 bytes of headers, 495 is two and 244 one), as electron/bluetooth-link.js.
+    static int frameSize(int mtu) {
+        int most = Math.min(509, (mtu > 0 ? mtu : 23) - 3);
+        return most >= 495 ? 495 : most >= 244 ? 244 : Math.max(20, most);
+    }
+
+    // A message as frames that fit the link (each frameSize(mtu) bytes at most).
     static List<byte[]> frames(int type, int session, int message, byte[] data, int mtu) {
-        int room = Math.max(20, Math.min(509, (mtu > 0 ? mtu : 23) - 3)) - HEAD;
+        int room = frameSize(mtu) - HEAD;
         List<byte[]> out = new ArrayList<>();
         for (int at = 0; at == 0 || at < data.length; at += room) {
             int n = Math.min(room, data.length - at);

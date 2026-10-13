@@ -33,6 +33,7 @@ import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -49,7 +50,8 @@ import java.util.UUID;
  *   connect({ id }) -> { mtu }            connected, its services found
  *   read({ id, characteristic }) -> { value }   (base64)
  *   write({ id, characteristic, value })  with a response
- *   notify({ id, characteristic })        its notifications on: "notification" { id, characteristic, value }
+ *   notify({ id, characteristic })        its notifications on: "notifications" { id, characteristic, values }
+ *                                         (those that came within NOTIFY_BATCH_MS of each other, in order)
  *   disconnect({ id })                    "disconnected" { id } (also when the computer goes)
  */
 @SuppressLint("MissingPermission")
@@ -64,6 +66,10 @@ public class BtLinkPlugin extends Plugin {
     private static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     private static final int CONNECT_MS = 15000;
     private static final int STEP_MS = 10000;
+    // Notifications go to the page together: a picture is ~200 of them, each its own hand-off
+    // to the page otherwise.
+    private static final int NOTIFY_BATCH_MS = 10;
+    private static final int NOTIFY_BATCH_MAX = 64;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private BluetoothGatt gatt;
@@ -74,6 +80,9 @@ public class BtLinkPlugin extends Plugin {
     private PluginCall step;
     private final ArrayDeque<Step> steps = new ArrayDeque<>();
     private Runnable stepTimeout;
+    // Notifications not yet passed to the page ({ characteristic, base64 }), from Bluetooth's thread.
+    private final ArrayList<String[]> notified = new ArrayList<>();
+    private boolean notifyQueued;
 
     private BluetoothAdapter adapter() {
         BluetoothManager bm = getContext().getSystemService(BluetoothManager.class);
@@ -199,6 +208,10 @@ public class BtLinkPlugin extends Plugin {
                     close();
                     return;
                 }
+                // Bluetooth 5's 2M radio mode where both ends can (a Raspberry Pi's is LE 1M only).
+                // Not its quick timing: a Pi's Bluetooth sends ~7 packets a turn, and 7.5 ms turns
+                // halved what it carried (15-37.5 ms all carried ~50 KB a second).
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) g.setPreferredPhy(BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_OPTION_NO_PREFERRED);
                 JSObject ret = new JSObject();
                 ret.put("mtu", mtu);
                 c.resolve(ret);
@@ -239,13 +252,36 @@ public class BtLinkPlugin extends Plugin {
         }
 
         private void changed(BluetoothGattCharacteristic ch, byte[] value) {
-            JSObject ev = new JSObject();
-            ev.put("id", gattId);
-            ev.put("characteristic", ch.getUuid().toString());
-            ev.put("value", Base64.encodeToString(value == null ? new byte[0] : value, Base64.NO_WRAP));
-            notifyListeners("notification", ev);
+            String[] n = { ch.getUuid().toString(), Base64.encodeToString(value == null ? new byte[0] : value, Base64.NO_WRAP) };
+            synchronized (notified) {
+                notified.add(n);
+                if (notified.size() >= NOTIFY_BATCH_MAX) main.post(BtLinkPlugin.this::passNotifications);
+                else if (!notifyQueued) main.postDelayed(BtLinkPlugin.this::passNotifications, NOTIFY_BATCH_MS);
+                notifyQueued = true;
+            }
         }
     };
+
+    // The notifications waiting, to the page: one "notifications" per characteristic in a row.
+    private void passNotifications() {
+        ArrayList<String[]> now;
+        synchronized (notified) {
+            notifyQueued = false;
+            if (notified.isEmpty()) return;
+            now = new ArrayList<>(notified);
+            notified.clear();
+        }
+        for (int at = 0; at < now.size(); ) {
+            String ch = now.get(at)[0];
+            JSArray values = new JSArray();
+            for (; at < now.size() && now.get(at)[0].equals(ch); at++) values.put(now.get(at)[1]);
+            JSObject ev = new JSObject();
+            ev.put("id", gattId);
+            ev.put("characteristic", ch);
+            ev.put("values", values);
+            notifyListeners("notifications", ev);
+        }
+    }
 
     @PluginMethod
     public void connect(PluginCall call) {
@@ -257,6 +293,9 @@ public class BtLinkPlugin extends Plugin {
         }
         main.post(() -> {
             close();
+            synchronized (notified) {
+                notified.clear();
+            }
             gattId = id;
             mtu = 23;
             connecting = call;
@@ -407,6 +446,7 @@ public class BtLinkPlugin extends Plugin {
 
     // The connection's over (why: for what was waiting on it).
     private void gone(String why) {
+        passNotifications(); // (what came before it ended)
         String id = gattId;
         if (connecting != null) {
             connecting.reject(why == null ? "Disconnected." : why);

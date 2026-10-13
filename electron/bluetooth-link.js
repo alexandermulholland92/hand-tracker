@@ -100,9 +100,17 @@ function unpack(buf) {
     return null;
   }
 }
-// A message as frames that fit the link (each at most mtu - 3 bytes, as notifications are).
+// A notification's most bytes: at most mtu - 3, and a size that fills Bluetooth's radio packets
+// (251 bytes each, with the packet length extension every phone and computer here has): with
+// its 7 bytes of headers, 495 is exactly two and 244 one, where 509 took three (the last with 14
+// bytes, a third of the packets sent: a Raspberry Pi's Bluetooth sends so many a turn).
+function frameSize(mtu) {
+  const most = Math.min(509, (mtu || 23) - 3);
+  return most >= 495 ? 495 : most >= 244 ? 244 : Math.max(20, most);
+}
+// A message as frames that fit the link (each frameSize(mtu) bytes at most).
 function frames(type, session, message, data, mtu) {
-  const room = Math.max(20, Math.min(509, (mtu || 23) - 3)) - HEAD;
+  const room = frameSize(mtu) - HEAD;
   const out = [];
   for (let at = 0; at === 0 || at < data.length; at += room) {
     const part = data.subarray(at, at + room);
@@ -194,4 +202,4 @@ class BluetoothLink {
   }
 }
 
-module.exports = { BluetoothLink, SERVICE, INFO, RX, TX, makeSecret, checkPassword, sessionKey, seal, open, pack, unpack, frames, HELLO, WELCOME, DATA, ERROR, FIRST, LAST, HEAD };
+module.exports = { BluetoothLink, SERVICE, INFO, RX, TX, makeSecret, checkPassword, sessionKey, seal, open, pack, unpack, frames, frameSize, HELLO, WELCOME, DATA, ERROR, FIRST, LAST, HEAD };

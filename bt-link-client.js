@@ -222,7 +222,9 @@
           gatt: {
             async connect() {
               drop();
+              // (One at a time on the iPhone; several together on Android: "notifications".)
               handles.push(await plugin.addListener("notification", (e) => e.id === d.id && onValue.forEach((f) => f(e))));
+              handles.push(await plugin.addListener("notifications", (e) => e.id === d.id && (e.values || []).forEach((value) => onValue.forEach((f) => f({ ...e, value })))));
               handles.push(await plugin.addListener("disconnected", (e) => {
                 if (e.id !== d.id) return;
                 drop();

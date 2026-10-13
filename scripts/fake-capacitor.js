@@ -615,7 +615,20 @@
     const { ipcRenderer } = require("electron");
     const ev = events();
     let connected = "";
-    ipcRenderer.on("fake-btlink:notify", (_e, value) => connected && ev.emit("notification", { id: connected, characteristic: "48540004-6c69-6e6b-8000-68616e647472", value }));
+    // (As each app's does: one at a time on the iPhone, together within 10 ms on Android.)
+    const TX = "48540004-6c69-6e6b-8000-68616e647472";
+    let batch = null;
+    ipcRenderer.on("fake-btlink:notify", (_e, value) => {
+      if (!connected) return;
+      if (ios) return ev.emit("notification", { id: connected, characteristic: TX, value });
+      if (batch) return batch.push(value);
+      batch = [value];
+      setTimeout(() => {
+        const values = batch;
+        batch = null;
+        if (connected) ev.emit("notifications", { id: connected, characteristic: TX, values });
+      }, 10);
+    });
     const near = () => {
       try {
         return JSON.parse(localStorage.getItem("__fakeBtLe") || "[]");

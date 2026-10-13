@@ -138,9 +138,16 @@ final class RigLinkProtocol {
         return n > 0 ? Data(out[0..<n]) : nil
     }
 
-    // A message as frames that fit the link (each at most mtu - 3 bytes, as notifications are).
+    // A notification's most bytes: at most mtu - 3, and filling Bluetooth's 251-byte radio packets
+    // (with its 7 bytes of headers, 495 is two and 244 one), as electron/bluetooth-link.js.
+    static func frameSize(_ mtu: Int) -> Int {
+        let most = min(509, (mtu > 0 ? mtu : 23) - 3)
+        return most >= 495 ? 495 : most >= 244 ? 244 : max(20, most)
+    }
+
+    // A message as frames that fit the link (each frameSize(mtu) bytes at most).
     static func frames(_ type: UInt8, _ session: Int, _ message: Int, _ data: [UInt8], _ mtu: Int) -> [Data] {
-        let room = max(20, min(509, (mtu > 0 ? mtu : 23) - 3)) - HEAD
+        let room = frameSize(mtu) - HEAD
         var out: [Data] = []
         var at = 0
         repeat {

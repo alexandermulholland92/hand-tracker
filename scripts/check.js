@@ -1028,6 +1028,18 @@ function checkMacApp() {
 // by reads nothing of it and can't use its session; the server takes the link's token only from
 // itself, and a phone on the Bluetooth network only with the password.
 async function checkBluetoothLink() {
+  // Each notification fills Bluetooth's 251-byte radio packets (with its 7 bytes of headers: 495
+  // is two, 244 one), never over mtu - 3; and the Android and iPhone rigs size theirs the same.
+  const { frameSize, frames: framesOf, HEAD: LINK_HEAD } = require("../electron/bluetooth-link.js");
+  const sizes = Object.fromEntries([23, 185, 247, 250, 300, 512, 517].map((m) => [m, frameSize(m)]));
+  const longOne = framesOf(3, 1, 1, Buffer.alloc(5000), 517).map((f) => f.length);
+  const sizeCode = (file, re) => (re.exec(fs.readFileSync(path.join(__dirname, "..", file), "utf8")) || [])[0] || "";
+  const sameRule = (code) => /509/.test(code) && /495 \? 495 : most >= 244 \? 244 : (Math\.)?max\(20, most\)/.test(code);
+  check("Bluetooth's pieces fill its radio packets (495 bytes at MTU 517: two packets, not 509 in three; 244 at 247; never over mtu - 3), the same in the Android and iPhone rigs",
+    JSON.stringify(sizes) === JSON.stringify({ 23: 20, 185: 182, 247: 244, 250: 244, 300: 244, 512: 495, 517: 495 }) && longOne.slice(0, -1).every((n) => n === 495) && longOne[0] - LINK_HEAD === 489 &&
+      sameRule(sizeCode("android/app/src/main/java/com/handtracker/app/BtRigProtocol.java", /static int frameSize[\s\S]{0,300}/)) &&
+      sameRule(sizeCode("ios/App/App/RigBluetooth.swift", /static func frameSize[\s\S]{0,300}/)),
+    JSON.stringify({ sizes, longOne: longOne.slice(0, 3) }));
   const { BluetoothLink, makeSecret, checkPassword } = require("../electron/bluetooth-link.js");
   const { RemoteRecordServer } = require("../electron/remote-record.js");
   const BtLinkClient = require("../bt-link-client.js");

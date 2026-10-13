@@ -1273,7 +1273,8 @@ async function checkRemoteBluetoothNetwork(win, js) {
   const secret = { ...makeSecret("correct horse 42"), from: "hotspot" };
   const link = new BluetoothLink({ name: "rig-test", secret: () => secret, relay: (r) => server.relay(r), send: (frame) => !wc.isDestroyed() && wc.send("fake-btlink:notify", frame.toString("base64")) });
   ipcMain.handle("fake-btlink:info", () => link.info().toString("base64"));
-  ipcMain.handle("fake-btlink:write", (_e, b64) => link.received("/dev/fake-phone", Buffer.from(b64, "base64"), 247));
+  // (A write's done when the computer has it, not when it has answered: as the platform helpers do.)
+  ipcMain.handle("fake-btlink:write", (_e, b64) => void link.received("/dev/fake-phone", Buffer.from(b64, "base64"), 247));
   const navigated = (step) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`No page loaded (still at ${wc.getURL()})`)), 20000);
     wc.once("did-finish-load", () => {
@@ -1382,6 +1383,38 @@ async function checkRemoteBluetoothNetwork(win, js) {
       const title = await until(() => /[(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent);
       return { title, password: shown("btJoin") };
     })()`);
+    // Full screen over it: pictures (30 a second at the computer), two requests on their way at
+    // once (the notifications passed on together, as the Android app does).
+    const fullNow = { n: 0, most: 0, asked: 0 };
+    const relay = server.relay.bind(server);
+    server.relay = async (r) => {
+      const isFull = /full=1/.test(r.path || "");
+      if (isFull) (fullNow.n++, fullNow.asked++, (fullNow.most = Math.max(fullNow.most, fullNow.n)));
+      try {
+        return await relay(r);
+      } finally {
+        if (isFull) fullNow.n--;
+      }
+    };
+    const pic = require("electron").nativeImage.createFromBitmap(Buffer.alloc(64 * 48 * 4, 90), { width: 64, height: 48 }).toJPEG(70);
+    const feed = setInterval(() => server.setPreview(0, pic), 33);
+    try {
+      out.leFull = await js(`(async () => {
+        ${PAGE}
+        await until(() => document.querySelector("#cam0 .big"));
+        document.querySelector("#cam0 .big").click();
+        const rate = await until(() => /^[1-9]\\d* fps$/.test($("fullRate").textContent) && $("fullRate").textContent, 8000);
+        await sleep(1500);
+        const shownNow = !$("full").hidden && $("fullImg").naturalWidth === 64;
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+        return { rate, shown: shownNow };
+      })()`);
+    } finally {
+      clearInterval(feed);
+      server.relay = relay;
+    }
+    out.leFull.atOnce = fullNow.most;
+    out.leFull.asked = fullNow.asked;
   } catch (err) {
     out.error = String((err && err.stack) || err);
   } finally {
@@ -1393,7 +1426,7 @@ async function checkRemoteBluetoothNetwork(win, js) {
   }
   out.tried = tried;
   const l = out.launcher || {}, off = out.off || {}, c = out.connect || {};
-  check("Remote recording from the app over a computer's Bluetooth network: remote.html says how to join it and opens Bluetooth settings; on none, the computer's page says so; on it, its Bluetooth password is asked for (the wrong one said), the right one connects (over Bluetooth) and is kept; a computer out of reach goes over its Bluetooth network by itself (by name), another one's is offered, and a different computer on it is said; with a VPN keeping the app off it, Bluetooth Low Energy by itself (the computer asked for, its password once, a camera's picture on a tap)",
+  check("Remote recording from the app over a computer's Bluetooth network: remote.html says how to join it and opens Bluetooth settings; on none, the computer's page says so; on it, its Bluetooth password is asked for (the wrong one said), the right one connects (over Bluetooth) and is kept; a computer out of reach goes over its Bluetooth network by itself (by name), another one's is offered, and a different computer on it is said; with a VPN keeping the app off it, Bluetooth Low Energy by itself (the computer asked for, its password once, a camera's picture on a tap, full screen with two requests on their way at once)",
     !out.error && l.card && l.android && !l.web && /isn't on/.test(l.now) && l.settings &&
       /rig=10\.43\.0\.1/.test(decodeURIComponent(off.url || "")) && /Bluetooth Low Energy.*Faster: pair/.test(off.note) && off.settings && !off.password && off.asked &&
       /rig-test needs its Bluetooth password/.test(c.asked || "") && c.wrong && c.title === "Hand Tracker on rig-test (Bluetooth)" && c.panelGone && /Connected to rig-test over Bluetooth/.test(c.message) && c.rows === 1 &&
@@ -1403,7 +1436,8 @@ async function checkRemoteBluetoothNetwork(win, js) {
       out.offered && /want=127\.0\.0\.1/.test(out.offered.url) && out.offered.title &&
       out.le && /VPN/.test(out.le.asked || "") && /needs its Bluetooth password/.test(out.le.asked || "") && out.le.title === "Hand Tracker on rig-test (Bluetooth)" &&
       out.le.panelGone && out.le.tap && out.le.picture && out.le.calls.includes("btlink.connect AA:00:00:00:00:01") && !out.le.calls.includes("btlink.connect AA:00:00:00:00:02") && out.le.kept > 40 &&
-      out.leAgain && out.leAgain.title === "Hand Tracker on rig-test (Bluetooth)" && !out.leAgain.password,
+      out.leAgain && out.leAgain.title === "Hand Tracker on rig-test (Bluetooth)" && !out.leAgain.password &&
+      out.leFull && out.leFull.rate && out.leFull.shown && out.leFull.atOnce === 2 && out.leFull.asked > 4,
     JSON.stringify(out));
 }
 
