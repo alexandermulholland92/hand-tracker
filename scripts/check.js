@@ -816,10 +816,11 @@ async function checkSentry(js) {
     })()`);
     out.handsOff = await tracked();
     out.noTake = await post("record");
+    if (out.noTake.ok) out.noTakeStop = await post("stop");
     Object.assign(out, await pjs(`(async () => {
       ${PAGE}
       const out = {};
-      out.detailsHidden = !!(await until(() => $("detailsPanel").hidden && /hand tracking off/.test(document.querySelector("#cam0 .what").textContent)));
+      out.detailsShown = !!(await until(() => !$("detailsPanel").hidden && /hand tracking off/.test(document.querySelector("#cam0 .what").textContent)));
       out.handsSwitch = !$("sentryHandsBox").hidden && $("sentryHands").textContent;
       $("sentryHands").click();
       out.handsOn = !!(await until(() => $("sentryHands").classList.contains("on") && !$("detailsPanel").hidden && !/hand tracking off/.test(document.querySelector("#cam0 .what").textContent)));
@@ -829,7 +830,7 @@ async function checkSentry(js) {
     out.handsOffAgain = await pjs(`(async () => {
       ${PAGE}
       $("sentryHands").click();
-      return !!(await until(() => !$("sentryHands").classList.contains("on") && $("detailsPanel").hidden));
+      return !!(await until(() => !$("sentryHands").classList.contains("on") && !$("detailsPanel").hidden));
     })()`);
     out.handsOffHere = await tracked();
     // Every box watched again (from the page): the clock is an alert, with its photo on the page.
@@ -952,13 +953,13 @@ async function checkSentry(js) {
   // (A link only where this computer is on Tailscale: an alert's opens its video.)
   out.ntfyLinks = ntfyGot.filter((g) => g.click && g.title !== "Sentry: Test").map((g) => g.click);
   const r = out;
-  check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; while it's on the hands aren't tracked but movement is, the take details are hidden and no take starts, unless its switch tracks them; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; that video played on the page (as a notification's link opens it, from the takes list's ▶, and by its take's name once the alert's no longer listed); deleted from the page (an alert with its files, then every Sentry file, nothing else); ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
+  check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; while it's on the hands aren't tracked but movement is, and a take records videos only (its details stay), unless its switch tracks them; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; that video played on the page (as a notification's link opens it, from the takes list's ▶, and by its take's name once the alert's no longer listed); deleted from the page (an alert with its files, then every Sentry file, nothing else); ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
     !r.error && r.mainPage && r.hiddenState && r.hiddenState.shown === false && r.hiddenAtStart && r.shown && r.direct.every((d) => d.kb > 3) && r.direct[0].bits === r.direct[1].bits && r.direct[3].bits >= r.direct[2].bits * 3 && r.direct[2].bits < r.direct[0].bits &&
       r.test && r.boxes === 144 && r.box.w >= r.box.cellW * 0.7 && r.box.h >= r.box.cellH * 0.6 && parseFloat(r.box.radius) < Math.min(r.box.w, r.box.h) / 2 &&
       r.previewFps >= 8 && r.hot && r.tapped && r.leftOutCell === "15" && r.untapped && r.petsOn && r.petsOff && r.petsState === false &&
       r.armed && r.leftOut.armed && r.leftOut.events === 0 && !r.leftOut.session &&
-      r.handsOff.all === false && r.handsOff.tile === false && r.handsOff.drawn > 0 && r.handsOff.moved > 0 && r.noTake.ok === false && /^Hand tracking is off/.test(r.noTake.message) &&
-      r.detailsHidden && r.handsSwitch === "Off" && r.handsOn && r.handsOnHere.all && r.handsOnHere.tile &&
+      r.handsOff.all === false && r.handsOff.tile === false && r.handsOff.drawn > 0 && r.handsOff.moved > 0 && !/Hand tracking is off/.test(r.noTake.message || "") &&
+      r.detailsShown && r.handsSwitch === "Off" && r.handsOn && r.handsOnHere.all && r.handsOnHere.tile &&
       r.handsOffAgain && r.handsOffHere.all === false && r.handsOffHere.tile === false && r.handsOffHere.drawn > 0 && r.handsOffHere.moved > 0 &&
       r.handsAfterOff === true && r.detailsAfterOff &&
       r.alert && r.event && r.event.photo && r.listed.includes(r.event.camera) && r.off && r.video && r.video.name && r.hiddenAgain && r.hiddenStateAgain === '{"shown":false,"armed":false}' &&
@@ -2241,7 +2242,10 @@ async function checkSeveralOakCameras(js) {
     out.trackingOffShown = [...document.querySelectorAll("#multiCamGrid .st")].map((e) => e.textContent);
     document.getElementById("multiCamRecord").click();
     await sleep(300);
-    out.noTake = { recording: MultiCamera.isRecording(), note: document.getElementById("multiCamNote").textContent };
+    out.videoOnly = { recording: MultiCamera.isRecording(), note: document.getElementById("multiCamNote").textContent, tracked: tracked() };
+    document.getElementById("multiCamRecord").click();
+    await sleep(300);
+    out.videoOnlyStopped = document.getElementById("multiCamNote").textContent;
     MultiCamera.setOptions({ tracking: true });
     out.restartedOn = (await until(() => tracked() === "true:true:1,true:true:1" && running())) || tracked();
     document.getElementById("multiCamRecord").click();
@@ -2262,12 +2266,12 @@ async function checkSeveralOakCameras(js) {
     document.getElementById("motionDiscardBtn").click(); // (an unexported capture would make the next one ask first)
     return out;
   })()`).catch((err) => ({ error: String((err && err.message) || err) }));
-  check("Several cameras with Luxonis OAK cameras: the picker lists them; each gets a tile, its hands found on the camera; with hand tracking off (Sentry mode) each is started again without the hands' models, its picture carrying on and no take starting (one recording keeps its hands until it stops), and with them once it's back on; they record together, hands named by role",
+  check("Several cameras with Luxonis OAK cameras: the picker lists them; each gets a tile, its hands found on the camera; with hand tracking off (Sentry mode) each is started again without the hands' models, its picture carrying on, and a take records without hands (one recording keeps its hands until it stops), and with them once it's back on; they record together, hands named by role",
     r.boxes && r.boxes.filter((b) => b.startsWith("oak:")).length === 2 &&
       r.tiles.length === 2 && r.tiles.every((t) => t.fps > 0 && t.hands.length === 1 && !t.error) && r.tiles.map((t) => t.role).join() === "head,chest" &&
       r.messages.every((d) => d === "none") &&
       r.restartedOff === true && r.trackingOff.every((t) => t.fps > 0 && t.drawn > 0) && r.trackingOffShown.every((t) => /hand tracking off/.test(t)) &&
-      r.noTake.recording === false && /^Hand tracking is off/.test(r.noTake.note) && r.restartedOn === true &&
+      r.videoOnly.recording === true && /videos only/.test(r.videoOnly.note) && r.videoOnly.tracked === "false:false:0,false:false:0" && /No hands were recorded/.test(r.videoOnlyStopped) && r.restartedOn === true &&
       r.whileRecording === "true:true:1,true:true:1" && r.afterRecording === "false:false:0,false:false:0" && r.trackingOn === "true:true:1,true:true:1" &&
       r.labels.every((l) => /Luxonis Simulated OAK SIMULATED-OAK-[AB] · depth/.test(l)) && r.names["SIMULATED-OAK-A"] === "Simulated OAK SIMULATED-OAK-A" &&
       /Head \w+/.test(r.info) && /Chest \w+/.test(r.info) && r.closed,
@@ -2420,6 +2424,9 @@ async function checkRemoteOakSettings(js) {
       const out = { buttons: [...document.querySelectorAll("#camRows [data-oakopen]")].map((b) => b.dataset.oakopen).sort() };
       // On the page to be seen (not just there: the Cameras box was once left hidden).
       out.seen = document.querySelector('[data-oakopen="${A}"]').getClientRects().length > 0;
+      // (Tapped on a phone, the button has the focus as the row is drawn again: it opened only
+      // once something else took it.)
+      document.querySelector('[data-oakopen="${A}"]').focus();
       document.querySelector('[data-oakopen="${A}"]').click();
       out.opened = !!(await until(() => block("${A}")));
       out.rows = [...block("${A}").querySelectorAll("[data-oakset]")].map((e) => e.dataset.oakset);
@@ -2465,6 +2472,31 @@ async function checkRemoteOakSettings(js) {
     await sleep(3500);
     out.changed = await startedWith();
     out.restarted = runningSeen ? await js(`(() => { window.__oakOff(); return window.__oakRunning; })()`) : null;
+    // Its own Hand tracking switch (every camera has one, under its ⚙): off, it starts again
+    // without the hands; the other carries on with them. A webcam's ⚙ has only that switch.
+    out.trackSwitch = await pjs(`(async () => {
+      ${PAGE}
+      const sw = () => block("${A}") && block("${A}").querySelector("[data-track]");
+      const el = await until(() => sw() && !sw().disabled && sw());
+      const was = el.textContent;
+      el.focus();
+      el.click();
+      const off = !!(await until(() => sw() && sw().getAttribute("aria-pressed") === "false"));
+      const web = document.querySelector('#camRows [data-oakopen]:not([data-oakopen^="oak:"])');
+      if (web) web.click();
+      const webBlock = web && (await until(() => block(web.dataset.oakopen)));
+      return { was, off, webTrack: !!(webBlock && webBlock.querySelector("[data-track]")), webOak: webBlock ? webBlock.querySelectorAll("[data-oakset]").length : -1 };
+    })()`);
+    for (let i = 0; i < 100; i++) {
+      const w = await startedWith();
+      if (w.some((x) => x && x.hands === false)) break;
+      await sleep(200);
+    }
+    await sleep(500);
+    out.trackOff = {
+      started: (await startedWith()).map((x) => x && x.hands).sort().join(),
+      state: (await state()).available.cameras.filter((c) => c.id === A || c.id === B).map((c) => `${c.id === A ? "a" : "b"}:${c.tracking}`).sort().join(),
+    };
     // Not while recording.
     await post("settings", { settings: { detailsRequired: false } });
     await post("record");
@@ -2482,14 +2514,19 @@ async function checkRemoteOakSettings(js) {
     }
     await js(`(async () => {
       for (const id of ["${A}", "${B}"]) MultiCamera.setOakSettings(id, null);
+      MultiCamera.setTracking("${A}", true);
       if (!${wasOn} && (await desktop.remote.status()).on) document.getElementById("remoteToggle").click();
       return true;
     })()`).catch(() => {});
   }
   const [sa, sb] = (out.started || []).slice().sort((x, y) => (x && x.night === "on" ? -1 : 1));
   const ch = out.changed || [];
+  const ts = out.trackSwitch || {}, to = out.trackOff || {};
+  check("Remote recording's page: every camera has a Hand tracking switch under its ⚙ (a webcam only that); turned off for one OAK camera, it starts again without the hands while the other keeps them",
+    ts.was === "On" && ts.off && ts.webTrack && ts.webOak === 0 && to.started === "false,true" && to.state === "a:false,b:true",
+    JSON.stringify({ trackSwitch: ts, trackOff: to }));
   check("Remote recording's page: each OAK camera has its own settings (a Settings button on its row: hand model, hands, depth, frame rate, objects, picture, night vision and infrared dots); set there, it starts with them and the other with the usual ones; changed while they run, only that one starts again; not while recording; anything else is refused",
-    !out.error && out.buttons && out.buttons.join() === [A, B].join() && out.seen && out.opened && ["model", "hands", "depth", "fps", "detect", "picture", "night", "dots"].every((k) => out.rows.includes(k)) &&
+    !out.error && out.buttons && out.buttons.filter((b) => b.startsWith("oak:")).join() === [A, B].join() && out.buttons.length > 2 && out.seen && out.opened && ["model", "hands", "depth", "fps", "detect", "picture", "night", "dots"].every((k) => out.rows.includes(k)) &&
       out.before.a && out.before.a.night === "auto" && out.before.a.hands === 2 && out.before.a.depth === true && out.before.webcam === undefined &&
       out.refused.join() === "400,400,400" &&
       out.set.a.night === "on" && out.set.a.dots === true && out.set.a.hands === 1 && out.set.a.depth === false && out.set.a.model === "full" &&
@@ -3154,43 +3191,62 @@ async function checkOakCrashAgain(js) {
     const retry = () => document.querySelector("#multiCamGrid button.retry");
     const had = window.Sentry;
     const watch = async (ms) => {
-      const seen = { runs: 0, notes: [] };
-      let was = "";
+      const seen = { runs: 0, notes: [], gaps: [] };
+      let was = "", ranAt = 0, stoppedAt = 0;
       for (let t = 0; t < ms; t += 25) {
         const now = tile().oakState;
-        if (now === "running" && was !== "running") seen.runs++;
+        if (now === "running" && was !== "running") {
+          seen.runs++;
+          if (stoppedAt) seen.gaps.push(Math.round(performance.now() - stoppedAt));
+        }
+        if (now !== "running" && was === "running") stoppedAt = performance.now();
         was = now;
         const n = (() => { try { return note(); } catch { return ""; } })();
-        if (/Starting it again/.test(n) && !seen.notes.includes(n)) seen.notes.push(n);
+        if (/again in|rests/.test(n) && !seen.notes.includes(n)) seen.notes.push(n);
         await sleep(25);
       }
       seen.again = tile().again;
       seen.error = tile().status && tile().status.error;
+      seen.fps = tile().status && tile().status.fps;
       seen.retryShown = !!retry() && !retry().hidden;
       return seen;
     };
     const out = {};
+    const times = { ...MultiCamera._again };
     try {
+      // (shortened: 0.2 s first, resting 2.5 s after 2 failures)
+      Object.assign(MultiCamera._again, { firstMs: 200, mostMs: 1600, benchMs: 2500, frozenMs: 1500 });
       window.Sentry = Object.assign(Object.create(had || {}), { isArmed: () => true });
       await MultiCamera.start(["oak:SIMULATED-OAK-CRASHES"]);
-      out.armed = await watch(19000);
+      out.armed = await watch(24000);
+      MultiCamera.close();
+      await sleep(500);
+      await MultiCamera.start(["oak:SIMULATED-OAK-FREEZES"]);
+      out.frozen = await watch(9000);
       MultiCamera.close();
       await sleep(500);
       window.Sentry = Object.assign(Object.create(had || {}), { isArmed: () => false });
       await MultiCamera.start(["oak:SIMULATED-OAK-CRASHES-OFF"]);
       out.off = await watch(6000);
     } finally {
+      Object.assign(MultiCamera._again, times);
       window.Sentry = had;
       MultiCamera.close();
       await sleep(300);
     }
     return out;
   })()`).catch((err) => ({ error: String((err && err.message) || err) }));
-  const a = r.armed || {}, o = r.off || {};
-  check("Several cameras: an OAK camera whose own software crashes is started again by itself while Sentry mode is on (3 times in 10 minutes, then left off, saying so, with Try again); not while it's off",
-    a.runs === 4 && a.again === 3 && /own software crashed/.test(a.notes[0] || "") && /left off/.test(a.error || "") && a.retryShown &&
+  const a = r.armed || {}, f = r.frozen || {}, o = r.off || {};
+  const gaps = a.gaps || [];
+  check("Several cameras: an OAK camera whose own software crashes is started again by itself while Sentry mode is on (soon the first time, then resting after 2 failures; 5 times in 10 minutes, then left off, saying so, with Try again); not while it's off",
+    a.runs === 6 && a.again === 5 && /own software crashed.*again in/.test(a.notes[0] || "") && /failed 2 times.*rests/.test(a.notes[1] || "") &&
+      gaps.length === 5 && gaps[0] < 2000 && gaps.slice(1).every((g) => g >= 2400) &&
+      /left off/.test(a.error || "") && a.retryShown &&
       o.runs === 1 && o.again === 0 && /own software crashed/.test(o.error || "") && o.retryShown,
     JSON.stringify(r));
+  check("Several cameras: an OAK camera that runs but sends nothing is stopped and started again while Sentry mode is on, and then runs",
+    f.runs === 2 && f.again === 1 && /sent nothing/.test(f.notes[0] || "") && !f.error && f.fps > 0,
+    JSON.stringify(f));
 }
 
 // An OAK camera that didn't start: its tile says why and has Try again, which starts it.

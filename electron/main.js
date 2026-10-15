@@ -609,6 +609,7 @@ function stopOakStream(id) {
 // Python, streaming like the helper does: a hand moving across a plain picture.
 class SimulatedOak {
   static failedOnce = new Set();
+  static frozeOnce = new Set();
 
   start(options, onMessage) {
     // A camera whose id has FAILS-ONCE doesn't start the first time (for the checks' Try again).
@@ -625,6 +626,8 @@ class SimulatedOak {
     const T = [[0, 0], [-0.04, -0.03], [-0.08, -0.07], [-0.11, -0.1], [-0.13, -0.13], [-0.035, -0.12], [-0.04, -0.17], [-0.043, -0.2], [-0.045, -0.23],
       [0, -0.125], [0, -0.18], [0, -0.215], [0, -0.245], [0.03, -0.115], [0.035, -0.165], [0.038, -0.195], [0.04, -0.22], [0.055, -0.1], [0.065, -0.135], [0.07, -0.16], [0.075, -0.18]];
     const t0 = Date.now();
+    const frozen = /FREEZES/.test(options.device || "") && !SimulatedOak.frozeOnce.has(options.device);
+    if (frozen) SimulatedOak.frozeOnce.add(options.device);
     this.onMessage = onMessage;
     onMessage({ status: "running", camera: options.device ? `Simulated OAK ${options.device}` : "Simulated OAK", width: w, height: h, depth: true, id: options.device || "SIMULATED-OAK", usb: "SUPER",
       far: options.far || null, // (the checks see which far-away mode it was started in)
@@ -644,6 +647,9 @@ class SimulatedOak {
         if (catX > -0.06 && catX < 1.06) frame.objects.unshift({ label: "cat", score: 0.9, box: [Math.max(0, catX - 0.08), 0.72, Math.min(1, catX + 0.08), 0.95], xyz: [Math.round((catX - 0.5) * 3000), 600, 3000] });
       }
       if (options.motion) frame.motion = [0, 0, 0, 0, 0, 0, 0, 1, 2].map((_, i) => (i >= 6 && catX >= 0 && catX < 1 && Math.floor(catX * 3) === i - 6 ? 0.3 : 0));
+      // A camera whose id has FREEZES sends nothing after its first second, the first time it
+      // runs (for the checks' starting a frozen camera again).
+      if (frozen && Date.now() - t0 > 1000) return;
       onMessage({ frame, jpeg });
     }, 33);
     // A camera whose id has CRASHES crashes after a second each time it runs, as oak_bridge.py

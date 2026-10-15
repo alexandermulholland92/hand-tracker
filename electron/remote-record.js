@@ -109,6 +109,7 @@ function cleanPick(p) {
   if (!p || typeof p !== "object" || typeof p.id !== "string" || !/^[A-Za-z0-9:._+/=-]{1,200}$/.test(p.id)) return null;
   const out = { id: p.id };
   if (typeof p.use === "boolean") out.use = p.use;
+  if (typeof p.tracking === "boolean") out.tracking = p.tracking;
   if (ROLES.includes(p.role)) out.role = p.role;
   return out;
 }

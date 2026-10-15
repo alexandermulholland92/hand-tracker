@@ -196,13 +196,20 @@
     night: ["Night vision", [["auto", "Automatic"], ["on", "On"], ["off", "Off"]]],
   };
   const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", dots: "Infrared dots (better depth in the dark, dots on the picture)" };
-  function oakSettingsHtml(c, disabled) {
+  // A camera's own settings, under its ⚙: Hand tracking (every camera), then an OAK camera's.
+  function camSettingsHtml(c, disabled) {
+    const id = esc(c.id), on = c.tracking !== false;
+    const track = `<div class="row"><span class="grow">Hand tracking</span><button type="button" class="small${on ? " on" : ""}" data-track="${id}" aria-pressed="${on}"${disabled ? " disabled" : ""}>${on ? "On" : "Off"}</button></div>`;
+    if (c.oak) return oakSettingsHtml(c, disabled, track);
+    return `<div class="oakset" id="oakset-${id}">${track}<div class="sub">Off: a take records this camera's video, without its hands.</div></div>`;
+  }
+  function oakSettingsHtml(c, disabled, first = "") {
     const o = c.oak, id = esc(c.id), dis = disabled ? " disabled" : "";
     const choice = (k) => `<div class="row"><span class="grow">${OAK_CHOICES[k][0]}</span><select data-oakid="${id}" data-oakset="${k}"${dis}>` +
       OAK_CHOICES[k][1].map(([v, t]) => `<option value="${v}"${String(o[k]) === String(v) ? " selected" : ""}>${t}</option>`).join("") + "</select></div>";
     const sw = (k) => `<div class="row"><span class="grow">${OAK_SWITCHES[k]}</span><button type="button" class="small${o[k] ? " on" : ""}" data-oakid="${id}" data-oakset="${k}" aria-pressed="${!!o[k]}"${dis}>${o[k] ? "On" : "Off"}</button></div>`;
     const depth = o.hasDepth !== false, infrared = o.infrared !== false;
-    return `<div class="oakset" id="oakset-${id}">` + choice("model") + choice("hands") + (depth ? sw("depth") : "") + choice("fps") + sw("detect") + (depth ? choice("picture") : "") +
+    return `<div class="oakset" id="oakset-${id}">` + first + choice("model") + choice("hands") + (depth ? sw("depth") : "") + choice("fps") + sw("detect") + (depth ? choice("picture") : "") +
       (infrared ? choice("night") + sw("dots") : "") +
       `<div class="sub">${infrared ? (o.infrared === null ? "Night vision needs an infrared light (OAK-D Pro); Automatic turns it on when it's dark. " : "Night vision: Automatic turns it on when it's dark. ") : "This camera has no infrared light, so no night vision. "}` +
       "Changed while the camera runs, it starts again with them (a few seconds).</div></div>";
@@ -213,8 +220,13 @@
     if (b.dataset.oakopen) {
       if (openOak.has(b.dataset.oakopen)) openOak.delete(b.dataset.oakopen);
       else openOak.add(b.dataset.oakopen);
+      const id = b.dataset.oakopen;
       shownRows = "";
       if (state) renderCameras(state);
+      const again = [...$("camRows").querySelectorAll("button[data-oakopen]")].find((x) => x.dataset.oakopen === id);
+      if (again) again.focus(); // (the row was drawn again)
+    } else if (b.dataset.track) {
+      command("pick", { pick: { id: b.dataset.track, tracking: b.getAttribute("aria-pressed") !== "true" } });
     } else if (b.dataset.oakset) {
       command("oak", { oak: { id: b.dataset.oakid, options: { [b.dataset.oakset]: b.getAttribute("aria-pressed") !== "true" } } });
     }
@@ -241,7 +253,10 @@
     // An OAK camera's settings can be changed while the cameras run, not while recording.
     const fixed = !!s.recording || sending;
     const sig = JSON.stringify(list) + busy + fixed + [...openOak].join();
-    if (sig !== shownRows && !$("camRows").contains(document.activeElement)) {
+    // (Not while one of its menus is open under a finger; a button tapped there, ⚙ say, has the
+    // focus too, and mustn't hold it back.)
+    const using = document.activeElement && document.activeElement.tagName === "SELECT" && $("camRows").contains(document.activeElement);
+    if (sig !== shownRows && !using) {
       shownRows = sig;
       // One ticked that isn't plugged in can be unticked (it's then off the list) while the others
       // run too: it isn't one of them.
@@ -249,8 +264,8 @@
         `<div class="camrow"><label><input type="checkbox" data-id="${esc(c.id)}"${c.use ? " checked" : ""}${(c.present ? !busy : c.use && !fixed) ? "" : " disabled"} /> ` +
         `<span>${esc(c.label)}${c.present ? "" : ' <span class="gone">not plugged in</span>'}</span></label>` +
         `<select data-id="${esc(c.id)}" aria-label="Role of ${esc(c.label)}"${busy ? " disabled" : ""}>${roleOptions(c.role)}</select>` +
-        (c.oak ? `<button type="button" class="small" data-oakopen="${esc(c.id)}" aria-expanded="${openOak.has(c.id)}" aria-controls="oakset-${esc(c.id)}" aria-label="Settings of ${esc(c.label)}">⚙</button>` : "") +
-        "</div>" + (c.oak && openOak.has(c.id) ? oakSettingsHtml(c, fixed) : "")).join("");
+        `<button type="button" class="small" data-oakopen="${esc(c.id)}" aria-expanded="${openOak.has(c.id)}" aria-controls="oakset-${esc(c.id)}" aria-label="Settings of ${esc(c.label)}">⚙</button>` +
+        "</div>" + (openOak.has(c.id) ? camSettingsHtml(c, fixed) : "")).join("");
     }
     const note = $("camNote");
     note.className = "";
@@ -365,7 +380,7 @@
   // ---------- Sentry mode (sentry.js on the computer) ----------
   // Hidden: tapping the page's title five times (or Ctrl+Alt+S) shows it, on every page the
   // computer serves, and hides it again. Then: on or off (on starts the cameras if they're off),
-  // ignoring pets and animals, tracking hands while it's on (off: the take details are hidden),
+  // ignoring pets and animals, tracking hands while it's on (off: a take records videos only),
   // the boxes over each camera's preview (tap one to leave it out of what's watched; the grid and
   // the sensitivity for every camera), what an alert saves, the alerts on this phone (in the Hand
   // Tracker app) and through ntfy, and the alerts themselves, each with its photo (a slice of the
@@ -1670,8 +1685,6 @@
     $("grid").classList.toggle("one", cams.length === 1);
     $("missing").textContent = cams.length && empty.length ? `Not connected: ${empty.map((b) => ROLES[b][1]).join(", ")}` : "";
 
-    // Hands not tracked (Sentry mode watching): no takes, so no take details either.
-    $("detailsPanel").hidden = s.tracking === false;
     required = s.detailsRequired !== false;
     $("requiredBtn").textContent = required ? "On" : "Off";
     $("requiredBtn").setAttribute("aria-pressed", String(required));

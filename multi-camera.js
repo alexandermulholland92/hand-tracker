@@ -39,7 +39,7 @@
  *   MultiCamera.close();
  *   await MultiCamera.startRecording() / MultiCamera.stopRecording(show, extra)   // -> { ok, message } / the take (or null; extra: added to it)
  *   MultiCamera.remoteState(); MultiCamera.previewSources();           // for remote recording (remote-record-ui.js)
- *   MultiCamera.isTracking()                                           // the tiles track hands now
+ *   MultiCamera.isTracking()                                           // any of the tiles tracks hands now
  *   MultiCamera.sentryViews()                                          // each camera, for Sentry mode (sentry.js)
  *   MultiCamera.setRole(i, role); MultiCamera.setView(i, { rotation, mirror })
  *   MultiCamera.setScreenPictures(on); MultiCamera.screenPictures()   // OAK pictures on this screen (remembered)
@@ -221,7 +221,10 @@
     els.record.disabled = false;
     els.note.textContent = "Each camera has its own hand tracker. With several cameras each one runs slower than a single camera would.";
     clearInterval(statusTimer);
-    statusTimer = setInterval(showStatus, STATUS_MS);
+    statusTimer = setInterval(() => {
+      showStatus();
+      checkFrozen();
+    }, STATUS_MS);
     els.card.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
@@ -291,17 +294,17 @@
     let api = null;
     for (let i = 0; i < 100 && tiles.includes(t) && !(api = tileApi(t)); i++) await sleep(100);
     if (!api || !api.setOptions || !tiles.includes(t)) return;
-    api.setOptions({ tracking: tracking() }); // (from its first frame)
+    api.setOptions({ tracking: tracking(t) }); // (from its first frame)
     await api.ready.catch(() => {});
     if (!tiles.includes(t)) return;
     const { paused, ...rest } = tileOptions;
-    api.setOptions({ ...(paused ? tileOptions : rest), tracking: tracking() });
+    api.setOptions({ ...(paused ? tileOptions : rest), tracking: tracking(t) });
   }
   function setOptions(o = {}) {
     tileOptions = { ...tileOptions, ...o };
     for (const t of tiles) {
       const api = tileApi(t);
-      if (api && api.setOptions) api.setOptions({ ...o, tracking: tracking() });
+      if (api && api.setOptions) api.setOptions({ ...o, tracking: tracking(t) });
     }
     syncOak();
   }
@@ -328,7 +331,7 @@
   // its OAK options, which run on it (Sentry mode's needs added: its small grey picture, and the
   // objects for "ignore pets and animals").
   function oakStart(t) {
-    const hands = tracking(), o = oakSettingsOf(t.deviceId), main = tileOptions.oak || {};
+    const hands = tracking(t), o = oakSettingsOf(t.deviceId), main = tileOptions.oak || {};
     const options = OakSource.cameraOptions({ ...main, fps: o.fps, detect: o.detect || !!main.needObjects, picture: o.picture, night: o.night, dots: o.dots });
     return { lm: o.model, twoHands: o.hands !== 1, xyz: o.depth, ...(hands ? oakFar(tileOptions.far) : { far: null, allHands: false }), ...options, hands };
   }
@@ -368,13 +371,23 @@
     if (tiles.includes(t)) startOakTiles([t]);
   }
 
-  // Hand tracking: off while Sentry mode watches with it off (tileOptions.tracking), but a take
-  // that's recording has its hands tracked until it stops.
-  const tracking = () => tileOptions.tracking !== false || recording;
+  // Hand tracking: each camera's own switch (remote recording's page, under its ⚙; on unless
+  // it's turned off there), and off for every camera while Sentry mode watches with it off
+  // (tileOptions.tracking). A take keeps what each camera had when it started until it stops: a
+  // camera with it off records its video only, and one with it on keeps its hands.
+  const ownTracking = (id) => ((prefs && prefs.cameraTracking) || {})[id] !== false;
+  const tracking = (t) => (recording && typeof t.takeHands === "boolean" ? t.takeHands : tileOptions.tracking !== false && ownTracking(t.deviceId));
+  function setTracking(id, on) {
+    const all = { ...((prefs && prefs.cameraTracking) || {}) };
+    if (on) delete all[id];
+    else all[id] = false;
+    setPref("cameraTracking", all);
+    applyTracking();
+  }
   function applyTracking() {
     for (const t of tiles) {
       const api = tileApi(t);
-      if (api && api.setOptions) api.setOptions({ tracking: tracking() });
+      if (api && api.setOptions) api.setOptions({ tracking: tracking(t) });
     }
     syncOak(); // (an OAK camera finds hands on its own processor: started again without them, or with)
   }
@@ -453,6 +466,7 @@
     const i = tiles.findIndex((x) => x.oak === id);
     const t = tiles[i];
     const api = t && tileApi(t);
+    if (t) t.frameAt = performance.now();
     if (!api || !api.oakHands) return desktop.oak.streamShown(id);
     let hands = null;
     try {
@@ -493,29 +507,59 @@
   }
 
   // An OAK camera that ran and whose helper then stops by itself (the camera's own software
-  // crashing, say) while Sentry mode is on or a take records is started again AGAIN_AFTER_MS
-  // later (not one that never started: unplugged, say): up to AGAIN_TRIES
-  // times in AGAIN_WINDOW_MS, then it's left stopped, saying so.
-  const AGAIN_TRIES = 3, AGAIN_WINDOW_MS = 10 * 60 * 1000, AGAIN_AFTER_MS = 3000;
+  // crashing, say), or that runs but sends nothing for frozenMs, while Sentry mode is on or a take
+  // records is started again (not one that never started: unplugged, say). The first time after
+  // firstMs, twice as long each time after that up to mostMs; one that's failed benchFails times
+  // in benchWindowMs rests benchMs first. Up to `tries` times in windowMs, then it's left
+  // stopped, saying so. (The checks shorten these.)
+  const AGAIN = { tries: 5, windowMs: 10 * 60000, firstMs: 10000, mostMs: 60000, benchFails: 2, benchWindowMs: 5 * 60000, benchMs: 2 * 60000, frozenMs: 10000 };
   const keepGoing = () => recording || !!(global.Sentry && global.Sentry.isArmed && global.Sentry.isArmed());
+  const minutes = (ms) => `${ms / 60000} minute${ms === 60000 ? "" : "s"}`;
+  const span = (ms) => (ms >= 60000 && ms % 60000 === 0 ? minutes(ms) : `${Math.round(ms / 1000)} seconds`);
   function startAgain(t, s) {
     const now = Date.now(), api = tileApi(t);
-    t.again = (t.again || []).filter((at) => now - at < AGAIN_WINDOW_MS);
+    t.again = (t.again || []).filter((at) => now - at < AGAIN.windowMs);
     const why = t.oakError || `The OAK camera stopped${s.detail ? `: ${s.detail}` : "."}`;
-    if (t.again.length >= AGAIN_TRIES) {
+    if (t.again.length >= AGAIN.tries) {
       t.oakState = s.status;
-      if (api && api.oakStatus) api.oakStatus({ ...s, message: `${why} It was started again ${AGAIN_TRIES} times in ${AGAIN_WINDOW_MS / 60000} minutes, so it's left off.` });
+      if (api && api.oakStatus) api.oakStatus({ ...s, message: `${why} It was started again ${AGAIN.tries} times in ${minutes(AGAIN.windowMs)}, so it's left off.` });
       return;
     }
+    const failed = t.again.filter((at) => now - at < AGAIN.benchWindowMs).length + 1;
+    const bench = failed >= AGAIN.benchFails;
+    const wait = Math.max(Math.min(AGAIN.firstMs * 2 ** t.again.length, AGAIN.mostMs), bench ? AGAIN.benchMs : 0);
     t.again.push(now);
     t.oakState = "starting";
     t.restarting = true;
     t.grey = t.objects = null; // (Sentry mode measures afresh once the camera's back)
-    if (api && api.oakStatus) api.oakStatus({ status: "starting", message: `${why} Starting it again…` });
+    const when = bench
+      ? `It failed ${failed} times in ${minutes(AGAIN.benchWindowMs)}, so it rests ${span(wait)} before it's started again…`
+      : `Starting it again in ${span(wait)}…`;
+    if (api && api.oakStatus) api.oakStatus({ status: "starting", message: `${why} ${when}` });
     setTimeout(() => {
       t.restarting = false;
       if (tiles.includes(t) && t.oakState === "starting") startOakTiles([t]);
-    }, AGAIN_AFTER_MS);
+    }, wait);
+  }
+
+  // A running OAK camera that's sent nothing for frozenMs: its helper's stopped and it's started
+  // again as one that crashed (only while Sentry mode is on or a take records, as those).
+  function checkFrozen() {
+    if (!keepGoing()) return;
+    const now = performance.now();
+    for (const t of tiles) {
+      if (!t.oak || t.oakState !== "running" || t.restarting || now - (t.frameAt || now) < AGAIN.frozenMs) continue;
+      t.restarting = true; // (its helper's "stopped" is this)
+      t.oakError = `The OAK camera sent nothing for ${Math.round(AGAIN.frozenMs / 1000)} seconds.`;
+      desktop.oak
+        .streamStop(t.oak)
+        .catch(() => {})
+        .then(() => sleep(2500)) // until the camera is let go
+        .then(() => {
+          t.restarting = false;
+          if (tiles.includes(t)) startAgain(t, { id: t.oak, status: "stopped", code: 1 });
+        });
+    }
   }
 
   function onOakStatus(s) {
@@ -525,6 +569,7 @@
     if (s.status === "running") {
       t.oakState = "running";
       t.ran = true;
+      t.frameAt = performance.now();
       t.cameraHands = s.hands !== false; // (what the camera itself was started with)
       if (t.oakWith !== JSON.stringify(oakStart(t))) setTimeout(() => tiles.includes(t) && syncOak(), 0); // (changed while it started)
       // Remembered by model, so the picker can name it next time; and what it has (an infrared
@@ -582,20 +627,21 @@
       return { ok: false, message };
     };
     if (!tiles.length) return fail("No cameras are running.");
-    if (!tracking()) return fail("Hand tracking is off while Sentry mode watches: turn it on in Sentry mode on remote recording's page (Track hands while it's on), or turn Sentry off, to record.");
     const apis = tiles.map(tileApi);
     if (apis.some((a) => !a)) return fail("Wait for every camera to start.");
     if (app.readyForNewMotion && !app.readyForNewMotion()) return { ok: false, message: "The last capture hasn't been exported." }; // kept unless you say otherwise
     await Promise.all(apis.map((a) => a.ready.catch(() => {})));
     const live = apis.filter((a) => !a.status().error);
     if (!live.length) return fail("No camera is running.");
+    for (const t of tiles) t.takeHands = tracking(t);
     for (const a of live) a.startRecording();
     recording = true;
     recordingSince = Date.now();
     els.record.textContent = "Stop Motion Capture";
     els.record.classList.add("recording");
-    els.note.textContent = "Recording every camera's hands…";
-    return { ok: true, message: `Recording ${live.length} camera${live.length === 1 ? "" : "s"}.` };
+    const hands = tiles.filter((t) => tracking(t) && live.includes(tileApi(t))).length;
+    els.note.textContent = hands ? "Recording every camera's hands…" : "Hand tracking is off for every camera: recording their videos only…";
+    return { ok: true, message: `Recording ${live.length} camera${live.length === 1 ? "" : "s"}${hands ? "" : " (videos only: hand tracking is off)"}.` };
   }
 
   // Returns the take (null if no hands were recorded); show: hand it to the export card.
@@ -603,6 +649,7 @@
   function stopRecording(show = true, extra = null) {
     if (!recording) return null;
     recording = false;
+    for (const t of tiles) delete t.takeHands;
     els.record.textContent = "Start Motion Capture";
     els.record.classList.remove("recording");
     const parts = tiles
@@ -629,14 +676,14 @@
     return {
       running: tiles.length > 0,
       recording,
-      tracking: tracking(),
+      tracking: tiles.some((t) => tracking(t)),
       elapsed_s: recording ? (Date.now() - recordingSince) / 1000 : 0,
       cameras: tiles.map((t, i) => {
         const api = tileApi(t);
         const st = api ? api.status() : null;
         return {
           index: i, name: t.name, roleId: t.role || "", role: CameraRoles.label(t.role) || "", label: t.label, rotation: t.view.rotation, mirror: t.view.mirror,
-          fps: st ? st.fps : 0, hands: st ? st.hands : [], tracking: st ? st.tracking !== false : tracking(), error: st ? st.error || "" : "",
+          fps: st ? st.fps : 0, hands: st ? st.hands : [], tracking: st ? st.tracking !== false : tracking(t), error: st ? st.error || "" : "",
           ...(t.oak ? { oak: true, night: !!t.night } : {}),
         };
       }),
@@ -766,9 +813,10 @@
   }
 
   global.MultiCamera = {
-    init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
+    init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, tracking: ownTracking, setTracking, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
     oakSettings, setOakSettings,
-    isActive: () => tiles.length > 0, isRecording: () => recording, isTracking: tracking,
+    isActive: () => tiles.length > 0, isRecording: () => recording, isTracking: () => tiles.some((t) => tracking(t)),
+    _again: AGAIN, // (the checks shorten its times)
     _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null, cameraHands: t.oak ? t.cameraHands : undefined, oakWith: t.oak ? t.oakWith : undefined, oakState: t.oakState, again: (t.again || []).length })),
   };
 })(window);

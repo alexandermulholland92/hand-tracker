@@ -409,15 +409,24 @@
       const role = i >= 0 ? roles[i] : saved[c.id] && !used.has(saved[c.id]) ? saved[c.id] : "";
       // An OAK camera's own settings (and what it has, once it's run), for the page to show and change.
       const oak = c.id.startsWith("oak:") && cams().oakSettings ? { oak: cams().oakSettings(c.id) } : {};
-      return { id: c.id, label: c.label, present: c.present, use: picked.includes(c.id), role, ...oak };
+      const tracking = cams().tracking ? cams().tracking(c.id) : true; // (its own Hand tracking switch)
+      return { id: c.id, label: c.label, present: c.present, use: picked.includes(c.id), role, tracking, ...oak };
     });
   }
 
   // One camera picked or not, or given a role (a camera that had that role takes its old one).
-  function pick({ id, use, role }) {
+  // tracking: its own Hand tracking switch (a running OAK camera starts again with or without
+  // its hand models).
+  function pick({ id, use, role, tracking }) {
     const list = available();
     const i = list.findIndex((c) => c.id === id);
     if (i < 0) return { ok: false, message: "That camera isn't plugged in any more." };
+    if (typeof tracking === "boolean") {
+      if (!cams().setTracking) return { ok: false, message: "Hand tracking can't be turned off here." };
+      cams().setTracking(id, tracking);
+      const restarts = id.startsWith("oak:") && cams().isActive() && pickedIds().includes(id);
+      return { ok: true, message: `Hand tracking is ${tracking ? "on" : "off"} for ${labelOf(id)}${restarts ? " (it starts again, a few seconds)" : ""}.` };
+    }
     if (typeof use === "boolean") {
       const picked = pickedIds().filter((x) => x !== id);
       if (use && picked.filter((x) => list.some((c) => c.id === x && c.present)).length >= MAX_CAMERAS) return { ok: false, message: `At most ${MAX_CAMERAS} cameras.` };
@@ -691,7 +700,6 @@
     }
     if (action === "record") {
       if (recording) return { ok: true, message: "Already recording." };
-      if (global.Sentry && !global.Sentry.wantsTracking()) return { ok: false, message: "Hand tracking is off while Sentry mode watches: turn it on there (Track hands while it's on), or turn Sentry off, to record a take." };
       const missing = missingDetails();
       if (missing.length) return { ok: false, missing, message: `Fill in ${listOf(missing.map((k) => DETAIL_LABELS[k]))} first: each take is named after them.` };
       const need = requirement({ running: cams().isActive() });

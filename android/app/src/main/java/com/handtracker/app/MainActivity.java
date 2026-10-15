@@ -3,6 +3,8 @@ package com.handtracker.app;
 import android.content.Intent;
 import android.os.Bundle;
 import android.view.WindowManager;
+import android.webkit.WebView;
+import androidx.activity.OnBackPressedCallback;
 import com.getcapacitor.BridgeActivity;
 
 import java.util.regex.Pattern;
@@ -31,6 +33,21 @@ public class MainActivity extends BridgeActivity {
         // A video asked for (a take's ▶, an alert's notification) plays once it has come.
         if (getBridge() != null) getBridge().getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false);
         if (savedInstanceState == null) openPage(getIntent());
+        // Back: the page before this one in the app (the list of computers, a computer's page,
+        // its settings), as in a browser; only from the first page does it leave the app.
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                WebView web = getBridge() == null ? null : getBridge().getWebView();
+                if (web != null && web.canGoBack()) {
+                    web.goBack();
+                    return;
+                }
+                setEnabled(false);
+                getOnBackPressedDispatcher().onBackPressed();
+                setEnabled(true);
+            }
+        });
     }
 
     @Override

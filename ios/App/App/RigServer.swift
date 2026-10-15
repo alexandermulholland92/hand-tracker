@@ -829,6 +829,7 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
         if let pk = msg["pick"] as? [String: Any], let pid = pk["id"] as? String, Self.matches(pid, "^[A-Za-z0-9:._+/=-]{1,200}$") {
             var pick: [String: Any] = ["id": pid]
             if let u = Self.bool(pk["use"]) { pick["use"] = u }
+            if let t = Self.bool(pk["tracking"]) { pick["tracking"] = t }
             if let role = pk["role"] as? String, Self.roles.contains(role) { pick["role"] = role }
             cmd["pick"] = pick
         }
