@@ -9,7 +9,7 @@
  *
  * window.HandControl is the service's bridge (addJavascriptInterface); its calls return ""
  * or a reason it couldn't. Settings come from the page's address: ?settings=<JSON>
- *   { hand, reach, actionsOn, rules, allow, deviceId, mouse }
+ *   { hand, reach, actionsOn, rules, allow, deviceId, mouse, customGestures, mouseGestures }
  */
 
 (function (global) {
@@ -57,8 +57,10 @@
 
   async function start() {
     if (!native) return show("This page runs in the Android app's phone control window.");
+    // Gestures recorded in the app (custom-gestures.js), and which work the hand mouse.
+    if (global.CustomGestures) global.CustomGestures.set(settings.customGestures);
     const prefs = {
-      handMouse: { hand: settings.hand || "Right", reach: String(settings.reach || "0.55"), screen: "primary" },
+      handMouse: { hand: settings.hand || "Right", reach: String(settings.reach || "0.55"), screen: "primary", gestures: settings.mouseGestures || {} },
       gestureActions: { rules: Array.isArray(settings.rules) ? settings.rules : [], on: settings.actionsOn === true, allow: settings.allow || {} },
     };
     global.PcControl.init({ desktop: { pc }, prefs, setPref: () => {}, gestureLabels: global.HandGestures.LABELS, touch: true });

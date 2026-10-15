@@ -582,6 +582,12 @@
         <div id="webMouseNote" class="note"></div>
       </div>
       <div id="mouseStatus" class="note">Hand mouse off</div>
+      <!-- Recorded hand shapes as the hand mouse's buttons (pc-control.js; shown once one's recorded). -->
+      <div id="mouseGestureRow" class="toolbar" hidden>
+        <label title="What clicks (on a phone: taps); held, it drags">Click / tap <select id="mouseLeftWith"></select></label>
+        <label title="What right-clicks (on a phone: a long press)">Right click / long press <select id="mouseRightWith"></select></label>
+        <label title="What holds the pointer still while you move your hand">Hold still <select id="mouseHoldWith"></select></label>
+      </div>
       <div class="section-label">Gesture actions</div>
       <div class="toolbar">
         <button id="actionsToggle" aria-pressed="false" title="Make gestures press keys, type, click, scroll or call a web address. Nothing happens until this is on, and each action has its own switch.">Gesture actions: OFF</button>
@@ -592,6 +598,8 @@
       </div>
       <div id="actionList"></div>
       <div id="actionLog" class="note"></div>
+      <!-- Gestures you record yourself (custom-gestures.js). -->
+      <div id="myGestures"></div>
       <!-- On the PC: letting the Hand Tracker website's hand mouse move this computer's pointer (web-pc.js). -->
       <div id="webLinkPc" hidden>
         <div class="section-label">Control from the website</div>
@@ -850,6 +858,7 @@
 <script src="video-sync.js"></script>
 <script src="video-queue.js"></script>
 <script src="multi-video.js"></script>
+<script src="custom-gestures.js"></script>
 <script src="gestures.js"></script>
 <script src="stage-overlay.js"></script>
 <script src="camera-video.js"></script>

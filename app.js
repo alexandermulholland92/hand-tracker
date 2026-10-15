@@ -195,7 +195,7 @@
       <div class="hand-card ${side.toLowerCase()}">
         <div class="hand-header">
           <span class="hand-name">${side} Hand</span>
-          <span class="gesture-badge" style="background:${gesture.color}22; color:${gesture.color}; border-color:${gesture.color}66">${gesture.label}</span>
+          <span class="gesture-badge" style="background:${gesture.color}22; color:${gesture.color}; border-color:${gesture.color}66">${gesture.label.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</span>
           <span class="compass" style="transform: rotate(${arrowRotation}deg)">➤</span>
         </div>
 
@@ -1783,6 +1783,9 @@
     if (desktop) WebPc.initDesktop({ desktop, prefs, setPref });
     // A phone controlling a PC over Wi-Fi: pairing it (the phone's side, and the PC's).
     PhoneLinkUI.init({ desktop, mobile, prefs, setPref });
+    // Gestures you record yourself: for gesture actions, and as the hand mouse's buttons.
+    CustomGestures.initUI({ prefs, setPref, builtIn: GESTURE_LABELS, builtInLabelOf: (h) => handGestures.builtIn(h).label, onChange: () => PcControl.gesturesChanged() });
+    PcControl.gesturesChanged();
     // Several videos at once: tracked in turn, synced from the hand movement, or queued.
     MultiVideo.init({ desktop, prefs, setPref });
     // Several live cameras at once, each with its own tracker.

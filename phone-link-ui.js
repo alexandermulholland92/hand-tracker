@@ -170,6 +170,7 @@
         hand: mouse.hand || "Right", reach: mouse.reach || "0.55",
         actionsOn: actions.on === true, rules: actions.rules || [], allow: actions.allow || {},
         deviceId: global.HandTracker.getCamera().deviceId || null,
+        customGestures: prefs.customGestures || [], mouseGestures: mouse.gestures || {},
       };
       try {
         // The camera can only be used by one window at a time: the control window takes it.

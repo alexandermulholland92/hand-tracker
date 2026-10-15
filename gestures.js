@@ -8,6 +8,10 @@
  *   g.update(hands);                    // once a frame (HandTracker's hands)
  *   g.of(hand)                          // -> { label, color }
  *   HandGestures.LABELS                 // every name it gives
+ *
+ * Gestures you've recorded (custom-gestures.js, loaded before this) come first: a recorded hand
+ * shape is named ahead of the built-in ones, and a recorded movement is named for a moment
+ * once the hand has made it.
  */
 
 (function (global) {
@@ -186,6 +190,12 @@
         reach(8) > 0.75 * reach(12) && reach(16) > 0.75 * reach(12) && reach(20) > 0.6 * reach(12) && reach(12) > 1.4;
     }
 
+    // A recorded hand shape (custom-gestures.js), else the built-in one.
+    const own = global.CustomGestures || null;
+    function classifyGesture(hand) {
+      return (own && own.matchShape(hand)) || classifyBuiltIn(hand);
+    }
+
     // Gesture classifier built from data we already compute (finger curl,
     // thumb-index distance) plus wrist-relative landmark positions for the
     // one gesture (Thumbs Up) that needs a spatial direction, not just curl.
@@ -193,7 +203,7 @@
     // OK Sign) is checked before a looser one that shares the same signal
     // (e.g. Pinch, which also relies on thumb-index distance).
     // Call it once per frame per hand: the wave detector keeps a history.
-    function classifyGesture(hand) {
+    function classifyBuiltIn(hand) {
       const f = hand.features;
       const c = f.fingerCurls;
       const avgCurl = (c.thumb + c.index + c.middle + c.ring + c.pinky) / 5;
@@ -260,15 +270,22 @@
     // This frame's gesture per side, classified once in the frame handler and
     // shared by the stage labels, hand cards and Both Hands panel.
     let gestures = {};
+    const moves = own ? own.movements() : null; // each hand's recorded movements
     function updateGestures(hands) {
       gestures = {};
+      const builtIn = {};
       for (const hand of hands) {
-        if (!gestures[hand.handedness]) gestures[hand.handedness] = stableGesture(hand.handedness, classifyGesture(hand));
+        if (gestures[hand.handedness]) continue;
+        const b = classifyBuiltIn(hand);
+        builtIn[hand.handedness] = b.label;
+        gestures[hand.handedness] = stableGesture(hand.handedness, (own && own.matchShape(hand)) || b);
       }
+      // A recorded movement just made: its name, for a moment, over the shape's.
+      if (moves) Object.assign(gestures, moves.update(hands, (h) => builtIn[h.handedness] || NO_GESTURE.label));
     }
     const gestureOf = (hand) => gestures[hand.handedness] || NO_GESTURE;
 
-    return { update: updateGestures, of: gestureOf, classify: classifyGesture };
+    return { update: updateGestures, of: gestureOf, classify: classifyGesture, builtIn: classifyBuiltIn };
   }
 
   global.HandGestures = { create, LABELS: GESTURE_LABELS, NONE: NO_GESTURE };

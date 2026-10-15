@@ -80,6 +80,7 @@
   <button class="choice" data-mode="phone"><b>This phone</b><span>A pointer over any app: switch to it and your hand taps, swipes and drags.</span></button>
   <button class="choice" data-mode="pc"><b>A PC</b><span>Over Wi-Fi, with Hand Tracker on the PC.</span></button>
   <button class="choice" data-mode="bluetooth"><b>Bluetooth mouse</b><span>This phone becomes a Bluetooth mouse for an iPhone or iPad.</span></button>
+  <button class="choice" data-mode="gestures"><b>My gestures</b><span>Record your own hand shapes and movements, and choose what gestures do.</span></button>
   <p id="noApp" class="note" hidden>Hand Mouse runs in its Android app.</p>
 </section>
 
@@ -90,6 +91,7 @@
     <canvas id="stage" width="640" height="480"></canvas>
     <div id="stageMessage">Starting the camera…</div>
   </div>
+  <div id="gestureNow" class="note" hidden></div>
 
   <!-- The hand mouse and gesture actions (pc-control.js) and pairing with a PC (phone-link-ui.js)
        work from these controls: the ids are the full app's "Control your PC" card's. -->
@@ -155,6 +157,12 @@
       <button id="keyboardToggle" aria-pressed="false" title="The PC's floating keyboard, typed on with the hand mouse">Floating keyboard: OFF</button>
     </div>
     <div id="mouseStatus" class="note">Hand mouse off</div>
+    <!-- Recorded hand shapes as the hand mouse's buttons (pc-control.js; shown once one's recorded). -->
+    <div id="mouseGestureRow" class="toolbar" hidden>
+      <label title="What clicks (on a phone: taps); held, it drags">Click / tap <select id="mouseLeftWith"></select></label>
+      <label title="What right-clicks (on a phone: a long press)">Right click / long press <select id="mouseRightWith"></select></label>
+      <label title="What holds the pointer still while you move your hand">Hold still <select id="mouseHoldWith"></select></label>
+    </div>
     <div id="phoneSettingsNote" class="note" hidden>Changes here take effect the next time it starts.</div>
 
     <div class="section-label">Gesture actions</div>
@@ -167,12 +175,15 @@
     </div>
     <div id="actionList"></div>
     <div id="actionLog" class="note"></div>
+    <!-- Gestures you record yourself (custom-gestures.js). -->
+    <div id="myGestures"></div>
   </div>
 </section>
 
 <script src="node_modules/@mediapipe/hands/hands.js"></script>
 <script src="node_modules/@mediapipe/drawing_utils/drawing_utils.js"></script>
 <script src="hand-tracker.js"></script>
+<script src="custom-gestures.js"></script>
 <script src="gestures.js"></script>
 <script src="phone-link-protocol.js"></script>
 <script src="hid-core.js"></script>

@@ -24,7 +24,7 @@ const APP_FILES = [
   "app.js", "viewer.js", "mobile-bridge.js", "export-ui.js", "motion-import.js", "mcap.js",
   "hand-tracker.js", "far-hands.js", "robot-motion.js", "hand-3d.js",
   "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js", "ops-sessions.js", "rig-live.js", "rig-ble.js", "timing-check.js", "motion-video.js",
-  "natnet-parse.js", "stage-overlay.js", "remote-core.js", "phone-link-protocol.js", "phone-link-ui.js", "remote-record-ui.js", "remote.html", "remote-launcher.js", "remote-client.html", "remote-client.js", "bt-link-client.js", "gestures.js", "phone-control.html", "phone-control.js", "qr-code.js", "video-native.js",
+  "natnet-parse.js", "stage-overlay.js", "remote-core.js", "phone-link-protocol.js", "phone-link-ui.js", "remote-record-ui.js", "remote.html", "remote-launcher.js", "remote-client.html", "remote-client.js", "bt-link-client.js", "custom-gestures.js", "gestures.js", "phone-control.html", "phone-control.js", "qr-code.js", "video-native.js",
   "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
   "sentry.js", "camera-video.js", "object-finder.js", "object-finder-worker.js", "web-pc.js", "hid-core.js",
 ];
@@ -32,7 +32,7 @@ const APP_FILES = [
 // Hand Mouse: the hand mouse alone (hand-mouse.html), and this phone's control window.
 const HAND_MOUSE = process.argv.includes("--hand-mouse");
 const HAND_MOUSE_FILES = [
-  "hand-mouse.js", "hand-tracker.js", "gestures.js", "phone-link-protocol.js", "hid-core.js", "mobile-bridge.js",
+  "hand-mouse.js", "hand-tracker.js", "custom-gestures.js", "gestures.js", "phone-link-protocol.js", "hid-core.js", "mobile-bridge.js",
   "pc-control.js", "phone-link-ui.js", "phone-control.html", "phone-control.js",
 ];
 const HAND_MOUSE_LIBRARIES = (list) => list.filter((rel) => rel.startsWith("node_modules/@mediapipe/hands/") || rel === "node_modules/@mediapipe/drawing_utils/drawing_utils.js");

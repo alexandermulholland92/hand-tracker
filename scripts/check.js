@@ -111,6 +111,7 @@ const STEPS = [
   ["video-export", ["capture"], checkVideoExport],
   ["gestures", [], checkSimulatedGestures],
   ["photos", [], checkRealHandPhotos],
+  ["own-gestures", [], checkOwnGestures],
   ["readable-text", [], checkReadableText],
   ["tag-size", [], ({ js }) => checkTagSize(js)],
   ["views", [], checkViewsAndKeys],
@@ -384,6 +385,198 @@ async function checkSimulatedGestures({ js }) {
   // hand newly appearing (so smoothing starts fresh). The frames carry their own times (a
   // camera's 30 a second, and a second between photos, longer than the tracker keeps a lost
   // hand), so they needn't wait for the clock: only the hand card's redraw is waited for.
+// Gestures you record yourself (custom-gestures.js), on real hands (the photos' landmarks, fed
+// in as camera frames in real time, as the recorder and the movements go by the clock): a hand
+// shape recorded from one photo is that gesture on the same hand and turned 30°, not on other
+// shapes; a gesture action and the hand mouse's click work with it; a movement recorded three
+// times (a hand drawn round in a circle) is that gesture when drawn again, not when moved
+// straight across; deleted, a rule that used it says so.
+async function checkOwnGestures({ js }) {
+  await js("if (!window.__realSend) window.__realSend = Hands.prototype.send; Hands.prototype.send = async function () {}; true");
+  const r = await js(`(async () => {
+    const cases = ${fs.readFileSync(path.join(__dirname, "fixtures", "gesture-hands.json"), "utf8")}.cases;
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const $ = (id) => document.getElementById(id);
+    const cameraOf = HandTracker.getCamera;
+    const pick = (expect) => cases.find((c) => c.expect === expect && c.variant === "orig");
+    const peace = pick("Peace"), ok = pick("OK Sign"), bird = pick("The Bird");
+    const peaceTurned = cases.find((c) => c.photo === peace.photo && c.variant === "tilt+30");
+    const frame = document.createElement("canvas");
+    // One frame now: a photo's hand, moved by (dx, dy) palm lengths (as seen, mirrored).
+    const show = (c, dx = 0, dy = 0) => {
+      HandTracker.getCamera = () => ({ ...cameraOf(), width: c.width, height: c.height });
+      frame.width = c.width;
+      frame.height = c.height;
+      const a = c.width / c.height, L = c.landmarks;
+      const palm = Math.hypot((L[9][0] - L[0][0]) * a, L[9][1] - L[0][1]);
+      // Each photo's palm in the middle of the picture (as one hand changing shape would stay),
+      // moved from there. (The picture is mirrored: a hand to the right as seen is to the left in it.)
+      const cx = [0, 5, 9, 13, 17].reduce((t, i) => t + L[i][0], 0) / 5, cy = [0, 5, 9, 13, 17].reduce((t, i) => t + L[i][1], 0) / 5;
+      const ox = 0.5 - cx + (-dx * palm) / a, oy = 0.5 - cy + dy * palm;
+      HandTracker._processResults({ image: frame, multiHandLandmarks: [L.map(([x, y, z]) => ({ x: x + ox, y: y + oy, z }))], multiHandedness: [{ label: c.handedness, score: 0.9 }], externalTime: performance.now() });
+    };
+    const none = () => HandTracker._processResults({ image: frame, multiHandLandmarks: [], multiHandedness: [], externalTime: performance.now() });
+    // No hand for a while, so the next is a new one (a photo of the other hand isn't taken for the last).
+    const gap = async () => {
+      for (let i = 0; i < 36; i++) {
+        none();
+        await sleep(33);
+      }
+    };
+    const badgeOf = (c) => {
+      const el = document.querySelector("#slot" + (c.handedness === "Left" ? "Right" : "Left") + " .gesture-badge");
+      return el ? el.textContent : "";
+    };
+    // n frames of a photo, 30 a second; what its hand card said each time.
+    const hold = async (c, n, dx = 0, dy = 0) => {
+      const seen = [];
+      for (let i = 0; i < n; i++) {
+        show(c, dx, dy);
+        await sleep(33);
+        seen.push(badgeOf(c));
+      }
+      return seen;
+    };
+    // A circle (radius 1.5 palm lengths, starting at its left) or a line across (4), in ms.
+    const draw = async (c, kind, ms) => {
+      const n = Math.round(ms / 33), seen = [];
+      for (let i = 1; i <= n; i++) {
+        const t = 0.5 - 0.5 * Math.cos((Math.PI * i) / n); // (eased: slow at both ends, as a hand moves)
+        const [dx, dy] = kind === "circle" ? [1.5 - 1.5 * Math.cos(2 * Math.PI * t), -1.5 * Math.sin(2 * Math.PI * t)] : [4 * t, 0];
+        show(c, dx, dy);
+        await sleep(33);
+        seen.push(badgeOf(c));
+      }
+      return { seen, end: kind === "circle" ? [0, 0] : [4, 0] };
+    };
+    const status = () => $("myGestureStatus").textContent;
+    const until = async (test, ms, c) => {
+      for (const end = performance.now() + ms; performance.now() < end; ) {
+        if (test()) return true;
+        if (c) show(c);
+        else none();
+        await sleep(33);
+      }
+      return test();
+    };
+    const calls = [];
+    const fake = {
+      start: async () => {}, status: () => {}, setKeyboard: async () => {}, pointer: () => {},
+      button: async (w, a) => calls.push(["button", w, a]), wheel: async () => {},
+      key: async (k, a) => calls.push(["key", k, a]), text: async () => {}, web: async () => ({ ok: true, status: 200 }),
+    };
+    const out = {};
+    try {
+      for (let i = 0; i < 4; i++) none();
+      // A hand shape, recorded from the peace photo.
+      $("myGestureName").value = "Spider";
+      $("myGestureShape").click();
+      out.countdown = status();
+      out.shapeSaved = await until(() => /Saved “Spider”/.test(status()), 9000, peace);
+      out.shapeStatus = status();
+      out.list = $("myGestureList").textContent;
+      out.same = (await hold(peace, 12)).pop();
+      await hold(bird, 8);
+      out.turned = (await hold(peaceTurned, 12)).pop();
+      if (ok.handedness !== peace.handedness) await gap();
+      out.ok = (await hold(ok, 12)).pop();
+      if (ok.handedness !== bird.handedness) await gap();
+      out.bird = (await hold(bird, 12)).pop();
+      // A gesture action with it, and it listed for gesture actions.
+      PcControl._setDesktop({ pc: fake });
+      PcControl._setRules([{ enabled: true, gesture: "Spider", hand: "any", action: "keys", value: "volumeup", method: "GET", trigger: "enter", hold: 0.1, every: 0.5 }], true);
+      out.listed = [...document.querySelectorAll('#actionList select[data-f="gesture"] option')].map((o) => o.value).includes("Spider");
+      calls.length = 0;
+      await hold(peace, 15);
+      await hold(bird, 8);
+      out.action = calls.map((c) => c.slice(1).join(" "));
+      PcControl._setRules([], false);
+      // The hand mouse's click, with it.
+      out.mouseRow = !$("mouseGestureRow").hidden;
+      $("mouseLeftWith").value = "Spider";
+      $("mouseLeftWith").dispatchEvent(new Event("change"));
+      const handWas = $("mouseHand").value;
+      $("mouseHand").value = "either";
+      PcControl.setMouse(true);
+      await hold(bird, 10);
+      calls.length = 0;
+      await hold(peace, 7);
+      await hold(bird, 10);
+      // (the left button: the photos are different hands, so switching between them can look like a curl of the middle finger)
+      out.click = calls.filter((c) => c[1] === "left").map((c) => c.slice(1).join(" "));
+      PcControl.setMouse(false);
+      $("mouseHand").value = handWas;
+      $("mouseLeftWith").value = "";
+      $("mouseLeftWith").dispatchEvent(new Event("change"));
+
+      // A movement: the bird photo's hand drawn round in a circle, three times.
+      $("myGestureName").value = "Loop";
+      $("myGestureMove").click();
+      let takes = 0;
+      for (const end = performance.now() + 30000; performance.now() < end && !/Saved “Loop”/.test(status()); ) {
+        if (/draw “Loop” now/.test(status()) && takes < 3) {
+          await hold(bird, 4);
+          await draw(bird, "circle", [950, 1050, 1150][takes]);
+          await hold(bird, 14);
+          takes++;
+        } else await hold(bird, 1);
+      }
+      out.moveStatus = status();
+      out.moveSaved = /Saved “Loop”/.test(status());
+      const g = CustomGestures.list().find((x) => x.name === "Loop");
+      out.moveKept = g ? { kind: g.kind, ms: g.ms, size: g.size, shape: g.shape, tol: g.tol, dirTol: g.dirTol } : null;
+      // Drawn again (a little quicker and bigger): Loop; moved straight across: not.
+      PcControl._setDesktop({ pc: fake });
+      PcControl._setRules([{ enabled: true, gesture: "Loop", hand: "any", action: "keys", value: "playpause", method: "GET", trigger: "enter", hold: 0.3, every: 0.5 }], true);
+      calls.length = 0;
+      await hold(bird, 10);
+      const again = await draw(bird, "circle", 900);
+      const after = await hold(bird, 25);
+      out.loop = [...again.seen, ...after].includes("Loop");
+      out.loopAction = calls.map((c) => c.slice(1).join(" "));
+      calls.length = 0;
+      await hold(bird, 10);
+      const line = await draw(bird, "line", 900);
+      const lineAfter = await hold(bird, 25, 4, 0);
+      out.line = [...line.seen, ...lineAfter].includes("Loop");
+      out.lineAction = calls.length;
+      // Deleted: gone from the list, and a rule that used it says so.
+      PcControl._setRules([{ enabled: true, gesture: "Spider", hand: "any", action: "keys", value: "a", method: "GET", trigger: "enter", hold: 0.3, every: 0.5 }], false);
+      for (const name of ["Spider", "Loop"]) {
+        const row = [...$("myGestureList").querySelectorAll(".action-row")].find((el) => el.querySelector("b").textContent === name);
+        const del = row && row.querySelector("button");
+        if (del) { del.click(); del.click(); }
+      }
+      out.afterDelete = CustomGestures.names();
+      out.notRecorded = [...document.querySelectorAll('#actionList select[data-f="gesture"] option')].map((o) => o.textContent).includes("Spider (not recorded)");
+      out.mouseRowAfter = !$("mouseGestureRow").hidden;
+      PcControl._setRules([], false);
+    } catch (err) {
+      out.error = String((err && err.stack) || err).slice(0, 400);
+    } finally {
+      PcControl._setDesktop(window.desktop);
+      HandTracker.getCamera = cameraOf;
+      none();
+      await sleep(500); // (its hands no longer tracked: a hand in the next check is a new one)
+    }
+    return out;
+  })()`);
+  check("My gestures: a hand shape is recorded after a countdown, held up to the camera, and listed",
+    !r.error && /hold it… 3/.test(r.countdown || "") && r.shapeSaved && /Spider/.test(r.list || "") && /hand shape/.test(r.list || ""), JSON.stringify(r));
+  check("My gestures: the recorded hand shape is that gesture on the same hand, and turned 30°; other shapes keep their own names",
+    r.same === "Spider" && r.turned === "Spider" && r.ok === "OK Sign" && r.bird === "The Bird",
+    JSON.stringify({ same: r.same, turned: r.turned, ok: r.ok, bird: r.bird }));
+  check("My gestures: a recorded hand shape is listed for gesture actions and sets one off",
+    r.listed && Array.isArray(r.action) && r.action.length === 1 && r.action[0] === "volumeup tap", JSON.stringify({ listed: r.listed, action: r.action }));
+  check("My gestures: a recorded hand shape can be the hand mouse's click instead of the index finger's curl",
+    r.mouseRow && Array.isArray(r.click) && (r.click.join() === "left click" || r.click.join() === "left down,left up"), JSON.stringify({ row: r.mouseRow, click: r.click }));
+  check("My gestures: a movement recorded three times (a circle drawn in the air, with the hand as The Bird) is that gesture when drawn again, and sets off its gesture action once; moved straight across, it isn't",
+    r.moveSaved && r.moveKept && r.moveKept.kind === "movement" && r.moveKept.shape === "The Bird" && r.loop && Array.isArray(r.loopAction) && r.loopAction.length === 1 && r.loopAction[0] === "playpause tap" && r.line === false && r.lineAction === 0,
+    JSON.stringify({ status: r.moveStatus, kept: r.moveKept, loop: r.loop, loopAction: r.loopAction, line: r.line, lineAction: r.lineAction }));
+  check("My gestures: deleted (tapped twice), a gesture's gone, and a rule that used it says it isn't recorded",
+    Array.isArray(r.afterDelete) && r.afterDelete.length === 0 && r.notRecorded && r.mouseRowAfter === false, JSON.stringify({ left: r.afterDelete, notRecorded: r.notRecorded, row: r.mouseRowAfter }));
+}
+
 async function checkRealHandPhotos({ js }) {
   // Only these hands: the camera's own frames stop reaching MediaPipe meanwhile ("views" lets them back).
   await js("if (!window.__realSend) window.__realSend = Hands.prototype.send; Hands.prototype.send = async function () {}; true");

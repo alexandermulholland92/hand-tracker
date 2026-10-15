@@ -20,6 +20,12 @@
  *
  *   PcControl.init({ desktop, prefs, setPref, gestureLabels, touch });   // touch: working a touchscreen
  *   PcControl.update(hands, gestureOf, mirrored);   // every frame
+ *   PcControl.gesturesChanged();   // gestures recorded or deleted (custom-gestures.js)
+ *
+ * Gestures you've recorded (custom-gestures.js) are gestures for gesture actions too, and a
+ * recorded hand shape can be the hand mouse's click (tap), right click (long press) or
+ * hold-still instead of its finger curls (prefs.handMouse.gestures: { left, right, hold }).
+ * Nothing happens while one's being recorded.
  */
 
 (function (global) {
@@ -174,6 +180,27 @@
     return { st, started: !wasCurled && st.curled, ended: wasCurled && !st.curled };
   }
 
+  // A button worked by a recorded hand shape instead of a finger: "curled" while the hand is
+  // that shape (as fingerState gives it).
+  function shapeState(f, on, now) {
+    const st = mouse.fingers[f] || (mouse.fingers[f] = { curled: false, since: 0, cancelled: false });
+    const wasCurled = st.curled;
+    if (on && !st.curled) {
+      st.curled = true;
+      st.since = now;
+      st.cancelled = false;
+    } else if (!on && st.curled) st.curled = false;
+    return { st, started: !wasCurled && st.curled, ended: wasCurled && !st.curled };
+  }
+  // Which recorded shapes work the hand mouse (those still recorded): { left, right, hold }.
+  let mouseGestures = {};
+  function mouseMap() {
+    const own = global.CustomGestures ? global.CustomGestures.shapeNames() : [];
+    const m = {};
+    for (const k of ["left", "right", "hold"]) if (mouseGestures[k] && own.includes(mouseGestures[k])) m[k] = mouseGestures[k];
+    return m;
+  }
+
   function mouseStatus(noteText) {
     const s = { mouseOn: mouse.on, hand: mouse.on ? mouse.side : null, dragging: mouse.dragging, note: noteText };
     desktop.pc.status(s);
@@ -192,7 +219,7 @@
     return candidates[0];
   }
 
-  function updateMouse(hands, mirrored, aspect, now) {
+  function updateMouse(hands, gestureOf, mirrored, aspect, now) {
     const hand = pickHand(hands, now);
     if (!hand) {
       if (mouse.side && now - mouse.lastSeen > 600) {
@@ -201,7 +228,7 @@
         mouse.flick.trail = [];
         mouse.side = null;
         mouse.filter.reset();
-        mouse.fingers = { index: null, middle: null };
+        mouse.fingers = {};
         mouseStatus(`Hand mouse on: show your ${els.mouseHand.value === "either" ? "" : els.mouseHand.value.toLowerCase() + " "}hand to the camera`);
       }
       return;
@@ -209,18 +236,30 @@
     if (mouse.side !== hand.handedness) {
       mouse.side = hand.handedness;
       mouse.filter.reset();
-      mouse.fingers = { index: null, middle: null };
+      mouse.fingers = {};
     }
     mouse.lastSeen = now;
     const g = geometry(hand, aspect);
-    const index = fingerState("index", g.reach(8), now);
-    const middle = fingerState("middle", g.reach(12), now);
-    // Both curled (or a fist): hold the pointer still, no clicks.
-    const clutch = index.st.curled && middle.st.curled;
+    const fingerIndex = fingerState("index", g.reach(8), now);
+    const fingerMiddle = fingerState("middle", g.reach(12), now);
+    // The left button (click, tap), the right (right click, long press) and holding still: the
+    // index and middle fingers, or recorded hand shapes instead.
+    const map = mouseMap();
+    const shapeNow = map.left || map.right || map.hold ? gestureOf(hand).label : null;
+    const index = map.left ? shapeState("ownLeft", shapeNow === map.left, now) : fingerIndex;
+    const middle = map.right ? shapeState("ownRight", shapeNow === map.right, now) : fingerMiddle;
+    // Both fingers curled (or a fist): hold the pointer still, no clicks.
+    const bothCurled = fingerIndex.st.curled && fingerMiddle.st.curled;
+    // (a recorded shape that works a button isn't holding still, whatever its fingers do)
+    const clutch = map.hold ? shapeNow === map.hold : bothCurled && !(shapeNow && (shapeNow === map.left || shapeNow === map.right));
     if (clutch) {
       index.st.cancelled = true;
       middle.st.cancelled = true;
       stopSwipe();
+    } else if (bothCurled) {
+      // (a fist, while a recorded shape holds still: the fingers' own clicks don't count)
+      if (!map.left) fingerIndex.st.cancelled = true;
+      if (!map.right) fingerMiddle.st.cancelled = true;
     }
 
     // The pointer follows the palm's centre (it hardly moves when a finger curls), within a
@@ -512,7 +551,8 @@
           st.present = true;
           st.since = now;
         }
-        const holdMs = Math.max(0, Number(rule.hold) || 0) * 1000;
+        const moved = global.CustomGestures && global.CustomGestures.isMovement(rule.gesture);
+        const holdMs = moved ? 0 : Math.max(0, Number(rule.hold) || 0) * 1000;
         if (!st.triggered && now - st.since >= holdMs) {
           st.triggered = true;
           st.lastFire = now;
@@ -541,6 +581,13 @@
     }
   }
 
+  // The built-in gestures and the recorded ones; and a rule's own, if it's no longer recorded.
+  const allGestures = () => [...gestureLabels, ...(global.CustomGestures ? global.CustomGestures.names() : [])];
+  const gestureChoices = (current) => {
+    const all = allGestures();
+    return current && !all.includes(current) ? [...all, current] : all;
+  };
+
   function renderRules() {
     const list = els.list;
     list.innerHTML = "";
@@ -556,7 +603,7 @@
       const esc = (v) => String(v === undefined || v === null ? "" : v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
       row.innerHTML = `
         <label title="On or off"><input type="checkbox" data-f="enabled"${rule.enabled ? " checked" : ""} /></label>
-        <select data-f="gesture" title="Gesture">${opt(gestureLabels.map((g) => [g, g]), rule.gesture)}</select>
+        <select data-f="gesture" title="Gesture">${opt(gestureChoices(rule.gesture).map((g) => [esc(g), esc(g === rule.gesture && !allGestures().includes(g) ? `${g} (not recorded)` : g)]), esc(rule.gesture))}</select>
         <select data-f="hand" title="Which hand">${opt([["any", "either hand"], ["Right", "right hand"], ["Left", "left hand"]], rule.hand)}</select>
         <select data-f="action" title="What it does">${opt(Object.entries(ACTIONS).map(([k, [l]]) => [k, l]), rule.action)}</select>
         ${rule.action === "web" ? `<select data-f="method" title="Request method">${opt([["GET", "GET"], ["POST", "POST"], ["PUT", "PUT"]], rule.method || "GET")}</select>` : ""}
@@ -616,8 +663,22 @@
     if (saved.hand) els.mouseHand.value = saved.hand;
     if (saved.screen && els.mouseScreen.querySelector(`option[value="${saved.screen}"]`)) els.mouseScreen.value = saved.screen;
     if (saved.reach) els.mouseReach.value = saved.reach;
-    const saveMouse = () => setPref("handMouse", { ...(prefs.handMouse || {}), hand: els.mouseHand.value, screen: els.mouseScreen.value, reach: els.mouseReach.value, ...deviceChoice() });
+    mouseGestures = saved.gestures && typeof saved.gestures === "object" ? { ...saved.gestures } : {};
+    const saveMouse = () => setPref("handMouse", { ...(prefs.handMouse || {}), hand: els.mouseHand.value, screen: els.mouseScreen.value, reach: els.mouseReach.value, gestures: { ...mouseGestures }, ...deviceChoice() });
     for (const el of [els.mouseHand, els.mouseScreen, els.mouseReach]) el.addEventListener("change", saveMouse);
+    for (const [k, id] of [["left", "mouseLeftWith"], ["right", "mouseRightWith"], ["hold", "mouseHoldWith"]]) {
+      const sel = $(id);
+      if (!sel) continue;
+      els[`with_${k}`] = sel;
+      sel.addEventListener("change", () => {
+        if (sel.value) mouseGestures[k] = sel.value;
+        else delete mouseGestures[k];
+        if (mouse.dragging) release();
+        mouse.fingers = {};
+        saveMouse();
+      });
+    }
+    showMouseGestures();
     setupDevice(saved, saveMouse);
     els.mouseToggle.addEventListener("click", () => setMouse(!mouse.on));
     desktop.pc.onToggleMouse(() => setMouse(!mouse.on));
@@ -735,10 +796,43 @@
     }[s.state] || "";
   }
 
+  // The hand mouse's choices of recorded shapes (shown once there's one recorded).
+  function showMouseGestures() {
+    const row = $("mouseGestureRow");
+    const shapes = global.CustomGestures ? global.CustomGestures.shapeNames() : [];
+    if (row) row.hidden = !shapes.length;
+    const esc = (v) => String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+    const builtIn = { left: "index finger curl", right: "middle finger curl", hold: "both curled (fist)" };
+    for (const k of ["left", "right", "hold"]) {
+      const sel = els[`with_${k}`];
+      if (!sel) continue;
+      const current = shapes.includes(mouseGestures[k]) ? mouseGestures[k] : "";
+      sel.innerHTML = [`<option value="">${builtIn[k]}</option>`, ...shapes.map((n) => `<option value="${esc(n)}"${n === current ? " selected" : ""}>${esc(n)}</option>`)].join("");
+    }
+  }
+  function gesturesChanged() {
+    renderRules();
+    showMouseGestures();
+  }
+
+  let wasRecording = false;
   function update(hands, gestureOf, mirrored, aspect) {
     if (!desktop || !desktop.pc) return;
+    // Recording a gesture: nothing happens meanwhile (a button held down is let go).
+    const recordingNow = !!(global.CustomGestures && global.CustomGestures.isRecording());
+    if (recordingNow) {
+      if (!wasRecording) {
+        if (mouse.dragging) release();
+        stopSwipe();
+        endAll();
+        mouse.fingers = {};
+      }
+      wasRecording = true;
+      return;
+    }
+    wasRecording = false;
     const now = performance.now();
-    if (mouse.on) updateMouse(hands, mirrored, aspect, now);
+    if (mouse.on) updateMouse(hands, gestureOf, mirrored, aspect, now);
     if (actionsOn) updateActions(hands, gestureOf, now);
   }
 
@@ -747,6 +841,7 @@
     update,
     setMouse,
     isMouseOn: () => mouse.on,
+    gesturesChanged,
     // For the checks.
     _state: () => ({ mouse: { on: mouse.on, side: mouse.side, dragging: mouse.dragging, last: mouse.last }, actionsOn, rules, allow }),
     // The checks swap in a stand-in for desktop.pc, so nothing reaches the real mouse or keyboard.

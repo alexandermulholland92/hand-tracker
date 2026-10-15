@@ -4,7 +4,8 @@
  *  - this phone: a pointer over every app (PhoneControlService.java's small window, running
  *    phone-control.js), once its two permissions are given;
  *  - a PC over Wi-Fi: paired from the PC's code (phone-link-ui.js), worked through mobile.pc;
- *  - an iPhone or iPad: this phone as its Bluetooth mouse (mobile.pc's "device" target, hid-core.js).
+ *  - an iPhone or iPad: this phone as its Bluetooth mouse (mobile.pc's "device" target, hid-core.js);
+ * or "My gestures": the camera on, to record gestures of your own (custom-gestures.js).
  * The hand mouse, its gestures and gesture actions are pc-control.js's, from the full app's
  * "Control your PC" card's controls (hand-mouse.html has them, with the same ids). Android's
  * Back (or ←) stops it and asks again.
@@ -15,7 +16,8 @@
 (function (global) {
   const $ = (id) => document.getElementById(id);
   const errText = (err) => (err && err.message ? err.message : String(err));
-  const NAMES = { phone: "This phone", pc: "A PC", bluetooth: "Bluetooth mouse" };
+  const NAMES = { phone: "This phone", pc: "A PC", bluetooth: "Bluetooth mouse", gestures: "My gestures" };
+  const CAMERA_MODES = ["pc", "bluetooth", "gestures"]; // (this phone's control has its own camera)
 
   // Settings, kept as the full app keeps them: its "Control your PC" card's (handMouse, gestureActions).
   const PREFS_KEY = "hand-tracker:prefs";
@@ -66,7 +68,7 @@
       await global.HandTracker.useCamera();
       if (mode !== forMode) {
         // Left while it started: let go of it, unless what's picked now wants it too.
-        if (mode !== "pc" && mode !== "bluetooth") stopCamera();
+        if (!CAMERA_MODES.includes(mode)) stopCamera();
         return false;
       }
       cameraOn = true;
@@ -118,6 +120,7 @@
       hand: mouse.hand || "Right", reach: mouse.reach || "0.55",
       actionsOn: actions.on === true, rules: actions.rules || [], allow: actions.allow || {},
       deviceId: null, // (the front camera)
+      customGestures: prefs.customGestures || [], mouseGestures: mouse.gestures || {},
     };
     try {
       // The camera allowed first (Android asks, the first time): the control window's camera
@@ -161,12 +164,14 @@
     $("running").hidden = !mode;
     $("backBtn").hidden = !mode;
     $("title").textContent = mode ? NAMES[mode] : "Hand Mouse";
-    $("stageWrap").hidden = !(on("pc") || on("bluetooth"));
+    $("stageWrap").hidden = !CAMERA_MODES.includes(mode);
     $("phonePart").hidden = !on("phone");
     $("linkPhone").hidden = !on("pc");
     $("deviceRow").hidden = !on("bluetooth");
-    $("mouseToggle").hidden = on("phone");
-    $("mouseStatus").hidden = on("phone");
+    $("mouseToggle").hidden = on("phone") || on("gestures");
+    $("mouseStatus").hidden = on("phone") || on("gestures");
+    $("myGestures").hidden = on("phone"); // (recorded with the camera here: My gestures)
+    $("gestureNow").hidden = !on("gestures");
     $("mouseScreenLabel").hidden = !on("pc");
     $("keyboardToggle").hidden = !on("pc");
     $("phoneSettingsNote").hidden = !on("phone");
@@ -185,7 +190,7 @@
     }
     setTarget(next === "bluetooth" ? "device" : "computer");
     const camera = await startCamera();
-    if (mode !== next || !camera) return;
+    if (mode !== next || !camera || next === "gestures") return;
     if (next === "bluetooth") global.PcControl.setMouse(true);
     else {
       const s = await mobile.link.status().catch(() => ({}));
@@ -228,10 +233,16 @@
     prefs.handMouse = { ...(prefs.handMouse || {}), target: "computer" };
     global.PcControl.init({ desktop: mobile, prefs, setPref, gestureLabels: global.HandGestures.LABELS });
     global.PhoneLinkUI.init({ desktop: null, mobile, prefs, setPref });
+    const gestures = global.HandGestures.create();
+    // Gestures you record yourself: for gesture actions, and as the hand mouse's buttons.
+    global.CustomGestures.initUI({
+      prefs, setPref, builtIn: global.HandGestures.LABELS, builtInLabelOf: (h) => gestures.builtIn(h).label,
+      onChange: () => global.PcControl.gesturesChanged(),
+    });
+    global.PcControl.gesturesChanged();
     show(); // (each part shown only for its choice)
 
-    // The camera: ready, but none opens until a PC or a Bluetooth device is picked.
-    const gestures = global.HandGestures.create();
+    // The camera: ready, but none opens until something that uses it is picked.
     ready = global.HandTracker.init({
       videoEl: $("video"),
       canvasEl: $("stage"),
@@ -244,8 +255,18 @@
       height: 480,
     });
     ready.catch(() => {}); // (said when a camera's wanted)
+    let shownAt = 0;
     global.HandTracker.onHandLandmarks(({ hands }) => {
       gestures.update(hands);
+      // My gestures: what each hand is now (to try the recorded ones), and nothing done with it.
+      if (mode === "gestures") {
+        const now = performance.now();
+        if (now - shownAt > 150) {
+          shownAt = now;
+          $("gestureNow").textContent = hands.length ? hands.map((h) => `${h.handedness === "Left" ? "Left" : "Right"} hand: ${gestures.of(h).label}`).join(" · ") : "Show your hand to the camera.";
+        }
+        return;
+      }
       const cam = global.HandTracker.getCamera();
       global.PcControl.update(hands, gestures.of, global.HandTracker.isMirrored(), cam.width && cam.height ? cam.width / cam.height : 4 / 3);
     });
