@@ -596,6 +596,28 @@
       });
   }
 
+  // Sentry left on when the app last closed (a restart, a power cut): its cameras start again as
+  // the app opens, once it's settled. A camera can take a while to show up after a restart, so a
+  // start that fails is tried again, SENTRY_AGAIN.tries times in all.
+  const SENTRY_AGAIN = { firstMs: 5000, ms: 30000, tries: 10 };
+  function sentryOnLaunch(k = 0) {
+    const armed = () => !!(global.Sentry && global.Sentry.isArmed && global.Sentry.isArmed());
+    const later = (n) => setTimeout(() => sentryOnLaunch(n), SENTRY_AGAIN.ms);
+    if (!armed() || cams().isActive()) return;
+    if (pending || recordStarting) return void later(k);
+    pending = "Sentry is on: starting the cameras…";
+    push();
+    startCameras()
+      .catch((err) => {
+        if (k + 1 < SENTRY_AGAIN.tries) later(k + 1);
+        else notice = { at: Date.now(), message: `Sentry is on, but the cameras couldn't start: ${errText(err)}` };
+      })
+      .finally(() => {
+        pending = "";
+        push();
+      });
+  }
+
   async function carryOut(action, data = {}) {
     const locked = detailsLocked();
     if (data.details && !locked) setDetails(data.details);
@@ -868,6 +890,7 @@
       // On when it was left on, and always when opened at login to wait for the phone.
       if (prefs.remoteRecord === true || s.standby) remote.start().then(show).catch((err) => ($("remoteStatus").textContent = `Couldn't turn it on: ${errText(err)}`));
       else remote.status().then(show);
+      setTimeout(sentryOnLaunch, SENTRY_AGAIN.firstMs);
     });
   }
 
@@ -880,5 +903,5 @@
 
   // Whether a page is looking at the previews now (Sentry mode measures only then, unless it's on).
   const looking = () => previewsOn;
-  global.RemoteRecordUI = { init, tailnetLink, looking, _carryOut: carryOut, _takeName: takeName };
+  global.RemoteRecordUI = { init, tailnetLink, looking, _carryOut: carryOut, _takeName: takeName, _sentryOnLaunch: sentryOnLaunch, _sentryAgain: SENTRY_AGAIN };
 })(window);

@@ -802,6 +802,29 @@ async function checkSentry(js) {
     })()`);
     await sleep(2500);
     out.leftOut = await js(`(() => { const st = Sentry._test.per.get(${JSON.stringify(camKey)}); return { armed: Sentry.isArmed(), events: Sentry._test.events.length, session: !!(st && st.session) }; })()`);
+    // The app opened with Sentry left on (as after a restart): its cameras start by themselves;
+    // the first try failing (no camera there yet), tried again.
+    out.launch = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const was = { ...RemoteRecordUI._sentryAgain }, start = MultiCamera.start;
+      const r = { tries: 0 };
+      try {
+        MultiCamera.close();
+        for (let i = 0; i < 40 && MultiCamera.isActive(); i++) await sleep(100);
+        r.closed = !MultiCamera.isActive();
+        Object.assign(RemoteRecordUI._sentryAgain, { ms: 1000, tries: 3 });
+        MultiCamera.start = (...a) => (r.tries++ ? start(...a) : Promise.reject(new Error("No camera yet.")));
+        RemoteRecordUI._sentryOnLaunch();
+        for (let i = 0; i < 150 && !(MultiCamera.isActive() && MultiCamera._tiles().some((t) => t.status && t.status.fps > 0)); i++) await sleep(100);
+        r.running = MultiCamera.isActive() && MultiCamera._tiles().some((t) => t.status && t.status.fps > 0);
+        r.armed = Sentry.isArmed();
+      } finally {
+        MultiCamera.start = start;
+        Object.assign(RemoteRecordUI._sentryAgain, was);
+      }
+      return r;
+    })()`);
+    await sleep(2500);
     // On: the hands aren't tracked, but movement still is (the picture carries on); no take
     // details on the page, and no take. Its switch turns the hands on (the details come back),
     // then off again.
@@ -956,6 +979,9 @@ async function checkSentry(js) {
   // (A link only where this computer is on Tailscale: an alert's opens its video.)
   out.ntfyLinks = ntfyGot.filter((g) => g.click && g.title !== "Sentry: Test").map((g) => g.click);
   const r = out;
+  const launch = r.launch || {};
+  check("Sentry mode: the app opened with it left on (as after a restart) starts its cameras by itself, trying again when the first start fails",
+    launch.closed && launch.tries === 2 && launch.running && launch.armed, JSON.stringify(launch));
   check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; while it's on the hands aren't tracked but movement is, and a take records videos only (its details stay), unless its switch tracks them; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; that video played on the page (as a notification's link opens it, from the takes list's ▶, and by its take's name once the alert's no longer listed); deleted from the page (an alert with its files, then every Sentry file, nothing else); ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
     !r.error && r.mainPage && r.hiddenState && r.hiddenState.shown === false && r.hiddenAtStart && r.shown && r.direct.every((d) => d.kb > 3) && r.direct[0].bits === r.direct[1].bits && r.direct[3].bits >= r.direct[2].bits * 3 && r.direct[2].bits < r.direct[0].bits &&
       r.test && r.boxes === 144 && r.box.w >= r.box.cellW * 0.7 && r.box.h >= r.box.cellH * 0.6 && parseFloat(r.box.radius) < Math.min(r.box.w, r.box.h) / 2 &&
