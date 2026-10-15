@@ -99,11 +99,16 @@ public class BtHidPlugin extends Plugin {
         begin(call);
     }
 
+    // Hand Tracker or Hand Mouse (the app's own name).
+    private String appName() {
+        return getContext().getString(R.string.app_name);
+    }
+
     @PermissionCallback
     private void afterPermission(PluginCall call) {
         if (getPermissionState("bluetooth") == PermissionState.GRANTED) begin(call);
         else {
-            setState("error", "", "Hand Tracker needs the Nearby devices permission to be a Bluetooth mouse.");
+            setState("error", "", appName() + " needs the Nearby devices permission to be a Bluetooth mouse.");
             call.reject(message);
         }
     }
@@ -132,8 +137,8 @@ public class BtHidPlugin extends Plugin {
             public void onServiceConnected(int profile, BluetoothProfile proxy) {
                 hid = (BluetoothHidDevice) proxy;
                 BluetoothHidDeviceAppSdpSettings sdp = new BluetoothHidDeviceAppSdpSettings(
-                    "Hand Tracker", "Hand Tracker's hand mouse and keyboard", "Hand Tracker", BluetoothHidDevice.SUBCLASS1_COMBO, reportMap);
-                if (!hid.registerApp(sdp, null, null, executor, callback)) fail("Android wouldn't let Hand Tracker be a Bluetooth mouse (another app may be one already).");
+                    appName(), appName() + "'s hand mouse and keyboard", appName(), BluetoothHidDevice.SUBCLASS1_COMBO, reportMap);
+                if (!hid.registerApp(sdp, null, null, executor, callback)) fail("Android wouldn't let " + appName() + " be a Bluetooth mouse (another app may be one already).");
             }
 
             @Override

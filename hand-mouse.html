@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Hand Mouse (the Android project's "mouse" flavor): the Android app with only the hand mouse, its
+     gestures and gesture actions, for this phone, a PC over Wi-Fi or as a Bluetooth mouse
+     (hand-mouse.js). scripts/build-web.js --hand-mouse makes it that app's index.html. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' data: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'" />
+<title>Hand Mouse</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: #0e0f12; color: #e8e8ea;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  [hidden] { display: none !important; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0; flex: 1; }
+  #buildInfo { font-size: 11px; opacity: 0.45; white-space: nowrap; }
+  #backBtn { padding: 6px 12px; }
+
+  #chooser { display: flex; flex-direction: column; gap: 12px; }
+  #chooser > p { margin: 0 0 4px; font-size: 14px; opacity: 0.7; }
+  .choice {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%;
+    padding: 18px 18px; border-radius: 12px; border: 1px solid #2c2e36; background: #17181c;
+    color: #e8e8ea; font-family: inherit; text-align: left; cursor: pointer;
+  }
+  .choice:active { background: #1f2026; }
+  .choice b { font-size: 18px; font-weight: 600; }
+  .choice span { font-size: 13px; opacity: 0.6; line-height: 1.4; }
+
+  #stageWrap { position: relative; width: 100%; aspect-ratio: 4 / 3; background: #000; border-radius: 10px; overflow: hidden; }
+  #stage { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #video { display: none; }
+  #stageMessage {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
+    padding: 16px; font-size: 13px; color: #c9c9cf;
+  }
+  #stageMessage.error { color: #ffc9c9; }
+
+  .card { background: #17181c; border-radius: 10px; padding: 14px 16px; margin-top: 12px; }
+  .section-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.45; margin: 12px 0 6px; }
+  .card > .section-label:first-child { margin-top: 0; }
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  .toolbar label { font-size: 12px; opacity: 0.85; display: inline-flex; align-items: center; gap: 6px; }
+  button, select, input[type="text"] {
+    padding: 8px 12px; border-radius: 6px; border: 1px solid #333;
+    background: #1a1b1f; color: #e8e8ea; font-size: 13px; font-family: inherit;
+  }
+  select { padding: 6px 8px; max-width: 220px; }
+  button { cursor: pointer; }
+  button:disabled, select:disabled { opacity: 0.45; cursor: default; }
+  button.active { background: #2b5c3f; border-color: #51cf66; color: #d3f9d8; }
+  button.primary { background: #1f4f7a; border-color: #4dabf7; color: #d0ebff; }
+  kbd { display: none; }
+  .note { font-size: 12px; opacity: 0.6; margin-top: 10px; line-height: 1.5; }
+  #linkCodeInput { flex: 1; min-width: 180px; }
+  .steps { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+  .steps button { text-align: left; }
+  .action-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-top: 1px solid #25272e; font-size: 12px; }
+  .action-row select, .action-row input[type="text"] { padding: 4px 6px; font-size: 12px; }
+  .action-row input[type="text"] { min-width: 150px; flex: 1; }
+  .action-row input[type="number"] { width: 58px; padding: 3px 4px; background: #1a1b1f; color: #e8e8ea; border: 1px solid #333; border-radius: 5px; font: inherit; }
+  .action-row button { padding: 3px 9px; }
+</style>
+</head>
+<body>
+<header>
+  <button id="backBtn" hidden aria-label="Back to the choices">←</button>
+  <h1 id="title">Hand Mouse</h1>
+  <span id="buildInfo"></span>
+</header>
+
+<!-- What to control: picked each time the app opens; the camera starts once one is. -->
+<section id="chooser">
+  <p>What should your hand control?</p>
+  <button class="choice" data-mode="phone"><b>This phone</b><span>A pointer over any app: switch to it and your hand taps, swipes and drags.</span></button>
+  <button class="choice" data-mode="pc"><b>A PC</b><span>Over Wi-Fi, with Hand Tracker on the PC.</span></button>
+  <button class="choice" data-mode="bluetooth"><b>Bluetooth mouse</b><span>This phone becomes a Bluetooth mouse for an iPhone or iPad.</span></button>
+  <p id="noApp" class="note" hidden>Hand Mouse runs in its Android app.</p>
+</section>
+
+<section id="running" hidden>
+  <!-- The camera, with your hand drawn (a PC or a Bluetooth device: this phone's control has its own small window). -->
+  <div id="stageWrap" hidden>
+    <video id="video" playsinline muted></video>
+    <canvas id="stage" width="640" height="480"></canvas>
+    <div id="stageMessage">Starting the camera…</div>
+  </div>
+
+  <!-- The hand mouse and gesture actions (pc-control.js) and pairing with a PC (phone-link-ui.js)
+       work from these controls: the ids are the full app's "Control your PC" card's. -->
+  <div class="card" id="pcCard">
+    <!-- This phone (hand-mouse.js, through PhoneControlService.java). -->
+    <div id="phonePart" hidden>
+      <div class="section-label">This phone</div>
+      <div class="note">A quick curl of your index finger taps, a quick flick of your open hand up or down swipes the page, curl your index finger and move your hand to drag, a quick curl of your middle finger is a long press. A fist holds the pointer still while you move your hand. A small camera window stays in a corner (its × stops it).</div>
+      <div class="toolbar steps">
+        <button id="phoneOverlay">1. Allow display over other apps</button>
+        <button id="phoneAccess">2. Turn on hand control in Accessibility</button>
+      </div>
+      <div id="phoneRestricted" class="note" hidden>
+        <b>"Restricted setting"?</b> Android 13 and later block this for apps installed from a downloaded file. Tap <b>Open App info</b>, then <b>⋮</b> (top right) → <b>Allow restricted settings</b>, and confirm with your PIN or fingerprint. Then tap <b>2. Turn on hand control in Accessibility</b> again.
+        <div class="toolbar"><button id="phoneAppInfo">Open App info</button></div>
+      </div>
+      <div class="toolbar"><button id="phoneStart" class="primary">Start controlling this phone</button></div>
+      <div id="phoneStatus" class="note"></div>
+    </div>
+
+    <!-- A PC over Wi-Fi (phone-link-ui.js). -->
+    <div id="linkPhone" hidden>
+      <div class="section-label">Your PC</div>
+      <div class="toolbar">
+        <button id="linkScan">Scan the PC's code</button>
+        <button id="linkEnter">Type the code…</button>
+        <button id="linkForget" hidden>Forget this PC</button>
+      </div>
+      <div id="linkEnterRow" class="toolbar" hidden>
+        <input id="linkCodeInput" type="text" placeholder="handtracker-link:1:…" spellcheck="false" autocomplete="off" autocapitalize="off" />
+        <button id="linkConnect" class="primary">Connect</button>
+      </div>
+      <div id="linkPhoneStatus" class="note"></div>
+    </div>
+
+    <!-- A Bluetooth mouse (pc-control.js, hid-core.js): its target is set by the choice above. -->
+    <div id="deviceRow" hidden>
+      <div class="section-label">Bluetooth mouse</div>
+      <div class="toolbar">
+        <label id="pcTargetLabel" hidden>Controls
+          <select id="pcTarget"><option value="computer">the paired PC</option><option value="device">an iPhone or iPad (Bluetooth)</option></select>
+        </label>
+        <span id="deviceOptions" class="toolbar" hidden>
+          <label>Its screen <select id="deviceScreen"><option value="iphone">iPhone</option><option value="iphone-landscape">iPhone, sideways</option><option value="ipad">iPad</option><option value="ipad-landscape">iPad, sideways</option></select></label>
+          <label title="If the pointer goes too far, or not far enough, for your hand">Pointer speed
+            <select id="deviceSpeed"><option value="0.5">½×</option><option value="0.75">¾×</option><option value="1">1×</option><option value="1.5">1½×</option><option value="2">2×</option><option value="3">3×</option></select>
+          </label>
+          <button id="deviceVisible" hidden>Pair a new one</button>
+        </span>
+        <button id="openMirroring" hidden></button>
+      </div>
+      <div id="deviceNote" class="note" hidden></div>
+    </div>
+
+    <div class="section-label">Hand mouse</div>
+    <div class="toolbar">
+      <button id="mouseToggle" aria-pressed="false">Hand mouse: OFF</button>
+      <label>Hand <select id="mouseHand"><option value="Right">right</option><option value="Left">left</option><option value="either">either</option></select></label>
+      <label title="How far you move your hand to cross the screen">Moves
+        <select id="mouseReach"><option value="0.4">small</option><option value="0.55" selected>medium</option><option value="0.7">large</option></select>
+      </label>
+      <label id="mouseScreenLabel">Screen <select id="mouseScreen"><option value="primary">main screen</option><option value="all">all screens</option></select></label>
+      <button id="keyboardToggle" aria-pressed="false" title="The PC's floating keyboard, typed on with the hand mouse">Floating keyboard: OFF</button>
+    </div>
+    <div id="mouseStatus" class="note">Hand mouse off</div>
+    <div id="phoneSettingsNote" class="note" hidden>Changes here take effect the next time it starts.</div>
+
+    <div class="section-label">Gesture actions</div>
+    <div class="toolbar">
+      <button id="actionsToggle" aria-pressed="false" title="Make gestures press keys, type, click, scroll or call a web address. Nothing happens until this is on, and each action has its own switch.">Gesture actions: OFF</button>
+      <label title="Allow actions that press keys or type"><input type="checkbox" id="allowKeys" checked /> Keyboard</label>
+      <label title="Allow actions that click, drag or scroll"><input type="checkbox" id="allowMouse" checked /> Mouse</label>
+      <label title="Allow actions that call a web address (for smart home hubs, IFTTT, Node-RED…)"><input type="checkbox" id="allowWeb" checked /> Web requests</label>
+      <button id="addAction">+ Add action</button>
+    </div>
+    <div id="actionList"></div>
+    <div id="actionLog" class="note"></div>
+  </div>
+</section>
+
+<script src="node_modules/@mediapipe/hands/hands.js"></script>
+<script src="node_modules/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="hand-tracker.js"></script>
+<script src="gestures.js"></script>
+<script src="phone-link-protocol.js"></script>
+<script src="hid-core.js"></script>
+<script src="mobile-bridge.js"></script>
+<script src="pc-control.js"></script>
+<script src="phone-link-ui.js"></script>
+<script src="hand-mouse.js"></script>
+</body>
+</html>

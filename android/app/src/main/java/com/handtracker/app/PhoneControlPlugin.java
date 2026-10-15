@@ -1,7 +1,9 @@
 package com.handtracker.app;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.provider.Settings;
@@ -80,7 +82,13 @@ public class PhoneControlPlugin extends Plugin {
     public void start(PluginCall call) {
         Context c = getContext();
         if (!Settings.canDrawOverlays(c)) {
-            call.reject("Allow Hand Tracker to display over other apps first.");
+            call.reject("Allow " + c.getString(R.string.app_name) + " to display over other apps first.");
+            return;
+        }
+        // Its window keeps the camera in a camera service, which Android allows (and otherwise
+        // stops the app) only once the camera's been allowed.
+        if (ContextCompat.checkSelfPermission(c, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            call.reject("Allow " + c.getString(R.string.app_name) + " to use the camera first.");
             return;
         }
         Intent i = new Intent(c, PhoneControlService.class);

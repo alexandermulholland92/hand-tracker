@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Hand Mouse (the "mouse" flavor): its own names, over src/main's. -->
+<resources>
+    <string name="app_name">Hand Mouse</string>
+    <string name="title_activity_main">Hand Mouse</string>
+    <string name="package_name">com.handtracker.mouse</string>
+    <string name="custom_url_scheme">com.handtracker.mouse</string>
+    <string name="hand_control_label">Hand Mouse hand control</string>
+    <string name="hand_control_description">Lets Hand Mouse\'s hand mouse and gesture actions control this phone: it taps, long-presses and swipes where the pointer is, presses Back, Home, Recents, volume and media keys, and types into the text box you\'re in. It only acts while you have started "This phone" in Hand Mouse, and reads nothing on screen except the text box being typed into.</string>
+</resources>

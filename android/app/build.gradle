@@ -16,6 +16,25 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Two apps: Hand Tracker (full) and Hand Mouse (mouse: the hand mouse alone, hand-mouse.html),
+    // each its own app on the phone. Each has only its own web files: the full app's are what
+    // Capacitor copies into src/main/assets, Hand Mouse's go in src/mouse/assets
+    // (scripts/build-android.js).
+    flavorDimensions = ["app"]
+    productFlavors {
+        full {
+            dimension "app"
+        }
+        mouse {
+            dimension "app"
+            applicationId "com.handtracker.mouse"
+        }
+    }
+    sourceSets {
+        main.assets.srcDirs = []
+        full.assets.srcDirs = ["src/main/assets"]
+        mouse.assets.srcDirs = ["src/mouse/assets"]
+    }
     buildTypes {
         release {
             minifyEnabled false

@@ -18,7 +18,7 @@ Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmark
 
 **Download the latest build:** every change to `main` rebuilds the Windows, Linux and Android apps on GitHub and puts them on the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release (`.github/workflows/build-apps.yml`). Each APK built there installs over the last one, but it's signed with a different key from one built on your PC, so Android only installs it over a PC-built copy after that copy is uninstalled (and the other way round). The same happens whenever GitHub drops the saved key (after a week with no builds, or sooner when its cache fills up). To fix the key for good, save a `debug.keystore` as the repository secret `ANDROID_DEBUG_KEYSTORE` (base64; *Settings → Secrets and variables → Actions → New repository secret*): every build is then signed with it, and saving your PC's own (`%USERPROFILE%\.android\debug.keystore`; in Git Bash, `base64 -w0 ~/.android/debug.keystore | clip` copies it) makes GitHub's and your PC's APKs install over each other. The build's log shows which key it signed with (*Signing key in use*).
 
-**Android app:** install `dist/HandTracker-1.1.0.apk` on your phone (see [Android app](#android-app) below).
+**Android app:** install `dist/HandTracker-1.1.0.apk` on your phone (see [Android app](#android-app) below). **Hand Mouse**, `dist/HandMouse-1.1.0.apk`, is the hand mouse alone, as an app of its own (see [Hand Mouse](#hand-mouse-android)).
 
 **From source** (Node.js 18+):
 
@@ -163,6 +163,15 @@ The phone and PC must be on the same network. Only a phone that has read the cod
 It needs two permissions, each one tap away in the card: **Display over other apps** (for the pointer and a small camera window) and Hand Tracker's **hand control** in Android's Accessibility settings (to tap, swipe and type). Then tap **Start controlling this phone** and switch to any app. A small window in a corner shows the camera while it runs, and a notification says it's on; tap the window's × or the notification's **Stop** to end it. Hand control does nothing unless this is running, and reads nothing on screen except the text box being typed into.
 
 On Android 13 and later, an app installed from a downloaded APK (not the Play Store) can't have hand control turned on at first: Android shows a **"Restricted setting"** box. Allow it once: in the card tap **Open App info** (it appears when you come back from Accessibility settings with hand control still off), then **⋮** (top right) → **Allow restricted settings**, and confirm with your PIN or fingerprint; then turn on hand control again. The ⋮ option appears only after the "Restricted setting" box has been seen once. Installing a newer Hand Tracker over the old one keeps it allowed; uninstalling and reinstalling needs it again.
+
+<a id="hand-mouse-android"></a>
+### Hand Mouse (Android)
+
+**Hand Mouse** (`HandMouse-<version>.apk`, from the same [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release) is the hand mouse alone, as an app of its own: it installs next to Hand Tracker (it's `com.handtracker.mouse`), with its own permissions and settings.
+
+- **Each time it opens** it asks what your hand should control, and starts it as soon as one is picked: **This phone** (a pointer over any app, as above: it asks for the camera, *Display over other apps* and its *hand control* in Accessibility the first time, then starts by itself), **A PC** (over Wi-Fi, paired from the code Hand Tracker on the PC shows, as in [From your phone](#from-your-phone)), or **Bluetooth mouse** (this phone as an iPhone's or iPad's Bluetooth mouse). Android's Back (or ←) stops it and asks again.
+- **The same gestures** as Hand Tracker's hand mouse, and its **gesture actions** (Back, Home, Recents, volume and media keys, typing, clicks, scrolling, web requests) and the PC's floating keyboard.
+- It's the same code as Hand Tracker's: its page is `hand-mouse.html` (`hand-mouse.js`), and `npm run android:apk` builds both apps (the Android project's flavors *full* and *mouse*).
 
 ## Remote recording
 
