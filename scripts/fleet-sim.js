@@ -32,7 +32,10 @@ function startFleetSim({ ffmpegPath, outDir }) {
   const codec = "avc1." + [k[sps], k[sps + 1], k[sps + 2]].map((b) => b.toString(16).padStart(2, "0")).join("");
   const rig = (hostname, display_name, generation, capture_state, extra) => ({ hostname, display_name, generation, capture_state, online: true, reachable: true, via_relay: false, preview_active: false, preview_cameras: ["head"], ...extra });
   const rigs = [
-    rig("rig-a", "Rig A", "rock5c", "recording", { recording_duration_s: 42, session_name: "s1" }),
+    rig("rig-a", "Rig A", "rock5c", "recording", { recording_duration_s: 42, session_name: "s1",
+      // (its health, as the dashboard sees it: under-voltage and throttling since it started)
+      cpu_temp: 61.4, disk_free_gb: 120.4, disk_total_gb: 476, storage_runway_label: "2.5 h", camera_count: 2, recording_health_pct: 98.6,
+      upload_queue: 3, upload_rate_label: "3.7 MB/s", throttle_int: 0x50000, today_recording_s: 4000 }),
     rig("rig-b", "Rig B", "rpi5", "idle", { preview_cameras: ["chest"] }),
     rig("rig-c", "Rig C", "rpi5", "unknown", { online: false, reachable: false, preview_cameras: [] }),
     rig("rig-d", "Rig D", "rpi5", "preview", { preview_active: true }),
@@ -59,6 +62,15 @@ function startFleetSim({ ffmpegPath, outDir }) {
     if (url.pathname === "/api/fleet/status") {
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ devices: rigs, summary: {} }));
+    }
+    // A rig's sessions: rig-a's history (uploaded) and one still on it (and one both, by its start).
+    const ses = /^\/proxy\/(rig-a)\/api\/(sessions\/history|sessions)$/.exec(url.pathname);
+    if (ses && url.searchParams.get("days") === "7") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify(ses[2] === "sessions" ? [
+        { session_id: "20261015_090000", duration_s: 120, total_bytes: 8e8, start_time_unix: 1760544000 },
+        { session_id: "f762f21a", duration_s: 300, total_bytes: 2.1e9, start_time_unix: 1760461000.5 },
+      ] : [{ session: "20261014_101500", start_unix: 1760461000, duration_s: 300, bytes: 2.1e9, location: "lab", camera_count: 3 }]));
     }
     const m = /^\/proxy\/([^/]+)\/api\/preview\/(frame|keyframe)\/([^/]+)$/.exec(url.pathname);
     if (m) {

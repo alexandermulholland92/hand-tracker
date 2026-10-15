@@ -167,6 +167,7 @@
     return {
       ...common, kind: "rig", video: remoteVideo(), sound: remoteSound(), videoQuality: remoteQuality(),
       sentry: global.Sentry ? global.Sentry.remoteState() : null,
+      timing: cams().timingState ? cams().timingState() : undefined,
       // (Pictures on its own screen: OAK cameras only, which a phone doesn't have.)
       mode: modeNow(), requirement: requirement(), screenPictures: onPhone ? undefined : cams().screenPictures(),
       available: { at: scanned.at, scanning: scanned.scanning, note: scanned.note, cameras: available() },
@@ -649,6 +650,16 @@
       if (recording) return { ok: false, message: "Stop recording first." };
       setPref("remoteDetailsRequired", st.detailsRequired);
       return { ok: true, message: detailsRequired() ? "The take details are needed before recording." : "The take details are optional now." };
+    }
+    if (action === "timing") {
+      // The timing check: the page flashes while every camera films it (multi-camera.js).
+      if (!cams().timingCheck) return { ok: false, message: "The timing check isn't available here." };
+      if (recording) return { ok: false, message: "Stop recording first." };
+      if (!cams().isActive()) return { ok: false, message: "Start the cameras first." };
+      const t = cams().timingState();
+      if (t && t.phase === "measuring") return { ok: true, message: "The timing check is measuring." };
+      setTimeout(() => cams().timingCheck().catch(() => {}), 1500); // (the page's flashing first; the cameras adjust to it)
+      return { ok: true, message: "Timing check: let every camera see this phone's flashing screen (about 12 seconds)." };
     }
     if (action === "oak") {
       // One OAK camera's own settings: remembered for it; running, it starts again with them.

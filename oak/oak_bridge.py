@@ -10,7 +10,8 @@ far from the camera, and, on depth cameras, each hand's distance.
 Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
     python oak_bridge.py --models DIR [--lm lite|full] [--two-hands] [--xyz]
                          [--far both|higher|left|right] [--all-hands] [--fps N] [--device ID]
-                         [--mjpeg auto|on|off] [--detect] [--picture color|depth] [--motion] [--no-hands]
+                         [--mjpeg auto|on|off] [--detect] [--picture color|depth|left|right|blend|side]
+                         [--motion] [--no-hands]
                          [--night auto|on|off] [--ir-dots]
     (--device: which OAK camera, by its id from --list; the first one found otherwise.
      --mjpeg: the camera sends its pictures as JPEG from its own encoder, about a tenth of the
@@ -20,7 +21,11 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
      each with its distance on a depth camera; needs mobilenet-ssd_openvino_2021.4_5shave.blob
      in the models folder. If the camera can't run it alongside the hands, it starts without.
      --picture depth: send the depth picture (coloured: near is red, far is blue) instead of the
-     colour one, lined up with it; depth cameras only.
+     colour one, lined up with it; depth cameras only. blend: the colour picture with the depth
+     picture laid over it, half see-through; side: the two side by side (twice as wide; the
+     hands' places are the colour half's). left / right: that black-and-white camera's picture,
+     for everything (the hands are found on it, as with night vision, which is the left one with
+     the infrared light on; --night on turns the light on here too).
      --motion: the camera also makes a small grey picture (64 x 36) each frame, sent along for
      Sentry mode to measure movement on.
      --no-hands: no hand tracking (Sentry mode, while it doesn't track hands): none of the hands'
@@ -42,7 +47,8 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
 Output on stdout, one message after another: the 4 bytes "HTK1", a 4-byte little-endian
 length and that many bytes of JSON, then a 4-byte length and that many bytes of JPEG (0 for
 none). The JSON is
-{"status": ...} or a frame: {"t", "w", "h", "fps", "hands": [{"lm": [[x, y, z]] (0-1 of the
+{"status": ...} or a frame: {"t", "u" (when the camera took it: ms since 1970 on this computer's
+clock), "w", "h", "fps", "hands": [{"lm": [[x, y, z]] (0-1 of the
 picture, z in picture widths, like MediaPipe), "world": [[x, y, z]] (metres), "label":
 "Left"/"Right", "anatomical": true when that's the person's own side (always, on the
 camera) rather than MediaPipe's mirrored convention, "score", "lm_score", "xyz": [x, y, z] mm from the
@@ -113,6 +119,29 @@ def object_of(det):
     return o
 
 
+DEPTH_VIEWS = ("depth", "blend", "side")  # the pictures made with the depth picture
+MONO_VIEWS = ("left", "right")  # a black-and-white camera's picture, for everything
+
+
+def view_picture(view, colour, depth):
+    """The picture for blend (the depth picture over the colour one, half see-through where the
+    depth is known) or side (the two side by side) from the colour picture (or a black-and-white
+    one) and the depth picture, the same size."""
+    import cv2
+    import numpy as np
+
+    if colour.ndim == 2 or colour.shape[2] == 1:
+        colour = cv2.cvtColor(colour, cv2.COLOR_GRAY2BGR)
+    if depth.shape[:2] != colour.shape[:2]:
+        depth = cv2.resize(depth, (colour.shape[1], colour.shape[0]), interpolation=cv2.INTER_NEAREST)
+    if view == "side":
+        return np.hstack([colour, depth])
+    # (cv2's own masked copy: numpy's indexing by a mask took ~50 ms a picture on a Pi 5)
+    out = colour.copy()
+    cv2.copyTo(cv2.addWeighted(colour, 0.5, depth, 0.5, 0), cv2.cvtColor(depth, cv2.COLOR_BGR2GRAY), out)
+    return out
+
+
 def depth_picture(disparity, max_disparity, w, h):
     """The depth picture as a colour picture the size of the colour one: near is red, far is
     blue, unknown (too near, too far, or seen by one camera only) is black."""
@@ -171,14 +200,14 @@ def night_geometry(t):
 
 class NightCamera:
     """Night vision's camera as the trackers take a camera (its preview and video): the left
-    black-and-white camera at 720P (its picture is grey; the hands' models get their crops of it
+    (or, for --picture right, the right) black-and-white camera at 720P (its picture is grey; the hands' models get their crops of it
     as colour). With meter, the colour camera runs too, a few times a second at a tiny size, only
     to tell when it's light again (its pictures' exposure, on the "meter" stream)."""
 
-    def __init__(self, dai, pipeline, fps, meter):
+    def __init__(self, dai, pipeline, fps, meter, socket=None):
         self.night = True
         self.resolution = dai.MonoCameraProperties.SensorResolution.THE_720_P
-        self.socket = dai.CameraBoardSocket.LEFT
+        self.socket = socket if socket is not None else dai.CameraBoardSocket.LEFT
         self.mono = pipeline.createMonoCamera()
         self.mono.setBoardSocket(self.socket)
         self.mono.setResolution(self.resolution)
@@ -264,7 +293,7 @@ def add_extras(dai, pipeline, cam, stereo, extras, tracker):
         nn.input.setQueueSize(1)
         manip.out.link(nn.input)
         out("det_out", nn.out)
-    if extras.get("picture") == "depth" and stereo is not None:
+    if extras.get("picture") in DEPTH_VIEWS and stereo is not None:
         tracker.max_disparity = stereo.initialConfig.getMaxDisparity()
         out("pic_out", stereo.disparity)
     if extras.get("motion"):
@@ -289,7 +318,7 @@ class PictureOnly:
 
     RESOLUTION = (1920, 1080)
 
-    def __init__(self, dai, device, extras, fps=None, depth=False, mjpeg=False, frame_height=640, night=False, meter=False):
+    def __init__(self, dai, device, extras, fps=None, depth=False, mjpeg=False, frame_height=640, night=False, meter=False, mono=None):
         import mediapipe_utils as mpu
 
         self.device = device
@@ -298,15 +327,17 @@ class PictureOnly:
         self.video_msg = None
         self.xyz = False  # (no hands to measure)
         self.night, self.meter = night, meter
+        # (night vision's left camera, or a black-and-white camera's view: that one)
+        self.mono = mono if mono is not None else dai.CameraBoardSocket.LEFT if night else None
         sw, sh = self.RESOLUTION
         _, self.scale_nd = mpu.find_isp_scale_params(frame_height * sw / sh, self.RESOLUTION, is_height=False)
         self.img_h = int(round(sh * self.scale_nd[0] / self.scale_nd[1]))
         self.img_w = int(round(sw * self.scale_nd[0] / self.scale_nd[1]))
-        if night:
+        if self.mono is not None:
             night_geometry(self)
         cameras = device.getConnectedCameras()
         self.has_depth = bool(depth and dai.CameraBoardSocket.LEFT in cameras and dai.CameraBoardSocket.RIGHT in cameras)
-        self.stereo = self.has_depth and bool(extras.get("detect") or extras.get("picture") == "depth")
+        self.stereo = self.has_depth and bool(extras.get("detect") or extras.get("picture") in DEPTH_VIEWS)
         self.internal_fps = min(fps or 30, 30) if self.stereo or extras.get("detect") else fps or 30
         device.startPipeline(self.create_pipeline(dai, extras))
         self.q_video = device.getOutputQueue(name="cam_out", maxSize=1, blocking=False)
@@ -314,8 +345,8 @@ class PictureOnly:
     def create_pipeline(self, dai, extras):
         pipeline = dai.Pipeline()
         pipeline.setOpenVINOVersion(version=dai.OpenVINO.Version.VERSION_2021_4)
-        if self.night:
-            cam = NightCamera(dai, pipeline, self.internal_fps, self.meter)
+        if self.mono is not None:
+            cam = NightCamera(dai, pipeline, self.internal_fps, self.meter, self.mono)
         else:
             cam = pipeline.createColorCamera()
             cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
@@ -340,25 +371,29 @@ class PictureOnly:
         stereo = None
         if self.stereo:
             # As the hand tracker sets them up: the colour camera at its calibrated focus, so the
-            # depth lines up with its picture (night vision: the left camera is its camera, at
-            # its size, and the depth lines up with that).
-            if self.night:
-                left, resolution = cam.mono, cam.resolution
+            # depth lines up with its picture (night vision, or a black-and-white camera's view:
+            # that camera is its camera, at its size, and the depth lines up with that).
+            mono = self.mono is not None
+            if mono:
+                resolution = cam.resolution
             else:
                 cam.initialControl.setManualFocus(self.device.readCalibration().getLensPosition(dai.CameraBoardSocket.RGB))
                 resolution = dai.MonoCameraProperties.SensorResolution.THE_400_P
-                left = pipeline.createMonoCamera()
-                left.setBoardSocket(dai.CameraBoardSocket.LEFT)
-                left.setResolution(resolution)
-                left.setFps(self.internal_fps)
-            right = pipeline.createMonoCamera()
-            right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
-            right.setResolution(resolution)
-            right.setFps(self.internal_fps)
+
+            def mono_camera(socket):
+                if mono and cam.socket == socket:
+                    return cam.mono
+                m = pipeline.createMonoCamera()
+                m.setBoardSocket(socket)
+                m.setResolution(resolution)
+                m.setFps(self.internal_fps)
+                return m
+
+            left, right = mono_camera(dai.CameraBoardSocket.LEFT), mono_camera(dai.CameraBoardSocket.RIGHT)
             stereo = pipeline.createStereoDepth()
             stereo.setConfidenceThreshold(230)
             stereo.setLeftRightCheck(True)
-            stereo.setDepthAlign(cam.socket if self.night else dai.CameraBoardSocket.RGB)
+            stereo.setDepthAlign(cam.socket if mono else dai.CameraBoardSocket.RGB)
             stereo.setSubpixel(False)
             left.out.link(stereo.left)
             right.out.link(stereo.right)
@@ -611,17 +646,22 @@ def run(args):
     import numpy as np
 
     class Tracker(Base):
-        def __init__(self, night=False, **kw):
+        def __init__(self, night=False, mono=None, **kw):
             self.night = night
+            # (night vision's left camera, or a black-and-white camera's view: that one)
+            self.mono = mono if mono is not None else dai.CameraBoardSocket.LEFT if night else None
             super().__init__(**kw)
 
-        # Night vision: its camera (NightCamera) and its picture's size, in the colour camera's place.
+        # Night vision, or a black-and-white camera's view: its camera (NightCamera) and its
+        # picture's size, in the colour camera's place.
         def camera_geometry(self):
-            if self.night:
+            if self.mono is not None:
                 night_geometry(self)
 
         def create_night_camera(self, pipeline):
-            return NightCamera(dai, pipeline, self.internal_fps, meter=args.night == "auto") if self.night else None
+            if self.mono is None:
+                return None
+            return NightCamera(dai, pipeline, self.internal_fps, meter=self.night and args.night == "auto", socket=self.mono)
 
         # Objects, the depth picture and the motion picture, alongside the hands (add_extras).
         def extend_pipeline(self, pipeline, cam, stereo):
@@ -690,6 +730,8 @@ def run(args):
         queues = {name: tracker.device.getOutputQueue(name=name, maxSize=1, blocking=False) for name in getattr(tracker, "extra_streams", [])}
         objects, objects_at = [], 0.0
         picture = None
+        view = extras.get("picture")
+        depth_now = None  # (blend, side: the last depth picture)
         while True:
             frame, hands, _ = tracker.next_frame()
             if frame is None:
@@ -709,7 +751,15 @@ def run(args):
             if "pic_out" in queues:
                 disparity = queues["pic_out"].tryGet()
                 if disparity is not None:
-                    picture = encode(depth_picture(disparity.getFrame(), tracker.max_disparity, w, h))
+                    depth_now = depth_picture(disparity.getFrame(), tracker.max_disparity, w, h)
+                    if view == "depth":
+                        picture = encode(depth_now)
+                if view in ("blend", "side") and depth_now is not None:
+                    import cv2
+
+                    colour = cv2.imdecode(np.frombuffer(tracker.jpeg, np.uint8), cv2.IMREAD_COLOR) if mjpeg else frame
+                    if colour is not None and colour.size:
+                        picture = encode(view_picture(view, colour, depth_now))
             out = []
             for hand in hands:
                 lm = hand.landmarks_f
@@ -742,6 +792,14 @@ def run(args):
                 frames = 0
                 last = now
             header = {"t": round((now - t0) * 1000, 1), "w": w, "h": h, "fps": round(fps, 1), "hands": out}
+            # When the camera took the picture, in ms since 1970 (its own timestamp, on this
+            # computer's clock): the app lines cameras up by it.
+            msg = getattr(tracker, "video_msg", None)
+            if msg is not None:
+                try:
+                    header["u"] = round((time.time() - (dai.Clock.now() - msg.getTimestamp()).total_seconds()) * 1000, 1)
+                except Exception:
+                    pass
             if "det_out" in queues:
                 header["objects"] = objects
             if grey:
@@ -756,6 +814,7 @@ def run(args):
     usb2 = Usb2Cameras(models)
     wanted, retried = args.device, False
     night = args.night == "on"
+    view = args.picture
     while True:
         device, high = None, retried
         reports = crash_reports()  # (those from before this start)
@@ -772,15 +831,27 @@ def run(args):
             device = dai.Device(info, dai.UsbSpeed.HIGH if high else dai.UsbSpeed.SUPER)
             usb = str(device.getUsbSpeed()).split(".")[-1]
             mjpeg = args.mjpeg == "on" or (args.mjpeg == "auto" and (usb in ("LOW", "FULL", "HIGH") or platform.machine().lower() in ("aarch64", "arm64")))
-            infrared = has_infrared(device) and dai.CameraBoardSocket.LEFT in device.getConnectedCameras()
+            cameras = device.getConnectedCameras()
+            infrared = has_infrared(device) and dai.CameraBoardSocket.LEFT in cameras
             if night and not infrared:
                 night = False
                 if args.night == "on":
                     warnings.append("This camera has no infrared light, so it can't use night vision.")
+            # A black-and-white camera's view: that camera, for everything (night vision's light
+            # only if it's on; Automatic doesn't switch here).
+            mono = None
+            if view in MONO_VIEWS:
+                socket = dai.CameraBoardSocket.LEFT if view == "left" else dai.CameraBoardSocket.RIGHT
+                if socket in cameras:
+                    mono = socket
+                    night = night and args.night == "on"
+                else:
+                    warnings.append("This camera has no black-and-white cameras, so its colour picture is shown.")
+                    view = extras["picture"] = "color"
             if hands:
-                tracker = Tracker(**common, **extra, device=device, mjpeg=mjpeg, night=night)
+                tracker = Tracker(**common, **extra, device=device, mjpeg=mjpeg, night=night, mono=mono)
             else:
-                tracker = PictureOnly(dai, device, extras, fps=args.fps, depth=args.xyz, mjpeg=mjpeg, night=night, meter=args.night == "auto")
+                tracker = PictureOnly(dai, device, extras, fps=args.fps, depth=args.xyz, mjpeg=mjpeg, night=night, meter=night and args.night == "auto", mono=mono)
             if infrared:
                 set_infrared(device, night, args.ir_dots)
         except SystemExit:
@@ -826,17 +897,18 @@ def run(args):
             return 4
 
         streams = getattr(tracker, "extra_streams", [])
-        if args.picture == "depth" and "pic_out" not in streams:
+        if view in DEPTH_VIEWS and "pic_out" not in streams:
             warnings.append("This camera has no depth cameras, so its colour picture is shown.")
+            view = "color"
         status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h,
                depth=bool(getattr(tracker, "xyz", False) or getattr(tracker, "has_depth", False)), id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
-               detect="det_out" in streams, picture="depth" if "pic_out" in streams else "color", motion="motion_out" in streams, hands=hands,
+               detect="det_out" in streams, picture=view, motion="motion_out" in streams, hands=hands,
                night=night, infrared=infrared, warning=" ".join(dict.fromkeys(warnings)) or None)
         if retried:
             usb2.add(wanted)
         change = None
         try:
-            change = stream(tracker, mjpeg, night_watch(tracker, night, args.night == "auto" and infrared))
+            change = stream(tracker, mjpeg, night_watch(tracker, night, args.night == "auto" and infrared and mono is None))
         except (BrokenPipeError, KeyboardInterrupt):
             pass
         except RuntimeError:
@@ -887,7 +959,8 @@ def main():
     ap.add_argument("--device", default=None, help="which OAK camera, by its id (from --list)")
     ap.add_argument("--mjpeg", choices=["auto", "on", "off"], default="auto", help="pictures as JPEG from the camera's encoder")
     ap.add_argument("--detect", action="store_true", help="also find objects (person, cat, dog...) on the camera")
-    ap.add_argument("--picture", choices=["color", "depth"], default="color", help="the picture sent: colour, or depth (depth cameras)")
+    ap.add_argument("--picture", choices=["color", "depth", "left", "right", "blend", "side"], default="color",
+                    help="the picture sent: colour, depth, the two blended or side by side (depth cameras), or a black-and-white camera's")
     ap.add_argument("--motion", action="store_true", help="a small grey picture (64 x 36) with each frame, for Sentry mode")
     ap.add_argument("--no-hands", action="store_true", help="no hand tracking: only the picture and what else is asked for (Sentry mode)")
     ap.add_argument("--night", choices=["auto", "on", "off"], default="off", help="night vision by the camera's infrared light (OAK-D Pro)")

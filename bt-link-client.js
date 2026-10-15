@@ -18,7 +18,7 @@
  *     kept from before (each computer's password's key, base64: what to keep, rather than the
  *     password); throws { needPassword: true } for a computer with none kept and no password given;
  *     bluetooth: instead of navigator.bluetooth, such as
- *   BtLinkClient.capacitorBluetooth(plugin, { prefer, pick })  the phone apps' own Bluetooth (the
+ *   BtLinkClient.capacitorBluetooth(plugin, { prefer, pick, service })  the phone apps' own Bluetooth (the
  *     "BtLink" plugin: BtLinkPlugin.java on Android) looking like Web Bluetooth's part used here:
  *     the device named prefer, or the only one near by, or pick(devices) -> one of them (or null)
  */
@@ -192,10 +192,11 @@
 
   // A phone app's Bluetooth (its "BtLink" plugin) as the Web Bluetooth connect() uses.
   const sameName = (a, b) => !!a && !!b && String(a).toLowerCase().split(".")[0] === String(b).toLowerCase().split(".")[0];
-  function capacitorBluetooth(plugin, { prefer = "", pick = null } = {}) {
+  // service: another GATT service's devices (a work rig's, rig-ble.js), not Hand Tracker's.
+  function capacitorBluetooth(plugin, { prefer = "", pick = null, service = SERVICE } = {}) {
     return {
       async requestDevice() {
-        const { devices = [] } = await plugin.scan({ service: SERVICE, ms: 4000 });
+        const { devices = [] } = await plugin.scan({ service, ms: 4000 });
         const named = prefer ? devices.filter((d) => sameName(d.name, prefer)) : [];
         let d = named.length === 1 ? named[0] : !prefer && devices.length === 1 ? devices[0] : null;
         if (!d && devices.length && pick) d = await pick(devices);

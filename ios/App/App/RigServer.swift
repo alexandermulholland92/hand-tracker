@@ -52,7 +52,7 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
     static let nextWait: TimeInterval = 0.4 // a preview request waits this long for that camera's next picture
     static let viewerGone: TimeInterval = 10, answerTime: TimeInterval = 30
     static let headBytes = 16 * 1024, bodyBytes = 8192
-    static let actions: Set<String> = ["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry"]
+    static let actions: Set<String> = ["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry", "timing"]
     static let roles: Set<String> = ["", "head", "chest", "wrist_left", "wrist_right"]
     static let modes: Set<String> = ["ego", "stereo", "freeform"]
     static let csp = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'"

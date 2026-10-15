@@ -46,8 +46,47 @@
   const overlay = StageOverlay.create(stage, { phone: params.get("phone") === "1" });
   const gestures = HandGestures.create();
   const options = { display: { side: true, skeleton: true }, overlay: true, far: false, readable: false };
-  function drawTags(hands) {
-    if (options.overlay) overlay.draw(hands, { display: options.display, far: options.far && !oak, gestureOf: (h) => gestures.of(h), objects });
+  let timing = null; // { samples, handle } while the timing check measures this webcam
+  function startTiming() {
+    stopTiming();
+    if (oak || !video || typeof video.requestVideoFrameCallback !== "function" || !global.TimingCheck) return false;
+    const [gw, gh] = TimingCheck.GRID;
+    const small = Object.assign(document.createElement("canvas"), { width: gw * 4, height: gh * 4 });
+    const sctx = small.getContext("2d", { willReadFrequently: true });
+    const t = (timing = { samples: [], handle: 0 });
+    const each = (now) => {
+      if (timing !== t) return;
+      sctx.drawImage(video, 0, 0, small.width, small.height);
+      t.samples.push({ t: performance.timeOrigin + now, cells: TimingCheck.cells(sctx.getImageData(0, 0, small.width, small.height).data, small.width, small.height, 4) });
+      t.handle = video.requestVideoFrameCallback(each);
+    };
+    t.handle = video.requestVideoFrameCallback(each);
+    return true;
+  }
+  function stopTiming() {
+    const t = timing;
+    timing = null;
+    if (t && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(t.handle);
+    return t ? t.samples : [];
+  }
+
+  function drawTags(hands, objs = objects) {
+    if (options.overlay) overlay.draw(hands, { display: options.display, far: options.far && !oak, gestureOf: (h) => gestures.of(h), objects: objs });
+  }
+  // An OAK camera's side-by-side picture (its colour half, then its depth): the hands and
+  // objects found are the colour half's, so they're drawn there (wherever the turned picture has it).
+  let oakSize = null; // its frames' size (the colour picture's)
+  function onColourHalf(p) {
+    const r = HandTracker.getRotation ? HandTracker.getRotation() : 0;
+    if (r === 90) return { ...p, y: p.y / 2 };
+    if (r === 180) return { ...p, x: 0.5 + p.x / 2 };
+    if (r === 270) return { ...p, y: 0.5 + p.y / 2 };
+    return { ...p, x: p.x / 2 };
+  }
+  function boxOnColourHalf(o) {
+    if (!Array.isArray(o.box)) return o;
+    const a = onColourHalf({ x: o.box[0], y: o.box[1] }), b = onColourHalf({ x: o.box[2], y: o.box[3] });
+    return { ...o, box: [Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y)] };
   }
 
   // The tile's camera. Its id from the page showing the tile works on a computer, but Android's
@@ -131,6 +170,7 @@
     oakHands: (w, h, results, t) => {
       if (!oak) return null;
       objects = results && Array.isArray(results.objects) ? results.objects : null;
+      oakSize = { w, h };
       HandTracker.pushExternalHands(w, h, results, t);
       if (!error) message.hidden = true;
       return latest;
@@ -138,8 +178,10 @@
     oakPicture: async (jpeg, hands) => {
       if (!oak || !jpeg) return;
       const bitmap = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }));
-      HandTracker.drawExternalPicture(bitmap, (hands || []).map((h) => h.imageLandmarks));
-      drawTags(hands || []);
+      const side = !!oakSize && bitmap.width / bitmap.height > 1.8 * (oakSize.w / oakSize.h);
+      const shown = side ? (hands || []).map((h) => ({ ...h, imageLandmarks: h.imageLandmarks.map(onColourHalf) })) : hands || [];
+      HandTracker.drawExternalPicture(bitmap, shown.map((h) => h.imageLandmarks), side);
+      drawTags(shown, side && objects ? objects.map(boxOnColourHalf) : objects);
       pictures++;
       if (lastBitmap) lastBitmap.close();
       lastBitmap = bitmap;
@@ -175,6 +217,10 @@
       if (o.tracking !== undefined) HandTracker.setTracking(!!o.tracking);
     },
     options: () => ({ ...options, display: { ...options.display }, square: !oak && HandTracker.isSquareCrop(), gloves: !oak && HandTracker.getGloves(), farMode: HandTracker.getFarMode(), paused: HandTracker.isPaused(), tracking: HandTracker.isTracking() }),
+    // The timing check (timing-check.js): a webcam's pictures measured as they come, from
+    // timing(true) until timing(false) -> [{ t (ms since 1970), cells }]. (An OAK camera's are
+    // measured by the page showing the tile; timing(true) is then false.)
+    timing: (on) => (on ? startTiming() : stopTiming()),
     setView: ({ rotation, mirror } = {}) => {
       if (rotation !== undefined) HandTracker.setRotation(rotation);
       if (mirror !== undefined) HandTracker.setMirror(!!mirror);

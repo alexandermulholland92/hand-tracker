@@ -279,10 +279,58 @@
           // ones already running, or a recording's own pictures can be shown without starting
           // anything on the rig.
           canWatch: online && d.reachable !== false && !d.via_relay && cameras.length > 0 && (!!d.preview_active || recording || ON_DEMAND.has(d.generation)),
+          health: fleetHealth(d),
         };
       })
       .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
   }
+
+  // A rig's health as the dashboard last saw it (each part null or empty when it doesn't say):
+  // temperature, disk space (and how long it lasts recording), cameras, uploads, power and
+  // temperature limits (a Raspberry Pi's throttle flags: now, and since it started), its error.
+  function fleetHealth(d) {
+    const num = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+    const text = (v, n = 160) => (typeof v === "string" ? v.slice(0, n) : "");
+    const t = Number(d.throttle_int) || 0;
+    return {
+      tempC: num(d.cpu_temp) || null,
+      diskFreeGb: num(d.disk_free_gb),
+      diskTotalGb: num(d.disk_total_gb),
+      runway: text(d.storage_runway_label, 40),
+      cameraCount: num(d.camera_count),
+      healthPct: num(d.recording_health_pct),
+      uploadQueue: num(d.upload_queue) || 0,
+      uploadRate: text(d.upload_rate_label, 40),
+      underVoltage: !!(t & 0x1),
+      wasUnderVoltage: !!(t & 0x10000),
+      hot: !!(t & 0xc),
+      wasHot: !!(t & 0xc0000),
+      error: text(d.service_last_error, 300),
+      todayS: num(d.today_recording_s),
+    };
+  }
+
+  // A rig's recent sessions, newest first: those in its history (uploaded) and those still on
+  // it (/api/sessions/history and /api/sessions, each ?days=N, through the dashboard; either may
+  // be null). -> [{ name, startS, durationS, bytes, cameras, location, uploaded }]
+  function fleetSessions(history, local) {
+    const num = (v) => (typeof v === "number" && isFinite(v) && v >= 0 ? v : null);
+    const text = (v, n = 80) => (typeof v === "string" ? v.slice(0, n) : "");
+    const out = [];
+    for (const r of Array.isArray(history) ? history : []) {
+      if (!r || typeof r !== "object" || !(r.session || r.session_name)) continue;
+      out.push({ name: text(r.session || r.session_name), startS: num(r.start_unix), durationS: num(r.duration_s), bytes: num(r.bytes), cameras: num(r.camera_count), location: text(r.location), uploaded: true });
+    }
+    for (const r of Array.isArray(local) ? local : []) {
+      if (!r || typeof r !== "object") continue;
+      const name = text(r.session_id || r.session || r.name), startS = num(r.start_time_unix || r.start_time);
+      // (one already uploaded may still be on the rig: the same name, or the same start)
+      if (!name || out.some((s) => s.name === name || (startS && s.startS && Math.abs(s.startS - startS) < 2))) continue;
+      out.push({ name, startS, durationS: num(r.duration_s), bytes: num(r.total_bytes || r.size_bytes), cameras: num(r.camera_count), location: text(r.location), uploaded: false });
+    }
+    return out.sort((a, b) => (b.startS || 0) - (a.startS || 0)).slice(0, 100);
+  }
+  const FLEET_SESSION_DAYS = 7;
 
   // A dashboard address as its origin: https only (http only for this device, for checks).
   function siteOrigin(site, what = "The dashboard's") {
@@ -297,5 +345,5 @@
     return url.origin;
   }
 
-  return { OpsCore, fleetRigs, siteOrigin, FLEET_HOST_RE, FLEET_CAMERA_RE, PAGE_SIZE };
+  return { OpsCore, fleetRigs, fleetSessions, FLEET_SESSION_DAYS, siteOrigin, FLEET_HOST_RE, FLEET_CAMERA_RE, PAGE_SIZE };
 });

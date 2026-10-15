@@ -339,21 +339,21 @@ class HandTrackerBpf:
             if night is None:
                 cam.initialControl.setManualFocus(calib_lens_pos)
 
-            # (Night vision: the left camera is its camera already, at its size; the depth is
-            # lined up with it.)
+            # (Night vision, or a black-and-white camera's view: that camera is its camera already,
+            # at its size; the depth is lined up with it.)
             mono_resolution = night.resolution if night is not None else dai.MonoCameraProperties.SensorResolution.THE_400_P
-            if night is not None:
-                left = night.mono
-            else:
-                left = pipeline.createMonoCamera()
-                left.setBoardSocket(dai.CameraBoardSocket.LEFT)
-                left.setResolution(mono_resolution)
-                left.setFps(self.internal_fps)
 
-            right = pipeline.createMonoCamera()
-            right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
-            right.setResolution(mono_resolution)
-            right.setFps(self.internal_fps)
+            def mono_camera(socket):
+                if night is not None and night.socket == socket:
+                    return night.mono
+                m = pipeline.createMonoCamera()
+                m.setBoardSocket(socket)
+                m.setResolution(mono_resolution)
+                m.setFps(self.internal_fps)
+                return m
+
+            left = mono_camera(dai.CameraBoardSocket.LEFT)
+            right = mono_camera(dai.CameraBoardSocket.RIGHT)
 
             stereo = pipeline.createStereoDepth()
             stereo.setConfidenceThreshold(230)

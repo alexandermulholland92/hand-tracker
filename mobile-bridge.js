@@ -379,6 +379,37 @@
         if (!j) throw new Error("Sign in to the fleet dashboard first.");
         return Core.fleetRigs(j);
       },
+      // The work rigs' Bluetooth password (rig-ble.js), kept by the app encrypted (the Keystore).
+      blePassword: async () => ((await Remote.secretGet({ key: "rig-ble" }).catch(() => ({}))).value || ""),
+      setBlePassword: async (password) => {
+        const pw = String(password || "");
+        if (!pw) await Remote.secretRemove({ key: "rig-ble" });
+        else if (pw.length > 128) throw new Error("That's too long for a Bluetooth password.");
+        else await Remote.secretSet({ key: "rig-ble", value: pw });
+        return !!pw;
+      },
+      // A work rig's Bluetooth (the app's own: BtLinkPlugin.java), as rig-ble.js uses Web Bluetooth.
+      bluetooth: (pick) => {
+        const BtLink = plugin("BtLink");
+        return BtLink && global.BtLinkClient && global.RigBle ? global.BtLinkClient.capacitorBluetooth(BtLink, { service: global.RigBle.SERVICE, pick }) : null;
+      },
+      // A rig's recent sessions (as electron/fleet.js sessions()): only read.
+      sessions: async (host) => {
+        if (!fleetSite) throw new Error("Enter the fleet dashboard's address first.");
+        if (!Core.FLEET_HOST_RE.test(String(host || ""))) throw new Error("Which rig?");
+        const get = async (p) => {
+          const res = await request(`${fleetSite}/proxy/${host}/${p}?days=${Core.FLEET_SESSION_DAYS}`, { headers: { "Cache-Control": "no-store" } }, { cookies: true, followRedirects: false }).catch(() => null);
+          if (!res) return null;
+          if (res.status === 401 || (res.status >= 300 && res.status < 400)) {
+            fleetSignedIn = false;
+            throw new Error("Sign in to the fleet dashboard first.");
+          }
+          return res.ok && (res.headers.get("content-type") || "").includes("json") ? res.json().catch(() => null) : null;
+        };
+        const [history, local] = await Promise.all([get("api/sessions/history"), get("api/sessions")]);
+        if (!Array.isArray(history) && !Array.isArray(local)) throw new Error("The rig didn't say what it has recorded (it may be offline).");
+        return Core.fleetSessions(history, local);
+      },
     };
     return { ops, fleet };
   }

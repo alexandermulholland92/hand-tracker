@@ -192,7 +192,7 @@
     model: ["Hand model", [["lite", "Lite"], ["full", "Full"]]],
     hands: ["Hands", [[1, "One"], [2, "Two"]]],
     fps: ["Frame rate", [[0, "Automatic"], [60, "60"]]],
-    picture: ["Picture", [["color", "Colour"], ["depth", "Depth"]]],
+    picture: ["Picture", [["color", "Colour"], ["depth", "Depth"], ["blend", "Colour + depth"], ["side", "Colour | depth"], ["left", "Left mono"], ["right", "Right mono"]]],
     night: ["Night vision", [["auto", "Automatic"], ["on", "On"], ["off", "Off"]]],
   };
   const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", dots: "Infrared dots (better depth in the dark, dots on the picture)" };
@@ -212,6 +212,7 @@
     return `<div class="oakset" id="oakset-${id}">` + first + choice("model") + choice("hands") + (depth ? sw("depth") : "") + choice("fps") + sw("detect") + (depth ? choice("picture") : "") +
       (infrared ? choice("night") + sw("dots") : "") +
       `<div class="sub">${infrared ? (o.infrared === null ? "Night vision needs an infrared light (OAK-D Pro); Automatic turns it on when it's dark. " : "Night vision: Automatic turns it on when it's dark. ") : "This camera has no infrared light, so no night vision. "}` +
+      (depth ? "Picture: Colour + depth lays the depth over the colour picture; Colour | depth puts them side by side; Left or Right mono is that black-and-white camera, the hands found on it (Night vision On lights it). " : "") +
       "Changed while the camera runs, it starts again with them (a few seconds).</div></div>";
   }
   $("camRows").addEventListener("click", (e) => {
@@ -1617,6 +1618,11 @@
     $("camsBtn").disabled = sending || !!s.pending || !need.ok;
     $("offBtn").hidden = !s.running || !!s.recording;
     $("offBtn").disabled = sending || !!s.pending;
+    // (A computer that has the timing check says how it went: "timing" in its state.)
+    $("timingRow").hidden = !("timing" in s) || !s.running || !!s.recording;
+    const tm = s.timing;
+    if (beaconRun && tm && tm.phase === "done" && tm.until >= beaconRun.since) stopBeacon();
+    $("timingNote").textContent = tm && tm.phase === "measuring" ? "Measuring…" : tm && tm.phase === "done" ? tm.text || "" : "";
     const rec = $("recBtn");
     rec.textContent = s.recording ? "Stop recording" : "Start recording";
     rec.className = s.recording ? "stop" : "record";
@@ -1948,12 +1954,14 @@
 
   // extra: what the action needs ({ camera }, { pick }, { mode }, { settings }). Details being
   // typed go first, so a take that's stopped (or started) has them.
+  // -> its answer (null if it couldn't be sent).
   async function command(action, extra = {}, { quiet = false } = {}) {
     sending = true;
     if (state) render();
+    let res = null;
     try {
       await sendDetails();
-      const res = await post({ action, ...extra });
+      res = await post({ action, ...extra });
       if (Array.isArray(res.missing)) markMissing(res.missing.filter((k) => FIELDS.includes(k)));
       if (!quiet || res.ok === false || res.error) say(res.message || (res.ok ? "" : res.error || "That didn't work."), res.ok === false || !!res.error);
     } catch (err) {
@@ -1965,8 +1973,34 @@
         render();
       } catch {}
     }
+    return res;
   }
   $("camsBtn").addEventListener("click", () => command("cameras"));
+  // The timing check: this screen flashes (white for the first half of each second) while every
+  // camera films it, until the computer has measured them (its results come with its state).
+  let beaconRun = null; // { since, frame, stop }
+  function stopBeacon() {
+    if (!beaconRun) return;
+    cancelAnimationFrame(beaconRun.frame);
+    beaconRun = null;
+    $("beacon").hidden = true;
+  }
+  $("timingBtn").addEventListener("click", async () => {
+    if (beaconRun) return;
+    const run = (beaconRun = { since: Date.now(), frame: 0 });
+    const el = $("beacon");
+    el.hidden = false;
+    const tick = () => {
+      if (beaconRun !== run) return;
+      el.style.background = Date.now() % 1000 < 500 ? "#fff" : "#000";
+      if (Date.now() - run.since > 25000) return stopBeacon(); // (the computer didn't say it's done)
+      run.frame = requestAnimationFrame(tick);
+    };
+    tick();
+    const r = await command("timing");
+    if (!r || r.ok === false) stopBeacon();
+  });
+  $("beacon").addEventListener("click", stopBeacon);
   $("offBtn").addEventListener("click", async () => {
     await command("close");
     scan();

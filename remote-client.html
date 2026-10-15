@@ -27,6 +27,10 @@
   .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--red); margin-right: 7px; vertical-align: 1px; animation: blink 1.2s infinite; }
   @keyframes blink { 50% { opacity: 0.25; } }
   .controls { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
+  #timingRow { margin: 8px 0; }
+  #beacon { position: fixed; inset: 0; z-index: 1000; background: #000; display: flex; align-items: flex-end; justify-content: center; }
+  #beacon[hidden] { display: none; }
+  #beacon span { color: #888; mix-blend-mode: difference; padding: 16px; font-size: 14px; text-align: center; }
   button { font: inherit; border: 0; border-radius: 12px; color: #fff; background: var(--green); cursor: pointer; }
   .controls button { flex: 1 1 150px; font-size: 17px; font-weight: 600; padding: 15px 16px; }
   button.record { background: var(--red); }
@@ -198,6 +202,8 @@
   </div>
   <div id="message"></div>
   <div id="grid" class="grid"></div>
+  <div id="timingRow" hidden><button type="button" id="timingBtn" class="small" title="How far apart the cameras' timings are: this screen flashes for about 12 seconds while every camera films it.">Timing check</button> <span id="timingNote"></span></div>
+  <div id="beacon" hidden><span>Timing check: let every camera see this screen flashing. Tap to stop.</span></div>
   <div id="missing"></div>
   <div id="take" hidden></div>
 

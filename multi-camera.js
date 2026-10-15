@@ -315,13 +315,13 @@
   // hands, depth, More settings → OAK camera).
   const OAK_OWN = {
     model: (v) => ["lite", "full"].includes(v), hands: (v) => [1, 2].includes(v), depth: (v) => typeof v === "boolean", fps: (v) => [0, 60].includes(v),
-    detect: (v) => typeof v === "boolean", picture: (v) => ["color", "depth"].includes(v), night: (v) => ["auto", "on", "off"].includes(v), dots: (v) => typeof v === "boolean",
+    detect: (v) => typeof v === "boolean", picture: (v) => OakSource.VIEWS.includes(v), night: (v) => ["auto", "on", "off"].includes(v), dots: (v) => typeof v === "boolean",
   };
   const oakOwn = (id) => ((prefs && prefs.oakCameraOptions) || {})[id] || {};
   // Its settings as they are: { model, hands, depth, fps, detect, picture, night, dots }.
   function oakSettingsOf(id) {
     const own = oakOwn(id), main = tileOptions.oak || {};
-    const o = { model: modelOf() === 1 ? "full" : "lite", hands: 2, depth: true, fps: Number(main.fps) || 0, detect: !!main.chosenDetect, picture: main.picture === "depth" ? "depth" : "color",
+    const o = { model: modelOf() === 1 ? "full" : "lite", hands: 2, depth: true, fps: Number(main.fps) || 0, detect: !!main.chosenDetect, picture: OakSource.VIEWS.includes(main.picture) ? main.picture : "color",
       night: ["on", "off"].includes(main.night) ? main.night : "auto", dots: !!main.dots };
     for (const k of Object.keys(OAK_OWN)) if (OAK_OWN[k](own[k])) o[k] = own[k];
     return o;
@@ -462,15 +462,29 @@
     return performance.now() - t.lastPicture >= every - 15;
   }
 
+  // An OAK camera's frame's time on its tile's clock (performance.now() there), as a webcam's
+  // frames are, so a take lines the cameras up: when the camera took it (header.u, ms since
+  // 1970), else when it came. (header.t is its helper's own clock, from when that started.)
+  function tileTime(t, header) {
+    let origin = performance.timeOrigin;
+    try {
+      origin = t.frame.contentWindow.performance.timeOrigin;
+    } catch {
+      // (its page going away)
+    }
+    return (typeof header.u === "number" && isFinite(header.u) ? header.u : performance.timeOrigin + performance.now()) - origin;
+  }
+
   function onOakFrame({ id, header, jpeg }) {
     const i = tiles.findIndex((x) => x.oak === id);
     const t = tiles[i];
+    if (timing && timing.phase === "measuring" && timing.oak.has(id)) timingSample(timing.oak.get(id), header, jpeg);
     const api = t && tileApi(t);
     if (t) t.frameAt = performance.now();
     if (!api || !api.oakHands) return desktop.oak.streamShown(id);
     let hands = null;
     try {
-      hands = api.oakHands(header.w, header.h, OakSource.toResults(header), header.t);
+      hands = api.oakHands(header.w, header.h, OakSource.toResults(header), tileTime(t, header));
     } catch {
       // its page going away meanwhile
     }
@@ -589,6 +603,90 @@
     const api = tileApi(t);
     // (Its helper having said why before it stopped: that, rather than how it stopped.)
     if (api && api.oakStatus) api.oakStatus(s.status === "stopped" && s.code && t.oakError ? { ...s, message: t.oakError } : s);
+  }
+
+  // ---------- the timing check (timing-check.js) ----------
+  // Every running camera's pictures measured for `seconds` while they film the beacon (on a
+  // phone's remote recording page, or this screen): an OAK camera's as they come here (its grey
+  // picture where it sends one, else its JPEG, small), a webcam's in its tile. Each one's
+  // offset from the first that saw it, then. timing: { phase, until, results } for the page.
+  let timing = null;
+  const TIMING = { seconds: 10 };
+  const smallCanvas = typeof document !== "undefined" ? document.createElement("canvas") : null;
+  async function timingSample(samples, header, jpeg) {
+    const at = performance.timeOrigin + performance.now(); // (when it came, before decoding it)
+    try {
+      const grey = header.grey && OakSource.decodeGrey(header.grey);
+      if (grey) return samples.push({ t: at, cells: TimingCheck.cells(grey.data, grey.w, grey.h, 1) });
+      if (!jpeg) return;
+      const [gw, gh] = TimingCheck.GRID;
+      const bitmap = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }), { resizeWidth: gw * 4, resizeHeight: gh * 4 });
+      smallCanvas.width = gw * 4;
+      smallCanvas.height = gh * 4;
+      const sctx = smallCanvas.getContext("2d", { willReadFrequently: true });
+      sctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      samples.push({ t: at, cells: TimingCheck.cells(sctx.getImageData(0, 0, gw * 4, gh * 4).data, gw * 4, gh * 4, 4) });
+    } catch {
+      // (a picture that didn't decode: left out)
+    }
+  }
+  // beacon: () -> the beacon's own flash times, when it's on this screen.
+  async function timingCheck({ seconds = TIMING.seconds, beacon = null } = {}) {
+    if (!tiles.length) return { ok: false, message: "No cameras are running." };
+    if (timing && timing.phase === "measuring") return { ok: false, message: "The timing check is already measuring." };
+    if (!global.TimingCheck) return { ok: false, message: "The timing check isn't available here." };
+    const run = (timing = { phase: "measuring", until: Date.now() + seconds * 1000, results: null, oak: new Map() });
+    const measured = new Set();
+    for (const t of tiles) {
+      if (t.oak) run.oak.set(t.oak, []);
+      else {
+        const api = tileApi(t);
+        if (api && api.timing && api.timing(true)) measured.add(t);
+      }
+    }
+    els.note.textContent = "Timing check: point every camera at the flashing beacon…";
+    await sleep(seconds * 1000);
+    const cameras = tiles.map((t) => {
+      const api = tileApi(t);
+      const samples = t.oak ? run.oak.get(t.oak) || [] : measured.has(t) && api && api.timing ? api.timing(false) : [];
+      return { name: nameOf(t), samples: samples.slice().sort((a, b) => a.t - b.t) };
+    });
+    run.oak.clear();
+    run.results = TimingCheck.compare(cameras, beacon ? beacon() : null);
+    run.phase = "done";
+    els.note.textContent = timingText(run.results);
+    return { ok: true, message: els.note.textContent, results: run.results };
+  }
+  function timingText(results) {
+    const each = results.map((r) =>
+      r.offsetMs === null ? `${r.name}: didn't see the beacon` : r.offsetMs === 0 && r === results.find((x) => x.offsetMs !== null) ? `${r.name}: the reference${r.afterBeaconMs !== null ? ` (${r.afterBeaconMs} ms after the screen)` : ""}` :
+        `${r.name}: ${r.offsetMs > 0 ? "+" : ""}${r.offsetMs} ms (±${r.spreadMs})${r.afterBeaconMs !== null ? `, ${r.afterBeaconMs} ms after the screen` : ""}`);
+    return `Timing check: ${each.join(" · ")}`;
+  }
+  const timingState = () => (timing ? { phase: timing.phase, until: timing.until, results: timing.results, text: timing.results ? timingText(timing.results) : "" } : null);
+
+  // The beacon on this screen (the cameras film it), for the check's length.
+  async function timingHere() {
+    const el = document.createElement("div");
+    el.style.cssText = "position:fixed;inset:0;z-index:99999;background:#000;cursor:none";
+    const note = document.createElement("div");
+    note.textContent = "Timing check: let every camera see this flashing (Esc stops it)";
+    note.style.cssText = "position:absolute;bottom:12px;left:0;right:0;text-align:center;color:#888;font:14px sans-serif;mix-blend-mode:difference";
+    el.appendChild(note);
+    document.body.appendChild(el);
+    const b = TimingCheck.beacon(el);
+    const esc = (e) => e.key === "Escape" && el.remove();
+    document.addEventListener("keydown", esc);
+    try {
+      await sleep(1500); // (the screen settles, the cameras adjust to it)
+      if (!el.isConnected) return { ok: false, message: "Timing check stopped." };
+      return await timingCheck({ beacon: b.flashes });
+    } finally {
+      b.stop();
+      el.remove();
+      document.removeEventListener("keydown", esc);
+    }
   }
 
   // keepOak: another set of tiles comes next (the main window's OAK camera isn't taken back yet).
@@ -767,8 +865,12 @@
     els = {
       dialog: $("multiCamDialog"), pickList: $("multiCamPicks"), pickNote: $("multiCamPickNote"), start: $("multiCamStart"), cancel: $("multiCamCancel"),
       card: $("multiCamCard"), grid: $("multiCamGrid"), record: $("multiCamRecord"), closeBtn: $("multiCamClose"), note: $("multiCamNote"),
-      screenBtn: $("multiCamScreen"), missing: $("multiCamMissing"),
+      screenBtn: $("multiCamScreen"), missing: $("multiCamMissing"), timingBtn: $("multiCamTiming"),
     };
+    if (els.timingBtn) els.timingBtn.addEventListener("click", () => {
+      els.timingBtn.disabled = true;
+      timingHere().then((r) => r && !r.ok && (els.note.textContent = r.message)).finally(() => (els.timingBtn.disabled = false));
+    });
     if (!els.dialog) return;
     // OAK cameras used to start not mirrored, and a camera turned then kept that: it's let go
     // once, so they're mirrored like the others (a flip from now on is remembered as ever).
@@ -813,7 +915,7 @@
   }
 
   global.MultiCamera = {
-    init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, tracking: ownTracking, setTracking, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
+    init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, tracking: ownTracking, setTracking, timingCheck, timingState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
     oakSettings, setOakSettings,
     isActive: () => tiles.length > 0, isRecording: () => recording, isTracking: () => tiles.some((t) => tracking(t)),
     _again: AGAIN, // (the checks shorten its times)

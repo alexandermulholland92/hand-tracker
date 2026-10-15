@@ -70,7 +70,7 @@ const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it t
 const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
-const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "sentry", "oak", "resetCameras", "reboot", "powerOff"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "sentry", "oak", "resetCameras", "reboot", "powerOff", "timing"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
 const ROLES = ["", "head", "chest", "wrist_left", "wrist_right"];
@@ -115,7 +115,7 @@ function cleanPick(p) {
 }
 // One OAK camera's own settings, from a request: which ("oak:<id>"), and any of its hand model,
 // one or two hands, depth, frame rate, finding objects, picture, night vision and infrared dots.
-const OAK_CHOICES = { model: ["lite", "full"], hands: [1, 2], fps: [0, 60], picture: ["color", "depth"], night: ["auto", "on", "off"] };
+const OAK_CHOICES = { model: ["lite", "full"], hands: [1, 2], fps: [0, 60], picture: ["color", "depth", "blend", "side", "left", "right"], night: ["auto", "on", "off"] };
 function cleanOak(o) {
   if (!o || typeof o !== "object" || typeof o.id !== "string" || !/^oak:[A-Za-z0-9._-]{1,64}$/.test(o.id) || !o.options || typeof o.options !== "object") return null;
   const options = {};

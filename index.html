@@ -71,6 +71,12 @@
   .rig-dot.rig-rec { background: #fa5252; }
   .rig-dot.rig-live { background: #40c057; }
   .rig-cams { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .rig-health { display: block; opacity: 0.85; }
+  #rigsBle { margin-top: 10px; border-top: 1px solid rgba(128, 128, 128, 0.25); padding-top: 8px; }
+  #rigsBleInfo div { padding: 2px 6px; }
+  .rig-warn { color: #e8590c; }
+  .rig-sessions { margin: 0 0 8px 20px; font-size: 0.85em; }
+  .rig-session { display: grid; grid-template-columns: 1.6fr 0.8fr 0.7fr 0.5fr 1.4fr; gap: 6px; padding: 2px 0; border-bottom: 1px solid rgba(128, 128, 128, 0.2); }
   .rig-cams button { padding: 3px 9px; font-size: 12px; }
   #rigsBrowse label { margin-right: 12px; }
   .error-note { color: #ffc9c9; }
@@ -704,6 +710,12 @@
       <div id="rigsList" class="ops-list"></div>
       <p class="note">Pick a camera to watch it and track its hands; pick it again to go back to your camera. Rigs recording now are listed first, and can always be watched. The pictures are the dashboard's previews (full-size keyframes where the camera has them): a new one every second or two, so hands jump between pictures. Nothing on the rig is changed.</p>
     </div>
+    <div id="rigsBle">
+      <div class="toolbar"><button id="rigsBleBtn" title="Reach a work rig next to you over its own Bluetooth: its status, with no network or dashboard. Only reads.">Nearby rig over Bluetooth…</button><span id="rigsBleNote" class="status"></span><span class="spacer"></span><button id="rigsBleForget" hidden>Forget its password</button></div>
+      <div id="rigsBlePwRow" class="toolbar" hidden><input type="password" id="rigsBlePw" placeholder="The rigs' Bluetooth password" autocomplete="off" style="flex:1" /><button id="rigsBleSave" class="primary">Keep and connect</button></div>
+      <div id="rigsBlePick" class="ops-list" hidden></div>
+      <div id="rigsBleInfo" class="ops-list" hidden></div>
+    </div>
     <p id="rigsError" class="note error-note" hidden></p>
   </div>
 </div>
@@ -779,6 +791,7 @@
   <div class="toolbar" style="margin-top:10px">
     <button id="multiCamRecord" class="primary">Start Motion Capture</button>
     <button id="multiCamClose">Close (back to one camera)</button>
+    <button id="multiCamTiming" title="How far apart the cameras' timings are: this screen flashes for about 12 seconds while every camera films it (or start it from Remote recording's page, which flashes on the phone).">Timing check</button>
     <button id="multiCamScreen" aria-pressed="false" hidden title="The OAK cameras' pictures on this screen. Off leaves more of the processor for finding hands: they're still tracked and recorded, and Remote recording's page still shows the cameras.">Hide pictures</button>
     <span id="multiCamNote" class="status"></span>
   </div>
@@ -828,6 +841,9 @@
 <script src="remote-record-ui.js"></script>
 <script src="oak-source.js"></script>
 <script src="ops-sessions.js"></script>
+<script src="bt-link-client.js"></script>
+<script src="rig-ble.js"></script>
+<script src="timing-check.js"></script>
 <script src="rig-live.js"></script>
 <script src="camera-roles.js"></script>
 <script src="multi-camera.js"></script>

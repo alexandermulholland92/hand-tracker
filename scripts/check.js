@@ -128,6 +128,7 @@ const STEPS = [
   ["oak-pictures-off", [], ({ js }) => checkOakPicturesOff(js)],
   ["oak-tile-retry", [], ({ js }) => checkOakTileRetry(js)],
   ["oak-crash-again", [], ({ js }) => checkOakCrashAgain(js)],
+  ["timing-check", [], ({ js }) => checkTimingCheck(js)],
   ["remote-recording", [], ({ js }) => checkRemoteRecording(js)],
   ["remote-oak-settings", [], ({ js }) => checkRemoteOakSettings(js)],
   ["remote-launcher", ["remote-recording"], ({ js }) => checkRemoteLauncher(js)], // downloads the take it saved
@@ -144,6 +145,7 @@ const STEPS = [
   ["mac-app", [], () => checkMacApp()],
   ["linux-input", [], () => checkLinuxInput()],
   ["bluetooth-link", [], () => checkBluetoothLink()],
+  ["rig-ble", [], () => checkRigBle()],
   ["bluetooth-page", [], () => checkBluetoothPage()],
   ["clip-mp4", [], () => checkClipMp4()],
   ["external-source", [], checkExternalSource],
@@ -1028,6 +1030,91 @@ function checkMacApp() {
 // long answer in frames that fit the link; the wrong password is told so; another device near
 // by reads nothing of it and can't use its session; the server takes the link's token only from
 // itself, and a phone on the Bluetooth network only with the password.
+// A work rig's own Bluetooth server (rig-ble.js), against a stand-in that speaks its protocol:
+// JSON in 128-byte pieces with a 3-byte head, commands { id, domain, action, params } on Command,
+// answers on Detail, its status on Status once the password's taken.
+async function checkRigBle() {
+  const RigBle = require("../rig-ble.js");
+  const PASSWORD = "stand-in-rig"; // (the stand-in's own)
+  const pieces = (obj) => {
+    const raw = Buffer.from(JSON.stringify(obj));
+    const out = [];
+    for (let i = 0, n = 0; i < raw.length || n === 0; i += 128, n++) {
+      const part = raw.subarray(i, i + 128);
+      out.push(Uint8Array.from([(n === 0 ? 1 : 0) | (i + 128 >= raw.length ? 2 : 0), n >> 8, n & 255, ...part]));
+    }
+    return out;
+  };
+  const telemetry = {
+    ts: 1, hostname: "rpi5-test",
+    recording: { active: true, elapsed_s: 65, task: "pick up cup", size_bytes: 2.5e9 },
+    cameras: { detected: 3, expected: 4, list: [{ role: "head", ui_health: "healthy" }, { role: "chest", ui_health: "healthy" }, { role: "wrist_left", ui_status: "missing" }] },
+    system: { cpu_pct: 23.4, cpu_temp_c: 61.2, mem_pct: 41, fan_rpm: 3100, hat_power_w: 8.24, throttled: "0x50000" },
+    disk: { free_gb: 120.4 }, ssd: { temp_c: 44 }, upload: { pending_bytes: 4.2e9, uploading_bytes: 0, paused: true },
+    wifi: { connected: true, ssid: "work", signal: -55 }, imu: { state: "ok" }, alerts: [{ message: "Wrist camera missing" }],
+  };
+  // The stand-in rig, as Web Bluetooth (the part rig-ble.js uses) gives it.
+  const standIn = () => {
+    const sent = [];
+    const listeners = {};
+    let authed = false, timer = null;
+    const notify = (uuid, obj) => pieces(obj).forEach((b) => (listeners[uuid] || []).forEach((fn) => fn({ target: { value: new DataView(b.buffer) } })));
+    const ch = (uuid) => ({
+      addEventListener: (type, fn) => (listeners[uuid] = [...(listeners[uuid] || []), fn]),
+      startNotifications: async () => {},
+      writeValueWithResponse: async (bytes) => {
+        const cmd = JSON.parse(Buffer.from(bytes).toString());
+        sent.push(`${cmd.domain}.${cmd.action}`);
+        const reply = (ok, data, error) => setTimeout(() => notify(RigBle.DETAIL, { id: cmd.id, domain: cmd.domain, action: cmd.action, ok, ...(ok ? { data } : { error }) }), 5);
+        if (cmd.action === "identity") return reply(true, { hostname: "rpi5-test", display_name: "Test Rig", protocol_version: 1 });
+        if (cmd.action === "auth") {
+          authed = cmd.params.password === PASSWORD;
+          if (!authed) return reply(false, null, { code: "auth_failed", message: "Password rejected" });
+          timer = setInterval(() => notify(RigBle.STATUS, { domain: "status", action: "telemetry", ok: true, data: telemetry }), 50);
+          return reply(true, { authenticated: true });
+        }
+        reply(false, null, { code: "unknown_command", message: "no" });
+      },
+    });
+    const device = {
+      name: "Workstream rpi5-test",
+      addEventListener: () => {},
+      gatt: { connect: async () => ({ getPrimaryService: async (uuid) => (uuid === RigBle.SERVICE ? { getCharacteristic: async (u) => ch(u) } : null) }), disconnect: () => clearInterval(timer) },
+    };
+    return { sent, bluetooth: { requestDevice: async ({ filters }) => (filters[0].services[0] === RigBle.SERVICE ? device : null) } };
+  };
+  const out = {};
+  try {
+    const a = standIn();
+    const got = [];
+    const rig = await RigBle.connect({ bluetooth: a.bluetooth, password: PASSWORD, onStatus: (t) => got.push(t) });
+    await new Promise((r) => setTimeout(r, 300));
+    rig.close();
+    out.name = rig.name;
+    out.statuses = got.length;
+    out.lines = got.length ? RigBle.lines(got[0]) : [];
+    out.sent = a.sent;
+    const b = standIn();
+    out.wrong = await RigBle.connect({ bluetooth: b.bluetooth, password: "not-it" }).then(() => "connected", (err) => (err.password ? "password" : String(err.message)));
+    // A missed piece drops that message only.
+    const seen = [];
+    const feed = RigBle.reassembler((m) => seen.push(m.n));
+    const first = pieces({ n: 1, pad: "x".repeat(300) }), second = pieces({ n: 2 });
+    feed(first[0]);
+    feed(first[2]);
+    second.forEach(feed);
+    out.afterMissed = seen.join();
+  } catch (err) {
+    out.error = String((err && err.message) || err);
+  }
+  const L = (out.lines || []).join(" | ");
+  check("Live Rigs over a rig's own Bluetooth: its identity, the password, then its status once a second, in pieces put back together (one with a missed piece dropped); only session commands are sent; a password it doesn't take is said so",
+    !out.error && out.name === "Test Rig" && out.statuses >= 2 && /^Recording 1:05 · pick up cup · 2\.5 GB/.test(L) && /Cameras 3 of 4: head healthy, chest healthy, wrist_left missing/.test(L) &&
+      /61 °C · processor 23% · memory 41% · fan 3100 rpm · 8\.2 W · ⚠ throttled/.test(L) && /120 GB free · drive 44 °C/.test(L) && /Upload: 4\.2 GB to upload · paused/.test(L) &&
+      /Wi-Fi: work \(signal -55\)/.test(L) && /⚠ Wrist camera missing/.test(L) && out.sent.join() === "session.identity,session.auth" && out.wrong === "password" && out.afterMissed === "2",
+    JSON.stringify(out));
+}
+
 async function checkBluetoothLink() {
   // Each notification fills Bluetooth's 251-byte radio packets (with its 7 bytes of headers: 495
   // is two, 244 one), never over mtu - 3; and the Android and iPhone rigs size theirs the same.
@@ -2497,6 +2584,25 @@ async function checkRemoteOakSettings(js) {
       started: (await startedWith()).map((x) => x && x.hands).sort().join(),
       state: (await state()).available.cameras.filter((c) => c.id === A || c.id === B).map((c) => `${c.id === A ? "a" : "b"}:${c.tracking}`).sort().join(),
     };
+    // Its picture side by side (colour | depth): started so, the tile's picture twice as wide.
+    await pjs(`(async () => {
+      ${PAGE}
+      if (!block("${B}")) document.querySelector('[data-oakopen="${B}"]').click();
+      await until(() => block("${B}"));
+      await choose("${B}", "picture", "side");
+      return true;
+    })()`);
+    for (let i = 0; i < 100; i++) {
+      const w = await startedWith();
+      if (w.some((x) => x && x.picture === "side")) break;
+      await sleep(200);
+    }
+    await sleep(3000);
+    out.side = await js(`(() => {
+      const i = MultiCamera._tiles().findIndex((t) => t.oakWith && JSON.parse(t.oakWith).picture === "side");
+      const stage = i >= 0 && document.querySelectorAll("#multiCamGrid iframe")[i].contentDocument.getElementById("stage");
+      return { found: i >= 0, w: stage && stage.width, h: stage && stage.height, fps: i >= 0 && MultiCamera._tiles()[i].status.fps };
+    })()`);
     // Not while recording.
     await post("settings", { settings: { detailsRequired: false } });
     await post("record");
@@ -2525,6 +2631,9 @@ async function checkRemoteOakSettings(js) {
   check("Remote recording's page: every camera has a Hand tracking switch under its ⚙ (a webcam only that); turned off for one OAK camera, it starts again without the hands while the other keeps them",
     ts.was === "On" && ts.off && ts.webTrack && ts.webOak === 0 && to.started === "false,true" && to.state === "a:false,b:true",
     JSON.stringify({ trackSwitch: ts, trackOff: to }));
+  const sd = out.side || {};
+  check("Remote recording's page: an OAK camera's Picture can be Colour | depth (side by side): it starts so, and its tile's picture is twice as wide",
+    sd.found && sd.w > 0 && sd.h > 0 && sd.w / sd.h > 3 && sd.fps > 0, JSON.stringify(sd));
   check("Remote recording's page: each OAK camera has its own settings (a Settings button on its row: hand model, hands, depth, frame rate, objects, picture, night vision and infrared dots); set there, it starts with them and the other with the usual ones; changed while they run, only that one starts again; not while recording; anything else is refused",
     !out.error && out.buttons && out.buttons.filter((b) => b.startsWith("oak:")).join() === [A, B].join() && out.buttons.length > 2 && out.seen && out.opened && ["model", "hands", "depth", "fps", "detect", "picture", "night", "dots"].every((k) => out.rows.includes(k)) &&
       out.before.a && out.before.a.night === "auto" && out.before.a.hands === 2 && out.before.a.depth === true && out.before.webcam === undefined &&
@@ -3249,6 +3358,45 @@ async function checkOakCrashAgain(js) {
     JSON.stringify(f));
 }
 
+// The timing check: two stand-in OAK cameras film a beacon flashing once a second, one 80 ms
+// later than the other; with the beacon's own flash times too (as on this screen).
+async function checkTimingCheck(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const out = {};
+    try {
+      await MultiCamera.start(["oak:SIMULATED-OAK-BEACON-0", "oak:SIMULATED-OAK-BEACON-80-CLOCK-2000"]);
+      for (let i = 0; i < 100 && !(MultiCamera._tiles().length === 2 && MultiCamera._tiles().every((t) => t.oakState === "running")); i++) await sleep(100);
+      await sleep(500);
+      const flashes = () => { const now = Date.now(); return Array.from({ length: 12 }, (_, k) => now - (now % 1000) - k * 1000); };
+      const res = await MultiCamera.timingCheck({ seconds: 6, beacon: flashes });
+      out.ok = res.ok;
+      out.results = res.results;
+      out.state = MultiCamera.timingState();
+      out.note = document.getElementById("multiCamNote").textContent;
+      // A take from both (started one after another): lined up by when each camera took its
+      // pictures, so they're on one clock (each camera's offset under a frame).
+      await MultiCamera.startRecording();
+      await sleep(1500);
+      const take = MultiCamera.stopRecording(true);
+      out.offsets = take && take.cameras.map((c) => c.offset_s);
+      document.getElementById("motionDiscardBtn").click();
+    } finally {
+      MultiCamera.close();
+      await sleep(300);
+    }
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  check("Several cameras: a take's OAK cameras are lined up by when each took its pictures (two started one after another: under a frame apart)",
+    !r.error && Array.isArray(r.offsets) && r.offsets.length === 2 && r.offsets.every((o) => Math.abs(o) < 0.05), JSON.stringify(r.offsets));
+  const [a, b] = r.results || [];
+  check("Several cameras: the timing check finds each camera's flashes of the beacon and how far apart they are (80 ms here), and how long after the beacon each saw it; said under the cameras and in remote recording's state",
+    !r.error && r.ok && a && b && a.flashes >= 4 && b.flashes >= 4 && a.offsetMs === 0 && Math.abs(b.offsetMs - 80) <= 25 && b.spreadMs <= 25 &&
+      a.afterBeaconMs >= 0 && a.afterBeaconMs <= 60 && b.afterBeaconMs - a.afterBeaconMs >= 55 && b.afterBeaconMs - a.afterBeaconMs <= 105 &&
+      r.state && r.state.phase === "done" && /Timing check: .*\+\d+ ms/.test(r.note || ""),
+    JSON.stringify(r));
+}
+
 // An OAK camera that didn't start: its tile says why and has Try again, which starts it.
 async function checkOakTileRetry(js) {
   const r = await js(`(async () => {
@@ -3301,6 +3449,18 @@ async function checkLiveRigs(js) {
     $("rigsSignInBtn").click(); // the stand-in's sign-in page signs in by itself
     await until(() => document.querySelectorAll("#rigsList .rig-row").length > 0, 15000);
     out.rows = [...document.querySelectorAll("#rigsList .rig-row")].map((row) => row.querySelector("b").textContent + ":" + [...row.querySelectorAll("button.rig-cam")].map((b) => b.textContent + (b.disabled ? "(off)" : "")).join(","));
+    // Each rig's health, and its sessions once asked for (one that doesn't say: why not).
+    const rowOf = (host) => document.querySelector('#rigsList button[data-sessions="' + host + '"]');
+    out.health = (document.querySelector("#rigsList .rig-row .rig-health") || {}).textContent || "";
+    rowOf("rig-a").click();
+    await until(() => document.querySelectorAll("#rigsList .rig-session").length > 0);
+    out.sessions = [...document.querySelectorAll("#rigsList .rig-session")].map((s) => s.textContent);
+    rowOf("rig-b").click();
+    await until(() => /didn't say/.test($("rigsList").textContent));
+    out.noSessions = /didn't say what it has recorded/.test($("rigsList").textContent);
+    rowOf("rig-a").click();
+    rowOf("rig-b").click();
+    out.closed = document.querySelectorAll("#rigsList .rig-sessions").length === 0;
     $("rigsSide").value = "left";
     $("rigsSide").dispatchEvent(new Event("change"));
     // A stereo JPEG camera: one view, not mirrored.
@@ -3359,6 +3519,10 @@ async function checkLiveRigs(js) {
   const servedAfter = sim.served() - servedAtEnd;
   sim.stop();
   const st = r.stereo || {};
+  check("Live Rigs: each rig's health from the dashboard (temperature, space, cameras, uploads, power warnings) and its sessions of the last week once asked for (uploaded and still on it, newest first, one on both shown once); a rig that doesn't say, says why",
+    /61 °C/.test(r.health || "") && /120 GB free \(2\.5 h\)/.test(r.health || "") && /2 cameras/.test(r.health || "") && /uploading 3\.7 MB\/s/.test(r.health || "") && /3 to upload/.test(r.health || "") && /under-voltage since it started/.test(r.health || "") && /slowed by heat since/.test(r.health || "") &&
+      (r.sessions || []).length === 2 && /on the rig/.test(r.sessions[0]) && /2:00/.test(r.sessions[0]) && /uploaded · lab/.test(r.sessions[1]) && /2\.1 GB/.test(r.sessions[1]) && r.noSessions && r.closed,
+    JSON.stringify({ health: r.health, sessions: r.sessions, noSessions: r.noSessions, closed: r.closed }));
   check("Live Rigs: signs in on the dashboard's own page and lists rigs (recording first; ones without a preview can't be picked); a stereo camera's JPEGs are tracked as the source (one view, not mirrored)",
     r.asksToSignIn && JSON.stringify(r.rows) === JSON.stringify(["Rig A:head", "Rig F:head,chest", "Rig D:head", "Rig E:head", "Rig B:chest(off)", "Rig C:"]) &&
       st.name === "Rig A · head" && st.size === "640x400" && st.mirrored === false && st.state && st.state.stereo && st.state.kind === "jpeg" && /Live: Rig A/.test(st.list) && st.dialogClosed && r.both === "1280x400",

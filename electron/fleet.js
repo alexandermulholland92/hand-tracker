@@ -24,16 +24,18 @@
 const fs = require("fs");
 const path = require("path");
 // The rig list and address rules are shared with the Android app.
-const { fleetRigs, siteOrigin, FLEET_HOST_RE: HOST_RE, FLEET_CAMERA_RE: CAMERA_RE } = require("../remote-core.js");
+const { fleetRigs, fleetSessions, FLEET_SESSION_DAYS, siteOrigin, FLEET_HOST_RE: HOST_RE, FLEET_CAMERA_RE: CAMERA_RE } = require("../remote-core.js");
 
 const FRAME_TIMEOUT_MS = 10000;
 
 const isRedirect = (err) => /redirect/i.test(String((err && err.message) || err));
 
 class FleetClient {
-  constructor(dataDir, ses) {
+  // safe: Electron's safeStorage (the rigs' Bluetooth password is kept with it, encrypted).
+  constructor(dataDir, ses, safe = null) {
     this.file = path.join(dataDir, "capture-fleet.json");
     this.ses = ses;
+    this.safe = safe;
     this.cfg = this.read();
     this.signedIn = false;
   }
@@ -56,7 +58,7 @@ class FleetClient {
 
   // https only (http is allowed for this computer, for automated checks).
   configure(site) {
-    this.cfg = { site: siteOrigin(site) };
+    this.cfg = { site: siteOrigin(site), ...(this.cfg.rigBle ? { rigBle: this.cfg.rigBle } : {}) };
     this.signedIn = false;
     this.save();
     return this.status();
@@ -123,6 +125,26 @@ class FleetClient {
     });
   }
 
+  // The work rigs' shared Bluetooth password (rig-ble.js), kept encrypted; "" when there's none.
+  blePassword() {
+    try {
+      return this.cfg.rigBle && this.safe && this.safe.isEncryptionAvailable() ? this.safe.decryptString(Buffer.from(this.cfg.rigBle, "base64")) : "";
+    } catch {
+      return "";
+    }
+  }
+  setBlePassword(password) {
+    const pw = String(password || "");
+    if (!pw) delete this.cfg.rigBle;
+    else {
+      if (!this.safe || !this.safe.isEncryptionAvailable()) throw new Error("This computer can't keep it encrypted.");
+      if (pw.length > 128) throw new Error("That's too long for a Bluetooth password.");
+      this.cfg.rigBle = this.safe.encryptString(pw).toString("base64");
+    }
+    this.save();
+    return !!pw;
+  }
+
   async signOut() {
     await this.ses.clearStorageData();
     this.signedIn = false;
@@ -134,6 +156,33 @@ class FleetClient {
     const j = await this.fleetStatus();
     if (!j) throw new Error("Sign in to the fleet dashboard first.");
     return fleetRigs(j);
+  }
+
+  // A rig's sessions of the last FLEET_SESSION_DAYS days, newest first (fleetSessions): those
+  // it has uploaded (its history) and those still on it, as the rig itself lists them through
+  // the dashboard. Only read.
+  async sessions(host) {
+    this.requireConfigured();
+    if (!HOST_RE.test(String(host || ""))) throw new Error("Which rig?");
+    const get = async (p) => {
+      let res;
+      try {
+        res = await this.ses.fetch(`${this.cfg.site}/proxy/${host}/${p}?days=${FLEET_SESSION_DAYS}`, { cache: "no-store", redirect: "manual", credentials: "include" });
+      } catch (err) {
+        if (!isRedirect(err)) return null;
+        this.signedIn = false;
+        throw new Error("Sign in to the fleet dashboard first.");
+      }
+      if (res.status === 401 || (res.status >= 300 && res.status < 400) || res.status === 0) {
+        this.signedIn = false;
+        throw new Error("Sign in to the fleet dashboard first.");
+      }
+      const type = res.headers.get("content-type") || "";
+      return res.ok && type.includes("json") ? res.json().catch(() => null) : null;
+    };
+    const [history, local] = await Promise.all([get("api/sessions/history"), get("api/sessions")]);
+    if (!Array.isArray(history) && !Array.isArray(local)) throw new Error("The rig didn't say what it has recorded (it may be offline).");
+    return fleetSessions(history, local);
   }
 
   // The camera's latest picture, as the dashboard's own camera tile gets it. kind

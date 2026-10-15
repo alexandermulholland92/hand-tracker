@@ -585,10 +585,11 @@
     return [x, y];
   }
 
-  function drawStage(image, rawLandmarksList) {
+  // size: the picture's own (an OAK camera's side-by-side picture, wider than its frames).
+  function drawStage(image, rawLandmarksList, size = null) {
     if (!ctx || !canvasEl) return;
     // The picture MediaPipe processed: the video, or its cropped part.
-    const { w, h } = frameSize();
+    const { w, h } = size || frameSize();
     if (canvasEl.width !== w || canvasEl.height !== h) {
       canvasEl.width = w;
       canvasEl.height = h;
@@ -1263,14 +1264,16 @@
 
   // A picture of an external source's hands, drawn later than they were given (pushExternalHands):
   // a picture can take a while on a small computer, and the hands don't wait for it. The skeleton
-  // drawn is those hands' (each one's imageLandmarks), so it matches the picture.
-  function drawExternalPicture(image, landmarksList = []) {
+  // drawn is those hands' (each one's imageLandmarks), so it matches the picture. ownSize: the
+  // stage takes the picture's size rather than the frames' (a side-by-side picture).
+  function drawExternalPicture(image, landmarksList = [], ownSize = false) {
     if (source !== "external" || !external || paused) return;
     const sw = image.width || image.videoWidth, sh = image.height || image.videoHeight;
     if (!sw || !sh) return;
     image = turnedExternal(image, sw, sh);
     lastFrame = image;
-    drawStage(image, landmarksList);
+    const turned = rotation === 90 || rotation === 270;
+    drawStage(image, landmarksList, ownSize ? { w: turned ? sh : sw, h: turned ? sw : sh } : null);
   }
 
   // An external source's picture (sw x sh) turned by the rotation (on a canvas kept for it).

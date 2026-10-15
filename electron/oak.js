@@ -232,7 +232,7 @@ class OakCamera {
   }
 
   // options: { lm: "lite" | "full", twoHands, xyz, far: null | "both" | "higher" | "left" | "right", allHands, device, simulate,
-  //   detect (find objects too), picture: "color" | "depth", motion (each ninth's movement, for Sentry mode), fps,
+  //   detect (find objects too), picture: "color" | "depth" | "blend" | "side" | "left" | "right", motion (each ninth's movement, for Sentry mode), fps,
   //   hands (false: no hand tracking, none of the hands' models on the camera: Sentry mode),
   //   night: "auto" | "on" | "off" (night vision by the camera's infrared light, OAK-D Pro), dots (its dot projector too) }
   // (device: which OAK camera, by its id; the first one found otherwise)
@@ -259,7 +259,7 @@ class OakCamera {
     if (options.allHands) args.push("--all-hands");
     if (options.device && /^[A-Za-z0-9._-]+$/.test(options.device)) args.push("--device", options.device);
     if (options.detect) args.push("--detect");
-    if (options.picture === "depth") args.push("--picture", "depth");
+    if (["depth", "blend", "side", "left", "right"].includes(options.picture)) args.push("--picture", options.picture);
     if (options.motion) args.push("--motion");
     if (options.hands === false) args.push("--no-hands");
     if (Number.isInteger(options.fps) && options.fps >= 10 && options.fps <= 60) args.push("--fps", String(options.fps));

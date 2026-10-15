@@ -622,23 +622,35 @@ class SimulatedOak {
     const pixels = Buffer.alloc(w * h * 4, 60);
     // The depth picture: reddish (BGRA), so the checks can tell it from the colour one.
     if (options.picture === "depth") for (let i = 0; i < pixels.length; i += 4) pixels.set([40, 40, 200, 255], i);
-    const jpeg = nativeImage.createFromBitmap(pixels, { width: w, height: h }).toJPEG(70);
+    // Side by side: twice as wide (its right half reddish, as the depth picture).
+    const side = options.picture === "side";
+    const wide = side ? Buffer.concat(Array.from({ length: h }, (_, y) => Buffer.concat([pixels.subarray(y * w * 4, (y + 1) * w * 4), Buffer.alloc(w * 4, 0).fill(Buffer.from([40, 40, 200, 255]))]))) : pixels;
+    const jpeg = nativeImage.createFromBitmap(wide, { width: side ? w * 2 : w, height: h }).toJPEG(70);
     const T = [[0, 0], [-0.04, -0.03], [-0.08, -0.07], [-0.11, -0.1], [-0.13, -0.13], [-0.035, -0.12], [-0.04, -0.17], [-0.043, -0.2], [-0.045, -0.23],
       [0, -0.125], [0, -0.18], [0, -0.215], [0, -0.245], [0.03, -0.115], [0.035, -0.165], [0.038, -0.195], [0.04, -0.22], [0.055, -0.1], [0.065, -0.135], [0.07, -0.16], [0.075, -0.18]];
     const t0 = Date.now();
     const frozen = /FREEZES/.test(options.device || "") && !SimulatedOak.frozeOnce.has(options.device);
+    const lag = /BEACON-(\d+)/.exec(options.device || "");
+    const clockLate = Number((/CLOCK-(\d+)/.exec(options.device || "") || [0, 0])[1]);
+    const beacon = lag && {
+      lag: Number(lag[1]),
+      white: nativeImage.createFromBitmap(Buffer.alloc(64 * 36 * 4, 255), { width: 64, height: 36 }).toJPEG(80),
+      black: nativeImage.createFromBitmap(Buffer.alloc(64 * 36 * 4, 0).fill(Buffer.from([0, 0, 0, 255])), { width: 64, height: 36 }).toJPEG(80),
+    };
     if (frozen) SimulatedOak.frozeOnce.add(options.device);
     this.onMessage = onMessage;
     onMessage({ status: "running", camera: options.device ? `Simulated OAK ${options.device}` : "Simulated OAK", width: w, height: h, depth: true, id: options.device || "SIMULATED-OAK", usb: "SUPER",
       far: options.far || null, // (the checks see which far-away mode it was started in)
-      detect: !!options.detect, picture: options.picture === "depth" ? "depth" : "color", motion: !!options.motion, fps: options.fps || null, hands: options.hands !== false,
+      detect: !!options.detect, picture: ["depth", "blend", "side", "left", "right"].includes(options.picture) ? options.picture : "color", motion: !!options.motion, fps: options.fps || null, hands: options.hands !== false,
       // (an infrared camera, as an OAK-D Pro: night vision as asked, Automatic taken to be light)
       infrared: true, night: options.night === "on", nightMode: options.night || "off", dots: !!options.dots, lm: options.lm || "lite", twoHands: !!options.twoHands, xyz: !!options.xyz });
     this.timer = setInterval(() => {
       const t = (Date.now() - t0) / 1000;
       const cx = 0.5 + 0.2 * Math.sin(t), cy = 0.75;
       const hand = { lm: T.map(([x, y]) => [cx + x, cy + y, 0]), world: T.map(([x, y]) => [x * 0.75, y * 0.75, 0]), label: "Left", anatomical: false, score: 0.97, lm_score: 0.95, xyz: [120, -40, 850] };
-      const frame = { t: Math.round(t * 1000), w, h, fps: 30, hands: options.hands === false ? [] : [hand] };
+      // (CLOCK-<ms>: its own clock started that long after it did, as a real helper's starts
+      // once its camera's running, seconds after its tile opened)
+      const frame = { t: Math.round(t * 1000) - clockLate, u: Date.now(), w, h, fps: 30, hands: options.hands === false ? [] : [hand] };
       // As oak_bridge.py --simulate: a cat walking along the bottom (moving its ninth of the
       // picture) and a person standing at the left.
       const catX = ((t * 0.25) % 1.2) - 0.1;
@@ -650,6 +662,9 @@ class SimulatedOak {
       // A camera whose id has FREEZES sends nothing after its first second, the first time it
       // runs (for the checks' starting a frozen camera again).
       if (frozen && Date.now() - t0 > 1000) return;
+      // A camera whose id has BEACON-<ms> films a beacon flashing once a second (white for the
+      // first half), that many ms late (for the checks' timing check).
+      if (beacon) return onMessage({ frame, jpeg: (Date.now() - beacon.lag) % 1000 < 500 ? beacon.white : beacon.black });
       onMessage({ frame, jpeg });
     }, 33);
     // A camera whose id has CRASHES crashes after a second each time it runs, as oak_bridge.py
@@ -953,12 +968,15 @@ function registerRemoteIpc() {
 }
 
 function registerFleetIpc() {
-  fleet = new FleetClient(app.getPath("userData"), session.fromPartition("persist:capture-fleet"));
+  fleet = new FleetClient(app.getPath("userData"), session.fromPartition("persist:capture-fleet"), safeStorage);
   handle("fleet:status", () => fleet.check());
   handle("fleet:configure", (event, { site }) => fleet.configure(site));
   handle("fleet:sign-in", (event) => fleet.signIn(BrowserWindow, BrowserWindow.fromWebContents(event.sender)));
   handle("fleet:sign-out", () => fleet.signOut());
   handle("fleet:rigs", () => fleet.rigs());
+  handle("fleet:sessions", (event, { host }) => fleet.sessions(host));
+  handle("fleet:ble-password", () => fleet.blePassword());
+  handle("fleet:set-ble-password", (event, { password }) => fleet.setBlePassword(password));
 }
 
 function signInWithSite(parent) {

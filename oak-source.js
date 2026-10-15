@@ -82,12 +82,16 @@
       objects: Array.isArray(header.objects) ? header.objects : null,
     };
   }
+  // The pictures an OAK camera can send: its colour one, the depth picture, the two blended or
+  // side by side (depth cameras), or one of its black-and-white cameras' (the hands are then found
+  // on that one).
+  const VIEWS = ["color", "depth", "blend", "side", "left", "right"];
   // The OAK camera's own options (More settings → OAK camera): find objects, the depth
   // picture, its frame rate; and a small grey picture with each frame while Sentry mode watches.
   function cameraOptions(oak = {}) {
     return {
       detect: !!oak.detect,
-      picture: oak.picture === "depth" ? "depth" : "color",
+      picture: VIEWS.includes(oak.picture) ? oak.picture : "color",
       motion: !!oak.motion,
       fps: Number(oak.fps) > 0 ? Number(oak.fps) : undefined,
       // Night vision (OAK-D Pro: its infrared light): Automatic unless set; its dot projector too, if asked.
@@ -192,6 +196,7 @@
     ensureReady,
     toResults,
     cameraOptions,
+    VIEWS,
     objects: () => (active ? lastObjects : null),
     grey: () => (active ? lastGrey : null),
     decodeGrey,

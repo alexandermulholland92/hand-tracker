@@ -112,6 +112,10 @@ contextBridge.exposeInMainWorld("desktop", {
     signIn: () => ipcRenderer.invoke("fleet:sign-in"),
     signOut: () => ipcRenderer.invoke("fleet:sign-out"),
     rigs: () => ipcRenderer.invoke("fleet:rigs"),
+    sessions: (host) => ipcRenderer.invoke("fleet:sessions", { host }),
+    // The work rigs' Bluetooth password (rig-ble.js), kept encrypted: "" for none.
+    blePassword: () => ipcRenderer.invoke("fleet:ble-password"),
+    setBlePassword: (password) => ipcRenderer.invoke("fleet:set-ble-password", { password }),
   },
 
   // Luxonis OAK cameras (OAK-D, OAK-D Lite, OAK-1...): hand tracking on the camera itself.

@@ -40,6 +40,59 @@
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const errText = (err) => String((err && err.message) || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
   const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const long = (s) => (s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min` : clock(s));
+  const size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
+  // Each rig's recent sessions, shown under it once asked for: host -> { list, error, loading }.
+  const sessionsOf = new Map();
+
+  // A rig's health as the dashboard last saw it, in a line (only what it says).
+  function healthText(r) {
+    const h = r.health || {};
+    if (!r.online) return "";
+    const parts = [];
+    if (h.tempC) parts.push(`${Math.round(h.tempC)} °C`);
+    if (h.diskFreeGb != null) parts.push(`${Math.round(h.diskFreeGb)} GB free${h.runway ? ` (${esc(h.runway)})` : ""}`);
+    if (h.cameraCount != null) parts.push(`${h.cameraCount} camera${h.cameraCount === 1 ? "" : "s"}`);
+    if (r.state === "recording" && h.healthPct != null) parts.push(`recording health ${Math.round(h.healthPct)}%`);
+    if (h.uploadRate) parts.push(`uploading ${esc(h.uploadRate)}`);
+    if (h.uploadQueue) parts.push(`${h.uploadQueue} to upload`);
+    if (h.todayS) parts.push(`${long(h.todayS)} recorded today`);
+    const warn = [];
+    if (h.underVoltage) warn.push("under-voltage now");
+    else if (h.wasUnderVoltage) warn.push("under-voltage since it started");
+    if (h.hot) warn.push("slowed by heat now");
+    else if (h.wasHot) warn.push("slowed by heat since it started");
+    if (h.error) warn.push(esc(h.error));
+    return parts.join(" · ") + (warn.length ? `<span class="rig-warn"> ⚠ ${warn.join(" · ")}</span>` : "");
+  }
+
+  function sessionsHtml(host) {
+    const s = sessionsOf.get(host);
+    if (!s) return "";
+    if (s.loading) return '<div class="rig-sessions note">Asking the rig for its sessions…</div>';
+    if (s.error) return `<div class="rig-sessions note">${esc(s.error)}</div>`;
+    if (!s.list.length) return '<div class="rig-sessions note">No sessions in the last week.</div>';
+    const when = (t) => (t ? new Date(t * 1000).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
+    return '<div class="rig-sessions">' + s.list.map((x) =>
+      `<div class="rig-session"><span>${when(x.startS)}</span><span>${x.durationS != null ? long(x.durationS) : ""}</span>` +
+      `<span>${x.bytes ? size(x.bytes) : ""}</span><span>${x.cameras ? `${x.cameras} cam` : ""}</span>` +
+      `<span>${x.uploaded ? "uploaded" : "on the rig"}${x.location ? ` · ${esc(x.location)}` : ""}</span></div>`).join("") + "</div>";
+  }
+
+  async function toggleSessions(host) {
+    if (sessionsOf.has(host)) {
+      sessionsOf.delete(host);
+      return render();
+    }
+    sessionsOf.set(host, { loading: true, list: [] });
+    render();
+    try {
+      sessionsOf.set(host, { list: await desktop.fleet.sessions(host) });
+    } catch (err) {
+      sessionsOf.set(host, { error: errText(err), list: [] });
+    }
+    if (sessionsOf.has(host)) render();
+  }
   const label = (a) => `${a.name} · ${a.camera}`;
   function ago(s) {
     if (s < 90) return `${Math.round(s)} s`;
@@ -332,9 +385,91 @@
     }
   }
 
+  // ---------- a work rig next to you, over its own Bluetooth (rig-ble.js) ----------
+  // Its status only, with the rigs' Bluetooth password (kept encrypted by the app once a rig has
+  // taken it). On a computer the rigs found are listed here to pick from (Web Bluetooth's chooser,
+  // through the app); on Android, the app's own Bluetooth finds them.
+  let ble = null; // { rig, name } while connected
+  let blePw = ""; // the kept password ("" for none)
+  let blePick = null; // Android: resolves the device picked from the list
+  const bleAvailable = () => !!(desktop && desktop.fleet && desktop.fleet.blePassword && global.RigBle && (desktop.fleet.bluetooth || (global.navigator && navigator.bluetooth)));
+
+  function showBle() {
+    if (!els.ble) return;
+    els.ble.hidden = !bleAvailable();
+    els.bleBtn.textContent = ble ? "Disconnect" : "Nearby rig over Bluetooth…";
+    els.bleForget.hidden = !blePw || !!ble;
+  }
+
+  function bleDevices(list) {
+    if (!els.blePick) return;
+    els.blePick.hidden = !list.length;
+    els.blePick.innerHTML = list.map((d) => `<div class="ops-row"><div><b>${esc(d.name || "A rig")}</b></div><div class="rig-cams"><button class="ble-pick" data-bleid="${esc(d.id)}">Connect</button></div></div>`).join("");
+  }
+
+  // Started from a tap (Web Bluetooth asks for a device only then): nothing is waited for first.
+  function connectBle(password, keep) {
+    if (ble || !bleAvailable()) return;
+    error("");
+    els.bleNote.textContent = "Looking for rigs near by…";
+    els.blePwRow.hidden = true;
+    let bluetooth = null;
+    if (desktop.fleet.bluetooth) {
+      bluetooth = desktop.fleet.bluetooth((devices) => new Promise((resolve) => {
+        blePick = resolve;
+        bleDevices(devices.map((d) => ({ id: d.id, name: d.name })));
+      }));
+    } else {
+      if (desktop.bluetooth && desktop.bluetooth.prefer) desktop.bluetooth.prefer(""); // (the rigs found are listed to pick from)
+      bluetooth = navigator.bluetooth;
+    }
+    global.RigBle.connect({
+      bluetooth,
+      password,
+      onStatus: (t) => {
+        if (!ble) return;
+        els.bleInfo.hidden = false;
+        els.bleInfo.innerHTML = `<div><b>${esc(ble.name)}</b> over Bluetooth</div>` + global.RigBle.lines(t).map((l) => `<div>${esc(l)}</div>`).join("");
+      },
+      onGone: () => {
+        ble = null;
+        els.bleNote.textContent = "The rig is out of Bluetooth range (or its Bluetooth stopped).";
+        els.bleInfo.hidden = true;
+        showBle();
+      },
+    })
+      .then(async (rig) => {
+        ble = { rig, name: rig.name };
+        els.bleNote.textContent = `Connected to ${rig.name}; its status comes once a second.`;
+        els.bleInfo.hidden = false;
+        els.bleInfo.innerHTML = `<div><b>${esc(rig.name)}</b> over Bluetooth</div><div class="note">Waiting for its status…</div>`;
+        if (keep && password !== blePw) {
+          await desktop.fleet.setBlePassword(password).catch((err) => error(`Connected, but the password wasn't kept: ${errText(err)}`));
+          blePw = password;
+        }
+      })
+      .catch(async (err) => {
+        els.bleNote.textContent = "";
+        if (err && err.password) {
+          if (!keep) await desktop.fleet.setBlePassword("").catch(() => {});
+          blePw = "";
+          els.blePwRow.hidden = false;
+        }
+        // (a chooser closed with nothing picked isn't an error worth showing)
+        if (!(err && err.name === "NotFoundError" && !err.none)) error(errText(err));
+      })
+      .finally(() => {
+        blePick = null;
+        bleDevices([]);
+        showBle();
+      });
+  }
+
   // ---------- the dialog ----------
   async function refresh() {
     error("");
+    if (bleAvailable()) blePw = (await desktop.fleet.blePassword().catch(() => "")) || "";
+    showBle();
     const s = await desktop.fleet.status();
     els.setup.hidden = s.configured;
     els.signIn.hidden = !s.configured || s.signedIn;
@@ -364,9 +499,13 @@
             return `<button class="rig-cam${on ? " primary" : ""}" data-host="${esc(r.host)}" data-name="${esc(r.name)}" data-cam="${esc(c)}"${r.canWatch ? "" : " disabled"}>${on ? (active.locked ? "Locked on " : "Watching ") : ""}${esc(c)}</button>`;
           })
           .join(" ");
+        const health = healthText(r);
+        const open = sessionsOf.has(r.host);
+        const sessions = desktop.fleet.sessions && r.online
+          ? ` <button class="rig-ses small" data-sessions="${esc(r.host)}" aria-expanded="${open}">${open ? "Hide sessions" : "Sessions"}</button>` : "";
         return `<div class="ops-row rig-row${r.canWatch ? "" : " rig-off"}"><span class="rig-dot rig-${r.state === "recording" ? "rec" : r.canWatch ? "live" : "off"}"></span>` +
-          `<div><b>${esc(r.name)}</b><small>${state}${r.canWatch || !r.online ? "" : " · no preview to show"}</small></div>` +
-          `<div class="rig-cams">${cams || '<span class="status">no cameras</span>'}</div></div>`;
+          `<div><b>${esc(r.name)}</b><small>${state}${r.canWatch || !r.online ? "" : " · no preview to show"}</small>${health ? `<small class="rig-health">${health}</small>` : ""}</div>` +
+          `<div class="rig-cams">${cams || '<span class="status">no cameras</span>'}${sessions}</div></div>` + (open ? sessionsHtml(r.host) : "");
       })
       .join("");
   }
@@ -408,7 +547,52 @@
       setup: $("rigsSetup"), site: $("rigsSite"), connect: $("rigsConnect"),
       signIn: $("rigsSignIn"), signInBtn: $("rigsSignInBtn"),
       browse: $("rigsBrowse"), follow: $("rigsFollow"), full: $("rigsFull"), side: $("rigsSide"), refresh: $("rigsRefresh"), list: $("rigsList"), error: $("rigsError"),
+      ble: $("rigsBle"), bleBtn: $("rigsBleBtn"), bleNote: $("rigsBleNote"), bleForget: $("rigsBleForget"), blePwRow: $("rigsBlePwRow"), blePw: $("rigsBlePw"),
+      bleSave: $("rigsBleSave"), blePick: $("rigsBlePick"), bleInfo: $("rigsBleInfo"),
     };
+    if (els.ble) {
+      els.bleBtn.addEventListener("click", () => {
+        if (ble) {
+          const b = ble;
+          ble = null;
+          b.rig.close();
+          els.bleNote.textContent = "";
+          els.bleInfo.hidden = true;
+          return showBle();
+        }
+        if (!blePw) {
+          els.blePwRow.hidden = false;
+          return els.blePw.focus();
+        }
+        connectBle(blePw, false);
+      });
+      els.bleSave.addEventListener("click", () => {
+        const pw = els.blePw.value;
+        if (!pw) return els.blePw.focus();
+        els.blePw.value = "";
+        connectBle(pw, true);
+      });
+      els.blePw.addEventListener("keydown", (e) => e.key === "Enter" && els.bleSave.click());
+      els.bleForget.addEventListener("click", () => busy(els.bleForget, async () => {
+        await desktop.fleet.setBlePassword("");
+        blePw = "";
+        showBle();
+      }));
+      els.blePick.addEventListener("click", (e) => {
+        const b = e.target.closest("button.ble-pick");
+        if (!b) return;
+        const id = b.dataset.bleid;
+        bleDevices([]);
+        if (blePick) {
+          const done = blePick;
+          blePick = null;
+          // (Android: the device itself, from the list it was given)
+          return done({ id, name: b.closest(".ops-row").querySelector("b").textContent, connectable: true });
+        }
+        if (desktop.bluetooth && desktop.bluetooth.choose) desktop.bluetooth.choose(id);
+      });
+      if (desktop.bluetooth && desktop.bluetooth.onDevices) desktop.bluetooth.onDevices((list) => !ble && !blePick && els.bleNote.textContent && bleDevices(list));
+    }
     els.button.addEventListener("click", open);
     els.close.addEventListener("click", () => (els.dialog.hidden = true));
     els.dialog.addEventListener("click", (e) => {
@@ -446,6 +630,8 @@
       if (active) active.lastKey = ""; // redraw the next picture with the chosen view
     });
     els.list.addEventListener("click", (e) => {
+      const s = e.target.closest("button.rig-ses");
+      if (s) return toggleSessions(s.dataset.sessions);
       const b = e.target.closest("button.rig-cam");
       if (!b || b.disabled) return;
       if (active && active.host === b.dataset.host && active.camera === b.dataset.cam) {

@@ -23,13 +23,17 @@
     "video/webm;codecs=vp9,opus",
     "video/webm;codecs=vp8,opus",
     "video/webm",
+    // H.264 as avc3 where the recorder has it: its picture may change size during a take (an
+    // OAK camera started again with another picture), which avc1 doesn't allow.
+    "video/mp4;codecs=avc3,mp4a.40.2",
     "video/mp4;codecs=avc1,mp4a.40.2",
     // Linux's recorder has no AAC: its MP4's sound is Opus, which the desktop app turns into AAC
     // as it saves the clip (exporter.finishClip), as some players (Apple's) don't play Opus.
+    "video/mp4;codecs=avc3,opus",
     "video/mp4;codecs=avc1,opus",
     "video/mp4",
   ];
-  const MIME_SILENT = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4;codecs=avc1", "video/mp4"];
+  const MIME_SILENT = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4;codecs=avc3", "video/mp4;codecs=avc1", "video/mp4"];
   // Bits for each pixel of each frame: Standard is plenty for a camera's picture at these
   // rates; High and Best keep fine detail and quick movement sharper (about twice and four
   // times the size), Small files is under half the size with a softer picture.
