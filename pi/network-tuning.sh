@@ -36,6 +36,8 @@ if [ "${1:-}" = "--remove" ]; then
   echo cubic > /proc/sys/net/ipv4/tcp_congestion_control
   echo fq_codel > /proc/sys/net/core/default_qdisc
   [ -e /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ] && echo 0 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
+  # (the Wi-Fi network joined now as it's saved, with its IPv6)
+  [ "$(nmcli -g GENERAL.STATE device show wlan0 2>/dev/null | cut -d' ' -f1)" = 100 ] && nmcli device reapply wlan0 >/dev/null 2>&1 || true
   echo "Network tuning is gone (TCP back to cubic, no marking, IPv6 on wlan0 again)."
   exit 0
 fi
@@ -98,16 +100,26 @@ systemctl daemon-reload
 systemctl enable hand-tracker-network.service >/dev/null 2>&1
 systemctl restart hand-tracker-network.service
 
-# No IPv6 on wlan0: the sysctl above when wlan0 appears, and again each time NetworkManager
-# brings it up (it turns IPv6 back on when it joins a network).
+# No IPv6 on wlan0: the sysctl above when wlan0 appears, and NetworkManager told each time it
+# joins a network (it turns IPv6 back on then, and if it's only switched off under it, it keeps
+# trying to add an address, a warning every few seconds). Told for that connection only: the
+# saved Wi-Fi networks are left as they are.
 cat > "$DISPATCH" <<'EOF'
 #!/bin/sh
 # Hand Tracker (pi/network-tuning.sh): no IPv6 on wlan0.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
 [ "$1" = wlan0 ] || exit 0
-case "$2" in up|pre-up|dhcp4-change|connectivity-change) echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ;; esac
+case "$2" in
+  pre-up) echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ;;
+  up) nmcli device modify wlan0 ipv6.method disabled >/dev/null 2>&1 || echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ;;
+esac
 EOF
 chmod 755 "$DISPATCH"
-[ -e /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ] && echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
+if [ "$(nmcli -g GENERAL.STATE device show wlan0 2>/dev/null | cut -d' ' -f1)" = 100 ]; then
+  nmcli device modify wlan0 ipv6.method disabled >/dev/null || echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
+elif [ -e /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ]; then
+  echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
+fi
 
 echo
 echo "Network tuning is on: TCP $(cat /proc/sys/net/ipv4/tcp_congestion_control), Tailscale's port $PORT marked urgent, IPv6 on wlan0 $( [ "$(cat /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 2>/dev/null)" = 1 ] && echo off || echo "not found (no wlan0)")."
