@@ -84,7 +84,13 @@ public class PhoneControlService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        startInForeground();
+        try {
+            startInForeground();
+        } catch (SecurityException e) {
+            // (the camera not allowed: Android won't run a camera service, and would stop the app)
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         if (running == null) {
             running = this;
             showWindows(intent == null ? "{}" : String.valueOf(intent.getStringExtra(EXTRA_SETTINGS)));

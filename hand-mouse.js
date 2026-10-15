@@ -120,6 +120,15 @@
       deviceId: null, // (the front camera)
     };
     try {
+      // The camera allowed first (Android asks, the first time): the control window's camera
+      // service can't run without it. (Opened and let go at once: the window opens its own.)
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+        stream.getTracks().forEach((t) => t.stop());
+      } catch (err) {
+        const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
+        throw new Error(denied ? "Hand Mouse needs the camera: allow it when Android asks (or in its App info → Permissions), then tap Start." : `The camera couldn't start: ${errText(err)}`);
+      }
       // (Android starts the service a moment later, so it doesn't say it's running yet.)
       phone.state = { ...(await mobile.phoneControl.start(settings)), running: true };
     } catch (err) {
