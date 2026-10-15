@@ -1,5 +1,11 @@
 # Hand Tracker
 
+> **This branch (`hand-mouse-app`) builds Hand Mouse**: the Android app with only the hand mouse. It's a separate app (`com.handtracker.mouse`), so it installs next to Hand Tracker, with its own permissions.
+>
+> - **Each time it opens** it asks what your hand should control: **This phone** (a pointer over any app, as in Hand Tracker's *Control this phone*: it needs *Display over other apps* and its *hand control* in Accessibility, then starts by itself), **A PC** (over Wi-Fi, paired from the code Hand Tracker on the PC shows, as in *Control your PC*), or **Bluetooth mouse** (this phone as an iPhone's or iPad's Bluetooth mouse). The camera and the hand mouse start as soon as one is picked; Android's Back (or ←) stops it and asks again.
+> - **Its gestures**: a quick curl of the index finger clicks (taps), a quick flick of the open hand up or down swipes, curl and move to drag, a quick curl of the middle finger right-clicks (a long press on a phone), a fist holds the pointer still. **Gesture actions** (Back, Home, Recents, volume, media keys, typing text, clicks, scrolling, web requests) and the PC's floating keyboard are there too, as in Hand Tracker.
+> - **Build it**: `npm run android:apk` (here it builds Hand Mouse: `node scripts/build-web.js --hand-mouse`, then Gradle) writes `dist/HandMouse-<version>.apk`. Its page is `hand-mouse.html` with `hand-mouse.js`; everything else is Hand Tracker's own code, unchanged.
+
 Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmarks per hand), with a live 3D view, gesture and finger-curl readouts, **motion capture export in 8 formats**, **video recording**, and a **video converter** that opens nearly any video format and exports **36 formats**. Runs as a Windows or Linux desktop app, an Android app, or in a browser.
 
 ## Run it

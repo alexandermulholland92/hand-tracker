@@ -6,6 +6,8 @@
  * vendor/. index.html gets a "hand-tracker-bundle" meta tag so the page knows it
  * is running from this bundle.
  *   npm run build:web
+ *   node scripts/build-web.js --hand-mouse   # Hand Mouse (the hand-mouse-app branch's Android
+ *                                            # app): its page as index.html, and only its files
  */
 
 const fs = require("fs");
@@ -24,6 +26,14 @@ const APP_FILES = [
   "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
   "sentry.js", "camera-video.js", "object-finder.js", "object-finder-worker.js", "web-pc.js", "hid-core.js",
 ];
+
+// Hand Mouse: the hand mouse alone (hand-mouse.html), and this phone's control window.
+const HAND_MOUSE = process.argv.includes("--hand-mouse");
+const HAND_MOUSE_FILES = [
+  "hand-mouse.js", "hand-tracker.js", "gestures.js", "phone-link-protocol.js", "hid-core.js", "mobile-bridge.js",
+  "pc-control.js", "phone-link-ui.js", "phone-control.html", "phone-control.js",
+];
+const HAND_MOUSE_LIBRARIES = (list) => list.filter((rel) => rel.startsWith("node_modules/@mediapipe/hands/") || rel === "node_modules/@mediapipe/drawing_utils/drawing_utils.js");
 
 const LIBRARY_FILES = [
   // MediaPipe Hands: loader, wasm builds, packed assets and both models.
@@ -88,9 +98,11 @@ const BUILT = new Date().toISOString();
 const VERSION = require("../package.json").version;
 
 fs.rmSync(OUT, { recursive: true, force: true });
-for (const rel of APP_FILES) {
+// [from, to]: Hand Mouse's page is its index.html.
+const pages = HAND_MOUSE ? [["hand-mouse.html", "index.html"], ...HAND_MOUSE_FILES.map((f) => [f, f])] : APP_FILES.map((f) => [f, f]);
+for (const [from, rel] of pages) {
   // Library paths in the page and scripts: "node_modules/... -> "vendor/...
-  let text = read(rel).toString("utf8").split('"node_modules/').join('"vendor/');
+  let text = read(from).toString("utf8").split('"node_modules/').join('"vendor/');
   if (rel === "index.html") {
     text = text.replace(
       '<meta charset="UTF-8" />',
@@ -100,7 +112,11 @@ for (const rel of APP_FILES) {
   }
   write(rel, Buffer.from(text, "utf8"));
 }
-for (const rel of LIBRARY_FILES) write(vendorPath(rel), read(rel));
+for (const rel of HAND_MOUSE ? HAND_MOUSE_LIBRARIES(LIBRARY_FILES) : LIBRARY_FILES) write(vendorPath(rel), read(rel));
+if (HAND_MOUSE) {
+  console.log(`www/ ready (Hand Mouse): ${count} files, ${(bytes / 1024 / 1024).toFixed(1)} MB`);
+  process.exit(0);
+}
 for (const rel of GUNZIP_FILES) write(vendorPath(rel).replace(/\.gz$/, ""), zlib.gunzipSync(read(rel)));
 for (const rel of SPLIT_FILES) {
   const data = read(rel);

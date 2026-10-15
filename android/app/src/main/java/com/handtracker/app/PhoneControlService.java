@@ -101,7 +101,7 @@ public class PhoneControlService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
         Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
-        Notification n = b.setContentTitle("Hand Tracker is controlling this phone")
+        Notification n = b.setContentTitle("Hand Mouse is controlling this phone")
                 .setContentText("Your hand moves the pointer. Tap Stop, or the × on its window, to end.")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentIntent(open)
@@ -218,7 +218,7 @@ public class PhoneControlService extends Service {
         return HandControlService.instance;
     }
 
-    private static final String NO_SERVICE = "Turn on Hand Tracker in Android's Accessibility settings to tap and type on this phone";
+    private static final String NO_SERVICE = "Turn on Hand Mouse in Android's Accessibility settings to tap and type on this phone";
 
     // What phone-control.js calls (on WebView's own thread); "" when done, else why not.
     private class Bridge {

@@ -18,15 +18,13 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        // The app's own native plugins (Capacitor's come from their packages).
-        registerPlugin(NatNetPlugin.class);
+        // The app's own native plugins (Capacitor's come from their packages). Hand Mouse: only
+        // the hand mouse's (the PC link's key in the Keystore and its messages, this phone's
+        // control, the Bluetooth mouse).
         registerPlugin(RemotePlugin.class);
         registerPlugin(UdpPlugin.class);
         registerPlugin(PhoneControlPlugin.class);
-        registerPlugin(RigServerPlugin.class);
-        registerPlugin(SentryWatchPlugin.class);
         registerPlugin(BtHidPlugin.class);
-        registerPlugin(BtLinkPlugin.class);
         super.onCreate(savedInstanceState);
         // Tracking and recording shouldn't be cut off by the screen timing out.
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);

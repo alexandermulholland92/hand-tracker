@@ -80,7 +80,7 @@ public class PhoneControlPlugin extends Plugin {
     public void start(PluginCall call) {
         Context c = getContext();
         if (!Settings.canDrawOverlays(c)) {
-            call.reject("Allow Hand Tracker to display over other apps first.");
+            call.reject("Allow Hand Mouse to display over other apps first.");
             return;
         }
         Intent i = new Intent(c, PhoneControlService.class);
