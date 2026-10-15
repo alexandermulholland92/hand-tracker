@@ -8,7 +8,8 @@
  *     (quality: "low" | "standard" | "high" | "best", how much of the picture's detail is kept,
  *     and so how big the file is: CameraVideo.QUALITIES; standard if not given)
  *   rec.elapsed()                          // seconds so far
- *   const clip = await rec.stop();         // { blob, mimeType, ext: "webm" | "mp4", duration, width, height, sound, bitsPerSecond }
+ *   const clip = await rec.stop();         // { blob, mimeType, ext: "webm" | "mp4", duration, width, height, sound, bitsPerSecond,
+ *                                          //   startedAt (ms since 1970) }
  *   CameraVideo.setMicrophone(deviceId)    // which microphone the sound comes from ("" the usual one)
  *   await CameraVideo.microphones()        // [{ deviceId, label }]
  *
@@ -163,6 +164,7 @@
           height: canvas.height,
           sound,
           bitsPerSecond,
+          startedAt: performance.timeOrigin + startedAt,
         };
       },
     };

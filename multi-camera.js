@@ -333,7 +333,7 @@
   function oakStart(t) {
     const hands = tracking(t), o = oakSettingsOf(t.deviceId), main = tileOptions.oak || {};
     const options = OakSource.cameraOptions({ ...main, fps: o.fps, detect: o.detect || !!main.needObjects, picture: o.picture, night: o.night, dots: o.dots });
-    return { lm: o.model, twoHands: o.hands !== 1, xyz: o.depth, ...(hands ? oakFar(tileOptions.far) : { far: null, allHands: false }), ...options, hands };
+    return { lm: o.model, twoHands: o.hands !== 1, xyz: o.depth, ...(hands ? oakFar(tileOptions.far) : { far: null, allHands: false }), ...options, hands, imu: true };
   }
   // An OAK camera keeps what it was started with: one that's running (or failed) is started
   // again when that changes (the hands, with hand tracking off or on; far-away hands; its
@@ -479,6 +479,7 @@
     const i = tiles.findIndex((x) => x.oak === id);
     const t = tiles[i];
     if (timing && timing.phase === "measuring" && timing.oak.has(id)) timingSample(timing.oak.get(id), header, jpeg);
+    if (recording && t && t.imuReadings && Array.isArray(header.imu)) for (const r of header.imu) if (Array.isArray(r) && r.length === 7) t.imuReadings.push(r);
     const api = t && tileApi(t);
     if (t) t.frameAt = performance.now();
     if (!api || !api.oakHands) return desktop.oak.streamShown(id);
@@ -731,7 +732,10 @@
     await Promise.all(apis.map((a) => a.ready.catch(() => {})));
     const live = apis.filter((a) => !a.status().error);
     if (!live.length) return fail("No camera is running.");
-    for (const t of tiles) t.takeHands = tracking(t);
+    for (const t of tiles) {
+      t.takeHands = tracking(t);
+      t.imuReadings = t.oak ? [] : null; // (an OAK camera's motion sensor, while the take records)
+    }
     for (const a of live) a.startRecording();
     recording = true;
     recordingSince = Date.now();
@@ -764,6 +768,20 @@
       return null;
     }
     if (extra) Object.assign(merged, extra);
+    // Each OAK camera's motion sensor, on the take's clock (t: seconds, as the hands'): the
+    // readings from its first frame on.
+    const origin = Date.parse(merged.recorded_at);
+    const imu = tiles
+      .filter((t) => t.imuReadings && t.imuReadings.length)
+      .map((t) => ({
+        camera: nameOf(t),
+        units: "t s, acceleration m/s², angular velocity rad/s, on the camera's motion sensor's own axes",
+        columns: ["t", "ax", "ay", "az", "gx", "gy", "gz"],
+        samples: t.imuReadings.map((r) => [Math.round(r[0] - origin) / 1000, ...r.slice(1)]).filter((r) => r[0] >= 0),
+      }))
+      .filter((m) => m.samples.length);
+    for (const t of tiles) t.imuReadings = null;
+    if (imu.length) merged.imu = imu;
     els.note.textContent = `Recorded ${merged.hands.length} hand${merged.hands.length === 1 ? "" : "s"} from ${parts.length} camera${parts.length === 1 ? "" : "s"}: export below.`;
     app.showMotionExport(merged);
     return merged;

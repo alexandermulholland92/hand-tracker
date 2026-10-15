@@ -327,6 +327,9 @@
     "geometry_msgs/Vector3": "float64 x\nfloat64 y\nfloat64 z\n",
     "std_msgs/ColorRGBA": "float32 r\nfloat32 g\nfloat32 b\nfloat32 a\n",
     "sensor_msgs/CompressedImage": "std_msgs/Header header\nstring format\nuint8[] data\n",
+    "sensor_msgs/Imu":
+      "std_msgs/Header header\ngeometry_msgs/Quaternion orientation\nfloat64[9] orientation_covariance\ngeometry_msgs/Vector3 angular_velocity\n" +
+      "float64[9] angular_velocity_covariance\ngeometry_msgs/Vector3 linear_acceleration\nfloat64[9] linear_acceleration_covariance\n",
     "visualization_msgs/UVCoordinate": "float32 u\nfloat32 v\n",
     "visualization_msgs/MeshFile": "string filename\nuint8[] data\n",
     "visualization_msgs/Marker":
@@ -339,6 +342,9 @@
   };
   const withDeps = (top, deps) => top + deps.map((d) => SEP + d + "\n" + MSG[d]).join("");
   const ROS2 = {
+    // A camera's pictures (JPEG), and a motion sensor's readings.
+    CompressedImage: withDeps(MSG["sensor_msgs/CompressedImage"], ["std_msgs/Header", "builtin_interfaces/Time"]),
+    Imu: withDeps(MSG["sensor_msgs/Imu"], ["std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Quaternion", "geometry_msgs/Vector3"]),
     PoseArray: withDeps("std_msgs/Header header\nPose[] poses\n", ["std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Pose", "geometry_msgs/Point", "geometry_msgs/Quaternion"]),
     MarkerArray: withDeps("Marker[] markers\n", [
       "visualization_msgs/Marker", "std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Pose", "geometry_msgs/Point", "geometry_msgs/Quaternion",
@@ -396,6 +402,25 @@
         w.string("").ui32(0); // mesh_file
         w.bool(false);
       }
+      return w.bytes().slice();
+    },
+    // sensor_msgs/msg/CompressedImage: a picture (format "jpeg", its bytes).
+    compressedImage(timeNs, frameId, format, data) {
+      return new Cdr().header(timeNs, frameId).string(format).ui32(data.length).raw(data).bytes().slice();
+    },
+    // sensor_msgs/msg/Imu without an orientation (its covariance's first value -1, as ROS says
+    // for one that's unknown): angular velocity (rad/s) and acceleration (m/s²), each [x, y, z].
+    imu(timeNs, frameId, gyro, accel) {
+      const w = new Cdr().header(timeNs, frameId).f64(0).f64(0).f64(0).f64(1);
+      const cov = (first) => {
+        w.f64(first);
+        for (let i = 1; i < 9; i++) w.f64(0);
+      };
+      cov(-1);
+      w.f64(gyro[0]).f64(gyro[1]).f64(gyro[2]);
+      cov(0);
+      w.f64(accel[0]).f64(accel[1]).f64(accel[2]);
+      cov(0);
       return w.bytes().slice();
     },
     // The positions in a message of a kind that holds some: PoseArray, PoseStamped, PointStamped.

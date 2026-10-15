@@ -11,7 +11,7 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
     python oak_bridge.py --models DIR [--lm lite|full] [--two-hands] [--xyz]
                          [--far both|higher|left|right] [--all-hands] [--fps N] [--device ID]
                          [--mjpeg auto|on|off] [--detect] [--picture color|depth|left|right|blend|side]
-                         [--motion] [--no-hands]
+                         [--motion] [--imu] [--no-hands]
                          [--night auto|on|off] [--ir-dots]
     (--device: which OAK camera, by its id from --list; the first one found otherwise.
      --mjpeg: the camera sends its pictures as JPEG from its own encoder, about a tenth of the
@@ -28,6 +28,10 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
      the infrared light on; --night on turns the light on here too).
      --motion: the camera also makes a small grey picture (64 x 36) each frame, sent along for
      Sentry mode to measure movement on.
+     --imu: its motion sensor's readings too (a camera that has one): accelerometer (m/s²) and
+     gyroscope (rad/s), IMU_HZ a second, each frame bringing those since the last as "imu":
+     [[when (ms since 1970, on this computer's clock), ax, ay, az, gx, gy, gz]], on the sensor's
+     own axes.
      --no-hands: no hand tracking (Sentry mode, while it doesn't track hands): none of the hands'
      models run on the camera, only its picture (the same size) and what else is asked for;
      each frame's "hands" is empty. The depth cameras run only for an object's distance or the
@@ -230,6 +234,8 @@ class NightCamera:
             colour.preview.link(x.input)
 
 
+IMU_HZ = 100  # the motion sensor's readings a second (--imu)
+
 DETECT_GAP_S = 0.33
 # On the camera (a Script node): only every frame DETECT_GAP_S after the last one sent goes on.
 DETECT_EVERY = f"""
@@ -296,6 +302,18 @@ def add_extras(dai, pipeline, cam, stereo, extras, tracker):
     if extras.get("picture") in DEPTH_VIEWS and stereo is not None:
         tracker.max_disparity = stereo.initialConfig.getMaxDisparity()
         out("pic_out", stereo.disparity)
+    if extras.get("imu"):
+        # Every reading kept (a few to a message), unlike the pictures, of which only the last is.
+        imu = pipeline.create(dai.node.IMU)
+        imu.enableIMUSensor([dai.IMUSensor.ACCELEROMETER_RAW, dai.IMUSensor.GYROSCOPE_RAW], IMU_HZ)
+        imu.setBatchReportThreshold(5)
+        imu.setMaxBatchReports(20)
+        x = pipeline.create(dai.node.XLinkOut)
+        x.setStreamName("imu_out")
+        x.input.setBlocking(False)
+        x.input.setQueueSize(8)
+        imu.out.link(x.input)
+        tracker.extra_streams.append("imu_out")
     if extras.get("motion"):
         small = pipeline.create(dai.node.ImageManip)
         small.initialConfig.setResize(*MOTION_SIZE)
@@ -614,7 +632,7 @@ def run(args):
     if detect and not os.path.isfile(detect):
         warnings.append("The object finder's model isn't downloaded, so objects aren't found.")
         detect = None
-    extras = {"detect": detect, "picture": args.picture, "motion": args.motion}
+    extras = {"detect": detect, "picture": args.picture, "motion": args.motion, "imu": False}
 
     import depthai as dai
 
@@ -727,7 +745,7 @@ def run(args):
         last = time.time()
         frames = 0
         fps = 0.0
-        queues = {name: tracker.device.getOutputQueue(name=name, maxSize=1, blocking=False) for name in getattr(tracker, "extra_streams", [])}
+        queues = {name: tracker.device.getOutputQueue(name=name, maxSize=50 if name == "imu_out" else 1, blocking=False) for name in getattr(tracker, "extra_streams", [])}
         objects, objects_at = [], 0.0
         picture = None
         view = extras.get("picture")
@@ -804,6 +822,18 @@ def run(args):
                 header["objects"] = objects
             if grey:
                 header["grey"] = grey  # (only when the camera made a new one)
+            if "imu_out" in queues:
+                readings = []
+                for m in queues["imu_out"].tryGetAll():
+                    for p in m.packets:
+                        a, g = p.acceleroMeter, p.gyroscope
+                        try:
+                            u = (time.time() - (dai.Clock.now() - a.getTimestamp()).total_seconds()) * 1000
+                        except Exception:
+                            u = time.time() * 1000
+                        readings.append([round(u, 1)] + [round(float(v), 4) for v in (a.x, a.y, a.z, g.x, g.y, g.z)])
+                if readings:
+                    header["imu"] = readings
             jpeg = picture if "pic_out" in queues and picture else tracker.jpeg if mjpeg else encode(frame)
             send(header, jpeg)
             change = watch()
@@ -815,6 +845,7 @@ def run(args):
     wanted, retried = args.device, False
     night = args.night == "on"
     view = args.picture
+    imu_tried = False  # (once it's failed to start, it isn't tried again)
     while True:
         device, high = None, retried
         reports = crash_reports()  # (those from before this start)
@@ -833,6 +864,11 @@ def run(args):
             mjpeg = args.mjpeg == "on" or (args.mjpeg == "auto" and (usb in ("LOW", "FULL", "HIGH") or platform.machine().lower() in ("aarch64", "arm64")))
             cameras = device.getConnectedCameras()
             infrared = has_infrared(device) and dai.CameraBoardSocket.LEFT in cameras
+            if args.imu and not imu_tried:
+                try:
+                    extras["imu"] = str(device.getConnectedIMU()).upper() not in ("", "NONE")
+                except Exception:
+                    extras["imu"] = False
             if night and not infrared:
                 night = False
                 if args.night == "on":
@@ -866,6 +902,14 @@ def run(args):
                 except Exception:
                     pass
             text = str(err)
+            if extras.get("imu"):
+                # The motion sensor wouldn't start with the rest: started again without it.
+                extras["imu"] = False
+                imu_tried = True
+                warnings.append("Its motion sensor couldn't run alongside the rest, so it isn't read.")
+                status("starting", message="Starting the OAK camera again without its motion sensor…")
+                time.sleep(2)  # until the camera is let go
+                continue
             if extras["detect"]:
                 # Finding objects as well may be more than the camera's processor can take with the
                 # hands' models (or its model may not load): started again without it.
@@ -902,7 +946,7 @@ def run(args):
             view = "color"
         status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h,
                depth=bool(getattr(tracker, "xyz", False) or getattr(tracker, "has_depth", False)), id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
-               detect="det_out" in streams, picture=view, motion="motion_out" in streams, hands=hands,
+               detect="det_out" in streams, picture=view, motion="motion_out" in streams, imu="imu_out" in streams, hands=hands,
                night=night, infrared=infrared, warning=" ".join(dict.fromkeys(warnings)) or None)
         if retried:
             usb2.add(wanted)
@@ -962,6 +1006,7 @@ def main():
     ap.add_argument("--picture", choices=["color", "depth", "left", "right", "blend", "side"], default="color",
                     help="the picture sent: colour, depth, the two blended or side by side (depth cameras), or a black-and-white camera's")
     ap.add_argument("--motion", action="store_true", help="a small grey picture (64 x 36) with each frame, for Sentry mode")
+    ap.add_argument("--imu", action="store_true", help="its motion sensor's readings too (accelerometer, gyroscope)")
     ap.add_argument("--no-hands", action="store_true", help="no hand tracking: only the picture and what else is asked for (Sentry mode)")
     ap.add_argument("--night", choices=["auto", "on", "off"], default="off", help="night vision by the camera's infrared light (OAK-D Pro)")
     ap.add_argument("--ir-dots", action="store_true", help="night vision: the infrared dot projector on too (better depth; dots on the picture)")

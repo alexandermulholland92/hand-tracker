@@ -1000,6 +1000,21 @@
         { timeNs: t, frameId: MCAP_FRAME, ns, id: 1, type: 5, scale: [0.005, 0, 0], color, lifetimeNs: MCAP_LIFETIME_NS, points: CONNECTIONS.flatMap(([a, b]) => [P[a], P[b]]) },
       ]));
     }
+    // Each OAK camera's motion sensor (data.imu), sensor_msgs/Imu on /hand_tracker/<camera>/imu.
+    const imus = Array.isArray(data.imu) ? data.imu.filter((m) => m && Array.isArray(m.samples) && m.samples.length) : [];
+    if (imus.length) {
+      const imuSchema = w.schema("sensor_msgs/msg/Imu", "ros2msg", M.ROS2.Imu);
+      const readings = [];
+      for (const m of imus) {
+        let name = rosName(m.camera);
+        for (let k = 2; topics.has(`${name}/imu`); k++) name = `${rosName(m.camera)}_${k}`;
+        topics.add(`${name}/imu`);
+        const ch = w.channel(`/hand_tracker/${name}/imu`, "cdr", imuSchema, qos);
+        for (const r of m.samples) if (Array.isArray(r) && r.length >= 7 && r.every(Number.isFinite)) readings.push({ ch, t: at(r[0]), r, frame: `${name}_imu` });
+      }
+      readings.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
+      for (const x of readings) w.message(x.ch, x.t, M.cdr.imu(x.t, x.frame, [x.r[4], x.r[5], x.r[6]], [x.r[1], x.r[2], x.r[3]]));
+    }
     const meta = { recorded_at: String(data.recorded_at || ""), hands: prep.tracks.map((tr) => tr.name).join(", "), frame_rate: String(prep.fps), units: "m", frame_id: MCAP_FRAME };
     for (const [k, v] of Object.entries(data.metadata || {})) if (v !== null && v !== undefined && typeof v !== "object") meta[k] = String(v);
     w.metadata("hand_tracker", meta);

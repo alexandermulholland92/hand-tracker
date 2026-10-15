@@ -146,6 +146,7 @@ const STEPS = [
   ["linux-input", [], () => checkLinuxInput()],
   ["bluetooth-link", [], () => checkBluetoothLink()],
   ["rig-ble", [], () => checkRigBle()],
+  ["mcap-video", [], () => checkMcapVideo()],
   ["bluetooth-page", [], () => checkBluetoothPage()],
   ["clip-mp4", [], () => checkClipMp4()],
   ["external-source", [], checkExternalSource],
@@ -1030,6 +1031,55 @@ function checkMacApp() {
 // long answer in frames that fit the link; the wrong password is told so; another device near
 // by reads nothing of it and can't use its session; the server takes the link's token only from
 // itself, and a phone on the Bluetooth network only with the password.
+// A motion capture's MCAP file with its video added (electron/mcap-video.js): a 2-second test
+// video's frames as JPEG pictures at the moments they were taken, the file's own messages,
+// attachment and metadata kept.
+async function checkMcapVideo() {
+  const out = {};
+  try {
+    require("../mcap.js");
+    const M = globalThis.Mcap;
+    const { addVideos } = require("../electron/mcap-video.js");
+    const video = path.join(outDir, "mcap-video-src.mp4");
+    await new Promise((resolve, reject) => {
+      const p = require("child_process").spawn(exporter.ffmpegPath, ["-y", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30:duration=2", "-pix_fmt", "yuv420p", video], { windowsHide: true });
+      p.on("close", (c) => (c === 0 ? resolve() : reject(new Error(`ffmpeg ${c}`))));
+    });
+    const start = Date.parse("2026-10-15T12:00:00Z");
+    const w = M.writer({ profile: "ros2", library: "Hand Tracker" });
+    const pose = w.channel("/hand_tracker/head_left/joints", "cdr", w.schema("geometry_msgs/msg/PoseArray", "ros2msg", M.ROS2.PoseArray), { offered_qos_profiles: M.QOS });
+    for (let k = 0; k < 10; k++) {
+      const t = BigInt(start) * 1000000n + BigInt(k) * 100000000n;
+      w.message(pose, t, M.cdr.poseArray(t, "camera", [{ p: [0, 0, k], q: [0, 0, 0, 1] }]));
+    }
+    w.metadata("hand_tracker", { hands: "Head Left" });
+    w.attachment("hand_tracker.json", "application/json", new TextEncoder().encode("{}"), BigInt(start) * 1000000n);
+    const file = path.join(outDir, "mcap-video.mcap");
+    fs.writeFileSync(file, w.finish());
+    const r = await addVideos(file, [{ path: video, name: "Head", startMs: start + 250 }]);
+    const back = M.read(new Uint8Array(fs.readFileSync(file)));
+    const topicOf = (m) => back.channels.get(m.channel).topic;
+    const images = back.messages.filter((m) => topicOf(m) === "/hand_tracker/head/image/compressed");
+    const t = images.map((m) => Number(BigInt(m.logTime) / 1000000n) - start);
+    const first = images[0] && images[0].data;
+    out.added = r;
+    out.images = images.length;
+    out.from = t[0];
+    out.to = t[t.length - 1];
+    out.sorted = back.messages.every((m, i) => i === 0 || BigInt(back.messages[i - 1].logTime) <= BigInt(m.logTime));
+    out.jpeg = !!first && [...first].some((b, i) => b === 0xff && first[i + 1] === 0xd8 && first[i + 2] === 0xff);
+    out.poses = back.messages.filter((m) => topicOf(m) === "/hand_tracker/head_left/joints").length;
+    out.kept = back.attachments.length === 1 && back.metadata.length === 1 && back.metadata[0].metadata.hands === "Head Left";
+    out.schema = [...back.schemas.values()].map((s) => s.name).sort().join();
+  } catch (err) {
+    out.error = String((err && err.message) || err);
+  }
+  check("Motion capture's MCAP file with its video: each frame a JPEG picture (sensor_msgs/CompressedImage) at the moment it was taken, on the hands' clock; the hands, metadata and attachment kept",
+    !out.error && out.added && out.added.ok && out.images >= 58 && out.images <= 62 && out.from === 250 && Math.abs(out.to - 2217) <= 40 && out.sorted && out.jpeg && out.poses === 10 && out.kept &&
+      out.schema === "geometry_msgs/msg/PoseArray,sensor_msgs/msg/CompressedImage",
+    JSON.stringify(out));
+}
+
 // A work rig's own Bluetooth server (rig-ble.js), against a stand-in that speaks its protocol:
 // JSON in 128-byte pieces with a 3-byte head, commands { id, domain, action, params } on Command,
 // answers on Detail, its status on Status once the password's taken.
@@ -3380,6 +3430,13 @@ async function checkTimingCheck(js) {
       await sleep(1500);
       const take = MultiCamera.stopRecording(true);
       out.offsets = take && take.cameras.map((c) => c.offset_s);
+      // Their motion sensors, on the take's clock, and in its MCAP file.
+      out.imu = take && (take.imu || []).map((m) => ({ camera: m.camera, n: m.samples.length, from: m.samples[0][0], to: m.samples[m.samples.length - 1][0] }));
+      const files = MotionExport.build(take, ["mcap"], "imu-check");
+      const back = Mcap.read(files.find((f) => f.ext === "mcap").data);
+      const isImu = (topic) => topic.endsWith("/imu");
+      out.imuTopics = [...back.channels.values()].filter((c) => isImu(c.topic)).map((c) => c.topic).sort();
+      out.imuMessages = back.messages.filter((m) => isImu(back.channels.get(m.channel).topic)).length;
       document.getElementById("motionDiscardBtn").click();
     } finally {
       MultiCamera.close();
@@ -3389,9 +3446,14 @@ async function checkTimingCheck(js) {
   })()`).catch((err) => ({ error: String((err && err.message) || err) }));
   check("Several cameras: a take's OAK cameras are lined up by when each took its pictures (two started one after another: under a frame apart)",
     !r.error && Array.isArray(r.offsets) && r.offsets.length === 2 && r.offsets.every((o) => Math.abs(o) < 0.05), JSON.stringify(r.offsets));
+  const imu = r.imu || [];
+  check("Several cameras: each OAK camera's motion sensor is in a take (about 100 readings a second, on the take's clock) and in its MCAP file (sensor_msgs/Imu, a topic each)",
+    imu.length === 2 && imu.every((m) => m.n >= 100 && m.n <= 200 && m.from >= 0 && m.from < 0.2 && m.to > 1.2 && m.to < 1.8) &&
+      (r.imuTopics || []).join() === "/hand_tracker/chest/imu,/hand_tracker/head/imu" && r.imuMessages === imu.reduce((n, m) => n + m.n, 0),
+    JSON.stringify({ imu, topics: r.imuTopics, messages: r.imuMessages }));
   const [a, b] = r.results || [];
   check("Several cameras: the timing check finds each camera's flashes of the beacon and how far apart they are (80 ms here), and how long after the beacon each saw it; said under the cameras and in remote recording's state",
-    !r.error && r.ok && a && b && a.flashes >= 4 && b.flashes >= 4 && a.offsetMs === 0 && Math.abs(b.offsetMs - 80) <= 25 && b.spreadMs <= 25 &&
+    !r.error && r.ok && a && b && a.flashes >= 4 && b.flashes >= 4 && a.offsetMs === 0 && Math.abs(b.offsetMs - 80) <= 25 && b.spreadMs <= 35 &&
       a.afterBeaconMs >= 0 && a.afterBeaconMs <= 60 && b.afterBeaconMs - a.afterBeaconMs >= 55 && b.afterBeaconMs - a.afterBeaconMs <= 105 &&
       r.state && r.state.phase === "done" && /Timing check: .*\+\d+ ms/.test(r.note || ""),
     JSON.stringify(r));

@@ -106,6 +106,11 @@ contextBridge.exposeInMainWorld("desktop", {
   },
   // Live pictures from capture rigs on a capture-fleet dashboard (hidden; see fleet.js).
   // Each camera's latest picture is at app://hand-tracker/__fleet/<rig>/<camera>[?full=1].
+  // A motion capture's MCAP file with the videos recorded with it (mcap-video.js): videos
+  // [{ path | data (bytes) + ext, name, startMs }] -> { ok, frames, message }.
+  mcap: {
+    addVideos: (mcap, videos) => ipcRenderer.invoke("mcap:add-videos", { mcap, videos }),
+  },
   fleet: {
     status: () => ipcRenderer.invoke("fleet:status"),
     configure: (site) => ipcRenderer.invoke("fleet:configure", { site }),

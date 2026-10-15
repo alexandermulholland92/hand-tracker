@@ -79,14 +79,14 @@ Press **Start Motion Capture**, do the movement, press **Stop**, then pick forma
 
 | Format | Opens in | Contents |
 | --- | --- | --- |
-| **JSON** | Anything; the Recording Viewer | Everything: 21 joints per frame with position, orientation, velocity and acceleration, plus trajectories and task phases; each frame also has `world_joints`, the hand's real shape in metres, and with an OAK-D `distance_mm` |
+| **JSON** | Anything; the Recording Viewer | Everything: 21 joints per frame with position, orientation, velocity and acceleration, plus trajectories and task phases; each frame also has `world_joints`, the hand's real shape in metres, and with an OAK-D `distance_mm`; with OAK cameras in *Several cameras at once*, `imu`: each one's motion sensor readings on the take's clock |
 | **CSV** | Excel, Google Sheets, pandas, MATLAB | One row per hand per frame. Columns: `hand, frame, t, phase`, the wrist's camera-frame position (`wrist_world_x/y/z`), the palm quaternion, x/y/z for all 21 joints relative to the wrist (`wrist_x` … `pinky_tip_z`), and `image_width, image_height`; then the real shape in metres (`wrist_real_x` … `pinky_tip_real_z`) and, with an OAK-D, `distance_x_mm, distance_y_mm, distance_z_mm`. Can be imported back (see below) |
 | **BVH** | Blender, Maya, MotionBuilder, Cinema 4D; Unity/Unreal via Blender | Animated skeleton, one file per hand (`…-left.bvh`, `…-right.bvh`) |
 | **GLB** (glTF 2.0) | Blender, three.js, Unity, Unreal, Windows 3D Viewer | Animated 3D hands (joints and bones) that play straight away |
 | **C3D** | Vicon Nexus, Qualisys, Visual3D, Mokka, ezc3d | 42 3D markers (21 per hand); frames where a hand wasn't visible are marked invalid |
 | **TRC** | OpenSim | The same 42 markers as a text table |
 | **NPZ** | Python / NumPy (`np.load`) | Per hand: `left_t`, `left_joints` (T×21×3), `left_wrist`, `left_palm_quat`, `left_phase`, `left_real_joints` (T×21×3, metres), with an OAK-D `left_distance_mm` (T×3); plus `joint_names`, `parents` |
-| **MCAP** (ROS 2) | `ros2 bag play`, RViz, Foxglove | ROS 2 messages: each hand's 21 joints as a `geometry_msgs/PoseArray` on `/hand_tracker/<hand>/joints` (each joint's x axis along its bone, the wrist's the palm's), and the skeletons as a `visualization_msgs/MarkerArray` on `/hand_tracker/skeleton` (spheres and lines, a colour per hand), one message per recorded frame, timed from when the take was recorded. The whole recording is attached (`hand_tracker.json`), which is what Hand Tracker reads back |
+| **MCAP** (ROS 2) | `ros2 bag play`, RViz, Foxglove | ROS 2 messages: each hand's 21 joints as a `geometry_msgs/PoseArray` on `/hand_tracker/<hand>/joints` (each joint's x axis along its bone, the wrist's the palm's), and the skeletons as a `visualization_msgs/MarkerArray` on `/hand_tracker/skeleton` (spheres and lines, a colour per hand), one message per recorded frame, timed from when the take was recorded. With *Several cameras at once*, each OAK camera's motion sensor (accelerometer and gyroscope, about 100 readings a second) as `sensor_msgs/Imu` on `/hand_tracker/<camera>/imu`. In the Windows, Mac and Linux app, the video recorded with it too, as JPEG pictures (`sensor_msgs/CompressedImage`, at most 960 wide) on `/hand_tracker/<camera>/image/compressed`, each at the moment it was taken: a remote recording take's cameras' videos, or *Record Video*'s while it recorded alongside the capture. The whole recording is attached (`hand_tracker.json`), which is what Hand Tracker reads back |
 
 Units and axes:
 
@@ -544,6 +544,7 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `robot-motion.js` | Two-hand motion capture recorder |
 | `motion-export.js` | CSV / BVH / GLB / C3D / TRC / NPZ / MCAP writers (hands and markers) |
 | `mcap.js` | MCAP files: a writer and reader, and ROS 2 messages in CDR (zstd chunks with fzstd) |
+| `electron/mcap-video.js` | A capture's videos added to its MCAP file, frame by frame (ffmpeg) |
 | `motion-import.js` | Reads JSON, CSV, C3D, TRC, BVH, NPZ, GLB and MCAP back in (with a C3D reader built from the format's published description), as hands where they hold Hand Tracker's hands |
 | `export-ui.js` | Export panels shared by the main window and the viewer |
 | `hand-3d.js` | Three.js view of both hands and grippers |

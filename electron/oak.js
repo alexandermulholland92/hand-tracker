@@ -261,6 +261,7 @@ class OakCamera {
     if (options.detect) args.push("--detect");
     if (["depth", "blend", "side", "left", "right"].includes(options.picture)) args.push("--picture", options.picture);
     if (options.motion) args.push("--motion");
+    if (options.imu) args.push("--imu");
     if (options.hands === false) args.push("--no-hands");
     if (Number.isInteger(options.fps) && options.fps >= 10 && options.fps <= 60) args.push("--fps", String(options.fps));
     if (["auto", "on", "off"].includes(options.night)) args.push("--night", options.night);

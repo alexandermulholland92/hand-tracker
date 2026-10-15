@@ -20,6 +20,7 @@ const { InputDriver } = require("./input");
 const { OakCamera } = require("./oak");
 const { OpsClient } = require("./ops");
 const { FleetClient } = require("./fleet");
+const mcapVideo = require("./mcap-video");
 const { PhoneLinkServer } = require("./phone-link");
 const { RemoteRecordServer, RIG_HOST, RIG_PATH } = require("./remote-record");
 const { RigBluetooth } = require("./bluetooth");
@@ -662,6 +663,11 @@ class SimulatedOak {
       // A camera whose id has FREEZES sends nothing after its first second, the first time it
       // runs (for the checks' starting a frozen camera again).
       if (frozen && Date.now() - t0 > 1000) return;
+      if (options.imu) {
+        const now = Date.now();
+        frame.imu = [];
+        for (let k = 3; k >= 1; k--) frame.imu.push([now - k * 10, 0.1, -9.8, 0.2, 0.01, 0.5 * Math.sin(t), 0]);
+      }
       // A camera whose id has BEACON-<ms> films a beacon flashing once a second (white for the
       // first half), that many ms late (for the checks' timing check).
       if (beacon) return onMessage({ frame, jpeg: (Date.now() - beacon.lag) % 1000 < 500 ? beacon.white : beacon.black });
@@ -975,6 +981,27 @@ function registerFleetIpc() {
   handle("fleet:sign-out", () => fleet.signOut());
   handle("fleet:rigs", () => fleet.rigs());
   handle("fleet:sessions", (event, { host }) => fleet.sessions(host));
+  // The videos recorded with a motion capture, added to its MCAP file (mcap-video.js): saved
+  // ones by their path, one only in the page (its bytes) through a file of its own for a moment.
+  handle("mcap:add-videos", async (event, { mcap, videos }) => {
+    const list = [];
+    const temps = [];
+    try {
+      for (const v of Array.isArray(videos) ? videos : []) {
+        if (!v || !Number.isFinite(v.startMs)) continue;
+        if (typeof v.path === "string") list.push({ path: v.path, name: String(v.name || "camera"), startMs: v.startMs });
+        else if (v.data instanceof Uint8Array && v.data.length) {
+          const file = path.join(app.getPath("temp"), `hand-tracker-mcap-${process.pid}-${temps.length}.${v.ext === "mp4" ? "mp4" : "webm"}`);
+          fs.writeFileSync(file, v.data);
+          temps.push(file);
+          list.push({ path: file, name: String(v.name || "camera"), startMs: v.startMs });
+        }
+      }
+      return await mcapVideo.addVideos(String(mcap || ""), list);
+    } finally {
+      for (const f of temps) fs.rmSync(f, { force: true });
+    }
+  });
   handle("fleet:ble-password", () => fleet.blePassword());
   handle("fleet:set-ble-password", (event, { password }) => fleet.setBlePassword(password));
 }

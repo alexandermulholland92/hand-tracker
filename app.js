@@ -1158,6 +1158,7 @@
       const saved = res.results.filter((r) => r.ok).length;
       if (saved) motion.exported = true;
       motionNote.textContent = saved ? `Saved ${saved} file${saved === 1 ? "" : "s"} to ${res.dir}` : "Nothing was saved.";
+      if (saved) await mcapVideos(res.results, clipDuringMotion());
     } catch (err) {
       motionNote.textContent = `Export failed: ${err.message}`;
     } finally {
@@ -1170,7 +1171,8 @@
   // A capture saved without asking where (remote recording: nobody may be at this screen):
   // the export card's formats, into the remote recording folder, named baseName if given (the
   // card shows it too). -> { ok, dir, files, message }
-  async function saveMotionNow(baseName) {
+  // videos: [{ path, name, startMs }] recorded with it (a remote take's cameras), for its MCAP.
+  async function saveMotionNow(baseName, videos = null) {
     if (!motion || motion.exported) return null;
     if (baseName) motionName.value = baseName;
     try {
@@ -1185,6 +1187,7 @@
         motionName.title = "A remote recording take keeps the name it was saved with.";
       }
       motionNote.textContent = saved.length ? `Saved ${saved.length} file${saved.length === 1 ? "" : "s"} to ${res.dir}` : "Nothing was saved.";
+      if (saved.length) await mcapVideos(res.results, videos || clipDuringMotion());
       const failed = res.results.find((r) => !r.ok);
       return { ok: saved.length > 0, dir: res.dir, files: saved.map((r) => r.path.split(/[\\/]/).pop()), message: failed ? failed.error : "" };
     } catch (err) {
@@ -1192,6 +1195,31 @@
       motionNote.textContent = `Couldn't save: ${message}`;
       return { ok: false, message };
     }
+  }
+
+  // The videos recorded with a capture in its MCAP file too (the desktop app: mcap-video.js),
+  // each frame at the moment it was taken. results: the files saved.
+  async function mcapVideos(results, videos) {
+    const mcap = (results || []).find((r) => r.ok && /\.mcap$/i.test(r.path || ""));
+    if (!mcap || !videos || !videos.length || !desktop || !desktop.mcap) return;
+    motionNote.textContent += " · adding the video to the MCAP file…";
+    try {
+      // (one only in the page goes as its bytes)
+      const list = await Promise.all(videos.map(async (v) => (v.blob ? { data: new Uint8Array(await v.blob.arrayBuffer()), ext: v.ext, name: v.name, startMs: v.startMs } : v)));
+      const r = await desktop.mcap.addVideos(mcap.path, list);
+      motionNote.textContent = motionNote.textContent.replace(" · adding the video to the MCAP file…", r.ok ? ` (the MCAP file has the video too: ${r.frames} pictures)` : "");
+      if (r.message) motionNote.textContent += ` ${r.message}`;
+    } catch (err) {
+      motionNote.textContent = motionNote.textContent.replace(" · adding the video to the MCAP file…", ` (the video couldn't be added to the MCAP file: ${err.message})`);
+    }
+  }
+  // Record Video's clip, if it was recording while the capture was: for its MCAP.
+  function clipDuringMotion() {
+    if (!clip || !clip.startedAt || !motion || !motion.recorded_at) return null;
+    const start = Date.parse(motion.recorded_at), end = start + (Number(motion.duration) || 0) * 1000;
+    const clipEnd = clip.startedAt + (Number(clip.duration) || 0) * 1000;
+    if (!(clip.startedAt < end && clipEnd > start)) return null;
+    return [{ blob: clip.blob, ext: clip.container, name: "screen", startMs: clip.startedAt }];
   }
 
   // ---------- Video recording ----------

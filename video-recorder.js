@@ -139,6 +139,7 @@
           height: r.layout.height,
           fps: r.fps,
           frames: r.frames,
+          startedAt: performance.timeOrigin + r.startedAt, // (ms since 1970: an MCAP puts its frames on the hands' clock)
         });
       };
       r.recorder.onerror = (e) => reject(e.error || new Error("Recording failed."));

@@ -535,8 +535,9 @@
     }
     return out;
   }
-  // Saved beside the take: <take>-video-<role>. -> the files' names
-  async function saveVideos(baseName, list) {
+  // Saved beside the take: <take>-video-<role>. -> the files' names; into: each one saved, for
+  // the take's MCAP file ({ path, name, startMs }).
+  async function saveVideos(baseName, list, into = []) {
     const saved = [];
     for (const { role, clip } of list) {
       if (!clip || !clip.blob.size || !host) continue;
@@ -545,7 +546,10 @@
         const data = new Uint8Array(await clip.blob.arrayBuffer());
         const res = await host.remote.saveTake({ baseName, files: [{ format: clip.ext, suffix: `-video-${slug}`.slice(0, 24), ext: clip.ext, data, mimeType: clip.mimeType }] });
         const r = (res.results || [])[0];
-        if (r && r.ok) saved.push(r.path.split(/[\\/]/).pop());
+        if (r && r.ok) {
+          saved.push(r.path.split(/[\\/]/).pop());
+          if (clip.startedAt) into.push({ path: r.path, name: role, startMs: clip.startedAt });
+        }
       } catch {
         // (the take's result says what was saved)
       }
@@ -563,7 +567,8 @@
     const clips = await stopVideos(true);
     const at = new Date().toISOString();
     const name = takeName(d, (take && take.recorded_at) || startedAt, seconds);
-    const videoFiles = await saveVideos(name, clips);
+    const withTake = [];
+    const videoFiles = await saveVideos(name, clips, withTake);
     if (!take) {
       takeDetails = null;
       lastTake = videoFiles.length
@@ -571,7 +576,7 @@
         : { ok: false, at, message: "No hands were recorded, so nothing was saved." };
       return { ok: lastTake.ok, message: videoFiles.length ? `No hands were recorded; saved the video: ${videoFiles.join(", ")}` : lastTake.message };
     }
-    const saved = await app.saveMotionNow(name);
+    const saved = await app.saveMotionNow(name, withTake);
     takeDetails = null; // saved: the next take can have others
     lastTake = saved && saved.ok
       ? { ok: true, at, files: [...saved.files, ...videoFiles], dir: saved.dir, duration: seconds, hands: take.hands.length, details: d }
