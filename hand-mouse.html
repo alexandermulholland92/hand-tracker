@@ -3,9 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<!-- Hand Mouse (the Android project's "mouse" flavor): the Android app with only the hand mouse, its
-     gestures and gesture actions, for this phone, a PC over Wi-Fi or as a Bluetooth mouse
-     (hand-mouse.js). scripts/build-web.js --hand-mouse makes it that app's index.html. -->
+<!-- Hand Mouse (an app of its own: the Android project's "mouse" flavor, the iPhone app's and the
+     computer apps' "mouse" builds): only the hand mouse, its gestures and gesture actions, for what
+     each can control (hand-mouse.js). scripts/build-web.js --hand-mouse makes it the phone apps'
+     index.html; the computer apps open it as their page. -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' data: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'" />
 <title>Hand Mouse</title>
@@ -58,6 +59,24 @@
   kbd { display: none; }
   .note { font-size: 12px; opacity: 0.6; margin-top: 10px; line-height: 1.5; }
   #linkCodeInput { flex: 1; min-width: 180px; }
+  .link-pair { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px; }
+  .link-pair canvas { width: 180px; height: 180px; image-rendering: pixelated; border-radius: 6px; }
+  .link-pair code { word-break: break-all; font-size: 12px; user-select: all; }
+  /* On a computer the page keeps to a phone-like column. */
+  html.desktop body { max-width: 640px; margin: 0 auto; }
+  /* The iPhone's hand browser: its address row, and its buttons while a website is open: in the
+     small window the app becomes (html.hb-pip: just the camera, the buttons along its foot), or at
+     the top with the app shown full screen over the website (as in index.html). */
+  #hbUrl { flex: 1 1 200px; min-width: 0; }
+  #hbBar { position: fixed; top: 0; left: 0; right: 0; z-index: 50; display: flex; gap: 6px; align-items: center; padding: 6px 8px;
+    background: rgba(14, 15, 18, 0.82); font-size: 13px; }
+  #hbBar button { padding: 6px 10px; font-size: 13px; }
+  #hbBar #hbTitle { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; }
+  html.hb-pip, html.hb-pip body { overflow: hidden; }
+  html.hb-pip #stageWrap { display: block !important; position: fixed; inset: 0; z-index: 45; aspect-ratio: auto; border-radius: 0; }
+  html.hb-pip #hbBar { top: auto; bottom: 0; gap: 4px; padding: 4px; background: rgba(14, 15, 18, 0.6); }
+  html.hb-pip #hbBar button { flex: 1 1 0; min-width: 0; padding: 5px 0; font-size: 15px; }
+  html.hb-pip #hbBar #hbTitle { display: none; }
   .steps { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
   .steps button { text-align: left; }
   .action-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-top: 1px solid #25272e; font-size: 12px; }
@@ -68,20 +87,26 @@
 </style>
 </head>
 <body>
+<div id="hbBar" hidden><button id="hbBack" title="Back a page">‹</button><button id="hbMouse" aria-pressed="false" title="The hand mouse on or off">Hand mouse</button><span id="hbTitle"></span><button id="hbApp" title="Hand Mouse full screen, for its settings (the website stays open)">⚙</button><button id="hbClose" title="Close the website">✕ Close</button></div>
 <header>
   <button id="backBtn" hidden aria-label="Back to the choices">←</button>
   <h1 id="title">Hand Mouse</h1>
   <span id="buildInfo"></span>
 </header>
 
-<!-- What to control: picked each time the app opens; the camera starts once one is. -->
+<!-- What to control: picked each time the app opens; the camera starts once one is. Each kind of
+     device has its own choices (data-for: hand-mouse.js shows those for this one). -->
 <section id="chooser">
   <p>What should your hand control?</p>
-  <button class="choice" data-mode="phone"><b>This phone</b><span>A pointer over any app: switch to it and your hand taps, swipes and drags.</span></button>
-  <button class="choice" data-mode="pc"><b>A PC</b><span>Over Wi-Fi, with Hand Tracker on the PC.</span></button>
-  <button class="choice" data-mode="bluetooth"><b>Bluetooth mouse</b><span>This phone becomes a Bluetooth mouse for an iPhone or iPad.</span></button>
-  <button class="choice" data-mode="gestures"><b>My gestures</b><span>Record your own hand shapes and movements, and choose what gestures do.</span></button>
-  <p id="noApp" class="note" hidden>Hand Mouse runs in its Android app.</p>
+  <button class="choice" data-mode="phone" data-for="android"><b>This phone</b><span>A pointer over any app: switch to it and your hand taps, swipes and drags.</span></button>
+  <button class="choice" data-mode="pc" data-for="android"><b>A PC</b><span>Over Wi-Fi, with Hand Mouse or Hand Tracker on the PC.</span></button>
+  <button class="choice" data-mode="bluetooth" data-for="android"><b>Bluetooth mouse</b><span>This phone becomes a Bluetooth mouse for an iPhone or iPad.</span></button>
+  <button class="choice" data-mode="computer" data-for="desktop"><b>This computer</b><span>Your hand moves this computer's pointer: it clicks, scrolls, drags and types.</span></button>
+  <button class="choice" data-mode="linked" data-for="desktop"><b>A phone controls it</b><span>Pair your phone (Hand Mouse or Hand Tracker on it): its camera follows your hand and moves this computer's pointer.</span></button>
+  <button class="choice" data-mode="bluetooth" data-for="desktop" id="desktopBluetooth"><b>Bluetooth mouse</b><span>This computer becomes an iPhone or iPad's Bluetooth mouse and keyboard.</span></button>
+  <button class="choice" data-mode="browser" data-for="ios"><b>Hand browser</b><span>Websites full screen, worked with your hand: it taps, scrolls and types. (iOS lets no app tap inside other apps.)</span></button>
+  <button class="choice" data-mode="gestures" data-for="android desktop ios"><b>My gestures</b><span>Record your own hand shapes and movements, and choose what gestures do.</span></button>
+  <p id="noApp" class="note" hidden>Hand Mouse runs in its app: for Android, iPhone and iPad, Windows, Mac and Linux.</p>
 </section>
 
 <section id="running" hidden>
@@ -91,6 +116,8 @@
     <canvas id="stage" width="640" height="480"></canvas>
     <div id="stageMessage">Starting the camera…</div>
   </div>
+  <!-- A computer's cameras (hand-mouse.js). -->
+  <div id="cameraRow" class="toolbar" hidden><label>Camera <select id="cameraPick"></select></label></div>
   <div id="gestureNow" class="note" hidden></div>
 
   <!-- The hand mouse and gesture actions (pc-control.js) and pairing with a PC (phone-link-ui.js)
@@ -127,6 +154,31 @@
       <div id="linkPhoneStatus" class="note"></div>
     </div>
 
+    <!-- A phone controlling this computer (phone-link-ui.js, on the computer). -->
+    <div id="linkPc" hidden>
+      <div class="section-label">Your phone</div>
+      <div class="toolbar">
+        <button id="linkToggle" aria-pressed="false" title="Your phone's hand mouse, keyboard and gesture actions control this computer over Wi-Fi. Only a phone that has read the code shown here can.">Let a phone control this PC: OFF</button>
+        <button id="linkNewKey" hidden title="A new code: phones paired with the old one can't connect any more">New code</button>
+        <span id="linkPcStatus" class="note"></span>
+      </div>
+      <div id="linkPcPair" class="link-pair" hidden>
+        <canvas id="linkQr" width="200" height="200"></canvas>
+        <div class="note">On your phone, open Hand Mouse and choose <b>A PC</b> → <b>Scan the PC's code</b> (in Hand Tracker: Control your PC → Scan the PC's code). The phone and this computer need to be on the same network (allow Hand Mouse through the firewall if asked). Or type this code on the phone:<br /><code id="linkCode"></code></div>
+      </div>
+    </div>
+
+    <!-- The iPhone's hand browser (phone-link-ui.js, HandBrowser.swift). -->
+    <div id="handBrowser" hidden>
+      <div class="section-label">Hand browser</div>
+      <div class="note">Open a website and it fills the screen, the camera in a small window in a corner, and your hand moves a pointer over it. A quick curl of your index finger taps, a quick flick of your open hand up or down swipes the page (curl and move to drag it), a quick curl of your middle finger right-clicks; gesture actions can scroll, press keys and type. The small window's ⚙ brings Hand Mouse back full screen.</div>
+      <div class="toolbar">
+        <input id="hbUrl" type="url" inputmode="url" placeholder="Website or search" autocapitalize="off" autocomplete="off" spellcheck="false" />
+        <button id="hbOpen" class="primary">Open</button>
+      </div>
+      <div id="hbStatus" class="note"></div>
+    </div>
+
     <!-- A Bluetooth mouse (pc-control.js, hid-core.js): its target is set by the choice above. -->
     <div id="deviceRow" hidden>
       <div class="section-label">Bluetooth mouse</div>
@@ -141,11 +193,13 @@
           </label>
           <button id="deviceVisible" hidden>Pair a new one</button>
         </span>
-        <button id="openMirroring" hidden></button>
+        <button id="openMirroring" hidden title="iPhone Mirroring shows your iPhone in a window on this Mac, worked with this Mac's pointer">Open iPhone Mirroring</button>
       </div>
       <div id="deviceNote" class="note" hidden></div>
     </div>
 
+    <!-- (Not while a phone controls this computer: the phone has its own.) -->
+    <div id="mouseParts">
     <div class="section-label">Hand mouse</div>
     <div class="toolbar">
       <button id="mouseToggle" aria-pressed="false">Hand mouse: OFF</button>
@@ -177,6 +231,7 @@
     <div id="actionLog" class="note"></div>
     <!-- Gestures you record yourself (custom-gestures.js). -->
     <div id="myGestures"></div>
+    </div>
   </div>
 </section>
 
@@ -189,6 +244,8 @@
 <script src="hid-core.js"></script>
 <script src="mobile-bridge.js"></script>
 <script src="pc-control.js"></script>
+<script src="web-pc.js"></script>
+<script src="qr-code.js"></script>
 <script src="phone-link-ui.js"></script>
 <script src="hand-mouse.js"></script>
 </body>

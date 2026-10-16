@@ -2,4 +2,6 @@
 <resources>
     <!-- Hand Mouse (the "mouse" flavor, src/mouse) is the app with only the hand mouse. -->
     <bool name="hand_mouse">false</bool>
+    <!-- Remote Recording (the "remote" flavor, src/remote) is the app for remote recording only. -->
+    <bool name="remote_recording">false</bool>
 </resources>

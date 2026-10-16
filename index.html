@@ -200,6 +200,11 @@
   html.hb-pip #hbBar { top: auto; bottom: 0; gap: 4px; padding: 4px; background: rgba(14, 15, 18, 0.6); }
   html.hb-pip #hbBar button { flex: 1 1 0; min-width: 0; padding: 5px 0; font-size: 15px; }
   html.hb-pip #hbBar #hbTitle { display: none; }
+  /* Remote Recording's rig (index.html?rig=1, app.js): the cameras, Record (motion capture and
+     remote recording), Several cameras and OptiTrack; nothing else. */
+  html.rig-app #legend, html.rig-app #pcCard, html.rig-app #viz3dCard, html.rig-app #panels, html.rig-app #videoRow,
+  html.rig-app #openVideoBtn, html.rig-app #opsBtn, html.rig-app #rigsBtn, html.rig-app #remoteLink, html.rig-app header a[href="viewer.html"] { display: none !important; }
+  html.rig-app #layout { grid-template-columns: minmax(0, 1fr); }
   .multi-cam-caption .lbl { opacity: 0.6; }
   .multi-cam-caption select.role, .multi-table select.role { font-size: 12px; padding: 2px 4px; }
   .multi-cam-caption button.retry, .multi-cam-caption button.rot, .multi-cam-caption button.flip { font-size: 12px; padding: 1px 8px; margin-left: 2px; }
@@ -301,6 +306,8 @@
   <a class="header-link" href="viewer.html" target="_blank" rel="noopener">Recording Viewer ↗</a>
   <!-- Opening a camera rig's remote recording page (remote.html; shown by remote-record-ui.js). -->
   <a id="remoteLink" class="header-link" href="remote.html" hidden>Remote recording</a>
+  <!-- Remote Recording's rig: back to its choices (remote-recording.html). -->
+  <a id="rigHome" class="header-link" href="remote-recording.html" hidden>← Remote Recording</a>
 </header>
 
 <div id="layout">
@@ -464,7 +471,7 @@
 
     <div class="card">
       <div class="section-label">Record</div>
-      <div class="toolbar">
+      <div class="toolbar" id="videoRow">
         <button id="videoBtn" title="Start / stop video recording (R)">Record Video<kbd>R</kbd></button>
         <label>Include
           <select id="layoutSelect">
@@ -495,7 +502,7 @@
             <div class="remote-row"><label title="Each camera's video (its picture with the hands drawn) is saved with the take, beside its motion capture"><input type="checkbox" id="remoteVideo" checked /> Each camera's video too</label>
               <label title="Sound from this computer's microphone, in each camera's video"><input type="checkbox" id="remoteSound" checked /> with sound</label>
               <label title="How much of each camera's picture detail its video keeps, and so its size: small files is under half the size of standard, high about twice, best about four times">Quality <select id="remoteQuality"><option value="low">small files</option><option value="standard">standard</option><option value="high">high</option><option value="best">best</option></select></label></div>
-            <label class="remote-row" id="remoteAutostartRow" hidden><input type="checkbox" id="remoteAutostart" /> Open Hand Tracker when this computer starts, waiting for the phone (for a computer with no screen)</label>
+            <label class="remote-row" id="remoteAutostartRow" hidden><input type="checkbox" id="remoteAutostart" /> Open <span id="remoteAppName">Hand Tracker</span> when this computer starts, waiting for the phone (for a computer with no screen)</label>
             <div class="remote-row" id="remoteBtRow" hidden title="Phones, the website and other computers can reach this page over Bluetooth too, when there's no network between them, with this password (a Raspberry Pi set up with pi/bluetooth-setup.sh uses its hotspot's)">Bluetooth: <span id="remoteBtStatus"></span>
               <input id="remoteBtPassword" type="password" minlength="8" maxlength="63" placeholder="Bluetooth password" autocomplete="new-password" /> <button id="remoteBtSet">Set</button></div>
           </div>

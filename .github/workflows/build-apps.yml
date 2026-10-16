@@ -35,6 +35,11 @@ jobs:
 
       - run: npm run dist
 
+      # Hand Mouse and Remote Recording: the same app, each with its own name, ID and page
+      # (scripts/dist.js --app).
+      - run: node scripts/dist.js portable --app mouse
+      - run: node scripts/dist.js portable --app remote
+
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -55,23 +60,40 @@ jobs:
       - run: npm ci
 
       - run: npm run dist:deb
+      # Hand Mouse and Remote Recording (scripts/dist.js --app): packages of their own.
+      - run: node scripts/dist.js deb --app mouse
+      - run: node scripts/dist.js deb --app remote
 
       # The same for 64-bit ARM (Raspberry Pi 4 and 5): ARM Electron, and ARM ffmpeg swapped
       # in for this build (see scripts/dist.js).
       - run: npm run dist:deb-arm64
+      - run: node scripts/dist.js deb --arm64 --app mouse
+      - run: node scripts/dist.js deb --arm64 --app remote
 
-      # The package installs and removes cleanly, with the USB rule OAK cameras need
-      # (build/linux/*-oak.sh) and the OAK helper where Python can read it.
-      - name: Install and remove the package
+      # The packages install and remove cleanly, side by side: Hand Tracker with the USB rule OAK
+      # cameras need (build/linux/*-oak.sh) and the OAK helper where Python can read it, Remote
+      # Recording with its own OAK rule, Hand Mouse with its own virtual mouse rule; removing
+      # those two leaves Hand Tracker's.
+      - name: Install and remove the packages
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q ./dist/hand-tracker_*_amd64.deb
+          sudo apt-get install -y -q ./dist/hand-tracker_*_amd64.deb ./dist/hand-mouse_*_amd64.deb ./dist/remote-recording_*_amd64.deb
           grep -q 'idVendor}=="03e7"' /lib/udev/rules.d/80-hand-tracker-oak.rules
           test -L /usr/bin/hand-tracker
           test -f "/opt/Hand Tracker/resources/app.asar.unpacked/oak/oak_bridge.py"
+          grep -q 'idVendor}=="03e7"' /lib/udev/rules.d/80-remote-recording-oak.rules
+          test -L /usr/bin/remote-recording
+          test -f "/opt/Remote Recording/resources/app.asar.unpacked/oak/oak_bridge.py"
+          grep -q uinput /lib/udev/rules.d/70-hand-mouse-uinput.rules
+          test -L /usr/bin/hand-mouse
+          test -d "/opt/Hand Mouse/resources"
+          sudo apt-get remove -y -q hand-mouse remote-recording
+          test ! -e /lib/udev/rules.d/80-remote-recording-oak.rules
+          test ! -e /lib/udev/rules.d/70-hand-mouse-uinput.rules
+          test -e /lib/udev/rules.d/80-hand-tracker-oak.rules
           sudo apt-get remove -y -q hand-tracker
           test ! -e /lib/udev/rules.d/80-hand-tracker-oak.rules
-          echo "Installed and removed cleanly, with the OAK camera rule"
+          echo "Installed and removed cleanly, side by side, each with its own rules"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -94,16 +116,24 @@ jobs:
       # With install scripts: Electron and ffmpeg download their Mac (Apple silicon) binaries.
       - run: npm ci
 
-      # Apple silicon, then Intel (Intel Electron, and Intel ffmpeg swapped in: scripts/dist.js).
+      # Apple silicon, then Intel (Intel Electron, and Intel ffmpeg swapped in: scripts/dist.js);
+      # each also as Hand Mouse and Remote Recording (scripts/dist.js --app).
       - run: npm run dist:mac 2>&1 | tee mac-build.log
+      - run: node scripts/dist.js mac --app mouse 2>&1 | tee mac-build.log
+      - run: node scripts/dist.js mac --app remote 2>&1 | tee mac-build.log
       - run: npm run dist:mac-x64 2>&1 | tee mac-build.log
+      - run: node scripts/dist.js mac --x64 --app mouse 2>&1 | tee mac-build.log
+      - run: node scripts/dist.js mac --x64 --app remote 2>&1 | tee mac-build.log
 
-      # Each app is signed whole, says why it wants the camera and microphone, and carries the
-      # input helper (both processors; it starts and answers) and ffmpeg for its own processor.
+      # Each app is signed whole, has its own ID, says why it wants the camera and microphone, and
+      # carries the input helper (both processors; it starts and answers) and ffmpeg for its own
+      # processor.
       - name: Check the apps
         run: |
+          for both in "Hand Tracker:com.handtracker.app" "Hand Mouse:com.handtracker.mouse" "Remote Recording:com.handtracker.remote"; do
           for dir in mac-arm64:arm64 mac:x86_64; do
-            app="dist/${dir%%:*}/Hand Tracker.app"; arch="${dir##*:}"
+            app="dist/${dir%%:*}/${both%%:*}.app"; arch="${dir##*:}"
+            test "$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$app/Contents/Info.plist")" = "${both##*:}"
             codesign --verify --deep --strict "$app"
             /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$app/Contents/Info.plist"
             /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$app/Contents/Info.plist"
@@ -116,7 +146,8 @@ jobs:
             lipo -archs "$unpacked/node_modules/ffmpeg-static/ffmpeg" | grep -qx "$arch"
             test -f "$unpacked/oak/oak_bridge.py"
           done
-          echo "Both Mac apps are signed, with the input helper and the right ffmpeg"
+          done
+          echo "The Mac apps (Hand Tracker, Hand Mouse, Remote Recording; Apple silicon and Intel) are signed, with the input helper and the right ffmpeg"
 
       # The end of a failed build's output, as an annotation on the run (anyone can read those;
       # the log needs signing in).
@@ -135,10 +166,12 @@ jobs:
   # The iPhone and iPad app (Capacitor's iOS app, ios/): built for the simulator and checked
   # there (the app launched with -HTSelfTest <test page> opens a page this job serves in its hand
   # browser and clicks its link with the hand mouse's calls), then built for iPhones, unsigned:
-  # Sideloadly or AltStore sign it with the user's own Apple ID when they install it.
+  # Sideloadly or AltStore sign it with the user's own Apple ID when they install it. Hand Mouse
+  # and Remote Recording are made from it (scripts/ios-variant.js: their own pages, ID and name)
+  # and checked in the simulator too.
   ios:
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -173,7 +206,7 @@ jobs:
       # The hand browser in the simulator, on a test page served here (a link, and the page it
       # opens): the self-test's result is in the app's log.
       - name: Check it in the simulator
-        timeout-minutes: 20
+        timeout-minutes: 40
         run: |
           mkdir -p selftest-site
           echo '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Hand Tracker test</title><a href="next.html" style="display:block;margin:40px 20px;padding:40px 0;font:28px sans-serif;text-align:center;background:#def">Next page</a><div style="height:300vh"></div>' > selftest-site/index.html
@@ -187,6 +220,17 @@ jobs:
           grep -a "HT-SELFTEST" sim.log | tail -1 | tee selftest.txt
           grep -q '"ok":true' selftest.txt || { tail -n 80 sim.log >> ios-build.log; cat site.log >> ios-build.log; exit 1; }
           echo "The hand browser opened a page and the hand mouse clicked its link"
+          # Hand Mouse (its hand browser, the same check) and Remote Recording (its rig: the same
+          # check, remote recording's part included).
+          for kind in mouse remote; do
+            node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app "$kind" "build/ios-sim-$kind"
+            xcrun simctl install "$udid" "build/ios-sim-$kind/App.app"
+            xcrun simctl launch --console-pty "$udid" "com.handtracker.$kind" -HTSelfTest http://127.0.0.1:8765/ > "sim-$kind.log" 2>&1 &
+            for i in $(seq 1 90); do grep -q "HT-SELFTEST" "sim-$kind.log" && break; sleep 2; done
+            grep -a "HT-SELFTEST" "sim-$kind.log" | tail -1 | tee "selftest-$kind.txt"
+            grep -q '"ok":true' "selftest-$kind.txt" || { echo "== $kind" >> ios-build.log; tail -n 80 "sim-$kind.log" >> ios-build.log; exit 1; }
+            echo "$kind: its self-test passed"
+          done
 
       - name: Build for iPhones (unsigned)
         run: |
@@ -199,9 +243,16 @@ jobs:
           test -d "$app"
           /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$app/Info.plist"
           lipo -archs "$app/App" | grep -q arm64
+          version=$(node -p "require('./package.json').version")
           mkdir -p Payload dist
           cp -R "$app" Payload/
-          zip -qr "dist/HandTracker-$(node -p "require('./package.json').version")-ios-unsigned.ipa" Payload
+          zip -qr "dist/HandTracker-$version-ios-unsigned.ipa" Payload
+          # Hand Mouse and Remote Recording, made from it.
+          for both in mouse:HandMouse remote:RemoteRecording; do
+            node scripts/ios-variant.js "$app" "${both%%:*}" "build/ios-${both%%:*}"
+            rm -rf Payload && mkdir Payload && cp -R "build/ios-${both%%:*}/App.app" Payload/
+            zip -qr "dist/${both##*:}-$version-ios-unsigned.ipa" Payload
+          done
 
       - name: Why the build failed
         if: failure()
@@ -325,4 +376,4 @@ jobs:
         run: |
           gh release delete latest-build --yes --cleanup-tag || true
           gh release create latest-build dist/* --target "$GITHUB_SHA" --prerelease --title "Latest build" \
-            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk; Hand Mouse (the hand mouse alone, an app of its own): HandMouse-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID). Chrome (the hand mouse for web pages): HandTracker-*-chrome-extension.zip, unzipped and loaded in chrome://extensions with Developer mode on (Load unpacked)."
+            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID). Chrome (the hand mouse for web pages): HandTracker-*-chrome-extension.zip, unzipped and loaded in chrome://extensions with Developer mode on (Load unpacked). Apps of their own, for each of these the same way: Hand Mouse (the hand mouse alone): HandMouse-*; Remote Recording (controlling camera rigs, or being one): RemoteRecording-*; on Linux hand-mouse_*.deb and remote-recording_*.deb."

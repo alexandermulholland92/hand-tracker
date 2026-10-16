@@ -162,6 +162,7 @@ const STEPS = [
   ["optitrack", [], ({ js }) => checkOptiTrack(js)],
   ["viewer", ["capture", "optitrack"], checkViewerStep], // the capture's files, and Motive's markers
   ["viewer-video", [], () => checkViewerVideo()],
+  ["own-apps", [], () => checkOwnApps()],
 ];
 if (process.argv.includes("--list")) {
   console.log(STEPS.map(([name, needs]) => (needs.length ? `${name} (needs ${needs.join(", ")})` : name)).join("\n"));
@@ -4504,6 +4505,100 @@ async function checkOptiTrack(js) {
 }
 
 // 8. Recording Viewer: open a video the page can't play (WMV, with sound) and convert it to every format.
+// Hand Mouse and Remote Recording, the apps of their own, as the computer apps open them (their
+// pages, each in a window of its own with the app's preload, as electron/main.js opens them for
+// --app mouse | remote):
+//  - Hand Mouse: this computer, a phone controlling it, the Bluetooth mouse (an iPhone or iPad's;
+//    on a Mac, iPhone Mirroring) and My gestures, none of the phones' choices. "A phone controls
+//    it" shows the code to pair a phone with, and back, stops listening for it; "This computer"
+//    starts the camera and the hand mouse at once (a stand-in for the real mouse here), with the
+//    computer's cameras to pick from, and back, stops both.
+//  - Remote Recording: both choices; Be a rig is Hand Tracker's page as a rig (only the cameras,
+//    Record and Several cameras; remote recording on; no camera until it's asked).
+async function checkOwnApps() {
+  const open = async (page) => {
+    const win = new BrowserWindow({
+      show: false, width: 600, height: 900,
+      webPreferences: { preload: path.join(__dirname, "..", "electron", "preload.js"), contextIsolation: true, sandbox: true, backgroundThrottling: false },
+    });
+    await win.loadURL(`app://hand-tracker/${page}`);
+    return { win, js: (code) => win.webContents.executeJavaScript(code, true) };
+  };
+  const UNTIL = `const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const until = async (fn, ms = 15000) => { for (let t = 0; t < ms; t += 100) { const v = await fn(); if (v) return v; await sleep(100); } return null; };
+    const $ = (id) => document.getElementById(id);
+    const choices = () => [...document.querySelectorAll(".choice")].filter((b) => !b.hidden && !b.disabled).map((b) => b.dataset.mode).join();
+    const live = (video) => !!(video.srcObject && video.srcObject.getVideoTracks().some((t) => t.readyState === "live"));`;
+  const out = {};
+
+  let w = await open("hand-mouse.html");
+  try {
+    out.mouse = await w.js(`(async () => {
+      ${UNTIL}
+      const r = { platform: HandMouse.platform(), choices: choices() };
+      // A phone controlling this computer: the code to pair it with; back, no longer listening.
+      HandMouse.choose("linked");
+      r.code = !!(await until(() => !$("linkPcPair").hidden && /^handtracker-link:/.test($("linkCode").textContent)));
+      r.linkedParts = $("mouseParts").hidden && $("stageWrap").hidden && !$("linkPc").hidden;
+      history.back();
+      r.linkOff = !!(await until(async () => !HandMouse.mode() && !(await desktop.pc.link.status()).on));
+      // This computer: the camera and the hand mouse at once (through a stand-in for the mouse).
+      const fake = { start: async () => {}, status: () => {}, setKeyboard: async () => {}, pointer: () => {}, button: async () => {}, wheel: async () => {},
+        key: async () => {}, text: async () => {}, web: async () => ({ ok: true, status: 200 }) };
+      PcControl._setDesktop({ pc: fake });
+      HandMouse.choose("computer");
+      const video = $("video");
+      r.camera = !!(await until(() => live(video)));
+      r.mouseOn = !!(await until(() => PcControl.isMouseOn()));
+      r.cameras = (await until(() => $("cameraPick").options.length)) || 0;
+      r.computerParts = !$("cameraRow").hidden && !$("keyboardToggle").hidden && !$("mouseScreenLabel").hidden && $("linkPc").hidden && !$("mouseParts").hidden;
+      history.back();
+      r.stopped = !!(await until(() => !HandMouse.mode() && !PcControl.isMouseOn() && !live(video)));
+      PcControl._setDesktop(window.desktop);
+      return r;
+    })()`);
+  } catch (err) {
+    out.mouse = { error: String((err && err.message) || err) };
+  } finally {
+    w.win.destroy();
+  }
+
+  w = await open("remote-recording.html");
+  try {
+    out.remote = await w.js(`(() => { ${UNTIL} return { choices: choices() }; })()`);
+    const rig = new Promise((resolve) => w.win.webContents.once("did-finish-load", () => resolve(w.win.webContents.getURL().endsWith("/index.html?rig=1"))));
+    await w.js(`document.querySelector('.choice[data-mode="rig"]').click(); true`);
+    out.remote.rig = await rig;
+    out.remote.page = await w.js(`(async () => {
+      ${UNTIL}
+      const gone = (el) => !el || getComputedStyle(el).display === "none" || !el.offsetParent;
+      const on = !!(await until(() => $("remoteToggle").getAttribute("aria-pressed") === "true", 20000));
+      await until(() => /Waiting for the phone/.test($("stageMessage").textContent), 20000);
+      const r = {
+        rigClass: document.documentElement.classList.contains("rig-app"), title: document.title,
+        hidden: ["pcCard", "viz3dCard", "legend", "panels", "videoRow", "openVideoBtn"].filter((id) => !gone($(id))),
+        kept: ["wrap", "motionBtn", "remoteRec", "cameraSelect"].filter((id) => gone($(id))),
+        remoteOn: on, noCamera: !live($("video")), waiting: $("stageMessage").textContent, appName: $("remoteAppName").textContent,
+      };
+      await desktop.remote.stop();
+      return r;
+    })()`);
+  } catch (err) {
+    out.remote = { ...(out.remote || {}), error: String((err && err.message) || err) };
+  } finally {
+    w.win.destroy();
+  }
+
+  const m = out.mouse || {}, r = out.remote || {}, rp = r.page || {};
+  check("Hand Mouse (Windows, Mac, Linux): this computer, a phone controlling it, the Bluetooth mouse and My gestures; a phone's code to pair with, then no longer listening; this computer's camera and hand mouse at once, then both stopped",
+    !m.error && m.platform === "desktop" && m.choices === "computer,linked,bluetooth,gestures" && m.code && m.linkedParts && m.linkOff && m.camera && m.mouseOn && m.cameras >= 1 && m.computerParts && m.stopped,
+    JSON.stringify(m));
+  check("Remote Recording (Windows, Mac, Linux): both choices; Be a rig is Hand Tracker's page as a rig: only the cameras, Record and Several cameras, remote recording on, no camera until it's asked",
+    !r.error && r.choices === "control,rig" && r.rig && rp.rigClass && rp.title === "Remote Recording" && rp.hidden.length === 0 && rp.kept.length === 0 && rp.remoteOn && rp.noCamera &&
+      /Waiting for the phone/.test(rp.waiting) && rp.appName === "Remote Recording",
+    JSON.stringify(r));
+}
+
 async function checkViewerVideo() {
   const src = path.join(outDir, "viewer-source.wmv");
   spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",

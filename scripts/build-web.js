@@ -6,9 +6,11 @@
  * vendor/. index.html gets a "hand-tracker-bundle" meta tag so the page knows it
  * is running from this bundle.
  *   npm run build:web
- *   node scripts/build-web.js --hand-mouse --out <dir>   # Hand Mouse (the Android app with only
- *                                                       # the hand mouse): its page as index.html,
- *                                                       # and only its files
+ *   node scripts/build-web.js --hand-mouse --out <dir>   # Hand Mouse (the app with only the hand
+ *                                                       # mouse): its page as index.html, and only
+ *                                                       # its files
+ * Remote Recording (the app of its own for remote recording) is the whole of this, opening
+ * remote-recording.html (build-android.js and the iPhone build give it that start page).
  */
 
 const fs = require("fs");
@@ -27,13 +29,15 @@ const APP_FILES = [
   "natnet-parse.js", "stage-overlay.js", "remote-core.js", "phone-link-protocol.js", "phone-link-ui.js", "remote-record-ui.js", "remote.html", "remote-launcher.js", "remote-client.html", "remote-client.js", "bt-link-client.js", "custom-gestures.js", "gestures.js", "phone-control.html", "phone-control.js", "qr-code.js", "video-native.js",
   "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
   "sentry.js", "camera-video.js", "object-finder.js", "object-finder-worker.js", "web-pc.js", "hid-core.js",
+  "remote-recording.html", "remote-recording.js",
 ];
 
-// Hand Mouse: the hand mouse alone (hand-mouse.html), and this phone's control window.
+// Hand Mouse: the hand mouse alone (hand-mouse.html), this phone's control window (Android), and
+// the hand browser's pointer (web-pc.js, iPhone).
 const HAND_MOUSE = process.argv.includes("--hand-mouse");
 const HAND_MOUSE_FILES = [
   "hand-mouse.js", "hand-tracker.js", "custom-gestures.js", "gestures.js", "phone-link-protocol.js", "hid-core.js", "mobile-bridge.js",
-  "pc-control.js", "phone-link-ui.js", "phone-control.html", "phone-control.js",
+  "pc-control.js", "phone-link-ui.js", "phone-control.html", "phone-control.js", "web-pc.js", "qr-code.js",
 ];
 const HAND_MOUSE_LIBRARIES = (list) => list.filter((rel) => rel.startsWith("node_modules/@mediapipe/hands/") || rel === "node_modules/@mediapipe/drawing_utils/drawing_utils.js");
 
@@ -105,7 +109,7 @@ const pages = HAND_MOUSE ? [["hand-mouse.html", "index.html"], ...HAND_MOUSE_FIL
 for (const [from, rel] of pages) {
   // Library paths in the page and scripts: "node_modules/... -> "vendor/...
   let text = read(from).toString("utf8").split('"node_modules/').join('"vendor/');
-  if (rel === "index.html") {
+  if (rel === "index.html" || rel === "remote-recording.html") {
     text = text.replace(
       '<meta charset="UTF-8" />',
       '<meta charset="UTF-8" />\n<meta name="hand-tracker-bundle" content="1" />\n' +

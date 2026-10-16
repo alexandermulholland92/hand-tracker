@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Remote Recording (an app of its own: the Android project's "remote" flavor, the iPhone app's
+     and the computer apps' "remote" builds): asks each time it opens whether this device controls
+     camera rigs (remote.html) or is one (index.html?rig=1: Hand Tracker's page with only what a
+     rig needs, the cameras off until a phone or browser starts them). remote-recording.js. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'" />
+<title>Remote Recording</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: #0e0f12; color: #e8e8ea;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  [hidden] { display: none !important; }
+  main { max-width: 560px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0; flex: 1; }
+  #buildInfo { font-size: 11px; opacity: 0.45; white-space: nowrap; }
+  #chooser { display: flex; flex-direction: column; gap: 12px; }
+  #chooser > p { margin: 0 0 4px; font-size: 14px; opacity: 0.7; }
+  .choice {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%;
+    padding: 18px 18px; border-radius: 12px; border: 1px solid #2c2e36; background: #17181c;
+    color: #e8e8ea; font-family: inherit; text-align: left; cursor: pointer;
+  }
+  .choice:active { background: #1f2026; }
+  .choice:disabled { opacity: 0.45; cursor: default; }
+  .choice b { font-size: 18px; font-weight: 600; }
+  .choice span { font-size: 13px; opacity: 0.6; line-height: 1.4; }
+  .note { font-size: 12px; opacity: 0.6; margin-top: 10px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Remote Recording</h1>
+  <span id="buildInfo"></span>
+</header>
+
+<!-- Picked each time the app opens. -->
+<section id="chooser">
+  <p>What is this device for now?</p>
+  <button class="choice" data-mode="control"><b>Control a rig</b><span>Start and stop recording on your camera rigs, watch their cameras live and run the timing check, over Wi-Fi, Tailscale or Bluetooth.</span></button>
+  <button class="choice" data-mode="rig"><b>Be a rig</b><span>Record with this device's cameras when a phone or browser starts it. The cameras stay off until then.</span></button>
+  <p id="noApp" class="note" hidden>Being a rig needs the Remote Recording app (or Hand Tracker's): a website can't be reached by other devices.</p>
+</section>
+</main>
+<script src="remote-recording.js"></script>
+</body>
+</html>

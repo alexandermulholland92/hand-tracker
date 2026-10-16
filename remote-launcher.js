@@ -284,8 +284,18 @@
     clear();
   }
 
-  // In the Windows and Linux app this page is a window of its own: no way "back".
-  if (inDesktopApp) $("back").hidden = true;
+  // Opened from Remote Recording (the app of its own, remote-recording.js): back to its choices.
+  // Otherwise, in the Windows and Linux app this page is a window of its own: no way "back".
+  let fromRemoteApp = false;
+  try {
+    fromRemoteApp = sessionStorage.getItem("hand-tracker:app") === "remote";
+  } catch {}
+  if (fromRemoteApp) {
+    const a = $("back").querySelector("a");
+    a.href = "remote-recording.html";
+    a.textContent = "← Remote Recording";
+    document.title = "Control a rig · Remote Recording";
+  } else if (inDesktopApp) $("back").hidden = true;
   // The apps show the computer's page here; the website opens the computer's own page.
   $("whereNote").textContent = inApp
     ? "The computer's page opens here: this app reaches it for you."

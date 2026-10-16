@@ -45,6 +45,8 @@
 (function (global) {
   const $ = (id) => document.getElementById(id);
   const errText = (err) => (err && err.message ? err.message : String(err)).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
+  // Remote Recording's rig (index.html?rig=1, app.js): remote recording always on.
+  const rigApp = /[?&]rig=1(&|$)/.test(location.search);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const MAX_CAMERAS = 4;
   const STATE_MS = 500;
@@ -796,6 +798,7 @@
     remote = (opts.desktop && opts.desktop.remote) || (opts.mobile && opts.mobile.remote) || null;
     host = opts.desktop || opts.mobile || null;
     if (!remote || !$("remoteRec")) return;
+    if (rigApp && $("remoteAppName")) $("remoteAppName").textContent = "Remote Recording";
     onPhone = !opts.desktop;
     lookAtSystem();
     setInterval(lookAtSystem, 60000);
@@ -887,8 +890,9 @@
     remote.settings().then((s) => {
       settings = s;
       showSettings();
-      // On when it was left on, and always when opened at login to wait for the phone.
-      if (prefs.remoteRecord === true || s.standby) remote.start().then(show).catch((err) => ($("remoteStatus").textContent = `Couldn't turn it on: ${errText(err)}`));
+      // On when it was left on, and always when opened at login to wait for the phone, or as
+      // Remote Recording's rig (index.html?rig=1).
+      if (prefs.remoteRecord === true || s.standby || rigApp) remote.start().then(show).catch((err) => ($("remoteStatus").textContent = `Couldn't turn it on: ${errText(err)}`));
       else remote.status().then(show);
       setTimeout(sentryOnLaunch, SENTRY_AGAIN.firstMs);
     });

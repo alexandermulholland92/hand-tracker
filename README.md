@@ -18,7 +18,9 @@ Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmark
 
 **Download the latest build:** every change to `main` rebuilds the Windows, Linux and Android apps on GitHub and puts them on the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release (`.github/workflows/build-apps.yml`). Each APK built there installs over the last one, but it's signed with a different key from one built on your PC, so Android only installs it over a PC-built copy after that copy is uninstalled (and the other way round). The same happens whenever GitHub drops the saved key (after a week with no builds, or sooner when its cache fills up). To fix the key for good, save a `debug.keystore` as the repository secret `ANDROID_DEBUG_KEYSTORE` (base64; *Settings → Secrets and variables → Actions → New repository secret*): every build is then signed with it, and saving your PC's own (`%USERPROFILE%\.android\debug.keystore`; in Git Bash, `base64 -w0 ~/.android/debug.keystore | clip` copies it) makes GitHub's and your PC's APKs install over each other. The build's log shows which key it signed with (*Signing key in use*).
 
-**Android app:** install `dist/HandTracker-1.1.0.apk` on your phone (see [Android app](#android-app) below). **Hand Mouse**, `dist/HandMouse-1.1.0.apk`, is the hand mouse alone, as an app of its own (see [Hand Mouse](#hand-mouse-android)).
+**Android app:** install `dist/HandTracker-1.1.0.apk` on your phone (see [Android app](#android-app) below).
+
+**Hand Mouse** and **Remote Recording** are apps of their own, for every one of these (Windows, Mac, Linux and Raspberry Pi, Android, iPhone and iPad), from the same release: the hand mouse alone (`HandMouse-*`, `hand-mouse_*.deb`; see [Hand Mouse](#hand-mouse)), and remote recording alone, controlling camera rigs or being one (`RemoteRecording-*`, `remote-recording_*.deb`; see [Remote Recording](#remote-recording-app)). Each installs next to Hand Tracker.
 
 **From source** (Node.js 18+):
 
@@ -117,7 +119,7 @@ In the Windows, Mac and Linux app, the **Control your PC** card turns your hands
   A mouse action can hold keys down while it clicks or scrolls (**with keys**: `shift`, `ctrl`, `ctrl+shift`…), so one gesture can Shift-click or Ctrl-scroll; for *Hold left button* they're held as long as the button is.
 
   Also set how long the gesture must be held first; a few misread frames don't end it. The **Keyboard**, **Mouse** and **Web requests** switches turn whole kinds of action off, and each action has its own switch. Three examples (volume up and down with thumbs up and down, play/pause with a fist) are there but switched off. Adapted from depthai_hand_tracker's HandController.
-- **My gestures**: record gestures of your own, under *Gesture actions* (in the Android Hand Mouse app: its *My gestures* choice). Type a name, then:
+- **My gestures**: record gestures of your own, under *Gesture actions* (in Hand Mouse: its *My gestures* choice). Type a name, then:
   - **Record a hand shape**: after a 3-second countdown, hold the shape up to the camera for a moment. Afterwards a hand that close to it is that gesture, ahead of the built-in ones (either hand: a left hand counts as the mirror image of a right one; tilted up to about 35° still counts, but a thumb down isn't a thumb up).
   - **Record a movement**: draw it in the air three times (a circle, a swipe, a zigzag…), each from when your hand starts moving until it stops. Afterwards drawing the same path, about as big and about as quickly, is that gesture for a moment, once your hand stops. If you kept one hand shape while recording it (say, pointing), it counts only with that shape, so the hand mouse's own movements don't set it off.
 
@@ -169,15 +171,28 @@ It needs two permissions, each one tap away in the card: **Display over other ap
 
 On Android 13 and later, an app installed from a downloaded APK (not the Play Store) can't have hand control turned on at first: Android shows a **"Restricted setting"** box. Allow it once: in the card tap **Open App info** (it appears when you come back from Accessibility settings with hand control still off), then **⋮** (top right) → **Allow restricted settings**, and confirm with your PIN or fingerprint; then turn on hand control again. The ⋮ option appears only after the "Restricted setting" box has been seen once. Installing a newer Hand Tracker over the old one keeps it allowed; uninstalling and reinstalling needs it again.
 
-<a id="hand-mouse-android"></a>
-### Hand Mouse (Android)
+<a id="hand-mouse-android"></a><a id="hand-mouse"></a>
+### Hand Mouse
 
-**Hand Mouse** (`HandMouse-<version>.apk`, from the same [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release) is the hand mouse alone, as an app of its own: it installs next to Hand Tracker (it's `com.handtracker.mouse`), with its own permissions and settings.
+**Hand Mouse** is the hand mouse alone, as an app of its own, for Android, iPhone and iPad, Windows, Mac and Linux, from the same [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release: `HandMouse-<version>.apk`, `HandMouse-<version>-ios-unsigned.ipa` (sideloaded as Hand Tracker's is), `HandMouse-<version>-portable.exe`, `HandMouse-<version>-mac-arm64.dmg` or `-mac-x64.dmg`, `hand-mouse_<version>_amd64.deb` or `_arm64.deb`. It installs next to Hand Tracker (it's `com.handtracker.mouse`), with its own permissions and settings.
 
-- **Each time it opens** it asks what your hand should control, and starts it as soon as one is picked: **This phone** (a pointer over any app, as above: it asks for the camera, *Display over other apps* and its *hand control* in Accessibility the first time, then starts by itself), **A PC** (over Wi-Fi, paired from the code Hand Tracker on the PC shows, as in [From your phone](#from-your-phone)), or **Bluetooth mouse** (this phone as an iPhone's or iPad's Bluetooth mouse). Android's Back (or ←) stops it and asks again.
-- **The same gestures** as Hand Tracker's hand mouse, and its **gesture actions** (Back, Home, Recents, volume and media keys, typing, clicks, scrolling, web requests) and the PC's floating keyboard.
-- **My gestures** (a fourth choice): the camera on, to record your own hand shapes and movements and try them (it shows what each hand is doing), as described under *My gestures* above.
-- It's the same code as Hand Tracker's: its page is `hand-mouse.html` (`hand-mouse.js`), and `npm run android:apk` builds both apps (the Android project's flavors *full* and *mouse*).
+**Each time it opens** it asks what your hand should control, and starts it as soon as one is picked; Back (or ←) stops it and asks again:
+
+- **Android**: **This phone** (a pointer over any app, as above: it asks for the camera, *Display over other apps* and its *hand control* in Accessibility the first time, then starts by itself), **A PC** (over Wi-Fi, paired from the code Hand Mouse or Hand Tracker on the PC shows, as in [From your phone](#from-your-phone)), or **Bluetooth mouse** (this phone as an iPhone's or iPad's Bluetooth mouse).
+- **Windows, Mac and Linux**: **This computer** (your hand moves this computer's pointer: it clicks, scrolls, drags and types, with the floating keyboard; Ctrl+Alt+M turns it on and off from anywhere; the camera is picked under its picture), **A phone controls it** (it shows the code for Hand Mouse or Hand Tracker on your phone to pair with: the phone's camera follows your hand and works this computer), or **Bluetooth mouse** (this computer as an iPhone's or iPad's Bluetooth mouse and keyboard, on Windows and Linux; on a Mac, **iPhone or iPad**: your iPhone in iPhone Mirroring's window).
+- **iPhone and iPad**: **Hand browser** (websites full screen, worked with your hand, with the camera in a small window: iOS lets no app tap inside other apps; see [iPhone and iPad app](#iphone-and-ipad-app)).
+- **My gestures** (everywhere): the camera on, to record your own hand shapes and movements and try them (it shows what each hand is doing), as described under *My gestures* above.
+- **The same gestures** as Hand Tracker's hand mouse, and its **gesture actions** (keys, typing, clicks, scrolling, web requests; on Android also Back, Home, Recents, volume and media keys).
+- It's the same code as Hand Tracker's: its page is `hand-mouse.html` (`hand-mouse.js`). `npm run android:apk` builds the Android apps (the Android project's flavors *full*, *mouse* and *remote*), `node scripts/dist.js <portable|deb|mac> --app mouse` the computer app, and GitHub's iPhone job makes the iPhone app from Hand Tracker's (`scripts/ios-variant.js`: its own pages, ID and name).
+
+<a id="remote-recording-app"></a>
+### Remote Recording (the app)
+
+**Remote Recording** is [remote recording](#remote-recording) alone, as an app of its own, for the same devices: `RemoteRecording-<version>.apk`, `RemoteRecording-<version>-ios-unsigned.ipa`, `RemoteRecording-<version>-portable.exe`, `RemoteRecording-<version>-mac-arm64.dmg` or `-mac-x64.dmg`, `remote-recording_<version>_amd64.deb` or `_arm64.deb` (a Raspberry Pi). It installs next to Hand Tracker (it's `com.handtracker.remote`), with its own settings. **Each time it opens** it asks what this device is for now:
+
+- **Control a rig**: the computers (and phones) you've reached before, each with its running cameras' previews, its page a tap away to pick the cameras and mode, start and stop recording and run the timing check, over Wi-Fi, Tailscale or Bluetooth, as described under [Remote recording](#remote-recording). *← Remote Recording* (or Back) comes back to the choices.
+- **Be a rig**: Hand Tracker's page with only what a camera rig needs: the camera list (and *Several cameras at once*), *Record* with remote recording (on by itself) and its settings, and OptiTrack. The cameras stay off until a phone or browser starts them. On a computer, **Open Remote Recording when this computer starts** opens it straight as the rig at login (a Raspberry Pi with no screen, say). *← Remote Recording* goes back to the choices, and remote recording turns off.
+- It has no hand mouse (on Android, no *hand control* in Accessibility). Its first page is `remote-recording.html` (`remote-recording.js`); the rig is `index.html?rig=1`.
 
 ## Remote recording
 
@@ -551,6 +566,9 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `pi/network-tuning.sh` | A Raspberry Pi kept reachable over Tailscale while its network is busy (BBR, Tailscale's packets first), and no IPv6 on its Wi-Fi |
 | `pi/restart-setup.sh`, `electron/system-control.js` | Restarting a computer, and its cameras' USB (off and on), from the device settings page |
 | `remote.html`, `remote-launcher.js` | The Remote recording page (website and apps): opens a computer's remote recording page by its name; in the apps, each computer's camera previews under its name |
+| `hand-mouse.html`, `hand-mouse.js` | Hand Mouse, the app of its own: what your hand controls on each kind of device, with the hand mouse's controls (pc-control.js) |
+| `remote-recording.html`, `remote-recording.js` | Remote Recording, the app of its own: Control a rig (remote.html) or Be a rig (index.html?rig=1) |
+| `scripts/ios-variant.js` | Hand Mouse's and Remote Recording's iPhone apps, made from Hand Tracker's (on GitHub's Mac) |
 | `motion-video.js` | Draws a recording's playback into a video (WebCodecs and a small WebM writer) |
 | `natnet-parse.js` | OptiTrack Motive's NatNet protocol (shared by the desktop and Android apps) |
 | `keyboard.html`, `keyboard.js` | The floating keyboard |

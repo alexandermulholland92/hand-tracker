@@ -811,6 +811,7 @@
     }
   }
   function gesturesChanged() {
+    if (!els.list) return; // (no hand mouse here: Remote Recording's Android app, say)
     renderRules();
     showMouseGestures();
   }

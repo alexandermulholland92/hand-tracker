@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Remote Recording (the "remote" flavor) has no hand mouse: this phone's control (its camera
+     window and its accessibility service) isn't in it. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <service android:name=".PhoneControlService" tools:node="remove" />
+        <service android:name=".HandControlService" tools:node="remove" />
+    </application>
+</manifest>

@@ -74,6 +74,8 @@
       "camera-tile.html",
       "phone-control.html",
       "keyboard.html",
+      "hand-mouse.html",
+      "remote-recording.html",
       "remote.html",
       "remote-client.html",
       "*.js",

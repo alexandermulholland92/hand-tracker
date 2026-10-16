@@ -59,6 +59,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-android-check-"));
+const MOUSE_WWW = path.join(outDir, "hand-mouse-www");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 function check(name, ok, detail = "") {
@@ -220,6 +221,8 @@ async function run() {
   checkRigRulesMatch();
   await checkRigProtocolJava();
   execSync("node scripts/build-web.js", { cwd: ROOT, stdio: "inherit" });
+  // Hand Mouse's files (its own app), served as app://hand-mouse/.
+  execSync(`node scripts/build-web.js --hand-mouse --out "${MOUSE_WWW}"`, { cwd: ROOT, stdio: "inherit" });
   // The phone's /__fleet/<rig>/<camera> (RemotePlugin.java serveFleet): the fake Remote
   // plugin (fake-capacitor.js) says which dashboard and which cookie, as the WebView's would be.
   const fleet = { site: null, cookie: "" };
@@ -239,8 +242,9 @@ async function run() {
       return new Response(await res.arrayBuffer(), { status: res.status, headers });
     }
     const rel = decodeURIComponent(url.pathname) === "/" ? "/index.html" : decodeURIComponent(url.pathname);
-    const file = path.normalize(path.join(WWW, rel));
-    if (url.host !== HOST || !file.startsWith(WWW + path.sep) || !fs.existsSync(file)) return new Response("Not found", { status: 404 });
+    const root = url.host === "hand-mouse" ? MOUSE_WWW : WWW;
+    const file = path.normalize(path.join(root, rel));
+    if ((url.host !== HOST && url.host !== "hand-mouse") || !file.startsWith(root + path.sep) || !fs.existsSync(file)) return new Response("Not found", { status: 404 });
     return new Response(fs.readFileSync(file), { headers: { "Content-Type": MIME[path.extname(file)] || "application/octet-stream" } });
   });
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === "media"));
@@ -250,6 +254,8 @@ async function run() {
     await checkIphoneApp();
     return checkIphoneRemote();
   }
+  // npm run check:android -- --only own: just Hand Mouse's and Remote Recording's checks.
+  if (/own/i.test(only)) return checkOwnApps();
 
   // Phone-sized window (a typical 412×915 dp Android screen).
   const win = new BrowserWindow({
@@ -830,6 +836,141 @@ async function run() {
   await checkPhoneAsRig(win, js);
   await checkIphoneApp();
   await checkIphoneRemote();
+  await checkOwnApps();
+}
+
+// Hand Mouse and Remote Recording, the apps of their own, as the phone apps open them (Capacitor
+// stood in for, with only each Android app's plugins: ?fakeapp=; ?fakeplatform=ios for the iPhone's):
+//  - Hand Mouse on Android: its four choices (this phone, a PC, Bluetooth mouse, My gestures),
+//    none of the computers' or the iPhone's; My gestures starts the camera, Back lets it go. On
+//    an iPhone: the hand browser and My gestures, and its self-test (the hand browser, as in the
+//    simulator) passes, with no remote recording in it.
+//  - Remote Recording on Android: its two choices; Control a rig opens remote.html with the way
+//    back to it; Be a rig opens Hand Tracker's page as a rig: only the cameras, Record and
+//    Several cameras (no hand cards, 3D view, hand mouse or video recording), remote recording
+//    on, no camera started, and the way back, where remote recording stops. On an iPhone its
+//    self-test goes to the rig and passes there (remote recording's part too).
+async function checkOwnApps() {
+  const open = async (url) => {
+    const win = new BrowserWindow({
+      show: false, width: 412, height: 915, useContentSize: true,
+      webPreferences: { preload: path.join(__dirname, "fake-capacitor.js"), contextIsolation: false, sandbox: false, backgroundThrottling: false },
+    });
+    const logs = [];
+    win.webContents.on("console-message", (...args) => {
+      const d = args[0] && typeof args[0].message === "string" ? args[0] : { level: args[1], message: args[2] };
+      logs.push(d.message);
+    });
+    await win.loadURL(url);
+    const js = (code) => win.webContents.executeJavaScript(code, true);
+    const selfTest = async () => {
+      for (let i = 0; i < 160 && !logs.some((m) => /^HT-SELFTEST /.test(m)); i++) await sleep(250);
+      const line = logs.find((m) => /^HT-SELFTEST /.test(m));
+      return line ? JSON.parse(line.slice(12)) : null;
+    };
+    return { win, js, selfTest };
+  };
+  const shownChoices = `[...document.querySelectorAll(".choice")].filter((b) => !b.hidden && !b.disabled).map((b) => b.dataset.mode).join()`;
+  const UNTIL = `const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const until = async (fn, ms = 15000) => { for (let t = 0; t < ms; t += 100) { const v = await fn(); if (v) return v; await sleep(100); } return null; };`;
+  const out = {};
+
+  // Hand Mouse, Android.
+  let w = await open(`app://hand-mouse/index.html?fakeapp=mouse`);
+  try {
+    out.mouseAndroid = await w.js(`(async () => {
+      ${UNTIL}
+      const r = { platform: HandMouse.platform(), choices: ${shownChoices}, noApp: document.getElementById("noApp").hidden };
+      HandMouse.choose("gestures");
+      const video = document.getElementById("video");
+      r.camera = !!(await until(() => video.srcObject && video.srcObject.getVideoTracks().some((t) => t.readyState === "live")));
+      r.shown = !document.getElementById("stageWrap").hidden && !document.getElementById("gestureNow").hidden && document.getElementById("cameraRow").hidden;
+      history.back();
+      r.released = !!(await until(() => !HandMouse.mode() && !(video.srcObject && video.srcObject.getVideoTracks().some((t) => t.readyState === "live"))));
+      r.chooser = !document.getElementById("chooser").hidden;
+      return r;
+    })()`);
+  } catch (err) {
+    out.mouseAndroid = { error: String((err && err.message) || err) };
+  } finally {
+    w.win.destroy();
+  }
+
+  // Hand Mouse, iPhone: its self-test.
+  w = await open(`app://hand-mouse/index.html?fakeplatform=ios&selftest=1`);
+  try {
+    const st = await w.selfTest();
+    out.mouseIos = { ...(await w.js(`({ platform: HandMouse.platform(), choices: ${shownChoices} })`)), selfTest: st && { ok: st.ok, rig: st.rig, full: st.full, small: st.small, moved: st.moved, error: st.error } };
+  } catch (err) {
+    out.mouseIos = { error: String((err && err.message) || err) };
+  } finally {
+    w.win.destroy();
+  }
+
+  // Remote Recording, Android: control a rig, then be one.
+  w = await open(`app://${HOST}/remote-recording.html?fakeapp=remote`);
+  try {
+    out.remoteAndroid = await w.js(`({ choices: ${shownChoices}, noApp: document.getElementById("noApp").hidden })`);
+    const loaded = (page) => new Promise((resolve) => w.win.webContents.once("did-finish-load", () => resolve(w.win.webContents.getURL().includes(page))));
+    let next = loaded("remote.html");
+    await w.js(`document.querySelector('.choice[data-mode="control"]').click(); true`);
+    out.remoteAndroid.control = await next;
+    out.remoteAndroid.back = await w.js(`(() => { const a = document.querySelector("#back a"); return { shown: !document.getElementById("back").hidden, text: a.textContent, href: a.getAttribute("href") }; })()`);
+    next = loaded("remote-recording.html");
+    await w.js(`document.querySelector("#back a").click(); true`);
+    out.remoteAndroid.backed = await next;
+    next = loaded("index.html?rig=1");
+    await w.js(`document.querySelector('.choice[data-mode="rig"]').click(); true`);
+    out.remoteAndroid.rig = await next;
+    out.remoteAndroid.rigPage = await w.js(`(async () => {
+      ${UNTIL}
+      const $ = (id) => document.getElementById(id);
+      const gone = (el) => !el || getComputedStyle(el).display === "none" || !el.offsetParent;
+      const on = !!(await until(() => $("remoteToggle").getAttribute("aria-pressed") === "true", 20000));
+      await until(() => /Waiting for the phone|Couldn't/.test($("stageMessage").textContent), 20000); // (once the hand model's loaded)
+      const video = $("video");
+      return {
+        rigClass: document.documentElement.classList.contains("rig-app"), title: document.title, home: !$("rigHome").hidden && $("rigHome").getAttribute("href"),
+        hidden: ["pcCard", "viz3dCard", "legend", "panels", "videoRow", "openVideoBtn"].filter((id) => !gone($(id))),
+        kept: ["wrap", "motionBtn", "remoteRec", "cameraSelect"].filter((id) => gone($(id))),
+        remoteOn: on, noCamera: !(video.srcObject && video.srcObject.getVideoTracks().length), waiting: $("stageMessage").textContent,
+      };
+    })()`);
+    // Back to the choices: remote recording stops there.
+    next = loaded("remote-recording.html");
+    await w.js(`document.getElementById("rigHome").click(); true`);
+    out.remoteAndroid.home = await next;
+    out.remoteAndroid.stopped = await w.js(`new Promise((r) => setTimeout(() => r(window.__fakeCapacitor.calls.some((c) => c[0] === "rig.stop")), 500))`);
+  } catch (err) {
+    out.remoteAndroid = { ...(out.remoteAndroid || {}), error: String((err && err.message) || err) };
+  } finally {
+    w.win.destroy();
+  }
+
+  // Remote Recording, iPhone: its self-test, from its first page to the rig.
+  w = await open(`app://${HOST}/remote-recording.html?fakeplatform=ios&selftest=1`);
+  try {
+    const st = await w.selfTest();
+    out.remoteIos = { url: w.win.webContents.getURL().replace(/^app:\/\/[^/]+/, ""), selfTest: st && { ok: st.ok, rig: st.rig && { ok: st.rig.ok, on: st.rig.on, error: st.rig.error }, error: st.error } };
+    out.remoteIos.rigClass = await w.js(`document.documentElement.classList.contains("rig-app")`);
+  } catch (err) {
+    out.remoteIos = { error: String((err && err.message) || err) };
+  } finally {
+    w.win.destroy();
+  }
+
+  const ma = out.mouseAndroid || {}, mi = out.mouseIos || {}, ra = out.remoteAndroid || {}, ri = out.remoteIos || {};
+  check("Hand Mouse (Android): its four choices only (this phone, a PC, Bluetooth mouse, My gestures); My gestures starts the camera, Back lets it go",
+    !ma.error && ma.platform === "android" && ma.choices === "phone,pc,bluetooth,gestures" && ma.noApp && ma.camera && ma.shown && ma.released && ma.chooser, JSON.stringify(ma));
+  check("Hand Mouse (iPhone): the hand browser and My gestures, and its self-test (the hand browser full screen, the small window moving off) passes, with no remote recording in it",
+    !mi.error && mi.platform === "ios" && mi.choices === "browser,gestures" && mi.selfTest && mi.selfTest.ok === true && mi.selfTest.rig && !!mi.selfTest.rig.skipped, JSON.stringify(mi));
+  const rp = ra.rigPage || {};
+  check("Remote Recording (Android): Control a rig opens the computers' list with the way back to it; Be a rig opens Hand Tracker's page as a rig: only the cameras, Record and Several cameras, remote recording on, no camera until it's asked, and the way back, where remote recording stops",
+    !ra.error && ra.choices === "control,rig" && ra.noApp && ra.control && ra.back && ra.back.shown && ra.back.text === "← Remote Recording" && ra.back.href === "remote-recording.html" && ra.backed && ra.rig && ra.home && ra.stopped &&
+      rp.rigClass && rp.title === "Remote Recording" && rp.home === "remote-recording.html" && rp.hidden.length === 0 && rp.kept.length === 0 && rp.remoteOn && rp.noCamera && /Waiting for the phone/.test(rp.waiting),
+    JSON.stringify(ra));
+  check("Remote Recording (iPhone): its self-test goes from its first page to the rig and passes there (remote recording's part too)",
+    !ri.error && ri.url === "/index.html?rig=1" && ri.rigClass && ri.selfTest && ri.selfTest.ok === true && ri.selfTest.rig && ri.selfTest.rig.ok === true, JSON.stringify(ri));
 }
 
 // The iPhone app (ios/: the same bundle, with Capacitor's iOS bridge, stood in for here with

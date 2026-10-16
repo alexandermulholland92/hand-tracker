@@ -106,7 +106,7 @@ public class BtLinkPlugin extends Plugin {
     @PermissionCallback
     private void afterPermission(PluginCall call) {
         if (getPermissionState(alias()) == PermissionState.GRANTED) scanNow(call);
-        else call.reject("Hand Tracker needs the Nearby devices permission to use Bluetooth.");
+        else call.reject(getContext().getString(R.string.app_name) + " needs the Nearby devices permission to use Bluetooth.");
     }
 
     private void scanNow(PluginCall call) {

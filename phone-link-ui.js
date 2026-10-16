@@ -330,7 +330,8 @@
           out.error = String((err && err.message) || err);
         }
         try {
-          out.rig = await rigSelfTest();
+          // (Hand Mouse's page has no remote recording: only Hand Tracker's and Remote Recording's.)
+          out.rig = global.RemoteRecordUI ? await rigSelfTest() : { ok: true, skipped: "no remote recording on this page" };
         } catch (err) {
           out.rig = { error: String((err && err.message) || err) };
         }

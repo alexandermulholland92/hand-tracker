@@ -29,11 +29,16 @@ android {
             dimension "app"
             applicationId "com.handtracker.mouse"
         }
+        remote {
+            dimension "app"
+            applicationId "com.handtracker.remote"
+        }
     }
     sourceSets {
         main.assets.srcDirs = []
         full.assets.srcDirs = ["src/main/assets"]
         mouse.assets.srcDirs = ["src/mouse/assets"]
+        remote.assets.srcDirs = ["src/remote/assets"]
     }
     buildTypes {
         release {

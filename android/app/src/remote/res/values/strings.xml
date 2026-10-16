@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Remote Recording (the "remote" flavor): its own names, over src/main's. -->
+<resources>
+    <string name="app_name">Remote Recording</string>
+    <string name="title_activity_main">Remote Recording</string>
+    <string name="package_name">com.handtracker.remote</string>
+    <string name="custom_url_scheme">com.handtracker.remote</string>
+</resources>

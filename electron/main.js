@@ -31,6 +31,28 @@ const { createWifi } = require("./wifi");
 const APP_ROOT = path.join(__dirname, "..");
 const SCHEME = "app";
 const HOST = "hand-tracker";
+// Which app this is: Hand Tracker, or one of the apps of its own built from it (scripts/dist.js
+// --app, which puts appKind in the packaged package.json; from the source folder,
+// `electron . --app=mouse`): Hand Mouse (only the hand mouse: hand-mouse.html) or Remote
+// Recording (controlling camera rigs, or being one: remote-recording.html).
+const APPS = {
+  full: { name: "Hand Tracker", page: "index.html", id: "com.handtracker.app", slug: "hand-tracker", size: { width: 1320, height: 940 } },
+  mouse: { name: "Hand Mouse", page: "hand-mouse.html", id: "com.handtracker.mouse", slug: "hand-mouse", size: { width: 600, height: 900 } },
+  remote: { name: "Remote Recording", page: "remote-recording.html", id: "com.handtracker.remote", slug: "remote-recording", size: { width: 1320, height: 940 } },
+};
+const APP = (() => {
+  const arg = process.argv.find((a) => a.startsWith("--app="));
+  let kind = arg ? arg.slice(6) : null;
+  if (!APPS[kind]) {
+    try {
+      kind = require("../package.json").appKind;
+    } catch {}
+  }
+  if (!APPS[kind]) kind = "full";
+  return { kind, ...APPS[kind] };
+})();
+// Its own settings, and its own single instance (a copy of Hand Tracker can run beside it).
+if (APP.kind !== "full" && !app.isPackaged) app.setName(APP.name);
 // Pages a link can open as an app window of their own, and their size.
 const PAGES = new Map([
   ["index.html", { width: 920, height: 960 }],
@@ -222,7 +244,7 @@ function createWindow(page = "index.html", size = { width: 1320, height: 940 }) 
     minWidth: 760,
     minHeight: 560,
     backgroundColor: "#0e0f12",
-    title: "Hand Tracker",
+    title: APP.name,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -247,6 +269,20 @@ function createWindow(page = "index.html", size = { width: 1320, height: 940 }) 
     if (!isAppUrl(url)) event.preventDefault();
   });
 
+  // A page left (Remote Recording going back to its choices from the rig, say): the OAK cameras
+  // it started stop, and so does remote recording when the page was Remote Recording's rig.
+  win.webContents.on("did-start-navigation", (event, ...old) => {
+    const isMainFrame = event.isMainFrame !== undefined ? event.isMainFrame : old[2];
+    const isSameDocument = event.isSameDocument !== undefined ? event.isSameDocument : old[1];
+    const url = event.url !== undefined ? event.url : old[0];
+    if (!isMainFrame || isSameDocument) return;
+    for (const [id, stream] of [...oakStreams]) if (stream.viewer === win.webContents) stopOakStream(id);
+    if (APP.kind === "remote" && win === mainWindow && remoteRecord && !/[?&]rig=1(&|$)/.test(String(url || ""))) {
+      if (rigBluetooth) rigBluetooth.stop();
+      Promise.resolve(remoteRecord.stop()).catch(() => {});
+    }
+  });
+
   win.loadURL(`${SCHEME}://${HOST}/${page}`);
   return win;
 }
@@ -258,6 +294,7 @@ function buildMenu() {
       submenu: [
         {
           label: "Open Recording Viewer",
+          visible: APP.kind !== "mouse",
           accelerator: "CmdOrCtrl+Shift+O",
           click: () => createWindow("viewer.html", { width: 920, height: 960 }),
         },
@@ -283,13 +320,13 @@ function buildMenu() {
       label: "Help",
       submenu: [
         {
-          label: "About Hand Tracker",
+          label: `About ${APP.name}`,
           click: async () => {
             const ffmpeg = (await exporter.isAvailable()) ? "available" : "not found";
             dialog.showMessageBox({
               type: "info",
-              title: "About Hand Tracker",
-              message: `Hand Tracker ${app.getVersion()}`,
+              title: `About ${APP.name}`,
+              message: `${APP.name} ${app.getVersion()}`,
               detail: `Electron ${process.versions.electron} · Chromium ${process.versions.chrome}\nffmpeg: ${ffmpeg}`,
             });
           },
@@ -365,7 +402,7 @@ function openKeyboard() {
     skipTaskbar: true,
     show: false,
     backgroundColor: "#15161a",
-    title: "Hand Tracker keyboard",
+    title: `${APP.name} keyboard`,
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   });
   keyboardWindow.setAlwaysOnTop(true, "screen-saver");
@@ -574,7 +611,7 @@ function registerOakIpc() {
     if (!/^[A-Za-z0-9._-]{1,64}$/.test(String(id || ""))) throw new Error("Which OAK camera?");
     stopOakStream(id);
     const viewer = event.sender;
-    const stream = { cam: simulated ? new SimulatedOak() : new OakCamera(app.getPath("userData"), (url) => net.fetch(url)), busy: false };
+    const stream = { cam: simulated ? new SimulatedOak() : new OakCamera(app.getPath("userData"), (url) => net.fetch(url)), busy: false, viewer };
     oakStreams.set(id, stream);
     stream.cam.start({ ...options, device: id }, (msg) => {
       if (oakStreams.get(id) !== stream && msg.status !== "stopped") return;
@@ -781,14 +818,15 @@ function remoteFolder() {
   return process.env.HAND_TRACKER_REMOTE_DIR || readSettings().remoteDir || path.join(app.getPath("documents"), "Hand Tracker recordings");
 }
 
-// Opening Hand Tracker at login, waiting for the phone (--remote-standby): the desktop's
-// autostart entry on Linux, a login item on Windows, a launch agent on a Mac (a login item
-// there can't be given --remote-standby). Only for the installed app.
+// Opening the app at login, waiting for the phone (--remote-standby): the desktop's autostart
+// entry on Linux, a login item on Windows, a launch agent on a Mac (a login item there can't be
+// given --remote-standby). Only for the installed app. Each app has its own (Remote Recording's
+// opens as its rig).
 const autostart = {
   file: () =>
     process.platform === "darwin"
-      ? path.join(os.homedir(), "Library", "LaunchAgents", "com.handtracker.app.standby.plist")
-      : path.join(os.homedir(), ".config", "autostart", "hand-tracker.desktop"),
+      ? path.join(os.homedir(), "Library", "LaunchAgents", `${APP.id}.standby.plist`)
+      : path.join(os.homedir(), ".config", "autostart", `${APP.slug}.desktop`),
   available: () => app.isPackaged && ["linux", "win32", "darwin"].includes(process.platform),
   get() {
     if (!this.available()) return false;
@@ -805,7 +843,7 @@ const autostart = {
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
         '<plist version="1.0"><dict>',
-        "<key>Label</key><string>com.handtracker.app.standby</string>",
+        `<key>Label</key><string>${APP.id}.standby</string>`,
         `<key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>--remote-standby</string></array>`,
         "<key>RunAtLoad</key><true/>",
         "<key>ProcessType</key><string>Interactive</string>",
@@ -818,7 +856,7 @@ const autostart = {
       fs.mkdirSync(path.dirname(this.file()), { recursive: true });
       // (Inside the Exec line's quotes, ", `, $ and \ are escaped with a \.)
       const exec = `"${exe.replace(/["`$\\]/g, (c) => `\\${c}`)}" --remote-standby`;
-      const entry = ["[Desktop Entry]", "Type=Application", "Name=Hand Tracker", "Comment=Waits for remote recording from a phone", `Exec=${exec}`, "Terminal=false", "X-GNOME-Autostart-enabled=true"];
+      const entry = ["[Desktop Entry]", "Type=Application", `Name=${APP.name}`, "Comment=Waits for remote recording from a phone", `Exec=${exec}`, "Terminal=false", "X-GNOME-Autostart-enabled=true"];
       fs.writeFileSync(this.file(), entry.join("\n") + "\n");
     } else {
       fs.rmSync(this.file(), { force: true });
@@ -1065,7 +1103,7 @@ function registerShortcuts() {
       else openKeyboard();
     });
   } catch (err) {
-    console.warn("Couldn't register the Hand Tracker shortcuts:", err.message);
+    console.warn(`Couldn't register the ${APP.name} shortcuts:`, err.message);
   }
 }
 
@@ -1358,12 +1396,13 @@ app.whenReady().then(() => {
   registerLinkIpc();
   registerRemoteIpc();
   buildMenu();
-  mainWindow = createWindow();
+  // Remote Recording opened at login is the rig, waiting for the phone (its choices otherwise).
+  mainWindow = createWindow(APP.kind === "remote" && remoteStandby ? "index.html?rig=1" : APP.page, APP.size);
   mainWindow.on("closed", () => {
     mainWindow = null;
     closeKeyboard(); // the keyboard types for the hand mouse, which lives in the main window
   });
-  registerShortcuts();
+  if (APP.kind !== "remote") registerShortcuts(); // (the hand mouse's and its keyboard's)
 });
 
 app.on("window-all-closed", () => {

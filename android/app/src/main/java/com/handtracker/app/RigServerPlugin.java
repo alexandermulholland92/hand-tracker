@@ -239,7 +239,7 @@ public class RigServerPlugin extends Plugin {
             return;
         }
         if (!btAllowed()) {
-            btError = "Allow Nearby devices for Hand Tracker (Set the password again to be asked).";
+            btError = "Allow Nearby devices for " + getContext().getString(R.string.app_name) + " (Set the password again to be asked).";
             btTell();
             return;
         }
@@ -286,7 +286,7 @@ public class RigServerPlugin extends Plugin {
     @PermissionCallback
     private void afterBluetoothPermission(PluginCall call) {
         if (!btAllowed()) {
-            call.reject("Hand Tracker needs the Nearby devices permission for Bluetooth.");
+            call.reject(getContext().getString(R.string.app_name) + " needs the Nearby devices permission for Bluetooth.");
             return;
         }
         keepBluetoothPassword(call);

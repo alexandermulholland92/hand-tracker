@@ -17,6 +17,11 @@
   const $ = (id) => document.getElementById(id);
   const desktop = window.desktop || null; // Windows app (electron/preload.js)
   const mobile = window.mobile || null;   // Android app (mobile-bridge.js)
+  // Remote Recording's "Be a rig" (index.html?rig=1, from remote-recording.js): only what a
+  // camera rig needs (html.rig-app hides the rest, and there's no 3D view), remote recording on
+  // and the cameras off until a phone or browser starts them, as when opened at login.
+  const rigApp = /[?&]rig=1(&|$)/.test(location.search);
+  if (rigApp) document.documentElement.classList.add("rig-app");
   // A phone (the Android app, or the website on a touch screen narrower than a tablet's).
   const onPhone = !!mobile || (matchMedia("(pointer: coarse)").matches && Math.min(screen.width, screen.height) < 600);
 
@@ -1231,7 +1236,7 @@
   function recordingSources() {
     const parts = layoutSelect.value.split("+");
     const sources = [stage];
-    if (parts.includes("3d")) sources.push(Hand3D.getCanvas());
+    if (parts.includes("3d") && Hand3D.getCanvas()) sources.push(Hand3D.getCanvas()); // (none in a rig)
     if (parts.includes("motive") && motiveState === "connected") sources.push(motiveView);
     return sources;
   }
@@ -1857,7 +1862,11 @@
         .catch(() => {});
     }
 
-    Hand3D.init($("threeContainer"));
+    if (rigApp) {
+      document.title = "Remote Recording";
+      document.querySelector("header h1").textContent = "Remote Recording: this device is a rig";
+      $("rigHome").hidden = false;
+    } else Hand3D.init($("threeContainer"));
     Hand3D.setMirror(mirrorOn);
     const shape3d = $("shape3d"), spin3d = $("spin3d");
     if (prefs.shape3d) shape3d.value = prefs.shape3d;
@@ -1867,9 +1876,9 @@
     shape3d.addEventListener("change", () => { setPref("shape3d", shape3d.value); apply3d(); });
     spin3d.addEventListener("change", () => { setPref("spin3d", spin3d.value); apply3d(); });
 
-    // Opened at login for remote recording (--remote-standby): no camera until the phone
-    // asks for them (or one is picked here).
-    const standby = !!(desktop && desktop.remote && (await desktop.remote.settings().catch(() => ({}))).standby);
+    // Opened at login for remote recording (--remote-standby), or as Remote Recording's rig: no
+    // camera until the phone asks for them (or one is picked here).
+    const standby = rigApp || !!(desktop && desktop.remote && (await desktop.remote.settings().catch(() => ({}))).standby);
     // Without a webcam (a computer with only OAK cameras, say) everything else still starts:
     // the camera list offers the OAK camera and Several cameras at once, and the message says so.
     let cameraError = null;
