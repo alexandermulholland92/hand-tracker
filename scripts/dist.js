@@ -46,7 +46,7 @@ if (appAt >= 0 && !APPS[appKind]) {
   console.error("--app is mouse (Hand Mouse) or remote (Remote Recording).");
   process.exit(1);
 }
-const own = APPS[appKind] || null;
+const variant = APPS[appKind] || null;
 // npm installs the ffmpeg for the computer it runs on, and the app bundles that one.
 if (target === "deb" && process.platform !== "linux") {
   console.error("Build the .deb on Linux (or in WSL): the app bundles the ffmpeg npm installed, which here is for " + process.platform + ".");
@@ -98,10 +98,10 @@ function linuxScripts() {
     const ours = fs
       .readdirSync(linux)
       .filter((f) => f.startsWith(`${name}-`) && f.endsWith(".sh"))
-      .filter((f) => !own || own.rules.includes(f.slice(name.length + 1, -3)))
+      .filter((f) => !variant || variant.rules.includes(f.slice(name.length + 1, -3)))
       .sort()
       .map((f) => fs.readFileSync(path.join(linux, f), "utf8"))
-      .map((text) => (own ? text.replace(/hand-tracker-(oak|uinput)\.rules/g, `${own.slug}-$1.rules`).replace(/Hand Tracker/g, own.name) : text));
+      .map((text) => (variant ? text.replace(/hand-tracker-(oak|uinput)\.rules/g, `${variant.slug}-$1.rules`).replace(/Hand Tracker/g, variant.name) : text));
     const file = path.join(dir, `${name}.tpl`);
     fs.writeFileSync(file, [own.trimEnd(), ...ours].join("\n\n").replace(/\r\n/g, "\n"));
     out.push(`-c.deb.${option}="${file}"`);
@@ -116,20 +116,20 @@ function ownApp() {
   const builtFor = arch || process.arch;
   const q = (text) => `"${text}"`;
   return [
-    `-c.appId=${own.id}`,
-    `-c.productName=${q(own.name)}`,
-    `-c.extraMetadata.name=${own.slug}`,
-    `-c.extraMetadata.productName=${q(own.name)}`,
+    `-c.appId=${variant.id}`,
+    `-c.productName=${q(variant.name)}`,
+    `-c.extraMetadata.name=${variant.slug}`,
+    `-c.extraMetadata.productName=${q(variant.name)}`,
     `-c.extraMetadata.appKind=${appKind}`,
-    `-c.extraMetadata.desktopName=${own.slug}.desktop`,
-    `-c.portable.artifactName=${own.file}-${version}-portable.exe`,
-    `-c.nsis.artifactName=${own.file}-${version}-setup.exe`,
-    `-c.linux.executableName=${own.slug}`,
-    `-c.linux.synopsis=${q(own.synopsis)}`,
-    `-c.deb.packageName=${own.slug}`,
-    `-c.deb.artifactName=${own.slug}_${version}_${builtFor === "arm64" ? "arm64" : "amd64"}.deb`,
-    `-c.dmg.artifactName=${own.file}-${version}-mac-${builtFor === "arm64" ? "arm64" : "x64"}.dmg`,
-    `-c.mac.extendInfo.NSCameraUsageDescription=${q(own.camera)}`,
+    `-c.extraMetadata.desktopName=${variant.slug}.desktop`,
+    `-c.portable.artifactName=${variant.file}-${version}-portable.exe`,
+    `-c.nsis.artifactName=${variant.file}-${version}-setup.exe`,
+    `-c.linux.executableName=${variant.slug}`,
+    `-c.linux.synopsis=${q(variant.synopsis)}`,
+    `-c.deb.packageName=${variant.slug}`,
+    `-c.deb.artifactName=${variant.slug}_${version}_${builtFor === "arm64" ? "arm64" : "amd64"}.deb`,
+    `-c.dmg.artifactName=${variant.file}-${version}-mac-${builtFor === "arm64" ? "arm64" : "x64"}.dmg`,
+    `-c.mac.extendInfo.NSCameraUsageDescription=${q(variant.camera)}`,
   ];
 }
 
@@ -137,7 +137,7 @@ let status = 1;
 try {
   const args = ["electron-builder", PLATFORM[target], TARGET[target], ...(arch ? [`--${arch}`] : []), `-c.extraMetadata.buildTime=${new Date().toISOString()}`];
   if (target === "deb") args.push(...linuxScripts());
-  if (own) args.push(...ownApp());
+  if (variant) args.push(...ownApp());
   const result = spawnSync("npx", args, { stdio: "inherit", shell: true });
   status = result.status === null ? 1 : result.status;
 } finally {
