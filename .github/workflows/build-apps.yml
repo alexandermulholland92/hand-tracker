@@ -116,24 +116,18 @@ jobs:
       # With install scripts: Electron and ffmpeg download their Mac (Apple silicon) binaries.
       - run: npm ci
 
-      # Apple silicon, then Intel (Intel Electron, and Intel ffmpeg swapped in: scripts/dist.js);
-      # each also as Hand Mouse and Remote Recording (scripts/dist.js --app).
-      - run: npm run dist:mac 2>&1 | tee mac-build.log
-      - run: node scripts/dist.js mac --app mouse 2>&1 | tee mac-build.log
-      - run: node scripts/dist.js mac --app remote 2>&1 | tee mac-build.log
-      - run: npm run dist:mac-x64 2>&1 | tee mac-build.log
-      - run: node scripts/dist.js mac --x64 --app mouse 2>&1 | tee mac-build.log
-      - run: node scripts/dist.js mac --x64 --app remote 2>&1 | tee mac-build.log
-
-      # Each app is signed whole, has its own ID, says why it wants the camera and microphone, and
+      # Apple silicon, then Intel (Intel Electron, and Intel ffmpeg swapped in: scripts/dist.js),
+      # each as Hand Tracker, Hand Mouse and Remote Recording (scripts/dist.js --app). Each app is
+      # checked as soon as it's built (the next build of that processor replaces dist/mac*/): it's
+      # signed whole, has its own ID, says why it wants the camera, microphone and Bluetooth, and
       # carries the input helper (both processors; it starts and answers) and ffmpeg for its own
       # processor.
-      - name: Check the apps
+      - name: Build and check the apps
         run: |
-          for both in "Hand Tracker:com.handtracker.app" "Hand Mouse:com.handtracker.mouse" "Remote Recording:com.handtracker.remote"; do
-          for dir in mac-arm64:arm64 mac:x86_64; do
-            app="dist/${dir%%:*}/${both%%:*}.app"; arch="${dir##*:}"
-            test "$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$app/Contents/Info.plist")" = "${both##*:}"
+          set -o pipefail
+          check() {
+            app="dist/$1/$2.app"; arch="$3"
+            test "$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$app/Contents/Info.plist")" = "$4"
             codesign --verify --deep --strict "$app"
             /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$app/Contents/Info.plist"
             /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$app/Contents/Info.plist"
@@ -145,7 +139,16 @@ jobs:
             /usr/libexec/PlistBuddy -c "Print :NSBluetoothAlwaysUsageDescription" "$app/Contents/Info.plist"
             lipo -archs "$unpacked/node_modules/ffmpeg-static/ffmpeg" | grep -qx "$arch"
             test -f "$unpacked/oak/oak_bridge.py"
-          done
+            echo "Checked: $2 ($arch)"
+          }
+          : > mac-build.log
+          for cpu in "arm64:mac-arm64:arm64" "x64:mac:x86_64"; do
+            flag="--${cpu%%:*}"; rest="${cpu#*:}"; dir="${rest%%:*}"; arch="${rest##*:}"
+            for app in ":Hand Tracker:com.handtracker.app" "mouse:Hand Mouse:com.handtracker.mouse" "remote:Remote Recording:com.handtracker.remote"; do
+              kind="${app%%:*}"; rest="${app#*:}"; name="${rest%%:*}"; id="${rest##*:}"
+              node scripts/dist.js mac "$flag" ${kind:+--app "$kind"} 2>&1 | tee -a mac-build.log
+              check "$dir" "$name" "$arch" "$id"
+            done
           done
           echo "The Mac apps (Hand Tracker, Hand Mouse, Remote Recording; Apple silicon and Intel) are signed, with the input helper and the right ffmpeg"
 
