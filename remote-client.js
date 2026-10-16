@@ -201,7 +201,34 @@
     const id = esc(c.id), on = c.tracking !== false;
     const track = `<div class="row"><span class="grow">Hand tracking</span><button type="button" class="small${on ? " on" : ""}" data-track="${id}" aria-pressed="${on}"${disabled ? " disabled" : ""}>${on ? "On" : "Off"}</button></div>`;
     if (c.oak) return oakSettingsHtml(c, disabled, track);
+    if (c.kinect) return kinectSettingsHtml(c, disabled, track);
     return `<div class="oakset" id="oakset-${id}">${track}<div class="sub">Off: a take records this camera's video, without its hands.</div></div>`;
+  }
+  // A Kinect's own settings (multi-camera.js's KINECT_OWN): what its picture shows and what's
+  // found in it, its colour camera, and what each take keeps.
+  const KINECT_CHOICES = {
+    picture: ["Picture", [["color", "Colour (infrared at night)"], ["depth", "Depth"], ["blend", "Colour + depth"], ["side", "Colour | depth"]]],
+    night: ["Night vision (its infrared camera)", [["auto", "Automatic"], ["on", "On"], ["off", "Off"]]],
+    size: ["Picture size", [["960x540", "960 × 540"], ["1440x810", "1440 × 810"], ["1920x1080", "1920 × 1080"]]],
+    model: ["Hand model", [["lite", "Lite"], ["full", "Full"]]],
+    hands: ["Hands", [[1, "One"], [2, "Two"]]],
+    people: ["People (bodies)", [[1, "1"], [2, "2"], [3, "3"], [4, "4"], [5, "5"], [6, "6"]]],
+    exposure: ["Brightness", [[-2, "−2"], [-1, "−1"], [0, "Automatic"], [1, "+1"], [2, "+2"]]],
+    led: ["Its light", [["on", "On"], ["dim", "Dim"], ["off", "Off"]]],
+    range: ["Depth up to", [[3, "3 m"], [4.5, "4.5 m"], [8, "8 m"]]],
+  };
+  const KINECT_SWITCHES = { bodies: "Bodies (25 joints each)", faces: "Faces (which way each looks, and its expressions)", depth: "Depth (each hand's place)", mics: "Its microphones", saveDepth: "Keep the depth and infrared with each take",
+    saveColor: "Keep its full-size colour (1920 × 1080) with each take", saveSound: "Keep its sound with each take" };
+  const KINECT_NUMBERS = new Set(["hands", "people", "exposure", "range"]);
+  function kinectSettingsHtml(c, disabled, first = "") {
+    const o = c.kinect, id = esc(c.id), dis = disabled ? " disabled" : "";
+    const choice = (k) => `<div class="row"><span class="grow">${KINECT_CHOICES[k][0]}</span><select data-kinid="${id}" data-kinset="${k}"${dis}>` +
+      KINECT_CHOICES[k][1].map(([v, t]) => `<option value="${v}"${String(o[k]) === String(v) ? " selected" : ""}>${t}</option>`).join("") + "</select></div>";
+    const sw = (k) => `<div class="row"><span class="grow">${KINECT_SWITCHES[k]}</span><button type="button" class="small${o[k] ? " on" : ""}" data-kinid="${id}" data-kinset="${k}" aria-pressed="${!!o[k]}"${dis}>${o[k] ? "On" : "Off"}</button></div>`;
+    return `<div class="oakset" id="oakset-${id}">` + first + choice("picture") + choice("night") + sw("bodies") + choice("people") + sw("faces") + sw("depth") + choice("model") + choice("hands") + choice("size") +
+      choice("exposure") + choice("led") + choice("range") + sw("mics") + sw("saveDepth") + sw("saveColor") + sw("saveSound") +
+      `<div class="sub">Night vision: Automatic switches to its infrared camera when it's dark, which sees in the dark. Bodies: each person's 25 joints, where they are, each hand open, closed or "lasso".${o.pipeline ? ` Its depth is worked out ${o.pipeline === "opengl" ? "with the graphics chip" : o.pipeline === "cpu" ? "by the processor (slower)" : `by ${esc(o.pipeline)}`}.` : ""} ` +
+      "Picture size and Its microphones start it again (a few seconds); the rest change as it runs.</div></div>";
   }
   function oakSettingsHtml(c, disabled, first = "") {
     const o = c.oak, id = esc(c.id), dis = disabled ? " disabled" : "";
@@ -230,9 +257,16 @@
       command("pick", { pick: { id: b.dataset.track, tracking: b.getAttribute("aria-pressed") !== "true" } });
     } else if (b.dataset.oakset) {
       command("oak", { oak: { id: b.dataset.oakid, options: { [b.dataset.oakset]: b.getAttribute("aria-pressed") !== "true" } } });
+    } else if (b.dataset.kinset) {
+      command("kinect", { kinect: { id: b.dataset.kinid, options: { [b.dataset.kinset]: b.getAttribute("aria-pressed") !== "true" } } });
     }
   });
   $("camRows").addEventListener("change", (e) => {
+    if (e.target.dataset.kinset) {
+      const k = e.target.dataset.kinset, v = e.target.value;
+      command("kinect", { kinect: { id: e.target.dataset.kinid, options: { [k]: KINECT_NUMBERS.has(k) ? Number(v) : v } } });
+      return;
+    }
     if (e.target.dataset.oakset) {
       const k = e.target.dataset.oakset, v = e.target.value;
       command("oak", { oak: { id: e.target.dataset.oakid, options: { [k]: k === "hands" || k === "fps" ? Number(v) : v } } });

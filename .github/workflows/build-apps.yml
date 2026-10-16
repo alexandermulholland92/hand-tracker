@@ -46,7 +46,33 @@ jobs:
           path: dist/*.exe
           if-no-files-found: error
 
+  # The Kinect's Linux helper (kinect/kinect2-helper.cpp, through libfreenect2), built on an Intel
+  # and an ARM computer (Raspberry Pi 4 and 5), on the older Ubuntu so it runs on older systems
+  # too; its own check (made-up frames, no Kinect) runs on each.
+  kinect-helper:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, arch: x64 }
+          - { runner: ubuntu-22.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Kinect helper
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q build-essential cmake pkg-config git libusb-1.0-0-dev libturbojpeg0-dev libasound2-dev libudev-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev wayland-protocols libxkbcommon-dev libgl-dev libegl-dev
+          bash kinect/build-linux.sh
+          test -x kinect/bin/linux-${{ matrix.arch }}/kinect2-helper
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kinect-helper-${{ matrix.arch }}
+          path: kinect/bin/linux-${{ matrix.arch }}/kinect2-helper
+          if-no-files-found: error
+
   linux:
+    needs: [kinect-helper]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,6 +85,17 @@ jobs:
       # With install scripts: Electron and ffmpeg download their Linux binaries.
       - run: npm ci
 
+      # The Kinect's helper for each processor (the job above), into the packages.
+      - uses: actions/download-artifact@v4
+        with:
+          name: kinect-helper-x64
+          path: kinect/bin/linux-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: kinect-helper-arm64
+          path: kinect/bin/linux-arm64
+      - run: chmod +x kinect/bin/linux-*/kinect2-helper
+
       - run: npm run dist:deb
       # Hand Mouse and Remote Recording (scripts/dist.js --app): packages of their own.
       - run: node scripts/dist.js deb --app mouse
@@ -70,10 +107,11 @@ jobs:
       - run: node scripts/dist.js deb --arm64 --app mouse
       - run: node scripts/dist.js deb --arm64 --app remote
 
-      # The packages install and remove cleanly, side by side: Hand Tracker with the USB rule OAK
-      # cameras need (build/linux/*-oak.sh) and the OAK helper where Python can read it, Remote
-      # Recording with its own OAK rule, Hand Mouse with its own virtual mouse rule; removing
-      # those two leaves Hand Tracker's.
+      # The packages install and remove cleanly, side by side: Hand Tracker with the USB rules OAK
+      # cameras and the Kinect need (build/linux/*-oak.sh, *-kinect.sh), the OAK helper where Python
+      # can read it and the Kinect's helper (its own check passing where it's installed), Remote
+      # Recording with its own OAK and Kinect rules, Hand Mouse with its own virtual mouse rule;
+      # removing those two leaves Hand Tracker's.
       - name: Install and remove the packages
         run: |
           sudo apt-get update -q
@@ -81,7 +119,11 @@ jobs:
           grep -q 'idVendor}=="03e7"' /lib/udev/rules.d/80-hand-tracker-oak.rules
           test -L /usr/bin/hand-tracker
           test -f "/opt/Hand Tracker/resources/app.asar.unpacked/oak/oak_bridge.py"
+          grep -q 'idProduct}=="02c4"' /lib/udev/rules.d/80-hand-tracker-kinect.rules
+          "/opt/Hand Tracker/resources/app.asar.unpacked/kinect/bin/linux-x64/kinect2-helper" --selftest | grep -a -q '"ok":true'
           grep -q 'idVendor}=="03e7"' /lib/udev/rules.d/80-remote-recording-oak.rules
+          grep -q 'idProduct}=="02c4"' /lib/udev/rules.d/80-remote-recording-kinect.rules
+          test -x "/opt/Remote Recording/resources/app.asar.unpacked/kinect/bin/linux-x64/kinect2-helper"
           test -L /usr/bin/remote-recording
           test -f "/opt/Remote Recording/resources/app.asar.unpacked/oak/oak_bridge.py"
           grep -q uinput /lib/udev/rules.d/70-hand-mouse-uinput.rules
@@ -89,10 +131,12 @@ jobs:
           test -d "/opt/Hand Mouse/resources"
           sudo apt-get remove -y -q hand-mouse remote-recording
           test ! -e /lib/udev/rules.d/80-remote-recording-oak.rules
+          test ! -e /lib/udev/rules.d/80-remote-recording-kinect.rules
           test ! -e /lib/udev/rules.d/70-hand-mouse-uinput.rules
           test -e /lib/udev/rules.d/80-hand-tracker-oak.rules
           sudo apt-get remove -y -q hand-tracker
           test ! -e /lib/udev/rules.d/80-hand-tracker-oak.rules
+          test ! -e /lib/udev/rules.d/80-hand-tracker-kinect.rules
           echo "Installed and removed cleanly, side by side, each with its own rules"
 
       - uses: actions/upload-artifact@v4

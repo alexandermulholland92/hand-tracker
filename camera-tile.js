@@ -5,7 +5,11 @@
  *
  * Settings come from the page's address: ?device=<camera id>&label=<its name>&mirror=1|0&rot=0|90|180|270&model=0|1&name=<tile name>,
  * or ?oak=<OAK camera id> for a Luxonis OAK camera: its hands are found on the camera, and the
- * page showing the tile passes its frames in (oakHands, then oakPicture now and then; oakStatus).
+ * page showing the tile passes its frames in (oakHands, then oakPicture now and then; oakStatus),
+ * or ?kinect=<Kinect id>&bodies=1|0&people=<1-6>&view=<color|depth|blend|side> for a Kinect: the page
+ * showing the tile passes each of its pictures in (kinectFrame), with the depth for each part of
+ * it; the hands are found here, each with where it is (from the depth), and the bodies too
+ * (body-tracker.js; on Windows the Kinect's own, from its frames).
  * The tile page's API, for the page that shows it:
  *   await Tile.ready                          the camera is running
  *   Tile.hands()                              the hands on the last frame
@@ -17,6 +21,14 @@
  *                                             hands; Tile.objects() its last objects
  *   await Tile.oakPicture(jpeg, hands)        then its picture, drawn with those hands
  *   Tile.oakStatus(status)                    its helper's status ("starting", "running", "error"…)
+ *   await Tile.kinectFrame({ header, jpeg, depth, bodies, audio, t })   a Kinect's picture (jpeg) with its
+ *                                             depth map (depth, kinect-view.js), its own bodies (Windows) and
+ *                                             its microphones' latest (audio), taken at t (this page's
+ *                                             clock): its hands found, drawn as its view says -> { hands, bodies }
+ *   Tile.kinectStatus(status)                 its helper's status
+ *   Tile.kinectOptions({ view, bodies, people, faces })   what it shows, and whether (and how many) bodies are tracked,
+ *                                             and their faces
+ *   Tile.bodies()                             the bodies on the last frame (body-tracker.js's)
  *   Tile.setView({ rotation, mirror })        turn the picture (and its tracking) clockwise by 0, 90, 180
  *                                             or 270 degrees, and show it mirrored or not (just the look:
  *                                             Left stays the person's left)
@@ -38,6 +50,7 @@
   let latest = [], error = "";
   let objects = null; // an OAK camera's last objects found
   const oak = params.get("oak");
+  const kinect = params.get("kinect");
   let lastBitmap = null;
   let pictures = 0; // pictures drawn (an OAK camera's hands can come without theirs; a webcam's, each frame)
 
@@ -49,7 +62,7 @@
   let timing = null; // { samples, handle } while the timing check measures this webcam
   function startTiming() {
     stopTiming();
-    if (oak || !video || typeof video.requestVideoFrameCallback !== "function" || !global.TimingCheck) return false;
+    if (oak || kinect || !video || typeof video.requestVideoFrameCallback !== "function" || !global.TimingCheck) return false;
     const [gw, gh] = TimingCheck.GRID;
     const small = Object.assign(document.createElement("canvas"), { width: gw * 4, height: gh * 4 });
     const sctx = small.getContext("2d", { willReadFrequently: true });
@@ -109,7 +122,113 @@
     return found.deviceId;
   }
 
+  // ---------- a Kinect ----------
+  // Its pictures come from the page showing this tile; the hands (and bodies) are found here.
+  const kin = kinect
+    ? { view: KinectView.create(), show: ["depth", "blend", "side"].includes(params.get("view")) ? params.get("view") : "color", bodies: params.get("bodies") !== "0",
+      people: Math.max(1, Math.min(6, Number(params.get("people")) || 1)), faces: params.get("faces") === "1", tracker: null, found: [], recording: null, audio: null, mirrored: false }
+    : null;
+  // A point of the picture the hand tracker saw (turned) in the depth map's own (unturned) one.
+  const at3dTurned = (u, v) => {
+    const [x, y] = KinectView.unturn(u, v, HandTracker.getRotation ? HandTracker.getRotation() : 0);
+    return kin.view.at3d(x, y);
+  };
+  // A hand's place: its palm's middle (the wrist and the knuckles), from the depth there.
+  const handXyz = (raw) => {
+    if (!raw || raw.length < 21) return null;
+    const ids = [0, 5, 9, 13, 17];
+    const u = ids.reduce((a, i) => a + raw[i].x, 0) / ids.length, v = ids.reduce((a, i) => a + raw[i].y, 0) / ids.length;
+    const [x, y] = KinectView.unturn(u, v, HandTracker.getRotation ? HandTracker.getRotation() : 0);
+    return kin.view.at3d(x, y);
+  };
+  function startBodies() {
+    if (!kin || (!kin.bodies && !kin.faces) || kin.tracker || !global.BodyTracker || typeof Worker === "undefined") return;
+    kin.tracker = BodyTracker.create({ people: kin.people });
+  }
+  // The Kinect's own bodies (Windows: its SDK's), as body-tracker.js's: joints in the colour
+  // picture (u, v: 0-1, unturned) and where they are (mm).
+  function ownBodies(list) {
+    const r = HandTracker.getRotation ? HandTracker.getRotation() : 0;
+    const turn = (u, v) => (r === 90 ? [1 - v, u] : r === 180 ? [1 - u, 1 - v] : r === 270 ? [v, 1 - u] : [u, v]);
+    return list.map((b) => ({
+      ...b,
+      joints: (b.joints || []).map((j) => {
+        if (j.u === null || j.u === undefined) return j;
+        const [u, v] = turn(j.u, j.v);
+        return { ...j, u, v };
+      }),
+    }));
+  }
+  async function kinectFrame({ header, jpeg, depth, bodies, audio, t }) {
+    if (!kin || !jpeg) return { hands: latest, bodies: kin ? kin.found : [] };
+    const bitmap = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }));
+    kin.view.frame(header, depth);
+    kin.audio = audio || null;
+    const when = Number.isFinite(t) ? t : performance.now();
+    await HandTracker.trackExternalImage(bitmap, when, (rawList) => rawList.map((raw) => ({ xyz: handXyz(raw) })));
+    if (!error) message.hidden = true;
+    // Bodies: the Kinect's own (Windows), or found here in the picture as tracked (turned), as
+    // often as the body model keeps up (the hands don't wait for it).
+    // Faces (when asked): each one's direction and expressions, on its body.
+    const own = Array.isArray(bodies);
+    if (own) {
+      const before = kin.found;
+      kin.found = ownBodies(bodies);
+      if (kin.faces && kin.lastFaces) BodyTracker.attachFaces(kin.found, kin.lastFaces, before);
+    }
+    if (((kin.bodies && !own) || kin.faces) && HandTracker.isTracking()) {
+      startBodies();
+      if (kin.tracker) {
+        const seen = latest.map((h) => ({ imageLandmarks: h.imageLandmarks, handedness: h.handedness, gesture: gestures.of(h).label }));
+        kin.tracker.detect(HandTracker.getFrameImage(), when, { people: kin.people, faces: kin.faces ? kin.people : 0, poses: kin.bodies && !own }).then((got) => {
+          if (!got) return;
+          kin.lastFaces = kin.faces ? got.faces : null;
+          if (kin.bodies && !own) kin.found = BodyTracker.fromPoses(got.poses, { at3d: at3dTurned, hands: seen, previous: kin.found, faces: kin.lastFaces });
+        }).catch(() => {});
+      }
+    } else if (!own) kin.found = [];
+    if (kin.recording && kin.found.length) kin.recording.push({ t: performance.timeOrigin + when, bodies: kin.found.map(compactBody) });
+    // Its view: the picture (colour, or infrared at night), the depth, the two laid over each
+    // other, or side by side (the hands and bodies drawn on the picture's half).
+    const shown = kin.view.picture(bitmap, kin.show);
+    const onPicture = shown.side ? (hands) => hands.map((h) => ({ ...h, imageLandmarks: h.imageLandmarks.map(onColourHalf) })) : (hands) => hands;
+    const drawn = onPicture(latest);
+    HandTracker.drawExternalPicture(shown.image, drawn.map((h) => h.imageLandmarks), shown.side);
+    drawTags(drawn);
+    const ctx = stage.getContext("2d");
+    const unit = Math.max(1, stage.width / (shown.side ? 1280 : 640));
+    if (kin.found.length) BodyTracker.draw(ctx, kin.found, (p) => HandTracker.toCanvasPoint(shown.side ? onColourHalf(p) : p), unit);
+    KinectView.drawSound(ctx, kin.audio, stage.width, stage.height, unit, HandTracker.isMirrored());
+    pictures++;
+    if (lastBitmap) lastBitmap.close();
+    lastBitmap = bitmap;
+    return { hands: latest, bodies: kin.found };
+  }
+  // A body as a take keeps it: each joint [x, y, z, u, v, state] (state 2 tracked, 1 inferred, 0 none).
+  const STATE = { tracked: 2, inferred: 1, none: 0 };
+  const compactBody = (b) => ({
+    id: b.id,
+    joints: b.joints.map((j) => [j.x, j.y, j.z, j.u, j.v, STATE[j.state] || 0]),
+    hands: [b.hands.left, b.hands.right],
+    lean: b.lean,
+    ...(b.face ? { face: { rotation: b.face.rotation, happy: b.face.happy, eyesClosed: b.face.eyesClosed, mouthOpen: b.face.mouthOpen, mouthMoved: b.face.mouthMoved,
+      lookingAway: b.face.lookingAway, engaged: b.face.engaged, box: b.face.box, shapes: b.face.shapes } } : {}),
+  });
+
   async function start() {
+    if (kinect) {
+      await HandTracker.init({ videoEl: video, canvasEl: stage, overlay: true, mirror: params.get("mirror") !== "0", maxNumHands: 2,
+        modelComplexity: params.get("model") === "0" ? 0 : 1, external: "Kinect", trackExternal: true });
+      HandTracker.setRotation(Number(params.get("rot")) || 0);
+      message.textContent = "Starting the Kinect…";
+      HandTracker.onHandLandmarks(({ hands, timestamp }) => {
+        latest = hands;
+        gestures.update(hands);
+        if (RobotMotion.isRecording()) RobotMotion.feed(hands, timestamp);
+      });
+      startBodies();
+      return;
+    }
     if (oak) {
       // The camera's helper finds the hands; this page draws and records them.
       await HandTracker.init({ videoEl: video, canvasEl: stage, overlay: true, mirror: params.get("mirror") !== "0", maxNumHands: 2, external: "OAK camera" });
@@ -165,7 +284,8 @@
     objects: () => objects,
     status: () => {
       const cam = error ? { width: 0, height: 0 } : HandTracker.getCamera();
-      return { fps: error ? 0 : HandTracker.getFPS(), width: cam.width, height: cam.height, hands: latest.map((h) => h.handedness), recording: RobotMotion.isRecording(), error, pictures, tracking: HandTracker.isTracking() };
+      return { fps: error ? 0 : HandTracker.getFPS(), width: cam.width, height: cam.height, hands: latest.map((h) => h.handedness), recording: RobotMotion.isRecording(), error, pictures, tracking: HandTracker.isTracking(),
+        ...(kin ? { bodies: kin.found.length, bodyError: kin.tracker ? kin.tracker.error() : "" } : {}) };
     },
     oakHands: (w, h, results, t) => {
       if (!oak) return null;
@@ -186,6 +306,36 @@
       if (lastBitmap) lastBitmap.close();
       lastBitmap = bitmap;
     },
+    kinectFrame: (f) => kinectFrame(f),
+    bodies: () => (kin ? kin.found : []),
+    kinectOptions: (o = {}) => {
+      if (!kin) return;
+      if (["color", "depth", "blend", "side"].includes(o.view)) kin.show = o.view;
+      if (Number.isInteger(o.people) && o.people >= 1 && o.people <= 6) kin.people = o.people;
+      if (o.model === 0 || o.model === 1) HandTracker.setModelComplexity(o.model);
+      if (o.hands === 1 || o.hands === 2) HandTracker.setMaxHands(o.hands);
+      if (typeof o.faces === "boolean") kin.faces = o.faces;
+      if (typeof o.bodies === "boolean") kin.bodies = o.bodies;
+      if (!kin.bodies && !kin.faces) {
+        if (kin.tracker) kin.tracker.close();
+        kin.tracker = null;
+        kin.found = [];
+      }
+      if (!kin.bodies) kin.found = [];
+    },
+    kinectStatus: (s) => {
+      if (s.status === "error" || (s.status === "stopped" && s.code)) {
+        error = s.message || `The Kinect stopped${s.detail ? `: ${s.detail}` : "."}`;
+        message.hidden = false;
+        message.textContent = error;
+      } else if (s.status === "starting") {
+        error = "";
+        message.hidden = false;
+        message.textContent = s.message || "Starting the Kinect…";
+      } else if (s.status === "running") {
+        error = "";
+      }
+    },
     oakStatus: (s) => {
       if (s.status === "error" || (s.status === "stopped" && s.code)) {
         error = s.message || `The OAK camera stopped${s.detail ? `: ${s.detail}` : "."}`;
@@ -203,7 +353,7 @@
     setOptions: (o = {}) => {
       if (o.display) options.display = { ...o.display };
       if (o.overlay !== undefined) options.overlay = !!o.overlay;
-      if (o.readable !== undefined) options.readable = !!o.readable && !oak;
+      if (o.readable !== undefined) options.readable = !!o.readable && !oak && !kinect;
       HandTracker.setOverlay(options.overlay && options.display.skeleton !== false);
       if (!oak) {
         if (o.square !== undefined) HandTracker.setSquareCrop(!!o.square);
@@ -225,9 +375,21 @@
       if (rotation !== undefined) HandTracker.setRotation(rotation);
       if (mirror !== undefined) HandTracker.setMirror(!!mirror);
     },
-    startRecording: () => RobotMotion.start(),
+    startRecording: () => {
+      if (kin) kin.recording = [];
+      return RobotMotion.start();
+    },
     stopRecording: () => {
       const data = RobotMotion.stop();
+      // A Kinect's bodies, each frame's time in ms since 1970 (multi-camera.js puts them on the take's clock).
+      if (kin) {
+        if (kin.recording && kin.recording.length) {
+          data.bodyFrames = kin.recording;
+          data.bodyJoints = BodyTracker.JOINTS;
+          if (BodyTracker.shapes().length) data.faceShapes = BodyTracker.shapes();
+        }
+        kin.recording = null;
+      }
       // RobotMotion's clock is this page's (performance.now); in ms since 1970 the cameras line up.
       data.clock_origin_ms = data.time_origin_s === null || data.time_origin_s === undefined ? null : performance.timeOrigin + data.time_origin_s * 1000;
       return data;

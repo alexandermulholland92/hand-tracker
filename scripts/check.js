@@ -65,6 +65,8 @@ dialog.showSaveDialog = async (_win, opts) => ({ canceled: false, filePath: path
 // Luxonis OAK cameras are stood in for by the main process's SimulatedOak: two of them, no
 // camera or Python needed (see "Several cameras with Luxonis OAK cameras").
 process.env.HAND_TRACKER_OAK_SIMULATE = "1";
+// (The Kinect too, but only while its checks run: checkKinect turns on the main process's
+// SimulatedKinect, electron/kinect.js, so the other checks don't find an extra camera.)
 process.env.HAND_TRACKER_SYSTEM_SIMULATE = "1"; // (never restarting this computer)
 // Remote recording's takes go here, not into Documents.
 process.env.HAND_TRACKER_REMOTE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-remote-"));
@@ -129,6 +131,8 @@ const STEPS = [
   ["oak-pictures-off", [], ({ js }) => checkOakPicturesOff(js)],
   ["oak-tile-retry", [], ({ js }) => checkOakTileRetry(js)],
   ["oak-crash-again", [], ({ js }) => checkOakCrashAgain(js)],
+  ["kinect", [], ({ js }) => checkKinect(js)],
+  ["kinect-helper", [], () => checkKinectHelper()],
   ["timing-check", [], ({ js }) => checkTimingCheck(js)],
   ["remote-recording", [], ({ js }) => checkRemoteRecording(js)],
   ["remote-oak-settings", [], ({ js }) => checkRemoteOakSettings(js)],
@@ -3562,6 +3566,194 @@ async function checkRemoteSettingsPage() {
 
 // An OAK camera whose own software crashes: started again by itself while Sentry mode is on (3
 // times in 10 minutes, then left off, saying so); not while it's off (Sentry mode stood in for).
+// The Kinect for Xbox One as a tile of "Several cameras" (a stand-in: SimulatedKinect, its frames
+// a grey picture with a wall 2 m away and a box 850 mm away in the middle; MediaPipe's hand model
+// in its tile stood in for by a hand in the middle, the body model by a person there): the picker
+// lists it and it starts alone; its hand gets its place from the depth (850 mm ahead); a body is
+// tracked with the Kinect's 25 joints, its hands' states and its lean, joints in the box from the
+// depth and the rest inferred; its views (side by side twice as wide); night vision (its infrared
+// picture, 512 x 424); a take keeps the hands with their places and the bodies, and saves the
+// Kinect's depth and infrared (16-bit, lossless), its sound (4 channels and the beam) and each
+// one's frame times beside it; the real body model loads in its worker.
+async function checkKinect(js) {
+  process.env.HAND_TRACKER_KINECT_SIMULATE = "1";
+  try {
+    await checkKinectSimulated(js);
+  } finally {
+    delete process.env.HAND_TRACKER_KINECT_SIMULATE;
+  }
+}
+async function checkKinectSimulated(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const until = async (fn, ms = 20000) => { for (let i = 0; i < ms / 100; i++) { const v = await fn(); if (v) return v; await sleep(100); } return null; };
+    const out = {};
+    await MultiCamera.openPicker();
+    await until(() => document.querySelector('#multiCamPicks input[value^="kinect:"]'), 5000);
+    out.box = (document.querySelector('#multiCamPicks input[value^="kinect:"]') || {}).value || null;
+    for (const b of document.querySelectorAll("#multiCamPicks input")) if (b.checked !== (b.value === out.box)) b.click();
+    out.startAlone = !document.getElementById("multiCamStart").disabled && document.getElementById("multiCamStart").textContent;
+    document.getElementById("multiCamCancel").click();
+    await MultiCamera.start(["kinect:SIMULATED-KINECT"]);
+    const frame = () => document.querySelector("#multiCamGrid iframe");
+    const w = () => frame() && frame().contentWindow;
+    await until(() => w() && w().Tile && w().HandTracker && w().Hands && MultiCamera._tiles()[0].status && MultiCamera._tiles()[0].status.fps > 0, 30000);
+    // The hand model stood in for: a right hand in the middle of the picture (MediaPipe's own label, mirrored).
+    const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.1],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.2],[-.045,-.23],[0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.1],[.065,-.135],[.07,-.16],[.075,-.18]];
+    const tw = w();
+    tw.Hands.prototype.send = async function () {
+      tw.HandTracker._processResults({ multiHandLandmarks: [T.map(([x, y]) => ({ x: 0.5 + x * 0.6, y: 0.56 + y * 0.6, z: 0 }))], multiHandedness: [{ label: "Left", score: 0.95 }] });
+    };
+    const hand = await until(() => { const h = tw.Tile.hands()[0]; return h && h.distance ? h : null; });
+    out.hand = hand && { side: hand.handedness, distance: hand.distance };
+    // The body model stood in for: a person standing in the middle (MediaPipe's 33 landmarks).
+    const P = { 0: [.5,.2], 7: [.47,.2], 8: [.53,.2], 11: [.42,.32], 12: [.58,.32], 13: [.38,.45], 14: [.62,.45], 15: [.36,.56], 16: [.64,.56], 17: [.355,.6], 18: [.645,.6],
+      19: [.36,.61], 20: [.64,.61], 21: [.37,.59], 22: [.63,.59], 23: [.45,.62], 24: [.55,.62], 25: [.45,.78], 26: [.55,.78], 27: [.45,.93], 28: [.55,.93], 29: [.45,.95], 30: [.55,.95], 31: [.45,.97], 32: [.55,.97] };
+    const pose = { landmarks: Array.from({ length: 33 }, (_, i) => [...(P[i] || [.5, .25]), 0, 0.95]), world: Array.from({ length: 33 }, (_, i) => [((P[i] || [.5, .25])[0] - 0.5) * 1.6, ((P[i] || [.5, .25])[1] - 0.62) * 1.6, 0]) };
+    const realCreate = tw.BodyTracker.create;
+    // The face model stood in for: a smiling face, mouth open, looking at the camera, at its head.
+    tw.BodyTracker.setShapes(["eyeBlinkLeft", "eyeBlinkRight", "jawOpen", "mouthSmileLeft", "mouthSmileRight"]);
+    const face = { box: [0.46, 0.15, 0.54, 0.25], points: { leftEye: [0.52, 0.19], rightEye: [0.48, 0.19], nose: [0.5, 0.21], mouthLeft: [0.52, 0.23], mouthRight: [0.48, 0.23] }, rotation: [5, -3, 1], shapes: [0.05, 0.05, 0.45, 0.8, 0.7] };
+    tw.BodyTracker.create = () => ({ detect: async (img, t, o) => ({ poses: [pose], faces: o && o.faces ? [face] : [] }), error: () => "", close() {} });
+    MultiCamera.setKinectSettings("kinect:SIMULATED-KINECT", { bodies: false, faces: false });
+    MultiCamera.setKinectSettings("kinect:SIMULATED-KINECT", { bodies: true, faces: true });
+    const bodies = await until(() => (tw.Tile.bodies().length ? tw.Tile.bodies() : null));
+    const b = bodies && bodies[0];
+    const j = (name) => b && b.joints.find((x) => x.name === name);
+    await until(() => tw.Tile.bodies()[0] && tw.Tile.bodies()[0].face, 5000);
+    const bf = tw.Tile.bodies()[0];
+    out.body = b && { joints: b.joints.length, spineMid: j("SpineMid"), head: j("Head"), handRight: j("HandRight"), hands: b.hands, lean: b.lean, states: [...new Set(b.joints.map((x) => x.state))].sort().join(),
+      face: bf && bf.face && { happy: bf.face.happy, mouthOpen: bf.face.mouthOpen, eyesClosed: bf.face.eyesClosed, lookingAway: bf.face.lookingAway, engaged: bf.face.engaged, rotation: bf.face.rotation } };
+    // Its views: side by side, twice as wide.
+    MultiCamera.setKinectSettings("kinect:SIMULATED-KINECT", { picture: "side" });
+    out.side = await until(() => { const c = frame().contentDocument.getElementById("stage"); return c.width === 1920 && c.height === 540 ? c.width + "x" + c.height : null; }, 5000);
+    MultiCamera.setKinectSettings("kinect:SIMULATED-KINECT", { picture: "color" });
+    // Night vision: its infrared picture.
+    MultiCamera.setKinectSettings("kinect:SIMULATED-KINECT", { night: "on" });
+    out.night = await until(() => { const c = tw.HandTracker.getCamera(); return c.width === 512 && c.height === 424 && MultiCamera.remoteState().cameras[0].night ? "512x424 night" : null; }, 8000);
+    MultiCamera.setKinectSettings("kinect:SIMULATED-KINECT", { night: "off" });
+    await until(() => tw.HandTracker.getCamera().width === 960, 8000);
+    out.state = MultiCamera.remoteState().cameras[0];
+    out.settings = MultiCamera.kinectSettings("kinect:SIMULATED-KINECT");
+    // A take: hands with their places, bodies, and the Kinect's files saved beside it.
+    const started = await MultiCamera.startRecording();
+    await sleep(2000);
+    const take = MultiCamera.stopRecording(true);
+    const files = await MultiCamera.saveKinect("Kinect check");
+    out.take = take && { started: started.ok, hands: take.hands.length, distance: (take.hands[0].frames.find((f) => f.distance_mm) || {}).distance_mm || null,
+      bodies: take.bodies && take.bodies.map((x) => ({ camera: x.camera, joints: x.joints.length, frames: x.frames.length, first: x.frames[0] && x.frames[0].bodies[0] && x.frames[0].bodies[0].joints.length })) };
+    out.files = files.map((f) => ({ kind: f.kind, name: f.path.split(/[\\\\/]/).pop(), times: f.times && f.times.split(/[\\\\/]/).pop(), frames: f.frames || null, path: f.path }));
+    // The take's exports: the bodies as a table of their own, and in its MCAP file.
+    try {
+      const built = MotionExport.build(take, ["csv", "mcap"], "k");
+      const table = built.find((f) => f.suffix === "-bodies");
+      const mcap = Mcap.read(built.find((f) => f.ext === "mcap").data);
+      const bodyCh = [...mcap.channels.entries()].find(([, c]) => /\\/bodies$/.test(c.topic));
+      out.exported = { names: built.map((f) => f.suffix + "." + f.ext), rows: table ? table.data.trim().split("\\n").length - 1 : 0, columns: table ? table.data.split("\\n")[0].split(",").length : 0,
+        faced: !!table && /,5,-3,1,0\\.75,0\\.05,0\\.05,0\\.45,0,1,/.test(table.data),
+        topic: bodyCh ? bodyCh[1].topic : null, messages: bodyCh ? mcap.messages.filter((m) => m.channel === bodyCh[0]).length : 0 };
+    } catch (err) {
+      out.exported = { error: String(err.message || err) };
+    }
+    // The real body model, in its worker: it loads and finds nobody in a grey picture.
+    const bt = realCreate({ people: 2 });
+    const grey = Object.assign(frame().contentDocument.createElement("canvas"), { width: 320, height: 240 });
+    grey.getContext("2d").fillRect(0, 0, 320, 240);
+    let k = 0;
+    const found = await until(async () => { const p = await bt.detect(grey, ++k * 33, { people: 2, faces: 2 }); return p ? { poses: p.poses.length, faces: p.faces.length } : bt.error() ? { error: bt.error() } : null; }, 60000);
+    out.realModel = found || { error: bt.error() || "no answer" };
+    bt.close();
+    MultiCamera.close();
+    document.getElementById("motionDiscardBtn").click();
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  // The saved files: 16-bit lossless 512 x 424 videos, four-channel 16 kHz sound.
+  const probe = (f) => String(spawnSync(exporter.ffmpegPath, ["-hide_banner", "-i", f], { encoding: "utf8" }).stderr || "");
+  const kinds = Object.fromEntries((r.files || []).map((f) => [f.kind, f]));
+  const depthInfo = kinds.depth ? probe(kinds.depth.path) : "", irInfo = kinds.ir ? probe(kinds.ir.path) : "", soundInfo = kinds.sound ? probe(kinds.sound.path) : "", beamInfo = kinds.beam ? probe(kinds.beam.path) : "";
+  const timesOk = kinds.depth && kinds.depth.times && fs.existsSync(path.join(path.dirname(kinds.depth.path), kinds.depth.times)) &&
+    fs.readFileSync(path.join(path.dirname(kinds.depth.path), kinds.depth.times), "utf8").trim().split("\n").length === kinds.depth.frames + 1;
+  const near = (v, want, tol) => Math.abs(v - want) <= tol;
+  check("Kinect (Several cameras): the picker lists it and it starts alone; its hand's place comes from the depth (850 mm ahead)",
+    r.box === "kinect:SIMULATED-KINECT" && /Kinect/.test(r.startAlone || "") && r.hand && r.hand.side === "Right" && r.hand.distance && near(r.hand.distance[2], 850, 1) && Math.abs(r.hand.distance[0]) < 150,
+    JSON.stringify({ box: r.box, startAlone: r.startAlone, hand: r.hand, error: r.error }));
+  check("Kinect: a body with its 25 joints (the depth where it fits the body, the rest from the body model), each hand's state, its lean and its face (which way it looks, smiling, mouth open, engaged)",
+    r.body && r.body.joints === 25 && r.body.spineMid && r.body.spineMid.state === "tracked" && near(r.body.spineMid.z, 850, 1) && r.body.head && r.body.head.z > 0 &&
+      r.body.hands && r.body.hands.right === "open" && r.body.hands.left === "notTracked" && Array.isArray(r.body.lean) && /inferred/.test(r.body.states) && /tracked/.test(r.body.states) &&
+      r.body.face && r.body.face.happy === 0.75 && r.body.face.mouthOpen === 0.45 && r.body.face.engaged === true && r.body.face.lookingAway === false && r.body.face.rotation[0] === 5,
+    JSON.stringify(r.body || r));
+  check("Kinect: its views (side by side twice as wide) and night vision (its infrared picture), changed as it runs",
+    r.side === "1920x540" && r.night === "512x424 night" && r.state && r.state.kinect === true && r.state.sound && Number.isFinite(r.state.sound.angle) && r.settings && r.settings.picture === "color",
+    JSON.stringify({ side: r.side, night: r.night, state: r.state, settings: r.settings }));
+  check("Kinect: a take keeps the hands with their places and the bodies, and saves its depth and infrared (16-bit, lossless, 512 x 424), its sound (4 channels, and the beam) and each one's frame times",
+    r.take && r.take.started && r.take.hands >= 1 && r.take.distance && near(r.take.distance[2], 850, 1) && r.take.bodies && r.take.bodies[0].joints === 25 && r.take.bodies[0].frames > 5 && r.take.bodies[0].first === 25 &&
+      /gray16le/.test(depthInfo) && /512x424/.test(depthInfo) && /ffv1/.test(depthInfo) && /gray16le/.test(irInfo) && /16000 Hz/.test(soundInfo) && /4 channels|4\.0|quad/.test(soundInfo) && /16000 Hz, (mono|1 channels)/.test(beamInfo) &&
+      timesOk && (r.files || []).some((f) => f.kind === "direction") && (r.files || []).every((f) => /^Kinect check-(depth|infrared|sound|sound-beam|sound-direction)-[a-z0-9-]+.(mkv|wav|csv)$/.test(f.name)),
+    JSON.stringify({ take: r.take, files: r.files, depth: depthInfo.split("\n").filter((l) => /Stream/.test(l)).join(" "), sound: soundInfo.split("\n").filter((l) => /Stream/.test(l)).join(" "), timesOk }));
+  const ex = r.exported || {};
+  check("Kinect: a take's bodies export as a table of their own (a row for each body on each frame, 25 joints' places and states) and in its MCAP file (each body's joints and bones)",
+    ex.rows > 5 && ex.columns === 7 + 9 + 25 * 6 && ex.faced && ex.topic === "/hand_tracker/head/bodies" && ex.messages > 5 && (ex.names || []).includes("-bodies.csv"), JSON.stringify(ex));
+  check("Kinect: the body and face models (MediaPipe's pose and face landmarkers, up to six people) load in their worker", r.realModel && r.realModel.poses === 0 && r.realModel.faces === 0, JSON.stringify(r.realModel || r.error));
+  // Its MCAP file (made after the take is saved): the depth as compressedDepth PNGs (16-bit grey),
+  // the infrared as 16-bit PNGs, each at its frame's time, with the cameras' parameters.
+  let mcapInfo = { error: "no MCAP file" };
+  const dir = kinds.depth ? path.dirname(kinds.depth.path) : null;
+  for (let i = 0; i < 60 && dir; i++) {
+    const f = fs.readdirSync(dir).find((n) => /^Kinect check-kinect-[a-z0-9-]+\.mcap$/.test(n));
+    if (f) {
+      try {
+        require("../mcap.js");
+        const file = globalThis.Mcap.read(new Uint8Array(fs.readFileSync(path.join(dir, f))));
+        const byTopic = {};
+        for (const m of file.messages) {
+          const topic = file.channels.get(m.channel).topic;
+          (byTopic[topic] = byTopic[topic] || []).push(m);
+        }
+        const depthMsgs = Object.entries(byTopic).find(([t]) => /depth\/image_raw\/compressedDepth$/.test(t));
+        // (sensor_msgs/CompressedImage in CDR: its header's time and frame id, then its format and data)
+        const compressed = (d) => {
+          const b = Buffer.from(d);
+          let at = 4 + 8;
+          const str = () => {
+            at += (4 - ((at - 4) % 4)) % 4;
+            const n = b.readUInt32LE(at);
+            const v = b.toString("utf8", at + 4, at + 4 + n - 1);
+            at += 4 + n;
+            return v;
+          };
+          str();
+          const format = str();
+          at += (4 - ((at - 4) % 4)) % 4;
+          const n = b.readUInt32LE(at);
+          return { format, data: b.subarray(at + 4, at + 4 + n) };
+        };
+        const first = depthMsgs && compressed(depthMsgs[1][0].data);
+        const png = first && Buffer.from(first.data).subarray(12);
+        mcapInfo = { name: f, topics: Object.fromEntries(Object.entries(byTopic).map(([t, l]) => [t, l.length])), format: first && first.format,
+          png16: !!png && png.subarray(1, 4).toString() === "PNG" && png[24] === 16 && png[25] === 0, sorted: file.messages.every((m, k, a) => k === 0 || a[k - 1].logTime <= m.logTime) };
+      } catch (err) {
+        mcapInfo = { error: err.message };
+      }
+      break;
+    }
+    await sleep(500);
+  }
+  const t = mcapInfo.topics || {};
+  check("Kinect: its depth, infrared and their cameras' parameters in an MCAP file of their own beside the take (compressedDepth 16-bit PNGs, in time order)",
+    t["/hand_tracker/head/kinect/depth/image_raw/compressedDepth"] === kinds.depth.frames && t["/hand_tracker/head/kinect/ir/image_raw/compressed"] === kinds.ir.frames &&
+      t["/hand_tracker/head/kinect/depth/camera_info"] >= 1 && mcapInfo.format === "16UC1; compressedDepth png" && mcapInfo.png16 && mcapInfo.sorted,
+    JSON.stringify(mcapInfo));
+}
+
+// The Kinect's Linux helper, where it's been built here (kinect/build-linux.sh): its own check
+// passes (the pictures turned back, depth lined up with colour, the microphones' delays).
+async function checkKinectHelper() {
+  const exe = path.join(__dirname, "..", "kinect", "bin", `linux-${process.arch}`, "kinect2-helper");
+  if (process.platform !== "linux" || !fs.existsSync(exe)) return; // (built on Linux only: GitHub's Linux job checks it)
+  const run = spawnSync(exe, ["--selftest"], { encoding: "latin1", timeout: 30000 });
+  check("Kinect helper: its own check passes", /"ok":true/.test(run.stdout || ""), String(run.stdout || run.error || "").replace(/[^\x20-\x7e]/g, "").slice(0, 400));
+}
+
 async function checkOakCrashAgain(js) {
   const r = await js(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

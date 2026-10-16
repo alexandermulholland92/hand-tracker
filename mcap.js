@@ -8,12 +8,15 @@
  *   w.message(channel, timeNs, bytes);           // timeNs: a BigInt, nanoseconds since 1970
  *   w.attachment(name, mediaType, bytes, timeNs); w.metadata(name, { key: "value" });
  *   const bytes = w.finish();                    // -> Uint8Array
+ *   (Mcap.writer({ ..., sink: (bytes) => ... }): each part of the file to sink as it's done, not
+ *   kept: a big file written as it goes; finish() then hands sink the rest, and returns null.)
  *
  *   const file = Mcap.read(bytes);  // { profile, library, schemas, channels: Map id ->
  *                                   //   { topic, messageEncoding, schema, metadata }, messages:
  *                                   //   [{ channel, sequence, logTime, data }], attachments, metadata }
  *
  *   Mcap.cdr.poseArray(timeNs, frameId, poses)   // ROS 2 messages, CDR-encoded (poses: [{ p, q }])
+ *   Mcap.cdr.cameraInfo(timeNs, frameId, { width, height, fx, fy, cx, cy, d })   // sensor_msgs/CameraInfo
  *   Mcap.cdr.markerArray(markers) / Mcap.cdr.decode(schemaName, bytes)
  *
  * Messages are written in chunks of about 1 MB, uncompressed, with an index and summary, as
@@ -76,8 +79,19 @@
   const record = (out, op, content) => out.u8(op).u64(content.length).raw(content);
 
   // ---------- writing ----------
-  function writer({ profile = "", library = "Hand Tracker" } = {}) {
+  function writer({ profile = "", library = "Hand Tracker", sink = null } = {}) {
     const out = new Bytes(1 << 16);
+    // With a sink, what's done goes to it (flushed: how much has; dataCrc: its CRC so far).
+    let flushed = 0, dataCrc = 0;
+    const pos = () => flushed + out.length;
+    const drain = () => {
+      if (!sink || !out.length) return;
+      const b = out.bytes();
+      dataCrc = crc32(b, dataCrc);
+      sink(b.slice());
+      flushed += out.length;
+      out.length = 0;
+    };
     out.raw(MAGIC);
     record(out, OP.header, new Bytes(64).str(profile).str(library).bytes());
     const schemas = [], channels = [], attachIndex = [], metaIndex = [], chunkIndex = [];
@@ -90,19 +104,20 @@
       const recs = chunk.records.bytes();
       const content = new Bytes(recs.length + 64)
         .u64(chunk.start).u64(chunk.end).u64(recs.length).u32(crc32(recs)).str("").u64(recs.length).raw(recs).bytes();
-      const chunkStart = out.length;
+      const chunkStart = pos();
       record(out, OP.chunk, content);
-      const chunkLength = out.length - chunkStart;
+      const chunkLength = pos() - chunkStart;
       const offsets = {};
-      const indexStart = out.length;
+      const indexStart = pos();
       for (const [id, entries] of chunk.index) {
-        offsets[id] = out.length;
+        offsets[id] = pos();
         const list = new Bytes(entries.length * 16 + 8);
         for (const [t, o] of entries) list.u64(t).u64(o);
         record(out, OP.messageIndex, new Bytes(list.length + 8).u16(id).u32(list.length).raw(list.bytes()).bytes());
       }
-      chunkIndex.push({ start: chunk.start, end: chunk.end, chunkStart, chunkLength, offsets, indexLength: out.length - indexStart, size: recs.length });
+      chunkIndex.push({ start: chunk.start, end: chunk.end, chunkStart, chunkLength, offsets, indexLength: pos() - indexStart, size: recs.length });
       chunk = null;
+      drain();
     }
 
     return {
@@ -113,6 +128,7 @@
         const content = new Bytes(data.length + 64).u16(id).str(name).str(encoding).u32(data.length).raw(data).bytes();
         schemas.push(content);
         record(out, OP.schema, content);
+        drain();
         return id;
       },
       channel(topic, messageEncoding, schemaId, metadata = {}) {
@@ -122,6 +138,7 @@
         channels.push(content);
         record(out, OP.channel, content);
         counts.set(id, 0n);
+        drain();
         return id;
       },
       message(channelId, timeNs, data) {
@@ -142,27 +159,27 @@
         flushChunk();
         const head = new Bytes(data.length + 128).u64(timeNs).u64(timeNs).str(name).str(mediaType).u64(data.length).raw(data);
         const content = new Bytes(head.length + 4).raw(head.bytes()).u32(crc32(head.bytes())).bytes();
-        const offset = out.length;
+        const offset = pos();
         record(out, OP.attachment, content);
-        attachIndex.push({ offset, length: out.length - offset, time: BigInt(timeNs), size: data.length, name, mediaType });
+        attachIndex.push({ offset, length: pos() - offset, time: BigInt(timeNs), size: data.length, name, mediaType });
       },
       metadata(name, map) {
         flushChunk();
-        const offset = out.length;
+        const offset = pos();
         record(out, OP.metadata, new Bytes(256).str(name).map(map).bytes());
-        metaIndex.push({ offset, length: out.length - offset, name });
+        metaIndex.push({ offset, length: pos() - offset, name });
       },
       finish() {
         flushChunk();
-        record(out, OP.dataEnd, new Bytes(4).u32(crc32(out.bytes())).bytes());
+        record(out, OP.dataEnd, new Bytes(4).u32(crc32(out.bytes(), dataCrc)).bytes());
         // The summary: each kind of record grouped, and where each group is.
-        const summaryStart = out.length;
+        const summaryStart = pos();
         const groups = [];
         const group = (op, contents) => {
           if (!contents.length) return;
-          const at = out.length;
+          const at = pos();
           for (const c of contents) record(out, op, c);
-          groups.push([op, at, out.length - at]);
+          groups.push([op, at, pos() - at]);
         };
         group(OP.schema, schemas);
         group(OP.channel, channels);
@@ -180,12 +197,16 @@
         }));
         group(OP.attachmentIndex, attachIndex.map((a) => new Bytes(128).u64(a.offset).u64(a.length).u64(a.time).u64(a.time).u64(a.size).str(a.name).str(a.mediaType).bytes()));
         group(OP.metadataIndex, metaIndex.map((m) => new Bytes(64).u64(m.offset).u64(m.length).str(m.name).bytes()));
-        const offsetStart = out.length;
+        const offsetStart = pos();
         for (const [op, at, len] of groups) record(out, OP.summaryOffset, new Bytes(17).u8(op).u64(at).u64(len).bytes());
         // Footer: its CRC covers the summary up to its own summary_offset_start.
         const footHead = new Bytes(25).u8(OP.footer).u64(20).u64(summaryStart).u64(offsetStart).bytes();
-        const crc = crc32(footHead, crc32(out.bytes().subarray(summaryStart)));
+        const crc = crc32(footHead, crc32(out.bytes().subarray(summaryStart - flushed)));
         out.raw(footHead).u32(crc).raw(MAGIC);
+        if (sink) {
+          sink(out.bytes().slice());
+          return null;
+        }
         return out.bytes().slice();
       },
     };
@@ -327,6 +348,10 @@
     "geometry_msgs/Vector3": "float64 x\nfloat64 y\nfloat64 z\n",
     "std_msgs/ColorRGBA": "float32 r\nfloat32 g\nfloat32 b\nfloat32 a\n",
     "sensor_msgs/CompressedImage": "std_msgs/Header header\nstring format\nuint8[] data\n",
+    "sensor_msgs/CameraInfo":
+      "std_msgs/Header header\nuint32 height\nuint32 width\nstring distortion_model\nfloat64[] d\nfloat64[9] k\nfloat64[9] r\nfloat64[12] p\n" +
+      "uint32 binning_x\nuint32 binning_y\nRegionOfInterest roi\n",
+    "sensor_msgs/RegionOfInterest": "uint32 x_offset\nuint32 y_offset\nuint32 height\nuint32 width\nbool do_rectify\n",
     "sensor_msgs/Imu":
       "std_msgs/Header header\ngeometry_msgs/Quaternion orientation\nfloat64[9] orientation_covariance\ngeometry_msgs/Vector3 angular_velocity\n" +
       "float64[9] angular_velocity_covariance\ngeometry_msgs/Vector3 linear_acceleration\nfloat64[9] linear_acceleration_covariance\n",
@@ -344,6 +369,7 @@
   const ROS2 = {
     // A camera's pictures (JPEG), and a motion sensor's readings.
     CompressedImage: withDeps(MSG["sensor_msgs/CompressedImage"], ["std_msgs/Header", "builtin_interfaces/Time"]),
+    CameraInfo: withDeps(MSG["sensor_msgs/CameraInfo"], ["std_msgs/Header", "builtin_interfaces/Time", "sensor_msgs/RegionOfInterest"]),
     Imu: withDeps(MSG["sensor_msgs/Imu"], ["std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Quaternion", "geometry_msgs/Vector3"]),
     PoseArray: withDeps("std_msgs/Header header\nPose[] poses\n", ["std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Pose", "geometry_msgs/Point", "geometry_msgs/Quaternion"]),
     MarkerArray: withDeps("Marker[] markers\n", [
@@ -403,6 +429,15 @@
         w.bool(false);
       }
       return w.bytes().slice();
+    },
+    // sensor_msgs/msg/CameraInfo: a camera's own parameters (pixels; d: plumb_bob's k1 k2 p1 p2 k3).
+    cameraInfo(timeNs, frameId, { width, height, fx, fy, cx, cy, d = [0, 0, 0, 0, 0] }) {
+      const w = new Cdr().header(timeNs, frameId).ui32(height).ui32(width).string("plumb_bob").ui32(d.length);
+      for (const v of d) w.f64(v);
+      for (const v of [fx, 0, cx, 0, fy, cy, 0, 0, 1]) w.f64(v);
+      for (const v of [1, 0, 0, 0, 1, 0, 0, 0, 1]) w.f64(v);
+      for (const v of [fx, 0, cx, 0, 0, fy, cy, 0, 0, 0, 1, 0]) w.f64(v);
+      return w.ui32(0).ui32(0).ui32(0).ui32(0).ui32(0).ui32(0).bool(false).bytes().slice();
     },
     // sensor_msgs/msg/CompressedImage: a picture (format "jpeg", its bytes).
     compressedImage(timeNs, frameId, format, data) {

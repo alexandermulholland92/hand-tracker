@@ -18,6 +18,8 @@ const exporter = require("./exporter");
 const tak = require("./tak");
 const { InputDriver } = require("./input");
 const { OakCamera } = require("./oak");
+const { KinectCamera, KinectTake, SimulatedKinect } = require("./kinect");
+const { writeKinectMcap } = require("./kinect-mcap");
 const { OpsClient } = require("./ops");
 const { FleetClient } = require("./fleet");
 const mcapVideo = require("./mcap-video");
@@ -109,6 +111,7 @@ let btHid = null;
 let oak = null; // Luxonis OAK cameras (see oak.js), created once the app is ready
 let oakViewer = null; // the window receiving the OAK camera's frames
 const oakStreams = new Map(); // several OAK cameras at once (multi-camera.js): id -> { cam, busy }
+const kinectStreams = new Map(); // Kinects (kinect.js), as tiles of "Several cameras": id -> { cam, busy, viewer, take, audio }
 let ops = null; // capture-session dashboard (see ops.js), created once the app is ready
 let fleet = null; // capture-fleet dashboard's live rig pictures (see fleet.js)
 const outputFolders = new Map(); // token -> folder the user picked for batch saving
@@ -277,6 +280,7 @@ function createWindow(page = "index.html", size = { width: 1320, height: 940 }) 
     const url = event.url !== undefined ? event.url : old[0];
     if (!isMainFrame || isSameDocument) return;
     for (const [id, stream] of [...oakStreams]) if (stream.viewer === win.webContents) stopOakStream(id);
+    for (const [id, stream] of [...kinectStreams]) if (stream.viewer === win.webContents) stopKinectStream(id);
     if (APP.kind === "remote" && win === mainWindow && remoteRecord && !/[?&]rig=1(&|$)/.test(String(url || ""))) {
       if (rigBluetooth) rigBluetooth.stop();
       Promise.resolve(remoteRecord.stop()).catch(() => {});
@@ -730,6 +734,141 @@ class SimulatedOak {
     this.timer = null;
     this.onMessage({ status: "stopped", code: 0, detail: "" });
   }
+}
+
+// ---------- the Kinect for Xbox One (kinect.js) ----------
+// Each one a tile of "Several cameras" (multi-camera.js): a helper each, its pictures (with their
+// depth) to the page, which finds the hands; a frame is dropped while the page is still on the
+// last. While a take records, its depth, infrared, sound (and the colour camera's own pictures,
+// when asked for) are written here as they come, and saved with the take when it stops.
+const KINECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
+const KINECT_COMMAND = /^(source (color|infrared|auto)|exposure auto -?\d(\.\d{1,2})?|exposure manual \d{1,2}(\.\d{1,2})? \d(\.\d{1,2})?|whitebalance auto|led \d{1,4}|depthrange \d{1,2}(\.\d{1,2})? \d{1,2}(\.\d{1,2})?|filters (on|off))$/;
+function registerKinectIpc() {
+  // (The checks' stand-in Kinect, while HAND_TRACKER_KINECT_SIMULATE is set: read each time, so only the Kinect checks see it.)
+  const simulated = () => !!process.env.HAND_TRACKER_KINECT_SIMULATE;
+  const u8 = (b) => (b ? new Uint8Array(b) : null); // (a copy: just its own bytes go to the page)
+  handle("kinect:available", () => (simulated() ? { ok: true, simulated: true } : KinectCamera.available()));
+  handle("kinect:list", async () => (simulated() ? [{ id: "SIMULATED-KINECT", name: "Kinect for Xbox One" }] : KinectCamera.list(app.getPath("userData")).catch(() => [])));
+  handle("kinect:stream-start", (event, { id, ...options } = {}) => {
+    if (!KINECT_ID.test(String(id || ""))) throw new Error("Which Kinect?");
+    stopKinectStream(id);
+    const viewer = event.sender;
+    const stream = { cam: simulated() ? new SimulatedKinect() : new KinectCamera(app.getPath("userData")), busy: false, viewer, take: null, audio: null };
+    kinectStreams.set(id, stream);
+    const opts = { device: id, source: options.source, size: options.size, mics: options.mics !== false, pipeline: options.pipeline };
+    stream.cam.start(opts, (msg) => {
+      if (kinectStreams.get(id) !== stream && msg.status !== "stopped") return;
+      if (viewer.isDestroyed()) return stopKinectStream(id);
+      if (msg.frame) {
+        if (stream.busy) return;
+        stream.busy = true;
+        viewer.send("kinect:frame", { id, header: msg.frame, jpeg: u8(msg.jpeg), depth: u8(msg.depth), body: u8(msg.body), audio: stream.audio });
+      } else if (msg.raw) {
+        if (stream.take) stream.take.raw(msg.raw, msg.depth, msg.ir);
+      } else if (msg.rawcolor) {
+        if (stream.take) stream.take.color(msg.rawcolor, msg.jpeg);
+      } else if (msg.audio) {
+        const a = msg.audio;
+        stream.audio = { level: a.level, angle: a.angle, confidence: a.confidence, delays: a.delays, u: a.u, beamAngle: a.beamAngle };
+        if (stream.take) stream.take.audio(a, msg.pcm, msg.beam);
+      } else if (kinectStreams.get(id) === stream || !kinectStreams.has(id)) {
+        if (msg.status === "running") stream.params = { color: msg.color || null, ir: msg.ir || null }; // (its cameras', for its MCAP file)
+        viewer.send("kinect:status", { id, ...msg });
+      }
+    });
+    return true;
+  });
+  ipcMain.on("kinect:shown", (event, id) => {
+    const stream = kinectStreams.get(id);
+    if (stream) stream.busy = false;
+  });
+  handle("kinect:command", (event, { id, line } = {}) => {
+    const stream = kinectStreams.get(String(id));
+    if (!stream || !KINECT_COMMAND.test(String(line || ""))) return false;
+    stream.cam.command(String(line));
+    return true;
+  });
+  handle("kinect:stream-stop", (event, id) => {
+    for (const key of id ? [id] : [...kinectStreams.keys()]) stopKinectStream(key);
+    return true;
+  });
+  // A take: { depth, ir, color, sound } as wanted.
+  handle("kinect:record-start", (event, { id, depth, ir, color, sound } = {}) => {
+    const stream = kinectStreams.get(String(id));
+    if (!stream) return false;
+    if (stream.take) stream.take.abort();
+    const folder = path.join(app.getPath("temp"), `hand-tracker-kinect-${process.pid}-${String(id).replace(/[^\w-]/g, "")}-${Date.now()}`);
+    stream.take = new KinectTake(folder, { depth: depth !== false, ir: ir !== false, color: !!color, sound: sound !== false });
+    stream.cam.command("record on");
+    if (color) stream.cam.command("rawcolor on");
+    return true;
+  });
+  // The take's end: no more is kept (saved next, by record-stop, once the take is named).
+  handle("kinect:record-end", (event, id) => {
+    const stream = kinectStreams.get(String(id));
+    if (!stream || !stream.take) return false;
+    stream.cam.command("record off");
+    stream.cam.command("rawcolor off");
+    return true;
+  });
+  // Its files, saved into remote recording's folder as <take>-<kind>-<role>: { dir, files: [{ kind,
+  // path, startMs, times, frames, seconds }], errors }; and its depth, infrared and colour as an
+  // MCAP file of their own, <take>-kinect-<role>.mcap (kinect-mcap.js), made after (mcap: "wait":
+  // before this answers, with its result as mcap). keep false: thrown away.
+  handle("kinect:record-stop", async (event, { id, baseName, role, keep = true, mcap } = {}) => {
+    const stream = kinectStreams.get(String(id));
+    if (!stream || !stream.take) return { files: [], errors: [] };
+    stream.cam.command("record off");
+    stream.cam.command("rawcolor off");
+    const take = stream.take;
+    stream.take = null;
+    if (!keep) {
+      take.abort();
+      return { files: [], errors: [] };
+    }
+    const made = await take.finish();
+    const dir = remoteFolder();
+    await fs.promises.mkdir(dir, { recursive: true });
+    const base = exporter.sanitizeBaseName(baseName || `Kinect_${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}`);
+    const slug = String(role || "kinect").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 16) || "kinect";
+    const NAMES = { depth: "depth", ir: "infrared", color: "colour", sound: "sound", beam: "sound-beam", direction: "sound-direction" };
+    const files = [];
+    for (const f of made) {
+      const ext = path.extname(f.file).slice(1);
+      const out = exporter.uniquePath(dir, `${base}-${NAMES[f.kind] || f.kind}-${slug}`, ext);
+      await fs.promises.rename(f.file, out).catch(() => fs.promises.copyFile(f.file, out));
+      exportedPaths.add(out);
+      let times = null;
+      if (f.times) {
+        times = out.replace(/\.[^.]+$/, "-times.csv");
+        await fs.promises.rename(f.times, times).catch(() => fs.promises.copyFile(f.times, times));
+        exportedPaths.add(times);
+      }
+      files.push({ kind: f.kind, path: out, startMs: f.startMs, times, frames: f.frames, seconds: f.seconds });
+    }
+    fs.rmSync(take.folder, { recursive: true, force: true });
+    let made2 = null;
+    const pictures = files.filter((f) => ["depth", "ir", "color"].includes(f.kind));
+    if (pictures.length) {
+      const out = exporter.uniquePath(dir, `${base}-kinect-${slug}`, "mcap");
+      const params = stream.params || {};
+      const job = writeKinectMcap(out, { name: role || "kinect", files: pictures, color: params.color, ir: params.ir }).then((r) => {
+        if (r.ok) exportedPaths.add(out);
+        return { ...r, path: r.ok ? out : null };
+      });
+      if (mcap === "wait") made2 = await job;
+      else job.catch(() => {});
+    }
+    return { dir, files, errors: take.errors, mcap: made2 };
+  });
+}
+
+function stopKinectStream(id) {
+  const stream = kinectStreams.get(id);
+  if (!stream) return;
+  kinectStreams.delete(id);
+  if (stream.take) stream.take.abort();
+  stream.cam.stop();
 }
 
 // ---------- Capture sessions from a capture-operations dashboard (hidden feature) ----------
@@ -1398,6 +1537,7 @@ app.whenReady().then(() => {
   registerIpc();
   registerPcIpc();
   registerOakIpc();
+  registerKinectIpc();
   registerOpsIpc();
   registerFleetIpc();
   registerLinkIpc();
@@ -1423,6 +1563,7 @@ app.on("will-quit", () => {
   if (btHid) btHid.stop();
   if (oak) oak.stop();
   for (const id of [...oakStreams.keys()]) stopOakStream(id);
+  for (const id of [...kinectStreams.keys()]) stopKinectStream(id);
   if (natnet.client) natnet.client.stop();
   if (phoneLink) phoneLink.stop();
   if (webLink) webLink.stop();

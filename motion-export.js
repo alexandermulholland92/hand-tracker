@@ -971,6 +971,34 @@
     };
   }
 
+  // A Kinect's bodies (data.bodies, multi-camera.js): its 25 joints' bones, by their place in its list.
+  const BODY_BONES = [[3, 2], [2, 20], [20, 1], [1, 0], [20, 8], [20, 4], [0, 16], [0, 12], [8, 9], [9, 10], [10, 11], [11, 23], [10, 24], [4, 5], [5, 6], [6, 7], [7, 21], [6, 22],
+    [16, 17], [17, 18], [18, 19], [12, 13], [13, 14], [14, 15]];
+  const BODY_COLORS = [[0.3, 0.67, 0.97], [1, 0.66, 0.3], [0.41, 0.86, 0.49], [0.97, 0.51, 0.67], [1, 0.83, 0.23], [0.69, 0.59, 0.99]];
+  const bodyCameras = (data) => (Array.isArray(data.bodies) ? data.bodies.filter((b) => b && Array.isArray(b.frames) && b.frames.length && Array.isArray(b.joints)) : []);
+
+  // The bodies as a table: a row for each body on each frame, its hands' states and lean, then
+  // each joint's place (mm), place on the picture (0-1) and state (2 tracked, 1 inferred, 0 none).
+  function toBodiesCSV(data) {
+    const cams = bodyCameras(data);
+    const joints = cams[0].joints;
+    const head = ["t", "camera", "body", "hand_left", "hand_right", "lean_x", "lean_y", "face_yaw", "face_pitch", "face_roll", "happy", "left_eye_closed", "right_eye_closed", "mouth_open", "looking_away", "engaged",
+      ...joints.flatMap((j) => ["x", "y", "z", "u", "v", "state"].map((k) => `${j}_${k}`))];
+    const rows = [head.join(",")];
+    for (const c of cams) {
+      for (const f of c.frames) {
+        for (const b of f.bodies || []) {
+          const fc = b.face || null, yes = (v) => (v === undefined || v === null ? "" : v ? 1 : 0);
+          const cells = [f.t, `"${String(c.camera).replace(/"/g, '""')}"`, b.id, (b.hands || [])[0] || "", (b.hands || [])[1] || "", (b.lean || [])[0] ?? "", (b.lean || [])[1] ?? "",
+            ...(fc ? [...(fc.rotation || ["", "", ""]), fc.happy ?? "", (fc.eyesClosed || [])[0] ?? "", (fc.eyesClosed || [])[1] ?? "", fc.mouthOpen ?? "", yes(fc.lookingAway), yes(fc.engaged)] : ["", "", "", "", "", "", "", "", ""])];
+          for (const j of b.joints || []) cells.push(...j.map((v) => (v === null || v === undefined ? "" : v)));
+          rows.push(cells.join(","));
+        }
+      }
+    }
+    return rows.join("\n") + "\n";
+  }
+
   function toMCAP(prep, data) {
     const { M, w, poseArray, markerArray, qos } = mcapWriter();
     const origin = BigInt(Date.parse(data.recorded_at) || 0) * 1000000n;
@@ -999,6 +1027,28 @@
         { timeNs: t, frameId: MCAP_FRAME, ns, id: 0, type: 7, scale: [0.012, 0.012, 0.012], color, lifetimeNs: MCAP_LIFETIME_NS, points: P },
         { timeNs: t, frameId: MCAP_FRAME, ns, id: 1, type: 5, scale: [0.005, 0, 0], color, lifetimeNs: MCAP_LIFETIME_NS, points: CONNECTIONS.flatMap(([a, b]) => [P[a], P[b]]) },
       ]));
+    }
+    // Each Kinect's bodies (data.bodies): visualization_msgs/MarkerArray on /hand_tracker/<camera>/bodies,
+    // each body's joints (spheres) and bones (lines), in metres in the Kinect's colour camera's own
+    // frame (x right, y down, z ahead: "<camera>_kinect_color", as its own MCAP file has it).
+    for (const c of bodyCameras(data)) {
+      let name = rosName(c.camera);
+      for (let k = 2; topics.has(`${name}/bodies`); k++) name = `${rosName(c.camera)}_${k}`;
+      topics.add(`${name}/bodies`);
+      const ch = w.channel(`/hand_tracker/${name}/bodies`, "cdr", markerArray, { ...qos, joints: JSON.stringify(c.joints) });
+      const frameId = `${rosName(c.camera)}_kinect_color`;
+      for (const f of c.frames) {
+        const t = at(f.t);
+        const markers = [];
+        for (const b of f.bodies || []) {
+          const P = (b.joints || []).map((j) => (j && j[5] > 0 && Number.isFinite(j[0]) && Number.isFinite(j[2]) ? [j[0] / 1000, j[1] / 1000, j[2] / 1000] : null));
+          const color = [...BODY_COLORS[(b.id || 0) % BODY_COLORS.length], 1];
+          const ns = `${name}_body_${b.id || 0}`;
+          markers.push({ timeNs: t, frameId, ns, id: 0, type: 7, scale: [0.04, 0.04, 0.04], color, lifetimeNs: MCAP_LIFETIME_NS * 4n, points: P.filter(Boolean) });
+          markers.push({ timeNs: t, frameId, ns, id: 1, type: 5, scale: [0.015, 0, 0], color, lifetimeNs: MCAP_LIFETIME_NS * 4n, points: BODY_BONES.filter(([a, z]) => P[a] && P[z]).flatMap(([a, z]) => [P[a], P[z]]) });
+        }
+        if (markers.length) w.message(ch, t, M.cdr.markerArray(markers));
+      }
     }
     // Each OAK camera's motion sensor (data.imu), sensor_msgs/Imu on /hand_tracker/<camera>/imu.
     const imus = Array.isArray(data.imu) ? data.imu.filter((m) => m && Array.isArray(m.samples) && m.samples.length) : [];
@@ -1056,6 +1106,8 @@
           break;
         case "csv":
           out.push({ format: id, suffix: "", ext: "csv", data: toCSV(prep) });
+          // (a Kinect's bodies: a table of their own)
+          if (bodyCameras(data).length) out.push({ format: id, suffix: "-bodies", ext: "csv", data: toBodiesCSV(data) });
           break;
         case "bvh":
           for (const tr of prep.tracks) out.push({ format: id, suffix: `-${tr.key}`, ext: "bvh", data: toBVH(prep, tr) });

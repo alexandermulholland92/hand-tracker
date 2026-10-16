@@ -44,6 +44,14 @@
  *   MultiCamera.setRole(i, role); MultiCamera.setView(i, { rotation, mirror })
  *   MultiCamera.setScreenPictures(on); MultiCamera.screenPictures()   // OAK pictures on this screen (remembered)
  *   MultiCamera.setPreviewWant({ on, focus, ms, focusMs })             // remote recording's previews: how often each is made
+ * A Kinect for Xbox One can be among them too (Linux and Windows app): the picker lists each one
+ * plugged in ("kinect:<id>"), a helper each streams its pictures with their depth (electron/kinect.js),
+ * and its tile finds the hands (and bodies) in them, each with where it is. While a take records,
+ * the Kinect's depth, infrared and sound (and its full-size colour, if asked) are kept beside it.
+ *
+ *   MultiCamera.kinectSettings(id) / MultiCamera.setKinectSettings(id, changes)   a Kinect's own
+ *                                            // settings ("kinect:<id>", KINECT_OWN), remembered for it
+ *   await MultiCamera.saveKinect(baseName)   // the last take's Kinect files, saved beside it -> [{ kind, path, startMs, times, name }]
  *   MultiCamera.oakSettings(id)              // an OAK camera's own settings ("oak:<id>"): { model, hands, depth, fps,
  *                                            //   detect, picture, night, dots }, and what it has (infrared, depth: null till known)
  *   MultiCamera.setOakSettings(id, changes)  // any of those, remembered for that camera; one running starts again with them
@@ -64,6 +72,9 @@
   let oakOff = []; // the OAK stream listeners, while OAK tiles run
   let restoreOak = false; // the main window's OAK camera was in use: back to it when the tiles close
   let oakPorts = {}; // OAK camera id -> its USB port, from the last listing
+  let kinectOff = []; // the Kinect stream listeners, while Kinect tiles run
+  let kinectHere = null; // whether this app has Kinects: { ok, reason } (desktop.kinect.available)
+  let kinectTakes = []; // the last take's Kinect tiles: [{ id, name }] (saveKinect)
   let home = null; // where the card goes back to when the cameras close: { parent, next }
   let previewWant = { on: false, focus: null, ms: 250, focusMs: 66 }; // remote recording's previews
 
@@ -72,6 +83,14 @@
   const errText = (err) => (err && err.message ? err.message : String(err)).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const isOak = (id) => String(id).startsWith("oak:");
+  const isKinect = (id) => String(id).startsWith("kinect:");
+  const kinectLabel = (id) => `Kinect for Xbox One${id ? ` (${String(id).slice(-4)})` : ""}`;
+  async function kinectAvailable() {
+    if (!global.desktop || !desktop.kinect) return false;
+    // (Asked again until it's yes: Microsoft's runtime installed meanwhile, say.)
+    if (!kinectHere || !kinectHere.ok) kinectHere = await desktop.kinect.available().catch(() => ({ ok: false }));
+    return !!kinectHere.ok;
+  }
   // A webcam's id for remembering it (picks, roles, turn and flip): its device id, but on Android
   // each start of the app gives the cameras new ids, so there it's the camera's name
   // ("cam:camera 0, facing back"), which stays the same. OAK cameras are "oak:<id>".
@@ -88,6 +107,10 @@
     els.pickList.innerHTML = cams.map((c) => box(keyOf(c), c.label)).join("") + (oakAvailable() ? '<div id="multiCamOak" class="note">Looking for Luxonis OAK cameras…</div>' : "");
     els.dialog.hidden = false;
     updatePickButton();
+    if (await kinectAvailable()) {
+      const kinects = await desktop.kinect.list().catch(() => []);
+      if (kinects.length) els.pickList.insertAdjacentHTML("afterbegin", kinects.map((k) => box(`kinect:${k.id}`, kinectLabel(k.id))).join(""));
+    }
     if (oakAvailable()) await listOak(box);
     tickNew();
     updatePickButton();
@@ -99,7 +122,8 @@
     const off = Array.isArray(prefs.multiCamerasOff) ? prefs.multiCamerasOff : [];
     const boxes = [...els.pickList.querySelectorAll("input")];
     let n = boxes.filter((b) => b.checked).length;
-    for (const b of [...boxes.filter((x) => isOak(x.value)), ...boxes.filter((x) => !isOak(x.value))]) {
+    const special = (x) => isOak(x.value) || isKinect(x.value);
+    for (const b of [...boxes.filter(special), ...boxes.filter((x) => !special(x))]) {
       if (n >= MAX_CAMERAS) break;
       if (b.checked || b.dataset.touched || off.includes(b.value)) continue;
       b.checked = true;
@@ -148,8 +172,9 @@
     const n = picked().length;
     const available = els.pickList.querySelectorAll("input").length;
     els.pickNote.textContent = !available ? "No cameras found." : available < 2 ? "Only one camera is connected: plug in another to track several at once." : `Pick up to ${MAX_CAMERAS}.`;
-    els.start.disabled = n < 2 || n > MAX_CAMERAS;
-    els.start.textContent = n > MAX_CAMERAS ? `At most ${MAX_CAMERAS} cameras` : `Start ${n >= 2 ? n : ""} cameras`.replace("  ", " ");
+    const kinectAlone = n === 1 && picked().some(isKinect);
+    els.start.disabled = (n < 2 && !kinectAlone) || n > MAX_CAMERAS;
+    els.start.textContent = n > MAX_CAMERAS ? `At most ${MAX_CAMERAS} cameras` : kinectAlone ? "Start the Kinect" : `Start ${n >= 2 ? n : ""} cameras`.replace("  ", " ");
   }
 
   // ---------- the tiles ----------
@@ -176,7 +201,7 @@
     inPlace(true);
     const cams = await HandTracker.listCameras();
     const find = (id) => cams.find((c) => c.deviceId === id || keyOf(c) === id);
-    const labelOf = (id) => (isOak(id) ? oakLabel(id.slice(4)) : (find(id) || {}).label || (id.startsWith("cam:") ? id.slice(4) : "Camera"));
+    const labelOf = (id) => (isOak(id) ? oakLabel(id.slice(4)) : isKinect(id) ? kinectLabel(id.slice(7)) : (find(id) || {}).label || (id.startsWith("cam:") ? id.slice(4) : "Camera"));
     // (A camera by name that isn't found by its id is looked for by its name in its tile.)
     const deviceOf = (id) => (find(id) || {}).deviceId || id;
     // An OAK camera the main window is using can't be a tile too.
@@ -207,17 +232,21 @@
         `<span class="lbl">${esc(labelOf(id))}</span> <span class="st"></span> <button type="button" class="retry" data-i="${i}" hidden>Try again</button></div>`;
       const frame = el.querySelector("iframe");
       const look = `mirror=${view.mirror ? 1 : 0}&rot=${view.rotation}${phone ? "&phone=1" : ""}`;
+      const k = isKinect(id) ? kinectSettingsOf(id) : null;
       frame.src = isOak(id)
         ? `camera-tile.html?oak=${encodeURIComponent(id.slice(4))}&${look}&name=${encodeURIComponent(name)}`
-        : `camera-tile.html?device=${encodeURIComponent(deviceOf(id))}&label=${encodeURIComponent(labelOf(id))}&${look}&model=${model}&name=${encodeURIComponent(name)}`;
+        : k
+          ? `camera-tile.html?kinect=${encodeURIComponent(id.slice(7))}&${look}&model=${k.model === "lite" ? 0 : 1}&name=${encodeURIComponent(name)}&bodies=${k.bodies ? 1 : 0}&people=${k.people}&faces=${k.faces ? 1 : 0}&view=${k.picture}`
+          : `camera-tile.html?device=${encodeURIComponent(deviceOf(id))}&label=${encodeURIComponent(labelOf(id))}&${look}&model=${model}&name=${encodeURIComponent(name)}`;
       els.grid.appendChild(el);
-      return { name, deviceId: id, role: roles[i], view, label: labelOf(id), frame, el, oak: isOak(id) ? id.slice(4) : null, oakState: "" };
+      return { name, deviceId: id, role: roles[i], view, label: labelOf(id), frame, el, oak: isOak(id) ? id.slice(4) : null, oakState: "", kinect: isKinect(id) ? id.slice(7) : null };
     });
     tiles.forEach(showView);
     tiles.forEach(applyOptions);
     layout();
     showPictures();
     if (tiles.some((t) => t.oak)) startOakTiles(tiles.filter((t) => t.oak));
+    if (tiles.some((t) => t.kinect)) startKinectTiles(tiles.filter((t) => t.kinect));
     els.record.disabled = false;
     els.note.textContent = "Each camera has its own hand tracker. With several cameras each one runs slower than a single camera would.";
     clearInterval(statusTimer);
@@ -406,7 +435,7 @@
       const st = api ? api.status() : null;
       const hands = st && st.tracking === false ? "hand tracking off" : st && st.hands.length ? st.hands.join(" + ") : "no hands";
       t.el.querySelector(".st").textContent = !st ? "starting…" : st.error ? st.error : `${st.fps} fps · ${hands}${st.recording ? " · recording" : ""}${t.oak && !screenPictures() ? " · picture off" : ""}`;
-      t.el.querySelector(".retry").hidden = !(t.oak && st && st.error && t.oakState !== "starting");
+      t.el.querySelector(".retry").hidden = !((t.oak || t.kinect) && st && st.error && t.oakState !== "starting");
       if (st && !st.error) shape(t, st);
     }
   }
@@ -444,6 +473,145 @@
       }
       for (let i = 0; i < 300 && tiles.includes(t) && t.oakState === "starting"; i++) await sleep(100);
     }
+  }
+
+  // ---------- Kinects in tiles ----------
+  // Each Kinect's own settings, set on remote recording's page (its ⚙) and remembered by its id
+  // ("kinect:<id>"): the rest are the main window's (its hand model) or the Kinect's own defaults.
+  //   picture: what its tile shows (the picture, its depth, the two laid over each other, side by side);
+  //   night: hands found on the infrared camera ("on": it sees in the dark), the colour one ("off"), or
+  //     the infrared one while it's dark ("auto"); size: the colour picture's size for tracking;
+  //   bodies, people: bodies tracked (and how many people); depth: each hand's place from the depth;
+  //   saveDepth / saveColor / saveSound: kept with each take (the depth and infrared; the colour camera's
+  //     own 1920 x 1080 pictures; the four microphones); mics: its microphones on;
+  //   exposure: the colour camera's (-2 to 2 brighter or darker); led: its light; range: depth's far limit (m).
+  const KINECT_OWN = {
+    model: (v) => ["lite", "full"].includes(v), hands: (v) => [1, 2].includes(v), picture: (v) => ["color", "depth", "blend", "side"].includes(v), night: (v) => ["auto", "on", "off"].includes(v),
+    size: (v) => ["960x540", "1440x810", "1920x1080"].includes(v), bodies: (v) => typeof v === "boolean", people: (v) => Number.isInteger(v) && v >= 1 && v <= 6, depth: (v) => typeof v === "boolean",
+    faces: (v) => typeof v === "boolean",
+    saveDepth: (v) => typeof v === "boolean", saveColor: (v) => typeof v === "boolean", saveSound: (v) => typeof v === "boolean", mics: (v) => typeof v === "boolean",
+    exposure: (v) => [-2, -1, 0, 1, 2].includes(v), led: (v) => ["on", "dim", "off"].includes(v), range: (v) => [3, 4.5, 8].includes(v),
+  };
+  const kinectOwn = (id) => ((prefs && prefs.kinectCameraOptions) || {})[id] || {};
+  function kinectSettingsOf(id) {
+    const o = { model: modelOf() === 1 ? "full" : "lite", hands: 2, picture: "color", night: "auto", size: "960x540", bodies: true, people: 1, depth: true, faces: false,
+      saveDepth: true, saveColor: false, saveSound: true, mics: true, exposure: 0, led: "on", range: 4.5 };
+    const own = kinectOwn(id);
+    for (const k of Object.keys(KINECT_OWN)) if (KINECT_OWN[k](own[k])) o[k] = own[k];
+    return o;
+  }
+  function kinectSettings(id) {
+    const t = tiles.find((x) => x.deviceId === id);
+    return { ...kinectSettingsOf(id), running: !!t, mics: kinectSettingsOf(id).mics, hasMics: t ? t.kinectMics : null, pipeline: t ? t.kinectPipeline || "" : "" };
+  }
+  // What a Kinect's helper is started with; a change to its size or microphones starts it again,
+  // the rest change as it runs (applyKinect).
+  const kinectSource = (o) => (o.night === "on" ? "infrared" : o.night === "off" ? "color" : "auto");
+  const kinectStart = (t) => {
+    const o = kinectSettingsOf(t.deviceId);
+    return { source: kinectSource(o), size: o.size, mics: o.mics };
+  };
+  const kinectFixed = (t) => {
+    const { size, mics } = kinectStart(t);
+    return JSON.stringify({ size, mics });
+  };
+  // The settings a running Kinect takes as it runs: its picture's view, the bodies, the colour
+  // camera's exposure, its light and depth's range.
+  function applyKinect(t) {
+    const o = kinectSettingsOf(t.deviceId), api = tileApi(t);
+    if (api && api.kinectOptions) api.kinectOptions({ view: o.picture, bodies: o.bodies, people: o.people, faces: o.faces, model: o.model === "lite" ? 0 : 1, hands: o.hands });
+    const send = (line) => desktop.kinect.command(t.kinect, line).catch(() => {});
+    send(`source ${kinectSource(o)}`);
+    send(`exposure auto ${o.exposure}`);
+    send(`led ${o.led === "off" ? 0 : o.led === "dim" ? 150 : 1000}`);
+    send(`depthrange 0.5 ${o.range}`);
+  }
+  function setKinectSettings(id, changes = {}) {
+    const all = { ...((prefs && prefs.kinectCameraOptions) || {}) };
+    if (changes === null) delete all[id];
+    else {
+      const own = { ...kinectOwn(id) };
+      for (const k of Object.keys(KINECT_OWN)) if (k in changes && KINECT_OWN[k](changes[k])) own[k] = changes[k];
+      all[id] = own;
+    }
+    setPref("kinectCameraOptions", all);
+    const t = tiles.find((x) => x.deviceId === id);
+    if (t && t.kinect) {
+      if (t.kinectWith !== kinectFixed(t)) restartKinect(t);
+      else applyKinect(t);
+      // (A new hand model is the tile's: it starts again.)
+    }
+    return kinectSettings(id);
+  }
+  async function restartKinect(t) {
+    t.oakState = "starting";
+    const api = tileApi(t);
+    if (api && api.kinectStatus) api.kinectStatus({ status: "starting", message: "Starting the Kinect again with the new settings…" });
+    await desktop.kinect.streamStop(t.kinect).catch(() => {});
+    await sleep(1500);
+    if (tiles.includes(t)) startKinectTiles([t]);
+  }
+  async function startKinectTiles(list) {
+    if (!kinectOff.length) kinectOff = [desktop.kinect.onFrame(onKinectFrame), desktop.kinect.onStatus(onKinectStatus)];
+    for (const t of list) {
+      let api = null;
+      for (let i = 0; i < 100 && tiles.includes(t) && !(api = tileApi(t)); i++) await sleep(100);
+      if (!api || !tiles.includes(t)) continue;
+      await api.ready.catch(() => {});
+      if (!tiles.includes(t)) return;
+      t.oakState = "starting";
+      const start = kinectStart(t);
+      t.kinectWith = kinectFixed(t);
+      try {
+        await desktop.kinect.streamStart(t.kinect, start);
+      } catch (err) {
+        t.oakState = "error";
+        api.kinectStatus({ status: "error", message: errText(err) });
+        continue;
+      }
+      for (let i = 0; i < 200 && tiles.includes(t) && t.oakState === "starting"; i++) await sleep(100);
+    }
+  }
+  function onKinectFrame({ id, header, jpeg, depth, body, audio }) {
+    const i = tiles.findIndex((x) => x.kinect === id);
+    const t = tiles[i];
+    const api = t && tileApi(t);
+    if (!api || !api.kinectFrame) return desktop.kinect.shown(id);
+    t.frameAt = performance.now();
+    if (timing && timing.phase === "measuring" && timing.oak.has(`kinect:${id}`)) timingSample(timing.oak.get(`kinect:${id}`), header, jpeg);
+    t.night = !!header.night;
+    t.audio = audio || null;
+    let bodies = null;
+    if (body && body.byteLength) {
+      try {
+        bodies = JSON.parse(new TextDecoder().decode(body));
+      } catch {}
+    }
+    // The next frame once this one's dealt with (its hands found): the helper's frames meanwhile are dropped.
+    api
+      .kinectFrame({ header, jpeg, depth, bodies, audio, t: tileTime(t, header) })
+      .catch(() => {})
+      .finally(() => desktop.kinect.shown(id));
+  }
+  function onKinectStatus(s) {
+    const t = tiles.find((x) => x.kinect === s.id);
+    if (!t) return;
+    const api = tileApi(t);
+    if (s.status === "note") {
+      if (typeof s.mics === "boolean") t.kinectMics = s.mics;
+      return;
+    }
+    if (s.status === "running") {
+      t.oakState = "running";
+      t.kinectPipeline = s.pipeline || "";
+      if (typeof s.mics === "boolean") t.kinectMics = s.mics;
+      t.label = `Kinect for Xbox One · depth · infrared${s.bodies ? " · bodies" : ""}`;
+      t.el.querySelector(".lbl").textContent = t.label;
+      applyKinect(t);
+    } else if (s.status === "error" || s.status === "stopped") {
+      t.oakState = s.status;
+    }
+    if (api && api.kinectStatus) api.kinectStatus(s);
   }
 
   // ---------- an OAK camera's pictures ----------
@@ -641,6 +809,7 @@
     const measured = new Set();
     for (const t of tiles) {
       if (t.oak) run.oak.set(t.oak, []);
+      else if (t.kinect) run.oak.set(`kinect:${t.kinect}`, []);
       else {
         const api = tileApi(t);
         if (api && api.timing && api.timing(true)) measured.add(t);
@@ -650,7 +819,7 @@
     await sleep(seconds * 1000);
     const cameras = tiles.map((t) => {
       const api = tileApi(t);
-      const samples = t.oak ? run.oak.get(t.oak) || [] : measured.has(t) && api && api.timing ? api.timing(false) : [];
+      const samples = t.oak ? run.oak.get(t.oak) || [] : t.kinect ? run.oak.get(`kinect:${t.kinect}`) || [] : measured.has(t) && api && api.timing ? api.timing(false) : [];
       return { name: nameOf(t), samples: samples.slice().sort((a, b) => a.t - b.t) };
     });
     run.oak.clear();
@@ -696,11 +865,15 @@
     clearInterval(statusTimer);
     const hadOak = tiles.some((t) => t.oak);
     for (const t of tiles) t.el.remove(); // a tile's page going away releases its camera
+    kinectTakes = [];
     tiles = [];
     if (els.missing) els.missing.textContent = "";
     if (hadOak) desktop.oak.streamStop().catch(() => {});
     for (const off of oakOff) off();
     oakOff = [];
+    if (kinectOff.length) desktop.kinect.streamStop().catch(() => {});
+    for (const off of kinectOff) off();
+    kinectOff = [];
     if (els.card) els.card.hidden = true;
     if (els.grid) els.grid.innerHTML = "";
     inPlace(false);
@@ -737,6 +910,15 @@
       t.imuReadings = t.oak ? [] : null; // (an OAK camera's motion sensor, while the take records)
     }
     for (const a of live) a.startRecording();
+    // Each Kinect's depth, infrared, colour and sound, kept as they come (electron/kinect.js).
+    kinectTakes = [];
+    for (const t of tiles) {
+      if (!t.kinect || !live.includes(tileApi(t))) continue;
+      const o = kinectSettingsOf(t.deviceId);
+      if (!o.saveDepth && !o.saveColor && !o.saveSound) continue;
+      desktop.kinect.recordStart(t.kinect, { depth: o.saveDepth, ir: o.saveDepth, color: o.saveColor, sound: o.saveSound && o.mics }).catch(() => {});
+      kinectTakes.push({ id: t.kinect, name: nameOf(t), saved: false });
+    }
     recording = true;
     recordingSince = Date.now();
     els.record.textContent = "Stop Motion Capture";
@@ -760,8 +942,14 @@
         return api && api.status().recording ? { tile: t, data: api.stopRecording() } : null;
       })
       .filter(Boolean);
+    // The Kinects stop keeping theirs now (saveKinect saves them, named after the take).
+    for (const k of kinectTakes) desktop.kinect.recordEnd(k.id).catch(() => {});
     applyTracking(); // (off again, if Sentry mode has it so)
-    if (!show) return null;
+    if (!show) {
+      for (const k of kinectTakes) desktop.kinect.recordStop(k.id, { keep: false }).catch(() => {});
+      kinectTakes = [];
+      return null;
+    }
     const merged = merge(parts);
     if (!merged) {
       els.note.textContent = "No hands were recorded.";
@@ -782,9 +970,42 @@
       .filter((m) => m.samples.length);
     for (const t of tiles) t.imuReadings = null;
     if (imu.length) merged.imu = imu;
+    // Each Kinect's bodies, on the take's clock (t: seconds, as the hands'), as the Kinect gives
+    // them: its 25 joints, each [x, y, z, u, v, state], each hand's state and the body's lean.
+    const bodies = parts
+      .filter((p) => Array.isArray(p.data.bodyFrames) && p.data.bodyFrames.length)
+      .map((p) => ({
+        camera: nameOf(p.tile),
+        joints: p.data.bodyJoints || [],
+        units: "x, y, z: mm from the camera (x right, y down, z ahead: where its depth camera sees that joint), u, v: 0-1 of its picture, state: 2 tracked, 1 inferred, 0 not seen; hands: left, right (open, closed, lasso, unknown, notTracked); lean: -1 to 1 (to the body's right, forwards); face (when looked for): rotation [yaw, pitch, roll] degrees, happy, eyesClosed [left, right], mouthOpen 0-1, mouthMoved, lookingAway, engaged, box (0-1 of the picture), shapes (faceShapes' scores, 0-1)",
+        columns: ["x", "y", "z", "u", "v", "state"],
+        ...(p.data.faceShapes ? { faceShapes: p.data.faceShapes } : {}),
+        frames: p.data.bodyFrames.map((f) => ({ t: Math.round(f.t - origin) / 1000, bodies: f.bodies })).filter((f) => f.t >= 0),
+      }))
+      .filter((b) => b.frames.length);
+    if (bodies.length) merged.bodies = bodies;
     els.note.textContent = `Recorded ${merged.hands.length} hand${merged.hands.length === 1 ? "" : "s"} from ${parts.length} camera${parts.length === 1 ? "" : "s"}: export below.`;
     app.showMotionExport(merged);
     return merged;
+  }
+
+  // The last take's Kinect files, saved beside it as <baseName>-<kind>-<camera> (depth, infrared,
+  // colour, sound…): [{ kind, path, startMs, times, name }] (once each; errors in the note).
+  async function saveKinect(baseName) {
+    const out = [];
+    for (const k of kinectTakes) {
+      if (k.saved) continue;
+      k.saved = true;
+      try {
+        const r = await desktop.kinect.recordStop(k.id, { baseName, role: k.name });
+        for (const f of r.files || []) out.push({ ...f, name: k.name });
+        if (r.errors && r.errors.length && els.note) els.note.textContent = r.errors.join(" ");
+      } catch (err) {
+        if (els.note) els.note.textContent = `The Kinect's files couldn't be saved: ${errText(err)}`;
+      }
+    }
+    kinectTakes = kinectTakes.filter((k) => !k.saved);
+    return out;
   }
 
   // ---------- for remote recording (remote-record-ui.js) ----------
@@ -801,6 +1022,7 @@
           index: i, name: t.name, roleId: t.role || "", role: CameraRoles.label(t.role) || "", label: t.label, rotation: t.view.rotation, mirror: t.view.mirror,
           fps: st ? st.fps : 0, hands: st ? st.hands : [], tracking: st ? st.tracking !== false : tracking(t), error: st ? st.error || "" : "",
           ...(t.oak ? { oak: true, night: !!t.night } : {}),
+          ...(t.kinect ? { kinect: true, night: !!t.night, bodies: st && st.bodies ? st.bodies : 0, sound: t.audio ? { angle: t.audio.angle, level: Math.max(...(t.audio.level || [0])) } : null } : {}),
         };
       }),
       note: els.note ? els.note.textContent : "",
@@ -924,7 +1146,7 @@
       const b = e.target.closest && e.target.closest("button");
       if (!b) return;
       const i = Number(b.dataset.i);
-      if (b.matches("button.retry")) retryOak(tiles[i]);
+      if (b.matches("button.retry")) (tiles[i] && tiles[i].kinect ? startKinectTiles([tiles[i]]) : retryOak(tiles[i]));
       else if (b.matches("button.rot") && tiles[i]) setView(i, { rotation: tiles[i].view.rotation + 90 });
       else if (b.matches("button.flip") && tiles[i]) setView(i, { mirror: !tiles[i].view.mirror });
     });
@@ -934,7 +1156,7 @@
 
   global.MultiCamera = {
     init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, tracking: ownTracking, setTracking, timingCheck, timingState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
-    oakSettings, setOakSettings,
+    oakSettings, setOakSettings, kinectSettings, setKinectSettings, saveKinect, kinectAvailable,
     isActive: () => tiles.length > 0, isRecording: () => recording, isTracking: () => tiles.some((t) => tracking(t)),
     _again: AGAIN, // (the checks shorten its times)
     _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null, cameraHands: t.oak ? t.cameraHands : undefined, oakWith: t.oak ? t.oakWith : undefined, oakState: t.oakState, again: (t.again || []).length })),

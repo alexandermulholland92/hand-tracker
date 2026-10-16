@@ -170,6 +170,36 @@ contextBridge.exposeInMainWorld("desktop", {
     },
   },
 
+  // The Kinect for Xbox One (Linux and Windows app, electron/kinect.js): { ok, reason } here, the
+  // ones plugged in [{ id, name }], then a stream each by id, as the OAK cameras' streams.
+  kinect: {
+    available: () => ipcRenderer.invoke("kinect:available"),
+    list: () => ipcRenderer.invoke("kinect:list"),
+    // options: { source: "color" | "infrared" | "auto", size: "960x540"…, mics, pipeline }
+    streamStart: (id, options) => ipcRenderer.invoke("kinect:stream-start", { ...options, id }),
+    streamStop: (id) => ipcRenderer.invoke("kinect:stream-stop", id || null),
+    // A setting changed as it runs: "source infrared", "exposure auto 0.5", "led 200"…
+    command: (id, line) => ipcRenderer.invoke("kinect:command", { id, line }),
+    // cb({ id, header, jpeg, depth, body, audio }); call shown(id) once it's been dealt with.
+    onFrame: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("kinect:frame", listener);
+      return () => ipcRenderer.removeListener("kinect:frame", listener);
+    },
+    shown: (id) => ipcRenderer.send("kinect:shown", id),
+    // cb({ id, status, message, camera, color, ir, mics, pipeline, ... })
+    onStatus: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("kinect:status", listener);
+      return () => ipcRenderer.removeListener("kinect:status", listener);
+    },
+    // A take's depth, infrared, colour and sound: recordStart(id, { depth, ir, color, sound }),
+    // then recordStop(id, { baseName, role, keep }) -> { dir, files: [{ kind, path, startMs, times }], errors }.
+    recordStart: (id, want) => ipcRenderer.invoke("kinect:record-start", { ...want, id }),
+    recordEnd: (id) => ipcRenderer.invoke("kinect:record-end", id),
+    recordStop: (id, opts) => ipcRenderer.invoke("kinect:record-stop", { ...opts, id }),
+  },
+
   // Controlling this computer: the hand mouse, the floating keyboard and gesture actions.
   pc: {
     // Starts sending input; resolves, or rejects with why it can't (e.g. xdotool missing).

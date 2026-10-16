@@ -67,6 +67,8 @@
       "electron/**",
       "!electron/*.m",
       "oak/**",
+      "kinect/bin/linux-${arch}/**",
+      "kinect/KinectHelper.cs",
       "!oak/__pycache__/**",
       "models/**",
       "index.html",
@@ -105,7 +107,8 @@
       "electron/input-helper.ps1",
       "electron/input-helper-mac", "electron/bluetooth-helper-mac", "electron/bluetooth-helper-win.cs",
       "electron/input-helper-linux.py", "electron/bluetooth-helper-linux.py",
-      "oak/**"
+      "oak/**",
+      "kinect/**"
     ],
     "win": {
       "target": "portable",

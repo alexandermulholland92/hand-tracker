@@ -322,7 +322,7 @@
   const labels = {}; // camera id -> its label when last found (for one picked that's gone)
 
   const oakLabel = (id, port) => `Luxonis ${(prefs.oakNames || {})[id] || "OAK camera"}${port ? ` (USB ${port})` : ""} …${id.slice(-6)}`;
-  const labelOf = (id) => labels[id] || (id.startsWith("oak:") ? oakLabel(id.slice(4)) : id.startsWith("cam:") ? id.slice(4) : "Webcam");
+  const labelOf = (id) => labels[id] || (id.startsWith("oak:") ? oakLabel(id.slice(4)) : id.startsWith("kinect:") ? `Kinect for Xbox One (${id.slice(-4)})` : id.startsWith("cam:") ? id.slice(4) : "Webcam");
   // Picked: every camera found, up to four (those picked before first, then OAK cameras), except
   // one unticked here or in Several cameras; one picked that isn't plugged in is still listed
   // (if there's room). Only the picked ones start.
@@ -375,6 +375,10 @@
         if (silent.length) note = OakSource.silentNote(silent);
       }
     }
+    // Kinects (the Linux and Windows app: electron/kinect.js).
+    if (cams().kinectAvailable && (await cams().kinectAvailable().catch(() => false))) {
+      for (const k of await desktop.kinect.list().catch(() => [])) found.push({ id: `kinect:${k.id}`, label: `Kinect for Xbox One (${k.id.slice(-4)})` });
+    }
     for (const c of await HandTracker.listCameras().catch(() => [])) if (c.deviceId) found.push({ id: cams().keyOf(c), label: c.label });
     for (const c of found) labels[c.id] = c.label;
     return { found, note };
@@ -411,7 +415,7 @@
       const i = starting.indexOf(c.id);
       const role = i >= 0 ? roles[i] : saved[c.id] && !used.has(saved[c.id]) ? saved[c.id] : "";
       // An OAK camera's own settings (and what it has, once it's run), for the page to show and change.
-      const oak = c.id.startsWith("oak:") && cams().oakSettings ? { oak: cams().oakSettings(c.id) } : {};
+      const oak = c.id.startsWith("oak:") && cams().oakSettings ? { oak: cams().oakSettings(c.id) } : c.id.startsWith("kinect:") && cams().kinectSettings ? { kinect: cams().kinectSettings(c.id) } : {};
       const tracking = cams().tracking ? cams().tracking(c.id) : true; // (its own Hand tracking switch)
       return { id: c.id, label: c.label, present: c.present, use: picked.includes(c.id), role, tracking, ...oak };
     });
@@ -571,6 +575,13 @@
     const name = takeName(d, (take && take.recorded_at) || startedAt, seconds);
     const withTake = [];
     const videoFiles = await saveVideos(name, clips, withTake);
+    // Each Kinect's depth, infrared, colour and sound, saved beside it as they were kept.
+    const kinect = cams().saveKinect ? await cams().saveKinect(name).catch(() => []) : [];
+    for (const f of kinect) {
+      videoFiles.push(f.path.split(/[\\/]/).pop());
+      if (f.times) videoFiles.push(f.times.split(/[\\/]/).pop());
+      if (["depth", "ir", "color"].includes(f.kind) && f.startMs) withTake.push({ path: f.path, name: f.name, startMs: f.startMs, kind: f.kind, times: f.times });
+    }
     if (!take) {
       takeDetails = null;
       lastTake = videoFiles.length
@@ -699,6 +710,17 @@
       const running = cams().isActive() && pickedIds().includes(o.id);
       return { ok: true, message: running ? `${labelOf(o.id)} starts again with its new settings (a few seconds).` : `Saved: ${labelOf(o.id)} starts with these.` };
     }
+    if (action === "kinect") {
+      // One Kinect's own settings: remembered for it; running, it takes them as it runs (its
+      // picture size or microphones: it starts again).
+      const o = data.kinect || {};
+      if (!cams().setKinectSettings) return { ok: false, message: "This Hand Tracker has no Kinects." };
+      if (recording) return { ok: false, message: "Stop recording first." };
+      cams().setKinectSettings(o.id, o.options || {});
+      const running = cams().isActive() && pickedIds().includes(o.id);
+      const restarts = Object.keys(o.options || {}).some((k) => k === "size" || k === "mics");
+      return { ok: true, message: running ? (restarts ? `${labelOf(o.id)} starts again with its new settings (a few seconds).` : `${labelOf(o.id)}: done.`) : `Saved: ${labelOf(o.id)} starts with these.` };
+    }
     if (action === "reboot") {
       if (!remote.reboot || !system || !system.reboot) return { ok: false, message: "This device can't be restarted from here." };
       if (recording) return { ok: false, message: "Stop recording first." };
@@ -813,10 +835,10 @@
     $("remoteRec").hidden = false;
     remote.onStatus(show);
     remote.onWantPreviews(setPreviews);
-    remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st, sentry, oak }) => {
+    remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st, sentry, oak, kinect }) => {
       let result;
       try {
-        result = await carryOut(action, { details: d, camera, pick: p, mode, settings: st, sentry, oak });
+        result = await carryOut(action, { details: d, camera, pick: p, mode, settings: st, sentry, oak, kinect });
       } catch (err) {
         result = { ok: false, message: errText(err) };
       }

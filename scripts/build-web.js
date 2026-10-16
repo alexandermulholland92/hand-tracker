@@ -30,6 +30,8 @@ const APP_FILES = [
   "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
   "sentry.js", "camera-video.js", "object-finder.js", "object-finder-worker.js", "web-pc.js", "hid-core.js",
   "remote-recording.html", "remote-recording.js",
+  // (camera-tile.html loads them; a Kinect only runs in the computer apps)
+  "kinect-view.js", "body-tracker.js",
 ];
 
 // Hand Mouse: the hand mouse alone (hand-mouse.html), this phone's control window (Android), and

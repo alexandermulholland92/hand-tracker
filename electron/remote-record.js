@@ -39,8 +39,8 @@
  * { id, use, role }), "mode" ("ego", "stereo" or "freeform") or "settings" ({ detailsRequired, screenPictures,
  * video, sound, videoQuality }: whether the take details are needed, whether the OAK cameras' pictures
  * are drawn on its screen, and each camera's video with a take, its sound and its quality),
- * "sentry" (Sentry mode's settings, boxes and on/off: cleanSentry) or "oak" (one OAK camera's own
- * settings: cleanOak).
+ * "sentry" (Sentry mode's settings, boxes and on/off: cleanSentry), "oak" (one OAK camera's own
+ * settings: cleanOak) or "kinect" (one Kinect's own settings: cleanKinect).
  * onWantPreviews({ on, focus }): a page is (or stopped) looking at the previews; focus: the
  * camera one is looking at full screen (null for none), which then comes bigger
  * (/api/preview?i=N&full=1). Each preview request waits for that camera's next picture; each
@@ -70,7 +70,7 @@ const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it t
 const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
-const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "sentry", "oak", "resetCameras", "reboot", "powerOff", "timing"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "sentry", "oak", "kinect", "resetCameras", "reboot", "powerOff", "timing"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
 const ROLES = ["", "head", "chest", "wrist_left", "wrist_right"];
@@ -121,6 +121,17 @@ function cleanOak(o) {
   const options = {};
   for (const [k, allowed] of Object.entries(OAK_CHOICES)) if (allowed.includes(o.options[k])) options[k] = o.options[k];
   for (const k of ["depth", "detect", "dots"]) if (typeof o.options[k] === "boolean") options[k] = o.options[k];
+  return Object.keys(options).length ? { id: o.id, options } : null;
+}
+// A Kinect's own settings (multi-camera.js's KINECT_OWN).
+const KINECT_CHOICES = { model: ["lite", "full"], hands: [1, 2], picture: ["color", "depth", "blend", "side"], night: ["auto", "on", "off"], size: ["960x540", "1440x810", "1920x1080"],
+  people: [1, 2, 3, 4, 5, 6], exposure: [-2, -1, 0, 1, 2], led: ["on", "dim", "off"], range: [3, 4.5, 8] };
+const KINECT_SWITCHES = ["bodies", "faces", "depth", "saveDepth", "saveColor", "saveSound", "mics"];
+function cleanKinect(o) {
+  if (!o || typeof o !== "object" || typeof o.id !== "string" || !/^kinect:[A-Za-z0-9._-]{1,64}$/.test(o.id) || !o.options || typeof o.options !== "object") return null;
+  const options = {};
+  for (const [k, allowed] of Object.entries(KINECT_CHOICES)) if (allowed.includes(o.options[k])) options[k] = o.options[k];
+  for (const k of KINECT_SWITCHES) if (typeof o.options[k] === "boolean") options[k] = o.options[k];
   return Object.keys(options).length ? { id: o.id, options } : null;
 }
 const cleanMode = (m) => (MODES.includes(m) ? m : null);
@@ -179,11 +190,15 @@ function cleanSentry(s) {
 // ---------- the takes in the remote recording folder ----------
 // A take is the files saved for it: its name, then "-left"/"-right" (BVH), "-motive" (Motive's
 // markers), "-video-<role>" (a camera's video), and " (2)" if the name was taken; the formats
-// Hand Tracker saves. Sentry mode's photo and video of a moment are a take too.
-const TAKE_FILE = /^[^/\\:*?"<>|\u0000-\u001f]{1,240}\.(json|csv|bvh|glb|c3d|trc|npz|mcap|webm|mp4|jpg)$/i;
+// Hand Tracker saves, and a Kinect's "-depth-<role>", "-infrared-<role>", "-colour-<role>" (.mkv),
+// "-sound-<role>", "-sound-beam-<role>" (.wav) with their "-times" (.csv), "-kinect-<role>" (.mcap). Sentry mode's photo and
+// video of a moment are a take too.
+const TAKE_FILE = /^[^/\\:*?"<>|\u0000-\u001f]{1,240}\.(json|csv|bvh|glb|c3d|trc|npz|mcap|webm|mp4|jpg|mkv|wav)$/i;
 const TAKE_SLICE = 2 << 20; // bytes per download request (the apps carry up to 4 MB an answer)
 const MAX_TAKES = 500;
-const takeOf = (file) => file.replace(/\.[a-z0-9]+$/i, "").replace(/ \(\d+\)$/, "").replace(/-video(-[a-z0-9-]+)?$/i, "").replace(/(-motive)?(-left|-right)?$/, "");
+const takeOf = (file) =>
+  file.replace(/\.[a-z0-9]+$/i, "").replace(/ \(\d+\)$/, "").replace(/-(depth|infrared|colour|kinect|sound(-beam|-direction)?)-[a-z0-9-]+?(-times)?( \(\d+\))?$/i, "")
+    .replace(/-video(-[a-z0-9-]+)?$/i, "").replace(/(-motive)?(-left|-right)?$/, "");
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -696,7 +711,7 @@ class RemoteRecordServer extends EventEmitter {
         body += chunk;
         if (body.length > 8192) return this.send(res, 413, { error: "Too long" });
       }
-      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null, sentry = null, oak = null;
+      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null, sentry = null, oak = null, kinect = null;
       try {
         const msg = JSON.parse(body);
         action = String(msg.action || "");
@@ -709,6 +724,7 @@ class RemoteRecordServer extends EventEmitter {
         takes = cleanTakes(msg.takes);
         sentry = cleanSentry(msg.sentry);
         oak = cleanOak(msg.oak);
+        kinect = cleanKinect(msg.kinect);
       } catch {
         return this.send(res, 400, { error: "Not JSON" });
       }
@@ -719,6 +735,7 @@ class RemoteRecordServer extends EventEmitter {
       if (action === "settings" && !settings) return this.send(res, 400, { error: "Which setting?" });
       if (action === "sentry" && !sentry) return this.send(res, 400, { error: "Which Sentry setting?" });
       if (action === "oak" && !oak) return this.send(res, 400, { error: "Which OAK camera setting?" });
+      if (action === "kinect" && !kinect) return this.send(res, 400, { error: "Which Kinect setting?" });
       // Takes this page has safely: deleted here (checked file by file).
       if (action === "deleteTakes") {
         if (!this.takes) return this.send(res, 404, { error: "No takes here." });
@@ -745,6 +762,7 @@ class RemoteRecordServer extends EventEmitter {
       if (settings) extra.settings = settings;
       if (sentry) extra.sentry = sentry;
       if (oak) extra.oak = oak;
+      if (kinect) extra.kinect = kinect;
       const result = await this.ask(action, extra);
       return this.send(res, 200, result || { ok: true });
     }

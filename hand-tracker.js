@@ -6,6 +6,7 @@
  *   await HandTracker.init({ videoEl, canvasEl, overlay: true, mirror: true, maxNumHands: 2,
  *                            deviceId, width: 1280, height: 720 });
  *                            (external: "<name>" instead of a camera: frames come from pushExternalFrame;
+ *                             trackExternal: true with it: MediaPipe is loaded, for trackExternalImage;
  *                             exactCamera: true: that camera or an error, never the default one instead;
  *                             noCamera: true: no camera until setCamera picks one)
  *   HandTracker.onHandLandmarks((data) => { ... });   // fires every processed frame, even with 0 hands
@@ -54,6 +55,10 @@
  *   HandTracker.pushExternalHands(width, height, results, timestamp); // its hands only, from a picture that size:
  *                            tracked and recorded as usual, nothing drawn (the stage keeps its last picture)
  *   HandTracker.drawExternalPicture(image, landmarksList); // then that picture, with those hands' skeleton
+ *   await HandTracker.trackExternalImage(image, timestamp, extras); // or its picture, the hands found here
+ *                            (a Kinect: init with trackExternal), as a camera's frame is (Far-away hands,
+ *                            Black gloves), reported as an external source's, nothing drawn;
+ *                            extras(rawLandmarksList) -> per hand { xyz: [x, y, z] mm }, in the unturned picture's axes
  *   HandTracker.stop();
  *
  * Each hand also has worldLandmarks: MediaPipe's estimate of the hand's real shape, in
@@ -683,15 +688,22 @@
 
   function onResults(results) {
     if (switching) return;
+    // (An external source's picture tracked here: timed by when it was taken, and drawn by the page.)
+    const tracked = trackedExternal;
+    if (tracked) results.noPicture = true;
     // Video files are timed by the video's own clock, so motion data matches the
     // footage however fast or slow the frames were processed.
-    const timestamp = results.externalTime !== undefined ? results.externalTime : frameTime !== null ? frameTime : performance.now();
+    const timestamp = results.externalTime !== undefined ? results.externalTime : tracked ? tracked.timestamp : frameTime !== null ? frameTime : performance.now();
     const region = results.region !== undefined ? results.region : focusRegion;
     let rawList = results.multiHandLandmarks || [];
     if (region) rawList = rawList.map((raw) => fromRegion(raw, region));
     let worldList = results.multiHandWorldLandmarks || [];
     let handednessList = results.multiHandedness || [];
     let extras = results.extras || []; // per hand, from an external source: { score, xyz }
+    if (tracked && tracked.extras && !results.extras) {
+      // (Its depth in the camera's own axes: turned as the picture was.)
+      extras = (tracked.extras(rawList) || []).map((e) => (e && e.xyz && rotation ? { ...e, xyz: [...turnVector(e.xyz[0], e.xyz[1]), e.xyz[2]] } : e));
+    }
 
     tickFps();
 
@@ -1276,6 +1288,38 @@
     drawStage(image, landmarksList, ownSize ? { w: turned ? sh : sw, h: turned ? sw : sh } : null);
   }
 
+  // An external source whose hands are found here (a Kinect): its picture (unturned) tracked as a
+  // camera's frame is, turned, with Far-away hands and Black gloves; its hands reported as an
+  // external source's, timed by when the picture was taken (timestamp, this page's clock), and
+  // nothing drawn (drawExternalPicture draws it, or another view of it, after). extras: per hand
+  // found, its { xyz } (see onResults). -> false if it wasn't taken (paused, say).
+  let trackedExternal = null;
+  async function trackExternalImage(image, timestamp = performance.now(), extras = null) {
+    if (source !== "external" || !external || paused || switching) return false;
+    const sw = image.width || image.videoWidth, sh = image.height || image.videoHeight;
+    if (!sw || !sh) return false;
+    const turned = rotation === 90 || rotation === 270;
+    const w = turned ? sh : sw, h = turned ? sw : sh;
+    const resized = w !== external.width || h !== external.height;
+    external.width = w;
+    external.height = h;
+    const input = turnedExternal(image, sw, sh);
+    lastFrame = input;
+    if (resized) notifySource();
+    if (!tracking || !hands) {
+      onResults({ multiHandLandmarks: [], multiHandedness: [], externalTime: timestamp, noPicture: true, region: null });
+      return true;
+    }
+    trackedExternal = { timestamp, extras };
+    inflight = processFrame(input).catch(handsFailed);
+    try {
+      await inflight;
+    } finally {
+      trackedExternal = null;
+    }
+    return true;
+  }
+
   // An external source's picture (sw x sh) turned by the rotation (on a canvas kept for it).
   function turnedExternal(image, sw, sh) {
     if (!rotation) return image;
@@ -1550,10 +1594,15 @@
     });
 
     // options.external: hands and pictures come from elsewhere from the start (an OAK camera
-    // in a tile of "Several cameras"): no camera of its own, and MediaPipe isn't loaded.
+    // in a tile of "Several cameras"): no camera of its own, and MediaPipe isn't loaded, unless
+    // the hands are found here in its pictures (trackExternal: a Kinect).
     if (options.external) {
       source = "external";
       external = { name: String(options.external), width: 0, height: 0 };
+      if (options.trackExternal) {
+        if (!global.Hands) throw new Error("MediaPipe Hands failed to load. Run `npm install` so node_modules/@mediapipe is present.");
+        await createHands();
+      }
       notifySource();
       return true;
     }
@@ -1800,6 +1849,7 @@
     pushExternalFrame,
     pushExternalHands,
     drawExternalPicture,
+    trackExternalImage,
     forgetStream,
     getFPS: () => fps,
     quaternionToEuler: quatToEuler,

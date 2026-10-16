@@ -1,0 +1,81 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d8ef047..f6e6802 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,4 +1,4 @@
+-CMAKE_MINIMUM_REQUIRED(VERSION 2.8.12.1)
++CMAKE_MINIMUM_REQUIRED(VERSION 3.5)
+ 
+ SET(PROJECT_VER_MAJOR 0)
+ SET(PROJECT_VER_MINOR 2)
+diff --git a/include/libfreenect2/packet_pipeline.h b/include/libfreenect2/packet_pipeline.h
+index 08d6540..20b88e8 100644
+--- a/include/libfreenect2/packet_pipeline.h
++++ b/include/libfreenect2/packet_pipeline.h
+@@ -90,6 +90,25 @@ public:
+   virtual ~CpuPacketPipeline();
+ };
+ 
++/** Pipeline with the color camera's own JPEG (not decoded: a Raw frame, its length in
++ * bytes_per_pixel) and CPU depth processing (Hand Tracker). */
++class LIBFREENECT2_API JpegCpuPacketPipeline : public PacketPipeline
++{
++public:
++  JpegCpuPacketPipeline();
++  virtual ~JpegCpuPacketPipeline();
++};
++
++#ifdef LIBFREENECT2_WITH_OPENGL_SUPPORT
++/** As JpegCpuPacketPipeline, with OpenGL depth processing (Hand Tracker). */
++class LIBFREENECT2_API JpegOpenGLPacketPipeline : public PacketPipeline
++{
++public:
++  JpegOpenGLPacketPipeline();
++  virtual ~JpegOpenGLPacketPipeline();
++};
++#endif // LIBFREENECT2_WITH_OPENGL_SUPPORT
++
+ #ifdef LIBFREENECT2_WITH_OPENGL_SUPPORT
+ /** Pipeline with OpenGL depth processing. */
+ class LIBFREENECT2_API OpenGLPacketPipeline : public PacketPipeline
+diff --git a/src/packet_pipeline.cpp b/src/packet_pipeline.cpp
+index e5d7ca3..ad3b661 100644
+--- a/src/packet_pipeline.cpp
++++ b/src/packet_pipeline.cpp
+@@ -135,6 +135,22 @@ CpuPacketPipeline::CpuPacketPipeline()
+ 
+ CpuPacketPipeline::~CpuPacketPipeline() { }
+ 
++JpegCpuPacketPipeline::JpegCpuPacketPipeline()
++{
++  comp_->initialize(new DumpRgbPacketProcessor(), new CpuDepthPacketProcessor());
++}
++
++JpegCpuPacketPipeline::~JpegCpuPacketPipeline() { }
++
++#ifdef LIBFREENECT2_WITH_OPENGL_SUPPORT
++JpegOpenGLPacketPipeline::JpegOpenGLPacketPipeline()
++{
++  comp_->initialize(new DumpRgbPacketProcessor(), new OpenGLDepthPacketProcessor(0, false));
++}
++
++JpegOpenGLPacketPipeline::~JpegOpenGLPacketPipeline() { }
++#endif // LIBFREENECT2_WITH_OPENGL_SUPPORT
++
+ #ifdef LIBFREENECT2_WITH_OPENGL_SUPPORT
+ OpenGLPacketPipeline::OpenGLPacketPipeline(void *parent_opengl_context, bool debug) : parent_opengl_context_(parent_opengl_context), debug_(debug)
+ {
+diff --git a/src/rgb_packet_processor.cpp b/src/rgb_packet_processor.cpp
+index 554e27e..c084f0f 100644
+--- a/src/rgb_packet_processor.cpp
++++ b/src/rgb_packet_processor.cpp
+@@ -55,7 +55,8 @@ DumpRgbPacketProcessor::~DumpRgbPacketProcessor() {}
+ 
+ void DumpRgbPacketProcessor::process(const RgbPacket &packet)
+ {
+-  Frame *frame = new Frame(1, 1, 1920*1080*4);
++  Frame *frame = new Frame(packet.jpeg_buffer_length, 1, 1);
++  frame->width = 1;
+   frame->sequence = packet.sequence;
+   frame->timestamp = packet.timestamp;
+   frame->exposure = packet.exposure;
