@@ -828,15 +828,22 @@ const autostart = {
       ? path.join(os.homedir(), "Library", "LaunchAgents", `${APP.id}.standby.plist`)
       : path.join(os.homedir(), ".config", "autostart", `${APP.slug}.desktop`),
   available: () => app.isPackaged && ["linux", "win32", "darwin"].includes(process.platform),
+  // Windows: the portable .exe itself (it runs from a copy it unpacks, deleted when it closes).
+  login: () => ({ path: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, args: ["--remote-standby"] }),
   get() {
     if (!this.available()) return false;
     if (process.platform !== "win32") return fs.existsSync(this.file());
-    return app.getLoginItemSettings({ args: ["--remote-standby"] }).openAtLogin;
+    return app.getLoginItemSettings(this.login()).openAtLogin;
   },
   set(on) {
     if (!this.available()) throw new Error("Only the installed app can open at login.");
+    // A Mac app opened from the disk image, or from where it was downloaded (macOS runs that from
+    // a copy it moves each time), isn't there at login.
+    if (process.platform === "darwin" && on && /^\/Volumes\/|\/AppTranslocation\//.test(process.execPath)) {
+      throw new Error(`Move ${APP.name} into Applications and open it from there first: from where it's open now, it can't open at login.`);
+    }
     if (process.platform === "win32") {
-      app.setLoginItemSettings({ openAtLogin: !!on, args: ["--remote-standby"] });
+      app.setLoginItemSettings({ openAtLogin: !!on, ...this.login() });
     } else if (process.platform === "darwin" && on) {
       const xml = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
       const plist = [

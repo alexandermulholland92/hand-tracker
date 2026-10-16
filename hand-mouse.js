@@ -230,6 +230,8 @@
     $("mouseToggle").hidden = on("phone") || on("gestures");
     $("mouseStatus").hidden = on("phone") || on("gestures");
     $("myGestures").hidden = on("phone"); // (recorded with the camera here: My gestures)
+    // (Not set up from This phone's page: those set up for the other choices still run there.)
+    $("actionsPart").hidden = on("phone");
     $("gestureNow").hidden = !on("gestures");
     $("mouseScreenLabel").hidden = !(on("pc") || on("computer") || (on("bluetooth") && mirroring));
     $("keyboardToggle").hidden = !(on("pc") || on("computer"));

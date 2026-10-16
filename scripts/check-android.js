@@ -842,7 +842,8 @@ async function run() {
 // Hand Mouse and Remote Recording, the apps of their own, as the phone apps open them (Capacitor
 // stood in for, with only each Android app's plugins: ?fakeapp=; ?fakeplatform=ios for the iPhone's):
 //  - Hand Mouse on Android: its four choices (this phone, a PC, Bluetooth mouse, My gestures),
-//    none of the computers' or the iPhone's; My gestures starts the camera, Back lets it go. On
+//    none of the computers' or the iPhone's; My gestures starts the camera, Back lets it go;
+//    This phone's page has no gesture actions, though those set up on A PC's still run. On
 //    an iPhone: the hand browser and My gestures, and its self-test (the hand browser, as in the
 //    simulator) passes, with no remote recording in it.
 //  - Remote Recording on Android: its two choices; Control a rig opens remote.html with the way
@@ -888,6 +889,23 @@ async function checkOwnApps() {
       history.back();
       r.released = !!(await until(() => !HandMouse.mode() && !(video.srcObject && video.srcObject.getVideoTracks().some((t) => t.readyState === "live"))));
       r.chooser = !document.getElementById("chooser").hidden;
+      // Gesture actions: set up on A PC's page (turned on there), not on This phone's, where
+      // they still run (handed to the control window). The hand mouse's settings are kept there.
+      const $ = (id) => document.getElementById(id);
+      const seen = (id) => !!$(id).offsetParent;
+      HandMouse.choose("pc");
+      r.pcActions = seen("actionsToggle") && seen("addAction");
+      const turnOn = $("actionsToggle").getAttribute("aria-pressed") !== "true";
+      if (turnOn) $("actionsToggle").click();
+      history.back();
+      await until(() => !HandMouse.mode());
+      HandMouse.choose("phone");
+      const started = await until(() => window.__fakeCapacitor.calls.find((c) => c[0] === "phoneControl.start"));
+      r.phone = { part: seen("phonePart"), actions: seen("actionsToggle") || seen("addAction") || seen("actionList"), hand: seen("mouseHand"),
+        actionsRun: !!(started && JSON.parse(started[1]).actionsOn === true && Array.isArray(JSON.parse(started[1]).rules)) };
+      history.back();
+      await until(() => !HandMouse.mode());
+      if (turnOn) $("actionsToggle").click(); // (as it was)
       return r;
     })()`);
   } catch (err) {
@@ -962,6 +980,8 @@ async function checkOwnApps() {
   const ma = out.mouseAndroid || {}, mi = out.mouseIos || {}, ra = out.remoteAndroid || {}, ri = out.remoteIos || {};
   check("Hand Mouse (Android): its four choices only (this phone, a PC, Bluetooth mouse, My gestures); My gestures starts the camera, Back lets it go",
     !ma.error && ma.platform === "android" && ma.choices === "phone,pc,bluetooth,gestures" && ma.noApp && ma.camera && ma.shown && ma.released && ma.chooser, JSON.stringify(ma));
+  check("Hand Mouse (Android): This phone's page has no gesture actions (A PC's has), and those set up there still run while it controls the phone; its hand mouse settings stay",
+    !ma.error && ma.pcActions && ma.phone && ma.phone.part && !ma.phone.actions && ma.phone.hand && ma.phone.actionsRun, JSON.stringify(ma.phone || ma));
   check("Hand Mouse (iPhone): the hand browser and My gestures, and its self-test (the hand browser full screen, the small window moving off) passes, with no remote recording in it",
     !mi.error && mi.platform === "ios" && mi.choices === "browser,gestures" && mi.selfTest && mi.selfTest.ok === true && mi.selfTest.rig && !!mi.selfTest.rig.skipped, JSON.stringify(mi));
   const rp = ra.rigPage || {};
