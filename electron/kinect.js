@@ -133,7 +133,7 @@ class KinectCamera {
         args.push("--pipeline", want === "cpu" ? "cpu" : want === "opengl" || (await probeOpenGL()) ? "opengl" : "cpu");
       }
       if (this.started !== started) return; // (stopped meanwhile)
-      this.spawn(exe, args, (msg) => {
+      this.spawn(exe, args, options.device, (msg) => {
         if (pw && msg.status === "running" && !this.mics) {
           this.mics = new KinectMics(onMessage);
           this.mics.start().catch(() => {});
@@ -147,9 +147,10 @@ class KinectCamera {
     })().catch((err) => onMessage({ status: "error", message: err.message, runtime: !!err.runtime }));
   }
 
-  spawn(exe, args, onMessage) {
+  spawn(exe, args, device, onMessage) {
     const proc = spawn(exe, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     this.proc = proc;
+    const log = helperLog(this.dataDir, device, args);
     let buf = Buffer.alloc(0), err = "";
     proc.stdout.on("data", (d) => {
       buf = buf.length ? Buffer.concat([buf, d]) : d;
@@ -165,11 +166,15 @@ class KinectCamera {
         else if (h.kind === "audio") onMessage({ audio: h, pcm: part("pcm"), beam: part("beam") });
       }
     });
-    proc.stderr.on("data", (d) => (err = (err + d).slice(-4000)));
+    proc.stderr.on("data", (d) => {
+      err = (err + d).slice(-4000);
+      log.write(d);
+    });
     proc.stdin.on("error", () => {}); // (a helper that's gone)
     proc.on("error", (e) => onMessage({ status: "error", message: `The Kinect's helper couldn't start: ${e.message}` }));
     proc.on("close", (code) => {
       if (this.proc === proc) this.proc = null;
+      log.end(`--- ${new Date().toISOString()} ended (${code})\n`);
       const last = err.trim().split("\n").filter((l) => l.trim()).slice(-2).join(" ");
       onMessage({ status: "stopped", code, detail: code ? last : "" });
     });
@@ -194,6 +199,24 @@ class KinectCamera {
     const timer = setTimeout(() => proc.kill(), 3000);
     proc.once("close", () => clearTimeout(timer));
     proc.kill("SIGTERM");
+  }
+}
+
+// Each Kinect's helper's messages (libfreenect2's, each with its time: lost packets and USB
+// troubles show there), kept in <data>/kinect/helper-<id>.log, about a megabyte of them (the one
+// before as .old.log): what's there when a Kinect has stopped says why.
+function helperLog(dataDir, device, args) {
+  try {
+    const dir = path.join(dataDir, "kinect");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `helper-${/^[A-Za-z0-9._-]{1,64}$/.test(device || "") ? device : "kinect"}.log`);
+    if (fs.existsSync(file) && fs.statSync(file).size > 1 << 20) fs.renameSync(file, file.replace(/\.log$/, ".old.log"));
+    const out = fs.createWriteStream(file, { flags: "a" });
+    out.on("error", () => {});
+    out.write(`--- ${new Date().toISOString()} started: ${args.join(" ")}\n`);
+    return out;
+  } catch {
+    return { write() {}, end() {} };
   }
 }
 
@@ -283,7 +306,8 @@ class KinectMics {
     }
     for (let m = 0; m < 4; m++) level[m] = Math.round(Math.sqrt(level[m] / frames) * 1e5) / 1e5;
     const b = this.beam.update(ch);
-    const header = { kind: "audio", u: Date.now() - (frames / 16000) * 1000, rate: 16000, channels: 4, frames, level, delays: b.delays.slice(1).map((d) => Math.round(d * 100) / 100), angle: Math.round(b.angle * 10) / 10, confidence: Math.round(b.confidence * 100) / 100 };
+    const header = { kind: "audio", u: Date.now() - (frames / 16000) * 1000, rate: 16000, channels: 4, frames, level, delays: b.delays.slice(1).map((d) => Math.round(d * 100) / 100), angle: Math.round(b.angle * 10) / 10, confidence: Math.round(b.confidence * 100) / 100,
+      active: b.active, snr: Math.round(b.snr * 10) / 10 };
     this.onMessage(this.recording ? { audio: header, pcm, beam: b.mono(ch) } : { audio: header });
   }
 
@@ -298,6 +322,11 @@ class KinectMics {
 // Where the loudest sound is (kinect2-helper.cpp's Beam, the same): each microphone's delay
 // behind the first (GCC-PHAT, in samples), how sure, its angle (roughly), and the four lined up
 // on it as one, turned up gently (the Kinect's sound is quiet).
+// Only a sound above the steady one is placed: the Kinect hears its own hum all the time (one
+// microphone far more than the rest), and placed, that hum would hold the angle still. So each
+// microphone's steady sound is followed, frequency by frequency, each frequency counts by how
+// far above it it is, and the delays change only while the speech band is well above it
+// (active: placed in the last 0.8 s).
 class Beam {
   constructor() {
     this.N = 1024;
@@ -306,6 +335,11 @@ class Beam {
     this.confidence = 0;
     this.angle = 0;
     this.gain = 8;
+    this.noise = null; // per microphone, per frequency: the steady sound's power
+    this.snr = 0; // the last 100 ms's speech band over that (dB)
+    this.quiet = 99; // updates since a sound was last placed
+    this.active = false;
+    this.window = Float64Array.from({ length: this.N }, (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (this.N - 1)));
   }
 
   static fft(re, im, inverse) {
@@ -339,22 +373,46 @@ class Beam {
   }
 
   update(ch) {
-    const N = this.N, n = Math.min(N, ch[0].length);
-    const r0 = new Float64Array(N), i0 = new Float64Array(N);
-    for (let i = 0; i < n; i++) r0[i] = ch[0][i];
-    Beam.fft(r0, i0, false);
-    let confSum = 0;
-    for (let m = 1; m < 4; m++) {
-      const rm = new Float64Array(N), im = new Float64Array(N);
-      for (let i = 0; i < n; i++) rm[i] = ch[m][i];
-      Beam.fft(rm, im, false);
-      for (let k = 0; k < N; k++) {
-        const cr = r0[k] * rm[k] + i0[k] * im[k], ci = i0[k] * rm[k] - r0[k] * im[k];
+    const N = this.N, H = N / 2, n = Math.min(N, ch[0].length), at = ch[0].length - n;
+    const k0 = Math.round((200 / 16000) * N), k1 = Math.round((6000 / 16000) * N); // the speech band
+    const re = [], im = [], power = [];
+    for (let m = 0; m < 4; m++) {
+      const r = new Float64Array(N), i = new Float64Array(N);
+      for (let j = 0; j < n; j++) r[j] = ch[m][at + j] * this.window[j];
+      Beam.fft(r, i, false);
+      const p = new Float64Array(H + 1);
+      for (let k = 0; k <= H; k++) p[k] = r[k] * r[k] + i[k] * i[k];
+      re.push(r), im.push(i), power.push(p);
+    }
+    const first = !this.noise;
+    if (first) this.noise = power.map((p) => Float64Array.from(p, (v) => v + 1e-20));
+    // How far above the steady sound: the speech band as a whole, and each frequency's share.
+    let sp = 0, sn = 0;
+    const share = power.map((p, m) =>
+      Float64Array.from(p, (v, k) => {
+        if (k >= k0 && k <= k1) (sp += v), (sn += this.noise[m][k]);
+        return Math.max(0, 1 - (2 * this.noise[m][k]) / Math.max(v, 1e-30));
+      })
+    );
+    this.snr = first ? 0 : 10 * Math.log10(Math.max(sp, 1e-30) / Math.max(sn, 1e-30));
+    let placed = 0, confSum = 0;
+    for (let m = 1; m < 4 && !first && this.snr > 6; m++) {
+      const rm = new Float64Array(N), iq = new Float64Array(N);
+      let weight = 0;
+      for (let k = k0; k <= k1; k++) {
+        const w = share[0][k] * share[m][k];
+        if (w <= 0) continue;
+        const cr = re[0][k] * re[m][k] + im[0][k] * im[m][k], ci = im[0][k] * re[m][k] - re[0][k] * im[m][k];
         const mag = Math.hypot(cr, ci);
-        rm[k] = mag > 1e-12 ? cr / mag : 0;
-        im[k] = mag > 1e-12 ? ci / mag : 0;
+        if (mag < 1e-30) continue;
+        rm[k] = (w * cr) / mag;
+        iq[k] = (w * ci) / mag;
+        rm[N - k] = rm[k];
+        iq[N - k] = -iq[k];
+        weight += w;
       }
-      Beam.fft(rm, im, true);
+      if (weight < 8) continue; // (too few frequencies above the steady sound to tell)
+      Beam.fft(rm, iq, true);
       let best = 0, top = -1e9, sum = 0;
       for (let lag = -this.MAX_LAG; lag <= this.MAX_LAG; lag++) {
         const v = rm[(lag + N) % N];
@@ -362,13 +420,28 @@ class Beam {
         if (v > top) (top = v), (best = lag);
       }
       const l = rm[(best - 1 + N) % N], r = rm[(best + 1 + N) % N], den = l - 2 * top + r;
-      const frac = Math.abs(den) > 1e-9 ? (0.5 * (l - r)) / den : 0;
+      const frac = Math.abs(den) > 1e-12 ? (0.5 * (l - r)) / den : 0;
       const d = -(best + Math.max(-0.5, Math.min(0.5, frac)));
       const c = sum > 0 ? top / (sum / (2 * this.MAX_LAG + 1)) : 0;
+      if (c < 4) continue;
+      this.delays[m] += (d - this.delays[m]) * 0.5;
+      placed++;
       confSum += c;
-      this.delays[m] += (d - this.delays[m]) * (c > 4 ? 0.5 : 0.1);
     }
-    this.confidence = Math.min(1, confSum / 3 / 12);
+    // The steady sound, after: its average while nothing stands out (the speech band within 3 dB
+    // of it); while something does, down towards a quieter frequency, up only slowly (4 dB in
+    // 10 s: a fan that's come on becomes the steady sound).
+    if (!first) {
+      const calm = this.snr < 3;
+      for (let m = 0; m < 4; m++)
+        for (let k = 0; k <= H; k++) {
+          const v = power[m][k] + 1e-20, s = this.noise[m][k];
+          this.noise[m][k] = calm || v < s ? s + (v - s) * 0.1 : s * 1.01;
+        }
+    }
+    this.quiet = placed ? 0 : this.quiet + 1;
+    this.active = this.quiet <= 8;
+    this.confidence = placed ? Math.min(1, confSum / placed / 12) : this.confidence * 0.8;
     const s = Math.max(-1, Math.min(1, ((this.delays[3] / 16000) * 343) / 0.2));
     this.angle = (Math.asin(s) * 180) / Math.PI;
     return this;
@@ -453,7 +526,7 @@ class KinectTake {
       fs.writeSync(s.fd, Buffer.from(data));
       s.bytes += data.length;
     }
-    this.streams.angles.push([Number(header.u) || Date.now(), header.angle, header.confidence]);
+    this.streams.angles.push([Number(header.u) || Date.now(), header.angle, header.confidence, header.active]);
   }
 
   async finish() {
@@ -479,12 +552,14 @@ class KinectTake {
         out.push({ kind: s.kind, file: s.file, startMs: s.startMs, seconds: s.bytes / (s.channels * (s.bits / 8) * 16000) });
       }
     }
-    // Where the sound came from (roughly), as it went.
+    // Where the sound came from (roughly), as it went (active 1: a sound above the room's steady
+    // one was placed then; empty with the Kinect's own direction finding, Windows).
     const angles = this.streams.angles;
     if (angles && angles.length) {
       const file = path.join(this.folder, "sound-direction.csv");
       const t0 = this.streams.beam.startMs;
-      fs.writeFileSync(file, `t_s,unix_ms,angle_deg,confidence\n${angles.map(([u, a, c]) => `${((u - t0) / 1000).toFixed(2)},${u.toFixed(1)},${a},${c}`).join("\n")}\n`);
+      const rows = angles.map(([u, a, c, on]) => `${((u - t0) / 1000).toFixed(2)},${u.toFixed(1)},${a},${c},${on === undefined ? "" : on ? 1 : 0}`);
+      fs.writeFileSync(file, `t_s,unix_ms,angle_deg,confidence,active\n${rows.join("\n")}\n`);
       out.push({ kind: "direction", file, startMs: t0 });
     }
     return out;
@@ -582,7 +657,7 @@ class SimulatedKinect {
           beam.writeInt16LE(Math.round(Math.sin(((k + i) / 16000) * 2 * Math.PI * 440) * 8000), i * 2);
         }
         k += frames;
-        const header = { kind: "audio", u: Date.now() - 100, rate: 16000, channels: 4, frames, level: [0.07, 0.07, 0.07, 0.07], delays: [1, 2, 3], angle: 19, confidence: 0.8 };
+        const header = { kind: "audio", u: Date.now() - 100, rate: 16000, channels: 4, frames, level: [0.07, 0.07, 0.07, 0.07], delays: [1, 2, 3], angle: 19, confidence: 0.8, active: true, snr: 24 };
         onMessage(this.recording ? { audio: header, pcm, beam } : { audio: header });
       }, 100);
     }
@@ -591,6 +666,7 @@ class SimulatedKinect {
 
   command(line) {
     const [cmd, a] = String(line).split(" ");
+    if (cmd === "stall") return this.stall();
     if (cmd === "record") this.recording = a === "on";
     else if (cmd === "rawcolor") this.rawcolor = a === "on";
     else if (cmd === "source" && this.source) this.source(a);
@@ -603,6 +679,18 @@ class SimulatedKinect {
     clearInterval(this.audioTimer);
     this.timer = this.audioTimer = null;
     this.onMessage({ status: "stopped", code: 0, detail: "" });
+  }
+
+  // As a Kinect whose pictures stop coming: the helper says so and ends.
+  stall() {
+    if (!this.timer) return;
+    clearInterval(this.timer);
+    clearInterval(this.audioTimer);
+    this.timer = this.audioTimer = null;
+    setTimeout(() => {
+      this.onMessage({ status: "error", message: "The Kinect stopped sending pictures.", colors: 10, depths: 10 });
+      this.onMessage({ status: "stopped", code: 0, detail: "" });
+    }, 200);
   }
 }
 

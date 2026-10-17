@@ -1801,6 +1801,8 @@
     syncTiles();
     // A phone's browser starting and stopping recording with those cameras (Windows, Mac and Linux app).
     RemoteRecordUI.init({ desktop, mobile, prefs, setPref, app: window.HandTrackerApp });
+    // Every camera's own settings on this page too, as remote recording's page has them (the apps).
+    if (desktop || mobile) CameraSettings.initCard({ remote: RemoteRecordUI, card: $("camerasCard"), rows: $("camerasRows"), note: $("camerasNote"), refresh: $("camerasRefresh") });
     // Sentry mode, set up and seen from remote recording's page (hidden there): it watches
     // remote recording's cameras, Several cameras. Only where remote recording is (the apps).
     if (desktop || mobile) {

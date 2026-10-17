@@ -229,7 +229,9 @@
         `<select class="role" data-i="${i}" title="Where this camera is worn: its hands are named after it, and its picture goes in that block">${CameraRoles.options(roles[i])}</select> ` +
         `<button type="button" class="rot" data-i="${i}" title="Turn this camera's picture (and its tracking) 90° clockwise"></button> ` +
         `<button type="button" class="flip" data-i="${i}" aria-pressed="false" title="Show this camera's picture mirrored (only the look: the left hand stays the left)">Flip</button> ` +
-        `<span class="lbl">${esc(labelOf(id))}</span> <span class="st"></span> <button type="button" class="retry" data-i="${i}" hidden>Try again</button></div>`;
+        `<button type="button" class="gear" data-i="${i}" aria-expanded="false" title="This camera's own settings">⚙</button> ` +
+        `<span class="lbl">${esc(labelOf(id))}</span> <span class="st"></span> <button type="button" class="retry" data-i="${i}" hidden>Try again</button></div>` +
+        '<div class="multi-cam-set" hidden></div>';
       const frame = el.querySelector("iframe");
       const look = `mirror=${view.mirror ? 1 : 0}&rot=${view.rotation}${phone ? "&phone=1" : ""}`;
       const k = isKinect(id) ? kinectSettingsOf(id) : null;
@@ -253,6 +255,7 @@
     statusTimer = setInterval(() => {
       showStatus();
       checkFrozen();
+      for (const t of tiles) if (t.settingsOpen) drawSettings(t, false);
     }, STATUS_MS);
     els.card.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
@@ -484,36 +487,41 @@
   //   bodies, people: bodies tracked (and how many people); depth: each hand's place from the depth;
   //   saveDepth / saveColor / saveSound: kept with each take (the depth and infrared; the colour camera's
   //     own 1920 x 1080 pictures; the four microphones); mics: its microphones on;
-  //   exposure: the colour camera's (-2 to 2 brighter or darker); led: its light; range: depth's far limit (m).
+  //   exposure: the colour camera's (-2 to 2 brighter or darker); led: its light; range: depth's far limit (m);
+  //   filters: the depth smoothed (libfreenect2's two filters: on a Raspberry Pi they'd take most of
+  //     its graphics chip, which the hand model needs); processing: where the depth is worked out
+  //     (Linux: "auto" the graphics chip where it can, "gpu", "cpu" the processor).
   const KINECT_OWN = {
     model: (v) => ["lite", "full"].includes(v), hands: (v) => [1, 2].includes(v), picture: (v) => ["color", "depth", "blend", "side"].includes(v), night: (v) => ["auto", "on", "off"].includes(v),
     size: (v) => ["960x540", "1440x810", "1920x1080"].includes(v), bodies: (v) => typeof v === "boolean", people: (v) => Number.isInteger(v) && v >= 1 && v <= 6, depth: (v) => typeof v === "boolean",
     faces: (v) => typeof v === "boolean",
     saveDepth: (v) => typeof v === "boolean", saveColor: (v) => typeof v === "boolean", saveSound: (v) => typeof v === "boolean", mics: (v) => typeof v === "boolean",
     exposure: (v) => [-2, -1, 0, 1, 2].includes(v), led: (v) => ["on", "dim", "off"].includes(v), range: (v) => [3, 4.5, 8].includes(v),
+    filters: (v) => typeof v === "boolean", processing: (v) => ["auto", "gpu", "cpu"].includes(v),
   };
   const kinectOwn = (id) => ((prefs && prefs.kinectCameraOptions) || {})[id] || {};
   function kinectSettingsOf(id) {
     const o = { model: modelOf() === 1 ? "full" : "lite", hands: 2, picture: "color", night: "auto", size: "960x540", bodies: true, people: 1, depth: true, faces: false,
-      saveDepth: true, saveColor: false, saveSound: true, mics: true, exposure: 0, led: "on", range: 4.5 };
+      saveDepth: true, saveColor: false, saveSound: true, mics: true, exposure: 0, led: "on", range: 4.5, filters: false, processing: "auto" };
     const own = kinectOwn(id);
     for (const k of Object.keys(KINECT_OWN)) if (KINECT_OWN[k](own[k])) o[k] = own[k];
     return o;
   }
   function kinectSettings(id) {
     const t = tiles.find((x) => x.deviceId === id);
-    return { ...kinectSettingsOf(id), running: !!t, mics: kinectSettingsOf(id).mics, hasMics: t ? t.kinectMics : null, pipeline: t ? t.kinectPipeline || "" : "" };
+    // (linux: its depth is worked out here, by libfreenect2: the smoothing and where are choices.)
+    return { ...kinectSettingsOf(id), running: !!t, mics: kinectSettingsOf(id).mics, hasMics: t ? t.kinectMics : null, pipeline: t ? t.kinectPipeline || "" : "", linux: /Linux/i.test(navigator.platform || "") };
   }
-  // What a Kinect's helper is started with; a change to its size or microphones starts it again,
-  // the rest change as it runs (applyKinect).
+  // What a Kinect's helper is started with; a change to its size, microphones or where its depth
+  // is worked out starts it again, the rest change as it runs (applyKinect).
   const kinectSource = (o) => (o.night === "on" ? "infrared" : o.night === "off" ? "color" : "auto");
   const kinectStart = (t) => {
     const o = kinectSettingsOf(t.deviceId);
-    return { source: kinectSource(o), size: o.size, mics: o.mics };
+    return { source: kinectSource(o), size: o.size, mics: o.mics, pipeline: o.processing === "gpu" ? "opengl" : o.processing };
   };
   const kinectFixed = (t) => {
-    const { size, mics } = kinectStart(t);
-    return JSON.stringify({ size, mics });
+    const { size, mics, pipeline } = kinectStart(t);
+    return JSON.stringify({ size, mics, pipeline });
   };
   // The settings a running Kinect takes as it runs: its picture's view, the bodies, the colour
   // camera's exposure, its light and depth's range.
@@ -525,6 +533,7 @@
     send(`exposure auto ${o.exposure}`);
     send(`led ${o.led === "off" ? 0 : o.led === "dim" ? 150 : 1000}`);
     send(`depthrange 0.5 ${o.range}`);
+    send(`filters ${o.filters ? "on" : "off"}`);
   }
   function setKinectSettings(id, changes = {}) {
     const all = { ...((prefs && prefs.kinectCameraOptions) || {}) };
@@ -550,6 +559,13 @@
     await desktop.kinect.streamStop(t.kinect).catch(() => {});
     await sleep(1500);
     if (tiles.includes(t)) startKinectTiles([t]);
+  }
+  // Retry: at once, and its restarts counted afresh.
+  function retryKinect(t) {
+    clearTimeout(t.kinectTimer);
+    t.kinectTimer = null;
+    t.kinectAgain = [];
+    startKinectTiles([t]);
   }
   async function startKinectTiles(list) {
     if (!kinectOff.length) kinectOff = [desktop.kinect.onFrame(onKinectFrame), desktop.kinect.onStatus(onKinectStatus)];
@@ -609,9 +625,65 @@
       t.el.querySelector(".lbl").textContent = t.label;
       applyKinect(t);
     } else if (s.status === "error" || s.status === "stopped") {
+      if (t.kinectTimer) return; // (it's starting again: its helper's own end after the error)
+      const ran = t.oakState === "running";
       t.oakState = s.status;
+      // Stopped while it ran (its pictures stopped coming, or its helper ended badly): again, by itself.
+      if (ran && (s.status === "error" || s.code)) return kinectAgain(t, s.status === "error" ? s.message || "The Kinect stopped." : "The Kinect's helper stopped.");
     }
     if (api && api.kinectStatus) api.kinectStatus(s);
+  }
+
+  // ---------- a tile's own settings (its ⚙) ----------
+  // The ones remote recording's page has under the camera's ⚙ (camera-settings.js): its hand
+  // tracking, and an OAK camera's or a Kinect's own; not while recording.
+  const cameraOf = (t) => ({ id: t.deviceId, tracking: ownTracking(t.deviceId), ...(t.oak ? { oak: oakSettings(t.deviceId) } : t.kinect ? { kinect: kinectSettings(t.deviceId) } : {}) });
+  function drawSettings(t, force) {
+    const panel = t.el.querySelector(".multi-cam-set"), gear = t.el.querySelector("button.gear");
+    if (!panel || !global.CameraSettings) return;
+    if (gear) gear.setAttribute("aria-expanded", String(!!t.settingsOpen));
+    panel.hidden = !t.settingsOpen;
+    if (!t.settingsOpen) return;
+    if (!panel.dataset.wired) {
+      panel.dataset.wired = "1";
+      CameraSettings.wire(panel, (kind, data) => {
+        if (recording) return;
+        if (kind === "pick" && typeof data.tracking === "boolean") setTracking(data.id, data.tracking);
+        else if (kind === "oak") setOakSettings(data.id, data.options);
+        else if (kind === "kinect") setKinectSettings(data.id, data.options);
+        drawSettings(t, true);
+      });
+    }
+    const html = CameraSettings.html(cameraOf(t), recording);
+    const using = document.activeElement && document.activeElement.tagName === "SELECT" && panel.contains(document.activeElement);
+    if ((force || html !== t.settingsShown) && !using) {
+      t.settingsShown = html;
+      panel.innerHTML = html;
+    }
+  }
+
+  // A Kinect that stopped as it ran starts again by itself: after 3 s, then 6, 12, 24 and 48, five
+  // times in 10 minutes at most; then it waits for Retry (a Kinect that's stuck needs its power
+  // off and on: a USB reset, which each start is, doesn't do it).
+  const KINECT_AGAIN_S = [3, 6, 12, 24, 48];
+  function kinectAgain(t, why) {
+    const now = Date.now(), api = tileApi(t);
+    t.kinectAgain = (t.kinectAgain || []).filter((at) => now - at < 10 * 60000);
+    if (t.kinectAgain.length >= KINECT_AGAIN_S.length) {
+      t.oakState = "error";
+      if (api && api.kinectStatus) api.kinectStatus({ status: "error", message: `${why} It's stopped again and again: turn its power off and on (unplug its power adapter for 5 seconds), then press Retry.` });
+      return;
+    }
+    const wait = KINECT_AGAIN_S[t.kinectAgain.length];
+    t.kinectAgain.push(now);
+    t.oakState = "starting";
+    if (api && api.kinectStatus) api.kinectStatus({ status: "starting", message: `${why} Starting it again in ${wait} s…` });
+    t.kinectTimer = setTimeout(async () => {
+      await desktop.kinect.streamStop(t.kinect).catch(() => {});
+      await sleep(500);
+      t.kinectTimer = null;
+      if (tiles.includes(t)) startKinectTiles([t]);
+    }, wait * 1000);
   }
 
   // ---------- an OAK camera's pictures ----------
@@ -865,6 +937,7 @@
     clearInterval(statusTimer);
     const hadOak = tiles.some((t) => t.oak);
     for (const t of tiles) t.el.remove(); // a tile's page going away releases its camera
+    for (const t of tiles) clearTimeout(t.kinectTimer);
     kinectTakes = [];
     tiles = [];
     if (els.missing) els.missing.textContent = "";
@@ -1022,7 +1095,7 @@
           index: i, name: t.name, roleId: t.role || "", role: CameraRoles.label(t.role) || "", label: t.label, rotation: t.view.rotation, mirror: t.view.mirror,
           fps: st ? st.fps : 0, hands: st ? st.hands : [], tracking: st ? st.tracking !== false : tracking(t), error: st ? st.error || "" : "",
           ...(t.oak ? { oak: true, night: !!t.night } : {}),
-          ...(t.kinect ? { kinect: true, night: !!t.night, bodies: st && st.bodies ? st.bodies : 0, sound: t.audio ? { angle: t.audio.angle, level: Math.max(...(t.audio.level || [0])) } : null } : {}),
+          ...(t.kinect ? { kinect: true, night: !!t.night, bodies: st && st.bodies ? st.bodies : 0, sound: t.audio ? { angle: t.audio.angle, level: Math.max(...(t.audio.level || [0])), active: t.audio.active } : null } : {}),
         };
       }),
       note: els.note ? els.note.textContent : "",
@@ -1146,9 +1219,13 @@
       const b = e.target.closest && e.target.closest("button");
       if (!b) return;
       const i = Number(b.dataset.i);
-      if (b.matches("button.retry")) (tiles[i] && tiles[i].kinect ? startKinectTiles([tiles[i]]) : retryOak(tiles[i]));
+      if (b.matches("button.retry")) (tiles[i] && tiles[i].kinect ? retryKinect(tiles[i]) : retryOak(tiles[i]));
       else if (b.matches("button.rot") && tiles[i]) setView(i, { rotation: tiles[i].view.rotation + 90 });
       else if (b.matches("button.flip") && tiles[i]) setView(i, { mirror: !tiles[i].view.mirror });
+      else if (b.matches("button.gear") && tiles[i]) {
+        tiles[i].settingsOpen = !tiles[i].settingsOpen;
+        drawSettings(tiles[i], true);
+      }
     });
     els.closeBtn.addEventListener("click", () => close());
     if (els.screenBtn) els.screenBtn.addEventListener("click", () => setScreenPictures(!screenPictures()));
@@ -1157,8 +1234,9 @@
   global.MultiCamera = {
     init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, tracking: ownTracking, setTracking, timingCheck, timingState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
     oakSettings, setOakSettings, kinectSettings, setKinectSettings, saveKinect, kinectAvailable,
-    isActive: () => tiles.length > 0, isRecording: () => recording, isTracking: () => tiles.some((t) => tracking(t)),
+    isActive: () => tiles.length > 0, runningIds: () => tiles.map((t) => t.deviceId), isRecording: () => recording, isTracking: () => tiles.some((t) => tracking(t)),
     _again: AGAIN, // (the checks shorten its times)
+    _kinectAgain: KINECT_AGAIN_S, // (and these)
     _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null, cameraHands: t.oak ? t.cameraHands : undefined, oakWith: t.oak ? t.oakWith : undefined, oakState: t.oakState, again: (t.again || []).length })),
   };
 })(window);

@@ -125,8 +125,8 @@ function cleanOak(o) {
 }
 // A Kinect's own settings (multi-camera.js's KINECT_OWN).
 const KINECT_CHOICES = { model: ["lite", "full"], hands: [1, 2], picture: ["color", "depth", "blend", "side"], night: ["auto", "on", "off"], size: ["960x540", "1440x810", "1920x1080"],
-  people: [1, 2, 3, 4, 5, 6], exposure: [-2, -1, 0, 1, 2], led: ["on", "dim", "off"], range: [3, 4.5, 8] };
-const KINECT_SWITCHES = ["bodies", "faces", "depth", "saveDepth", "saveColor", "saveSound", "mics"];
+  people: [1, 2, 3, 4, 5, 6], exposure: [-2, -1, 0, 1, 2], led: ["on", "dim", "off"], range: [3, 4.5, 8], processing: ["auto", "gpu", "cpu"] };
+const KINECT_SWITCHES = ["bodies", "faces", "depth", "filters", "saveDepth", "saveColor", "saveSound", "mics"];
 function cleanKinect(o) {
   if (!o || typeof o !== "object" || typeof o.id !== "string" || !/^kinect:[A-Za-z0-9._-]{1,64}$/.test(o.id) || !o.options || typeof o.options !== "object") return null;
   const options = {};

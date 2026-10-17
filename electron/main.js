@@ -748,7 +748,13 @@ function registerKinectIpc() {
   const simulated = () => !!process.env.HAND_TRACKER_KINECT_SIMULATE;
   const u8 = (b) => (b ? new Uint8Array(b) : null); // (a copy: just its own bytes go to the page)
   handle("kinect:available", () => (simulated() ? { ok: true, simulated: true } : KinectCamera.available()));
-  handle("kinect:list", async () => (simulated() ? [{ id: "SIMULATED-KINECT", name: "Kinect for Xbox One" }] : KinectCamera.list(app.getPath("userData")).catch(() => [])));
+  handle("kinect:list", async () => {
+    if (simulated()) return [{ id: "SIMULATED-KINECT", name: "Kinect for Xbox One" }];
+    const found = await KinectCamera.list(app.getPath("userData")).catch(() => []);
+    // (One running is plugged in, even if listing it fails while it's in use.)
+    for (const id of kinectStreams.keys()) if (!found.some((k) => k.id === id)) found.push({ id, name: "Kinect for Xbox One" });
+    return found;
+  });
   handle("kinect:stream-start", (event, { id, ...options } = {}) => {
     if (!KINECT_ID.test(String(id || ""))) throw new Error("Which Kinect?");
     stopKinectStream(id);
@@ -769,7 +775,7 @@ function registerKinectIpc() {
         if (stream.take) stream.take.color(msg.rawcolor, msg.jpeg);
       } else if (msg.audio) {
         const a = msg.audio;
-        stream.audio = { level: a.level, angle: a.angle, confidence: a.confidence, delays: a.delays, u: a.u, beamAngle: a.beamAngle };
+        stream.audio = { level: a.level, angle: a.angle, confidence: a.confidence, delays: a.delays, u: a.u, beamAngle: a.beamAngle, active: a.active, snr: a.snr };
         if (stream.take) stream.take.audio(a, msg.pcm, msg.beam);
       } else if (kinectStreams.get(id) === stream || !kinectStreams.has(id)) {
         if (msg.status === "running") stream.params = { color: msg.color || null, ir: msg.ir || null }; // (its cameras', for its MCAP file)
@@ -784,6 +790,7 @@ function registerKinectIpc() {
   });
   handle("kinect:command", (event, { id, line } = {}) => {
     const stream = kinectStreams.get(String(id));
+    if (stream && simulated() && line === "stall") return stream.cam.command("stall"), true; // (the checks' stand-in Kinect stopping)
     if (!stream || !KINECT_COMMAND.test(String(line || ""))) return false;
     stream.cam.command(String(line));
     return true;

@@ -406,7 +406,9 @@
   function available() {
     const picked = pickedIds();
     const list = scanned.found.map((c) => ({ ...c, present: true }));
-    for (const id of picked) if (!list.some((c) => c.id === id)) list.push({ id, label: labelOf(id), present: false });
+    // (One running in a tile is plugged in, whatever the last look found: a Kinect still starting then, say.)
+    const running = cams().runningIds ? cams().runningIds() : [];
+    for (const id of [...picked, ...running]) if (!list.some((c) => c.id === id)) list.push({ id, label: labelOf(id), present: running.includes(id) });
     const saved = prefs.multiCameraRoles || {};
     const starting = picked.filter((id) => list.some((c) => c.id === id && c.present));
     const roles = CameraRoles.assign(starting.map((id) => ({ name: labelOf(id), saved: saved[id] })));
@@ -718,7 +720,7 @@
       if (recording) return { ok: false, message: "Stop recording first." };
       cams().setKinectSettings(o.id, o.options || {});
       const running = cams().isActive() && pickedIds().includes(o.id);
-      const restarts = Object.keys(o.options || {}).some((k) => k === "size" || k === "mics");
+      const restarts = Object.keys(o.options || {}).some((k) => k === "size" || k === "mics" || k === "processing");
       return { ok: true, message: running ? (restarts ? `${labelOf(o.id)} starts again with its new settings (a few seconds).` : `${labelOf(o.id)}: done.`) : `Saved: ${labelOf(o.id)} starts with these.` };
     }
     if (action === "reboot") {
@@ -929,5 +931,8 @@
 
   // Whether a page is looking at the previews now (Sentry mode measures only then, unless it's on).
   const looking = () => previewsOn;
-  global.RemoteRecordUI = { init, tailnetLink, looking, _carryOut: carryOut, _takeName: takeName, _sentryOnLaunch: sentryOnLaunch, _sentryAgain: SENTRY_AGAIN };
+  // (The main page's Cameras card, camera-settings.js: the same list, changed by the same commands.)
+  const cameraState = () => ({ running: cams().isActive(), recording: cams().isRecording(), pending, scanning: !!scanned.scanning });
+  global.RemoteRecordUI = { init, tailnetLink, looking, cameras: () => available(), cameraState, changeCamera: (action, data) => carryOut(action, data), scanCameras: () => scan(),
+    _carryOut: carryOut, _takeName: takeName, _sentryOnLaunch: sentryOnLaunch, _sentryAgain: SENTRY_AGAIN };
 })(window);

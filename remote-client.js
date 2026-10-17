@@ -216,19 +216,24 @@
     exposure: ["Brightness", [[-2, "−2"], [-1, "−1"], [0, "Automatic"], [1, "+1"], [2, "+2"]]],
     led: ["Its light", [["on", "On"], ["dim", "Dim"], ["off", "Off"]]],
     range: ["Depth up to", [[3, "3 m"], [4.5, "4.5 m"], [8, "8 m"]]],
+    processing: ["Depth worked out by", [["auto", "Automatic"], ["gpu", "The graphics chip"], ["cpu", "The processor"]]],
   };
-  const KINECT_SWITCHES = { bodies: "Bodies (25 joints each)", faces: "Faces (which way each looks, and its expressions)", depth: "Depth (each hand's place)", mics: "Its microphones", saveDepth: "Keep the depth and infrared with each take",
-    saveColor: "Keep its full-size colour (1920 × 1080) with each take", saveSound: "Keep its sound with each take" };
+  const KINECT_SWITCHES = { bodies: "Bodies (25 joints each)", faces: "Faces (which way each looks, and its expressions)", depth: "Depth (each hand's place)", filters: "Depth smoothing",
+    mics: "Its microphones", saveDepth: "Keep the depth and infrared with each take", saveColor: "Keep its full-size colour (1920 × 1080) with each take", saveSound: "Keep its sound with each take" };
   const KINECT_NUMBERS = new Set(["hands", "people", "exposure", "range"]);
   function kinectSettingsHtml(c, disabled, first = "") {
     const o = c.kinect, id = esc(c.id), dis = disabled ? " disabled" : "";
     const choice = (k) => `<div class="row"><span class="grow">${KINECT_CHOICES[k][0]}</span><select data-kinid="${id}" data-kinset="${k}"${dis}>` +
       KINECT_CHOICES[k][1].map(([v, t]) => `<option value="${v}"${String(o[k]) === String(v) ? " selected" : ""}>${t}</option>`).join("") + "</select></div>";
     const sw = (k) => `<div class="row"><span class="grow">${KINECT_SWITCHES[k]}</span><button type="button" class="small${o[k] ? " on" : ""}" data-kinid="${id}" data-kinset="${k}" aria-pressed="${!!o[k]}"${dis}>${o[k] ? "On" : "Off"}</button></div>`;
+    // (Depth worked out by and Depth smoothing: only where libfreenect2 works the depth out, Linux.)
+    const linux = o.linux !== false;
     return `<div class="oakset" id="oakset-${id}">` + first + choice("picture") + choice("night") + sw("bodies") + choice("people") + sw("faces") + sw("depth") + choice("model") + choice("hands") + choice("size") +
-      choice("exposure") + choice("led") + choice("range") + sw("mics") + sw("saveDepth") + sw("saveColor") + sw("saveSound") +
-      `<div class="sub">Night vision: Automatic switches to its infrared camera when it's dark, which sees in the dark. Bodies: each person's 25 joints, where they are, each hand open, closed or "lasso".${o.pipeline ? ` Its depth is worked out ${o.pipeline === "opengl" ? "with the graphics chip" : o.pipeline === "cpu" ? "by the processor (slower)" : `by ${esc(o.pipeline)}`}.` : ""} ` +
-      "Picture size and Its microphones start it again (a few seconds); the rest change as it runs.</div></div>";
+      choice("exposure") + choice("led") + choice("range") + (linux ? choice("processing") + sw("filters") : "") + sw("mics") + sw("saveDepth") + sw("saveColor") + sw("saveSound") +
+      `<div class="sub">Night vision: Automatic switches to its infrared camera when it's dark, which sees in the dark. Bodies: each person's 25 joints, where they are, each hand open, closed or "lasso". ` +
+      (linux ? "Depth smoothing evens out the depth, but on a Raspberry Pi it takes most of the graphics chip, which the hand model needs. " : "") +
+      `${o.pipeline ? `Its depth is worked out ${o.pipeline === "opengl" ? "with the graphics chip" : o.pipeline === "cpu" ? "by the processor" : `by ${esc(o.pipeline)}`} now. ` : ""}` +
+      "Picture size, Its microphones and Depth worked out by start it again (a few seconds); the rest change as it runs.</div></div>";
   }
   function oakSettingsHtml(c, disabled, first = "") {
     const o = c.oak, id = esc(c.id), dis = disabled ? " disabled" : "";

@@ -180,6 +180,18 @@
   .multi-cam-grid.one { grid-template-columns: 1fr; }
   .multi-cam-tile iframe { margin: 0 auto; }
   #multiCamMissing { font-size: 12px; opacity: 0.7; margin-top: 6px; }
+  /* A camera's own settings (camera-settings.js): under a tile's ⚙, and in the Cameras card. */
+  .cs-head { display: flex; align-items: center; gap: 8px; }
+  .cs-head span { flex: 1; }
+  .cs-cam { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+  .cs-cam label { flex: 1; min-width: 180px; display: flex; align-items: center; gap: 6px; }
+  .cs-gone { opacity: 0.6; font-size: 0.9em; }
+  .cs-set, .multi-cam-set { border-left: 2px solid rgba(127, 127, 127, 0.35); padding: 2px 0 6px 10px; margin: 0 0 10px 4px; font-size: 13px; }
+  .multi-cam-set { margin-top: 6px; }
+  .cs-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .cs-grow { flex: 1; }
+  .cs-row button.on { background: #2f9e44; color: #fff; border-color: #2f9e44; }
+  .cs-sub { font-size: 12px; opacity: 0.75; margin-top: 6px; }
   #multiCamMissing:empty { display: none; }
   .multi-cam-caption { font-size: 12px; opacity: 0.85; margin-top: 4px; }
   .multi-cam-tile.no-picture iframe { opacity: 0.35; }
@@ -207,7 +219,7 @@
   html.rig-app #layout { grid-template-columns: minmax(0, 1fr); }
   .multi-cam-caption .lbl { opacity: 0.6; }
   .multi-cam-caption select.role, .multi-table select.role { font-size: 12px; padding: 2px 4px; }
-  .multi-cam-caption button.retry, .multi-cam-caption button.rot, .multi-cam-caption button.flip { font-size: 12px; padding: 1px 8px; margin-left: 2px; }
+  .multi-cam-caption button.retry, .multi-cam-caption button.rot, .multi-cam-caption button.flip, .multi-cam-caption button.gear { font-size: 12px; padding: 1px 8px; margin-left: 2px; }
   .multi-cam-pick { display: block; margin: 6px 0; font-size: 13px; }
   #motiveView { width: 100%; height: 380px; display: block; background: #0e0f12; border-radius: 8px; }
 
@@ -368,6 +380,14 @@
     </div>
     <div id="sourceNote" class="note" hidden></div>
     <div id="opsRunBar" class="toolbar video-bar" hidden><span id="opsRunText" class="status"></span><span class="spacer"></span><button id="opsRunStop" hidden>Stop</button></div>
+
+    <!-- Every camera found here and its own settings (camera-settings.js), as remote recording's
+         page has them (the apps: they're the cameras Several cameras and remote recording use). -->
+    <div id="camerasCard" class="card" hidden>
+      <div class="section-label cs-head"><span>Cameras</span><button id="camerasRefresh" class="small" title="Look for cameras again (not while they run)">Refresh</button></div>
+      <div id="camerasRows"></div>
+      <div id="camerasNote" class="note"></div>
+    </div>
 
     <div id="multiCard" class="card" hidden>
       <div class="section-label">Several videos</div>
@@ -861,6 +881,7 @@
 <script src="timing-check.js"></script>
 <script src="rig-live.js"></script>
 <script src="camera-roles.js"></script>
+<script src="camera-settings.js"></script>
 <script src="multi-camera.js"></script>
 <script src="video-sync.js"></script>
 <script src="video-queue.js"></script>

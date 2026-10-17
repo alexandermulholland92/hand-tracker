@@ -56,6 +56,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <iostream>
 #include <limits>
@@ -138,14 +139,25 @@ static double mono_ms() {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// libfreenect2's messages go to stderr (the app keeps the last few); its last error is kept, to say why.
+// libfreenect2's messages go to stderr, each with the time (the app keeps them in a log file:
+// lost packets and USB troubles show there); its last error is kept, to say why.
+static std::string clock_text() {
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t t = std::chrono::system_clock::to_time_t(now);
+  const int ms = (int)(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+  char buf[32];
+  std::strftime(buf, sizeof buf, "%H:%M:%S", std::localtime(&t));
+  char out[40];
+  std::snprintf(out, sizeof out, "%s.%03d", buf, ms);
+  return out;
+}
 class Logger : public libfreenect2::Logger {
  public:
   std::mutex mu;
   std::string last_error;
-  Logger() { level_ = Warning; }
+  Logger() { level_ = Info; }
   void log(Level level, const std::string &message) override {
-    std::cerr << "[libfreenect2] " << message << std::endl;
+    std::cerr << clock_text() << " [libfreenect2] " << message << std::endl;
     if (level == Error) {
       std::lock_guard<std::mutex> l(mu);
       last_error = message;
@@ -353,45 +365,96 @@ static void fft(std::vector<std::complex<float>> &a, bool inverse) {
 // Where the loudest sound is: each microphone's delay behind the first one (GCC-PHAT, in samples,
 // to a tenth), how sure (the peak's height over the rest), and its angle off straight ahead from
 // the outer two's delay, roughly (OUTER_M apart: the microphones' exact places aren't published).
+// Only a sound above the steady one is placed (electron/kinect.js's Beam, the same): the Kinect
+// hears its own hum all the time, which would hold the angle still. Each microphone's steady
+// sound is followed frequency by frequency, each frequency counts by how far above it it is, and
+// the delays change only while the speech band is well above it (active: placed in the last 0.8 s).
 struct Beam {
   static constexpr float OUTER_M = 0.2f, SOUND_MS = 343.0f, RATE = 16000;
-  static constexpr int N = 1024, MAX_LAG = 12;
-  float delays[4] = {0, 0, 0, 0}, confidence = 0, angle = 0;
-  float smooth[4] = {0, 0, 0, 0};
+  static constexpr int N = 1024, H = N / 2, MAX_LAG = 12;
+  float delays[4] = {0, 0, 0, 0}, confidence = 0, angle = 0, snr = 0;
+  bool active = false;
+  int quiet = 99;
+  std::vector<float> noise[4], window;
   void update(const std::vector<float> ch[4]) {
-    std::vector<std::complex<float>> f0(N);
-    const size_t n = std::min((size_t)N, ch[0].size());
-    for (size_t i = 0; i < n; i++) f0[i] = ch[0][i];
-    fft(f0, false);
-    float conf_sum = 0;
-    for (int m = 1; m < 4; m++) {
-      std::vector<std::complex<float>> fm(N);
-      for (size_t i = 0; i < n; i++) fm[i] = ch[m][i];
-      fft(fm, false);
-      for (int k = 0; k < N; k++) {
-        std::complex<float> c = f0[k] * std::conj(fm[k]);
-        const float mag = std::abs(c);
-        fm[k] = mag > 1e-12f ? c / mag : 0;
+    const int k0 = (int)std::lround(200.0 / RATE * N), k1 = (int)std::lround(6000.0 / RATE * N); // the speech band
+    if (window.empty())
+      for (int i = 0; i < N; i++) window.push_back(0.5f - 0.5f * std::cos(2 * (float)M_PI * i / (N - 1)));
+    const size_t n = std::min((size_t)N, ch[0].size()), at = ch[0].size() - n;
+    std::vector<std::complex<float>> f[4];
+    std::vector<float> power[4];
+    for (int m = 0; m < 4; m++) {
+      f[m].assign(N, 0);
+      for (size_t i = 0; i < n; i++) f[m][i] = ch[m][at + i] * window[i];
+      fft(f[m], false);
+      power[m].resize(H + 1);
+      for (int k = 0; k <= H; k++) power[m][k] = std::norm(f[m][k]);
+    }
+    const bool first = noise[0].empty();
+    if (first)
+      for (int m = 0; m < 4; m++) {
+        noise[m] = power[m];
+        for (auto &v : noise[m]) v += 1e-20f;
       }
-      fft(fm, true);
+    // How far above the steady sound: the speech band as a whole, and each frequency's share.
+    double sp = 0, sn = 0;
+    std::vector<float> share[4];
+    for (int m = 0; m < 4; m++) {
+      share[m].resize(H + 1);
+      for (int k = 0; k <= H; k++) {
+        if (k >= k0 && k <= k1) sp += power[m][k], sn += noise[m][k];
+        share[m][k] = std::max(0.0f, 1 - 2 * noise[m][k] / std::max(power[m][k], 1e-30f));
+      }
+    }
+    snr = first ? 0 : 10 * (float)std::log10(std::max(sp, 1e-30) / std::max(sn, 1e-30));
+    int placed = 0;
+    float conf_sum = 0;
+    for (int m = 1; m < 4 && !first && snr > 6; m++) {
+      std::vector<std::complex<float>> g(N, 0);
+      float weight = 0;
+      for (int k = k0; k <= k1; k++) {
+        const float w = share[0][k] * share[m][k];
+        if (w <= 0) continue;
+        const std::complex<float> c = f[0][k] * std::conj(f[m][k]);
+        const float mag = std::abs(c);
+        if (mag < 1e-30f) continue;
+        g[k] = c * (w / mag);
+        g[N - k] = std::conj(g[k]);
+        weight += w;
+      }
+      if (weight < 8) continue; // (too few frequencies above the steady sound to tell)
+      fft(g, true);
       // the lag with the highest correlation: mic m's sound is that many samples behind mic 0's
       int best = 0;
       float top = -1e9f, sum = 0;
       for (int lag = -MAX_LAG; lag <= MAX_LAG; lag++) {
-        const float v = fm[(lag + N) % N].real();
+        const float v = g[(lag + N) % N].real();
         sum += std::fabs(v);
         if (v > top) top = v, best = lag;
       }
-      const float l = fm[(best - 1 + N) % N].real(), r = fm[(best + 1 + N) % N].real();
+      const float l = g[(best - 1 + N) % N].real(), r = g[(best + 1 + N) % N].real();
       const float den = l - 2 * top + r;
-      const float frac = std::fabs(den) > 1e-9f ? 0.5f * (l - r) / den : 0;
+      const float frac = std::fabs(den) > 1e-12f ? 0.5f * (l - r) / den : 0;
       const float d = -(best + std::max(-0.5f, std::min(0.5f, frac)));
       const float c = sum > 0 ? top / (sum / (2 * MAX_LAG + 1)) : 0;
+      if (c < 4) continue;
+      delays[m] += (d - delays[m]) * 0.5f;
+      placed++;
       conf_sum += c;
-      smooth[m] += (d - smooth[m]) * (c > 4 ? 0.5f : 0.1f);
-      delays[m] = smooth[m];
     }
-    confidence = std::min(1.0f, conf_sum / 3 / 12);
+    // The steady sound, after: its average while nothing stands out (the speech band within 3 dB
+    // of it); while something does, down towards a quieter frequency, up only slowly (4 dB in 10 s).
+    if (!first) {
+      const bool calm = snr < 3;
+      for (int m = 0; m < 4; m++)
+        for (int k = 0; k <= H; k++) {
+          const float v = power[m][k] + 1e-20f, s = noise[m][k];
+          noise[m][k] = calm || v < s ? s + (v - s) * 0.1f : s * 1.01f;
+        }
+    }
+    quiet = placed ? 0 : quiet + 1;
+    active = quiet <= 8;
+    confidence = placed ? std::min(1.0f, conf_sum / placed / 12) : confidence * 0.8f;
     const float s = std::max(-1.0f, std::min(1.0f, delays[3] / RATE * SOUND_MS / OUTER_M));
     angle = std::asin(s) * 180 / (float)M_PI;
   }
@@ -461,7 +524,8 @@ static void mic_thread(std::atomic<bool> *running, std::atomic<bool> *mics_ok) {
     std::ostringstream f;
     f << "\"kind\":\"audio\",\"u\":" << num(u, 1) << ",\"rate\":16000,\"channels\":4,\"frames\":" << got << ",\"level\":[" << num(level[0], 5) << ","
       << num(level[1], 5) << "," << num(level[2], 5) << "," << num(level[3], 5) << "],\"delays\":[" << num(b.delays[1], 2) << "," << num(b.delays[2], 2) << ","
-      << num(b.delays[3], 2) << "],\"angle\":" << num(b.angle, 1) << ",\"confidence\":" << num(b.confidence, 2);
+      << num(b.delays[3], 2) << "],\"angle\":" << num(b.angle, 1) << ",\"confidence\":" << num(b.confidence, 2) << ",\"active\":" << (b.active ? "true" : "false")
+      << ",\"snr\":" << num(b.snr, 1);
     if (S.record) send(f.str(), {{"pcm", buf.data(), (size_t)got * 16}, {"beam", beam.data(), (size_t)got * 2}});
     else send(f.str());
   }
@@ -658,7 +722,7 @@ static int run_device(libfreenect2::Freenect2 &ctx) {
   bool night = source == "infrared";
   double dark_since = 0, light_since = 0;
   uint64_t seen_colors = 0, seen_depths = 0;
-  double last_frame = mono_ms();
+  double last_color = mono_ms(), last_depth = last_color;
   std::vector<unsigned char> raw_jpeg;
   uint32_t raw_ts = 0;
   float exposure = 0, gain = 0;
@@ -696,14 +760,21 @@ static int run_device(libfreenect2::Freenect2 &ctx) {
         std::swap(depth, listener.depth);
       }
     }
-    if (!color && !depth) {
-      if (mono_ms() - last_frame > 5000) {
-        status("error", "The Kinect stopped sending pictures.");
-        break;
-      }
-      continue;
+    // The pictures the view needs (colour, or the infrared camera's at night) stopped: it ends, to
+    // be started again (the app does that).
+    const double got = mono_ms();
+    if (color) last_color = got;
+    if (depth) last_depth = got;
+    if (got - (night ? last_depth : last_color) > 5000) {
+      std::cerr << clock_text() << " no " << (night ? "infrared" : "colour") << " pictures for 5 s: " << seen_colors << " colour and " << seen_depths
+                << " depth frames since it started, the last colour " << (int)(got - last_color) << " ms ago, the last depth " << (int)(got - last_depth) << " ms ago" << std::endl;
+      status("error", "The Kinect stopped sending pictures.", "\"colors\":" + std::to_string(seen_colors) + ",\"depths\":" + std::to_string(seen_depths));
+      delete color;
+      delete ir;
+      delete depth;
+      break;
     }
-    last_frame = mono_ms();
+    if (!color && !depth) continue;
     if (color) {
       out.color_rate.tick();
       color_count++;
@@ -863,19 +934,27 @@ static int selftest() {
   const bool irmap_ok = irmap[105 * 256 + 255 - 75] == 1000 && irmap[105 * 256 + 75] == 3000;
   report << ",\"irMap\":" << (irmap_ok ? "true" : "false");
   ok &= irmap_ok;
-  // The microphones' delays: a sound reaching the last one 3 samples after the first.
+  // The microphones' delays: a steady hum heard by all four (the Kinect's own, louder at the first)
+  // isn't placed; a sound above it reaching the last one 3 samples after the first is.
   std::vector<float> ch[4];
   srand(7);
-  std::vector<float> noise(1600 + 8);
-  for (auto &v : noise) v = (rand() / (float)RAND_MAX - 0.5f);
-  for (int m = 0; m < 4; m++) {
-    ch[m].resize(1600);
-    for (int i = 0; i < 1600; i++) ch[m][i] = noise[i + 8 - m];
-  }
+  const auto rnd = [] { return rand() / (float)RAND_MAX - 0.5f; };
+  long t = 0;
+  const auto chunk = [&](bool loud) {
+    std::vector<float> src(1600 + 8);
+    for (auto &v : src) v = rnd();
+    for (int m = 0; m < 4; m++) ch[m].resize(1600);
+    for (int i = 0; i < 1600; i++, t++)
+      for (int m = 0; m < 4; m++)
+        ch[m][i] = (m ? 0.002f : 0.01f) * std::sin(2 * (float)M_PI * 163 * (t - 2 * m) / 16000) + 0.0003f * rnd() + (loud ? 0.05f * src[i + 8 - m] : 0);
+  };
   Beam b;
-  for (int k = 0; k < 20; k++) b.update(ch);
-  const bool beam_ok = std::fabs(b.delays[3] - 3) < 0.3f && std::fabs(b.delays[1] - 1) < 0.3f;
-  report << ",\"beam\":" << (beam_ok ? "true" : "false") << ",\"delays\":[" << num(b.delays[1], 2) << "," << num(b.delays[2], 2) << "," << num(b.delays[3], 2) << "],\"angle\":" << num(b.angle, 1);
+  for (int k = 0; k < 40; k++) chunk(false), b.update(ch);
+  const bool hum_ok = !b.active && std::fabs(b.delays[3]) < 0.01f;
+  for (int k = 0; k < 6; k++) chunk(true), b.update(ch);
+  const bool beam_ok = hum_ok && b.active && std::fabs(b.delays[3] - 3) < 0.3f && std::fabs(b.delays[1] - 1) < 0.3f;
+  report << ",\"beam\":" << (beam_ok ? "true" : "false") << ",\"hum\":" << (hum_ok ? "true" : "false") << ",\"delays\":[" << num(b.delays[1], 2) << "," << num(b.delays[2], 2) << ","
+         << num(b.delays[3], 2) << "],\"angle\":" << num(b.angle, 1);
   ok &= beam_ok;
   send("\"status\":\"selftest\",\"ok\":" + std::string(ok ? "true" : "false") + "," + report.str());
   return ok ? 0 : 1;

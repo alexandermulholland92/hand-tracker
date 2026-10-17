@@ -145,11 +145,15 @@
 
   // Where the loudest sound comes from (roughly: the Kinect's microphone array, turned to the
   // picture as seen), and how loud it is, at the picture's top.
+  // With the app's own direction finding (audio.active, audio.snr: electron/kinect.js's Beam), the
+  // needle shows only while a sound above the room's steady one is placed, and the bar is how far
+  // above it the sound is; with the Kinect's own (Windows), as loud and sure as it says.
   function drawSound(ctx, audio, w, h, unit = 1, mirrored = false) {
     if (!audio || !Array.isArray(audio.level)) return;
     const level = Math.max(...audio.level.map((v) => Number(v) || 0));
     const db = level > 0 ? 20 * Math.log10(level) : -100;
-    const loud = Math.max(0, Math.min(1, (db + 70) / 50)); // -70 dB quiet, -20 dB loud
+    const own = typeof audio.active === "boolean";
+    const loud = own ? Math.max(0, Math.min(1, (Number(audio.snr) || 0) / 30)) : Math.max(0, Math.min(1, (db + 70) / 50)); // (-70 dB quiet, -20 dB loud)
     const cx = w / 2, cy = 8 * unit, r = 34 * unit;
     ctx.save();
     ctx.globalAlpha = 0.85;
@@ -160,7 +164,7 @@
     ctx.closePath();
     ctx.fill();
     // The angle: 0 straight ahead, positive to the camera's right (as the picture shows it, unless mirrored).
-    if (Number.isFinite(audio.angle) && (audio.confidence || 0) > 0.2 && loud > 0.15) {
+    if (Number.isFinite(audio.angle) && (own ? audio.active : (audio.confidence || 0) > 0.2 && loud > 0.15)) {
       const a = (((mirrored ? -1 : 1) * audio.angle) * Math.PI) / 180;
       ctx.strokeStyle = "#ffd43b";
       ctx.lineWidth = 3 * unit;

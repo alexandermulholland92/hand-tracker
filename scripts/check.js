@@ -133,6 +133,8 @@ const STEPS = [
   ["oak-crash-again", [], ({ js }) => checkOakCrashAgain(js)],
   ["kinect", [], ({ js }) => checkKinect(js)],
   ["kinect-helper", [], () => checkKinectHelper()],
+  ["kinect-sound", [], () => checkKinectSound()],
+  ["camera-settings-tables", [], () => checkCameraSettingsTables()],
   ["timing-check", [], ({ js }) => checkTimingCheck(js)],
   ["remote-recording", [], ({ js }) => checkRemoteRecording(js)],
   ["remote-oak-settings", [], ({ js }) => checkRemoteOakSettings(js)],
@@ -3635,6 +3637,39 @@ async function checkKinectSimulated(js) {
     await until(() => tw.HandTracker.getCamera().width === 960, 8000);
     out.state = MultiCamera.remoteState().cameras[0];
     out.settings = MultiCamera.kinectSettings("kinect:SIMULATED-KINECT");
+    // Its own settings on this computer's pages: its tile's ⚙ (Bodies off, then on again, there)...
+    const tileEl = document.querySelector("#multiCamGrid .multi-cam-tile"), panel = () => tileEl.querySelector(".multi-cam-set");
+    tileEl.querySelector("button.gear").click();
+    const bodiesBtn = () => panel().querySelector('button[data-csset="bodies"]');
+    out.gear = { open: !panel().hidden, tracking: !!panel().querySelector('button[data-csset="tracking"]'), picture: !!panel().querySelector('select[data-csset="picture"]') };
+    bodiesBtn().click();
+    out.gear.off = MultiCamera.kinectSettings("kinect:SIMULATED-KINECT").bodies === false && !!(await until(() => (tw.Tile.bodies().length === 0 ? true : null), 3000)) && bodiesBtn().textContent === "Off";
+    bodiesBtn().click();
+    out.gear.on = MultiCamera.kinectSettings("kinect:SIMULATED-KINECT").bodies === true && !!(await until(() => (tw.Tile.bodies().length ? true : null), 5000)) && bodiesBtn().textContent === "On";
+    tileEl.querySelector("button.gear").click();
+    out.gear.closed = panel().hidden;
+    // ... and the main page's Cameras card: it lists the Kinect, and its ⚙ changes the Kinect's settings.
+    const card = document.getElementById("camerasCard");
+    const cardGear = await until(() => document.querySelector('#camerasRows button[data-open="kinect:SIMULATED-KINECT"]'), 5000);
+    out.card = { shown: !card.hidden, listed: !!cardGear };    if (cardGear) {
+      cardGear.click();
+      const sel = await until(() => document.querySelector('#camerasRows select[data-csid="kinect:SIMULATED-KINECT"][data-csset="picture"]'), 3000);
+      if (sel) {
+        sel.value = "blend";
+        sel.dispatchEvent(new Event("change", { bubbles: true }));
+        out.card.blend = !!(await until(() => (MultiCamera.kinectSettings("kinect:SIMULATED-KINECT").picture === "blend" ? true : null), 3000));
+        MultiCamera.setKinectSettings("kinect:SIMULATED-KINECT", { picture: "color" });
+      }
+      document.querySelector('#camerasRows button[data-open="kinect:SIMULATED-KINECT"]').click();
+    }
+    // Its pictures stopping as it runs: it starts again by itself (the waits shortened here).
+    const waits = MultiCamera._kinectAgain.slice();
+    MultiCamera._kinectAgain.splice(0, waits.length, ...waits.map(() => 0.3));
+    const pics = tw.Tile.status().pictures;
+    await desktop.kinect.command("SIMULATED-KINECT", "stall");
+    out.again = { note: await until(() => { const m = tw.document.getElementById("message").textContent; return /Starting it again/.test(m) ? m : null; }, 5000) };
+    out.again.back = !!(await until(() => (MultiCamera._tiles()[0].oakState === "running" && tw.Tile.status().pictures > pics + 10 ? true : null), 15000));
+    MultiCamera._kinectAgain.splice(0, waits.length, ...waits);
     // A take: hands with their places, bodies, and the Kinect's files saved beside it.
     const started = await MultiCamera.startRecording();
     await sleep(2000);
@@ -3682,6 +3717,10 @@ async function checkKinectSimulated(js) {
       r.body.hands && r.body.hands.right === "open" && r.body.hands.left === "notTracked" && Array.isArray(r.body.lean) && /inferred/.test(r.body.states) && /tracked/.test(r.body.states) &&
       r.body.face && r.body.face.happy === 0.75 && r.body.face.mouthOpen === 0.45 && r.body.face.engaged === true && r.body.face.lookingAway === false && r.body.face.rotation[0] === 5,
     JSON.stringify(r.body || r));
+  const g = r.gear || {}, cd = r.card || {}, ag = r.again || {};
+  check("Kinect: its own settings on this computer's pages too: its tile's ⚙ (Bodies off and on again there) and the main page's Cameras card (it lists it; its ⚙ changes its picture)",
+    g.open && g.tracking && g.picture && g.off && g.on && g.closed && cd.shown && cd.listed && cd.blend, JSON.stringify({ gear: r.gear, card: r.card, error: r.error }));
+  check("Kinect: its pictures stopping as it runs, it starts again by itself", /Starting it again/.test(ag.note || "") && ag.back === true, JSON.stringify(r.again || r.error));
   check("Kinect: its views (side by side twice as wide) and night vision (its infrared picture), changed as it runs",
     r.side === "1920x540" && r.night === "512x424 night" && r.state && r.state.kinect === true && r.state.sound && Number.isFinite(r.state.sound.angle) && r.settings && r.settings.picture === "color",
     JSON.stringify({ side: r.side, night: r.night, state: r.state, settings: r.settings }));
@@ -3752,6 +3791,58 @@ async function checkKinectHelper() {
   if (process.platform !== "linux" || !fs.existsSync(exe)) return; // (built on Linux only: GitHub's Linux job checks it)
   const run = spawnSync(exe, ["--selftest"], { encoding: "latin1", timeout: 30000 });
   check("Kinect helper: its own check passes", /"ok":true/.test(run.stdout || ""), String(run.stdout || run.error || "").replace(/[^\x20-\x7e]/g, "").slice(0, 400));
+}
+
+// Where the Kinect's sound comes from (electron/kinect.js's Beam, on made-up sound): a steady hum
+// heard by all four microphones (the Kinect's own, louder at the first) isn't placed; a sound
+// above it reaching each microphone a sample after the one before is, and on the other side the
+// other way; once it's quiet again, nothing's placed (the dial's needle goes).
+function checkKinectSound() {
+  const { Beam } = require("../electron/kinect.js");
+  let seed = 7, t = 0;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5;
+  const chunk = (loud, step = 1) => {
+    const src = Array.from({ length: 1616 }, rnd), ch = [0, 1, 2, 3].map(() => new Float32Array(1600));
+    for (let i = 0; i < 1600; i++, t++)
+      for (let m = 0; m < 4; m++) ch[m][i] = (m ? 0.002 : 0.01) * Math.sin((2 * Math.PI * 163 * (t - 2 * m)) / 16000) + 0.0003 * rnd() + (loud ? 0.05 * src[i + 8 - m * step] : 0);
+    return ch;
+  };
+  const b = new Beam(), out = {};
+  for (let k = 0; k < 40; k++) b.update(chunk(false));
+  out.hum = { active: b.active, d3: +b.delays[3].toFixed(2) };
+  for (let k = 0; k < 6; k++) b.update(chunk(true, 1));
+  out.right = { active: b.active, delays: b.delays.slice(1).map((d) => +d.toFixed(2)), angle: +b.angle.toFixed(1) };
+  for (let k = 0; k < 12; k++) b.update(chunk(false));
+  out.quiet = { active: b.active };
+  for (let k = 0; k < 6; k++) b.update(chunk(true, -1));
+  out.left = { active: b.active, angle: +b.angle.toFixed(1) };
+  check("Kinect's sound: the steady hum isn't placed; a sound above it is (each microphone a sample later: about 19° one way, then the other); quiet again, nothing is",
+    !out.hum.active && out.hum.d3 === 0 && out.right.active && Math.abs(out.right.delays[0] - 1) < 0.2 && Math.abs(out.right.delays[2] - 3) < 0.3 && out.right.angle > 15 && !out.quiet.active && out.left.active && out.left.angle < -15,
+    JSON.stringify(out));
+}
+
+// A camera's own settings: remote recording's page (remote-client.js, for the phones), this
+// computer's pages (camera-settings.js) and what the rig takes (electron/remote-record.js) have
+// the same choices and switches.
+function checkCameraSettingsTables() {
+  const vm = require("vm");
+  const read = (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
+  const take = (src, name) => {
+    const m = src.match(new RegExp(`const ${name} = ([\\[{][\\s\\S]*?[\\]}]);\\n`));
+    return m ? vm.runInNewContext(`(${m[1]})`) : null;
+  };
+  const box = { window: {} };
+  vm.runInNewContext(read("camera-settings.js"), box);
+  const here = box.window.CameraSettings, page = read("remote-client.js"), rig = read("electron/remote-record.js");
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const out = {
+    kinectChoices: same(take(page, "KINECT_CHOICES"), here.KINECT_CHOICES), kinectSwitches: same(take(page, "KINECT_SWITCHES"), here.KINECT_SWITCHES),
+    oakChoices: same(take(page, "OAK_CHOICES"), here.OAK_CHOICES), oakSwitches: same(take(page, "OAK_SWITCHES"), here.OAK_SWITCHES),
+  };
+  const rigChoices = take(rig, "KINECT_CHOICES") || {}, rigSwitches = take(rig, "KINECT_SWITCHES") || [];
+  out.rigChoices = Object.entries(here.KINECT_CHOICES).every(([k, [, options]]) => same(rigChoices[k], options.map(([v]) => v)));
+  out.rigSwitches = same([...rigSwitches].sort(), Object.keys(here.KINECT_SWITCHES).sort());
+  check("A camera's own settings: remote recording's page, this computer's pages and what the rig takes have the same choices and switches", Object.values(out).every(Boolean), JSON.stringify(out));
 }
 
 async function checkOakCrashAgain(js) {
