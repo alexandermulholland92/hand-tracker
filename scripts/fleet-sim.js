@@ -37,7 +37,7 @@ function startFleetSim({ ffmpegPath, outDir }) {
       cpu_temp: 61.4, disk_free_gb: 120.4, disk_total_gb: 476, storage_runway_label: "2.5 h", camera_count: 2, recording_health_pct: 98.6,
       upload_queue: 3, upload_rate_label: "3.7 MB/s", throttle_int: 0x50000, today_recording_s: 4000 }),
     rig("rig-b", "Rig B", "rpi5", "idle", { preview_cameras: ["chest"] }),
-    rig("rig-c", "Rig C", "rpi5", "unknown", { online: false, reachable: false, preview_cameras: [] }),
+    rig("rig-c", "Rig C", "rpi5", "unknown", { online: false, reachable: false, preview_cameras: [], last_seen: Math.floor(Date.now() / 1000) - 3 * 86400 }),
     rig("rig-d", "Rig D", "rpi5", "preview", { preview_active: true }),
     rig("rig-e", "Rig E", "rpi5", "preview", { preview_active: true }),
     rig("rig-f", "Rig F", "rpi5", "recording", { recording_duration_s: 5, session_name: "s2", preview_cameras: ["head", "chest"] }),

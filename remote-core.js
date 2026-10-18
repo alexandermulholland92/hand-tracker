@@ -280,6 +280,8 @@
           // anything on the rig.
           canWatch: online && d.reachable !== false && !d.via_relay && cameras.length > 0 && (!!d.preview_active || recording || ON_DEMAND.has(d.generation)),
           health: fleetHealth(d),
+          // When the dashboard last heard from it (ms since 1970; it gives seconds), or null.
+          lastSeen: Number(d.last_seen) > 0 ? Math.round(Number(d.last_seen) * (Number(d.last_seen) > 1e12 ? 1 : 1000)) : null,
         };
       })
       .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));

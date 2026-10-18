@@ -752,7 +752,8 @@ function registerKinectIpc() {
   handle("kinect:available", () => (simulated() ? { ok: true, simulated: true } : KinectCamera.available()));
   handle("kinect:list", async () => {
     if (simulated()) return [{ id: "SIMULATED-KINECT", name: "Kinect for Xbox One" }];
-    const found = await KinectCamera.list(app.getPath("userData")).catch(() => []);
+    // (The other checks find no real Kinect, even one plugged into the computer they run on.)
+    const found = process.env.HAND_TRACKER_KINECT_NONE ? [] : await KinectCamera.list(app.getPath("userData")).catch(() => []);
     // (One running is plugged in, even if listing it fails while it's in use.)
     for (const id of kinectStreams.keys()) if (!found.some((k) => k.id === id)) found.push({ id, name: "Kinect for Xbox One" });
     return found;

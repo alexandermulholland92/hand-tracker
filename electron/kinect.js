@@ -33,9 +33,10 @@ const unpacked = (p) => p.replace(`app.asar${path.sep}`, `app.asar.unpacked${pat
 const KINECT = unpacked(path.join(__dirname, "..", "kinect"));
 const LINUX_HELPER = path.join(KINECT, "bin", `linux-${process.arch}`, "kinect2-helper");
 const WINDOWS_SOURCE = path.join(KINECT, "KinectHelper.cs");
-// Microsoft's Kinect library: where its Kinect for Windows Runtime 2.0 puts it, or its SDK.
+// Microsoft's Kinect library: where its Kinect for Windows Runtime 2.0 puts it (Windows' store
+// of 64-bit libraries, as the helper is 64-bit), or its SDK.
 const KINECT_DLLS = [
-  path.join(process.env.SystemRoot || "C:\\Windows", "Microsoft.NET", "assembly", "GAC_MSIL", "Microsoft.Kinect", "v4.0_2.0.0.0__31bf3856ad364e35", "Microsoft.Kinect.dll"),
+  ...["GAC_64", "GAC_MSIL"].map((store) => path.join(process.env.SystemRoot || "C:\\Windows", "Microsoft.NET", "assembly", store, "Microsoft.Kinect", "v4.0_2.0.0.0__31bf3856ad364e35", "Microsoft.Kinect.dll")),
   path.join(process.env.ProgramFiles || "C:\\Program Files", "Microsoft SDKs", "Kinect", "v2.0_1409", "Assemblies", "Microsoft.Kinect.dll"),
 ];
 const kinectDll = () => KINECT_DLLS.find((f) => fs.existsSync(f)) || null;
@@ -68,7 +69,7 @@ function buildWindowsHelper(folder) {
   for (const old of fs.readdirSync(folder)) if (/^kinect-helper-[0-9a-f]+\.exe$/.test(old)) fs.rmSync(path.join(folder, old), { force: true });
   const refs = [`-r:${dll}`, `-r:${path.join(fw, "WPF", "PresentationCore.dll")}`, `-r:${path.join(fw, "WPF", "WindowsBase.dll")}`, `-r:${path.join(fw, "System.Xaml.dll")}`];
   // (The SDK's copy isn't in Windows' own store of libraries: the helper finds it beside itself.)
-  if (!/GAC_MSIL/i.test(dll)) fs.copyFileSync(dll, path.join(folder, "Microsoft.Kinect.dll"));
+  if (!/[\\/]assembly[\\/]GAC_/i.test(dll)) fs.copyFileSync(dll, path.join(folder, "Microsoft.Kinect.dll"));
   const tmp = `${exe}.tmp.exe`;
   return new Promise((resolve, reject) => {
     execFile(path.join(fw, "csc.exe"), ["-nologo", "-optimize", "-platform:x64", "-unsafe", `-out:${tmp}`, ...refs, WINDOWS_SOURCE], { windowsHide: true, timeout: 120000 }, (err, stdout) => {

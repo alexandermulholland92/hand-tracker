@@ -48,7 +48,8 @@
   // A rig's health as the dashboard last saw it, in a line (only what it says).
   function healthText(r) {
     const h = r.health || {};
-    if (!r.online) return "";
+    // (Offline, the dashboard keeps none of its readings: only when it was last heard from.)
+    if (!r.online) return r.lastSeen ? `last seen ${ago(Math.max(0, (Date.now() - r.lastSeen) / 1000))} ago` : "";
     const parts = [];
     if (h.tempC) parts.push(`${Math.round(h.tempC)} °C`);
     if (h.diskFreeGb != null) parts.push(`${Math.round(h.diskFreeGb)} GB free${h.runway ? ` (${esc(h.runway)})` : ""}`);

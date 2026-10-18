@@ -66,7 +66,9 @@ dialog.showSaveDialog = async (_win, opts) => ({ canceled: false, filePath: path
 // camera or Python needed (see "Several cameras with Luxonis OAK cameras").
 process.env.HAND_TRACKER_OAK_SIMULATE = "1";
 // (The Kinect too, but only while its checks run: checkKinect turns on the main process's
-// SimulatedKinect, electron/kinect.js, so the other checks don't find an extra camera.)
+// SimulatedKinect, electron/kinect.js, so the other checks don't find an extra camera; nor a
+// real Kinect plugged into this computer.)
+process.env.HAND_TRACKER_KINECT_NONE = "1";
 process.env.HAND_TRACKER_SYSTEM_SIMULATE = "1"; // (never restarting this computer)
 // Remote recording's takes go here, not into Documents.
 process.env.HAND_TRACKER_REMOTE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-remote-"));
@@ -4222,6 +4224,9 @@ async function checkLiveRigs(js) {
     // Each rig's health, and its sessions once asked for (one that doesn't say: why not).
     const rowOf = (host) => document.querySelector('#rigsList button[data-sessions="' + host + '"]');
     out.health = (document.querySelector("#rigsList .rig-row .rig-health") || {}).textContent || "";
+    // (An offline rig: the dashboard keeps none of its readings, only when it was last heard from.)
+    out.offline = ([...document.querySelectorAll("#rigsList .rig-row")].find((row) => row.querySelector("b").textContent === "Rig C") || { querySelector: () => null }).querySelector(".rig-health");
+    out.offline = out.offline ? out.offline.textContent : "";
     rowOf("rig-a").click();
     await until(() => document.querySelectorAll("#rigsList .rig-session").length > 0);
     out.sessions = [...document.querySelectorAll("#rigsList .rig-session")].map((s) => s.textContent);
@@ -4291,8 +4296,9 @@ async function checkLiveRigs(js) {
   const st = r.stereo || {};
   check("Live Rigs: each rig's health from the dashboard (temperature, space, cameras, uploads, power warnings) and its sessions of the last week once asked for (uploaded and still on it, newest first, one on both shown once); a rig that doesn't say, says why",
     /61 °C/.test(r.health || "") && /120 GB free \(2\.5 h\)/.test(r.health || "") && /2 cameras/.test(r.health || "") && /uploading 3\.7 MB\/s/.test(r.health || "") && /3 to upload/.test(r.health || "") && /under-voltage since it started/.test(r.health || "") && /slowed by heat since/.test(r.health || "") &&
-      (r.sessions || []).length === 2 && /on the rig/.test(r.sessions[0]) && /2:00/.test(r.sessions[0]) && /uploaded · lab/.test(r.sessions[1]) && /2\.1 GB/.test(r.sessions[1]) && r.noSessions && r.closed,
-    JSON.stringify({ health: r.health, sessions: r.sessions, noSessions: r.noSessions, closed: r.closed }));
+      (r.sessions || []).length === 2 && /on the rig/.test(r.sessions[0]) && /2:00/.test(r.sessions[0]) && /uploaded · lab/.test(r.sessions[1]) && /2\.1 GB/.test(r.sessions[1]) && r.noSessions && r.closed &&
+      /last seen 3 days ago/.test(r.offline || ""),
+    JSON.stringify({ health: r.health, offline: r.offline, sessions: r.sessions, noSessions: r.noSessions, closed: r.closed }));
   check("Live Rigs: signs in on the dashboard's own page and lists rigs (recording first; ones without a preview can't be picked); a stereo camera's JPEGs are tracked as the source (one view, not mirrored)",
     r.asksToSignIn && JSON.stringify(r.rows) === JSON.stringify(["Rig A:head", "Rig F:head,chest", "Rig D:head", "Rig E:head", "Rig B:chest(off)", "Rig C:"]) &&
       st.name === "Rig A · head" && st.size === "640x400" && st.mirrored === false && st.state && st.state.stereo && st.state.kind === "jpeg" && /Live: Rig A/.test(st.list) && st.dialogClosed && r.both === "1280x400",
