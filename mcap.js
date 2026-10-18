@@ -364,6 +364,10 @@
       "std_msgs/ColorRGBA color\nbuiltin_interfaces/Duration lifetime\nbool frame_locked\ngeometry_msgs/Point[] points\nstd_msgs/ColorRGBA[] colors\n" +
       "string texture_resource\nsensor_msgs/CompressedImage texture\nUVCoordinate[] uv_coordinates\nstring text\nstring mesh_resource\n" +
       "MeshFile mesh_file\nbool mesh_use_embedded_materials\n",
+    // A step of an annotated take (annotate-core.js): its times (s from the take's start), label,
+    // description, kind, share of hands in sight, picture verdict and review.
+    "hand_tracker_msgs/Step":
+      "std_msgs/Header header\nstring id\nstring parent\nfloat64 start\nfloat64 end\nstring label\nstring description\nstring kind\nfloat64 hands\nstring quality\nstring review\n",
   };
   const withDeps = (top, deps) => top + deps.map((d) => SEP + d + "\n" + MSG[d]).join("");
   const ROS2 = {
@@ -371,6 +375,7 @@
     CompressedImage: withDeps(MSG["sensor_msgs/CompressedImage"], ["std_msgs/Header", "builtin_interfaces/Time"]),
     CameraInfo: withDeps(MSG["sensor_msgs/CameraInfo"], ["std_msgs/Header", "builtin_interfaces/Time", "sensor_msgs/RegionOfInterest"]),
     Imu: withDeps(MSG["sensor_msgs/Imu"], ["std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Quaternion", "geometry_msgs/Vector3"]),
+    Step: withDeps(MSG["hand_tracker_msgs/Step"], ["std_msgs/Header", "builtin_interfaces/Time"]),
     PoseArray: withDeps("std_msgs/Header header\nPose[] poses\n", ["std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Pose", "geometry_msgs/Point", "geometry_msgs/Quaternion"]),
     MarkerArray: withDeps("Marker[] markers\n", [
       "visualization_msgs/Marker", "std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Pose", "geometry_msgs/Point", "geometry_msgs/Quaternion",
@@ -445,6 +450,11 @@
     },
     // sensor_msgs/msg/Imu without an orientation (its covariance's first value -1, as ROS says
     // for one that's unknown): angular velocity (rad/s) and acceleration (m/s²), each [x, y, z].
+    // hand_tracker_msgs/Step: one step of an annotated take.
+    step(timeNs, frameId, s) {
+      return new Cdr().header(timeNs, frameId).string(s.id || "").string(s.parent || "").f64(Number(s.start) || 0).f64(Number(s.end) || 0).string(s.label || "").string(s.description || "")
+        .string(s.kind || "").f64(Number(s.hands) || 0).string((s.quality && s.quality.verdict) || "").string(s.review || "pending").bytes().slice();
+    },
     imu(timeNs, frameId, gyro, accel) {
       const w = new Cdr().header(timeNs, frameId).f64(0).f64(0).f64(0).f64(1);
       const cov = (first) => {

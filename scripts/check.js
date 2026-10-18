@@ -135,6 +135,8 @@ const STEPS = [
   ["kinect-helper", [], () => checkKinectHelper()],
   ["kinect-sound", [], () => checkKinectSound()],
   ["camera-settings-tables", [], () => checkCameraSettingsTables()],
+  ["annotate-core", [], () => checkAnnotateCore()],
+  ["annotate", [], () => checkAnnotate()],
   ["timing-check", [], ({ js }) => checkTimingCheck(js)],
   ["remote-recording", [], ({ js }) => checkRemoteRecording(js)],
   ["remote-oak-settings", [], ({ js }) => checkRemoteOakSettings(js)],
@@ -3669,6 +3671,13 @@ async function checkKinectSimulated(js) {
     await desktop.kinect.command("SIMULATED-KINECT", "stall");
     out.again = { note: await until(() => { const m = tw.document.getElementById("message").textContent; return /Starting it again/.test(m) ? m : null; }, 5000) };
     out.again.back = !!(await until(() => (MultiCamera._tiles()[0].oakState === "running" && tw.Tile.status().pictures > pics + 10 ? true : null), 15000));
+    // One that's stopped answering: no starting again, it asks for a power cycle; Retry starts it.
+    await desktop.kinect.command("SIMULATED-KINECT", "stuck");
+    out.again.stuck = await until(() => { const m = tw.document.getElementById("message").textContent; return /power off and on/.test(m) ? m : null; }, 5000);
+    await sleep(1500);
+    out.again.stuckStayed = /power off and on/.test(tw.document.getElementById("message").textContent) && MultiCamera._tiles()[0].oakState === "error";
+    document.querySelector("#multiCamGrid button.retry").click();
+    out.again.retried = !!(await until(() => (MultiCamera._tiles()[0].oakState === "running" ? true : null), 15000));
     MultiCamera._kinectAgain.splice(0, waits.length, ...waits);
     // A take: hands with their places, bodies, and the Kinect's files saved beside it.
     const started = await MultiCamera.startRecording();
@@ -3680,13 +3689,18 @@ async function checkKinectSimulated(js) {
     out.files = files.map((f) => ({ kind: f.kind, name: f.path.split(/[\\\\/]/).pop(), times: f.times && f.times.split(/[\\\\/]/).pop(), frames: f.frames || null, path: f.path }));
     // The take's exports: the bodies as a table of their own, and in its MCAP file.
     try {
+      // (With annotations, as the Recording Viewer's Annotate puts them on a take: they go into its MCAP.)
+      take.annotations = { format: "hand-tracker-annotations", segments: [{ id: "s1", parent: null, start: 0.5, end: 1.5, label: "Wave at the camera", description: "d", kind: "task", hands: 1, quality: { verdict: "ok" }, review: "approved" }] };
       const built = MotionExport.build(take, ["csv", "mcap"], "k");
       const table = built.find((f) => f.suffix === "-bodies");
       const mcap = Mcap.read(built.find((f) => f.ext === "mcap").data);
       const bodyCh = [...mcap.channels.entries()].find(([, c]) => /\\/bodies$/.test(c.topic));
+      const stepCh = [...mcap.channels.entries()].find(([, c]) => c.topic === "/hand_tracker/annotations");
+      const stepMsg = stepCh && mcap.messages.find((m) => m.channel === stepCh[0]);
       out.exported = { names: built.map((f) => f.suffix + "." + f.ext), rows: table ? table.data.trim().split("\\n").length - 1 : 0, columns: table ? table.data.split("\\n")[0].split(",").length : 0,
         faced: !!table && /,5,-3,1,0\\.75,0\\.05,0\\.05,0\\.45,0,1,/.test(table.data),
-        topic: bodyCh ? bodyCh[1].topic : null, messages: bodyCh ? mcap.messages.filter((m) => m.channel === bodyCh[0]).length : 0 };
+        topic: bodyCh ? bodyCh[1].topic : null, messages: bodyCh ? mcap.messages.filter((m) => m.channel === bodyCh[0]).length : 0,
+        steps: stepCh ? mcap.messages.filter((m) => m.channel === stepCh[0]).length : 0, stepLabel: stepMsg ? new TextDecoder().decode(stepMsg.data).includes("Wave at the camera") : false };
     } catch (err) {
       out.exported = { error: String(err.message || err) };
     }
@@ -3720,7 +3734,8 @@ async function checkKinectSimulated(js) {
   const g = r.gear || {}, cd = r.card || {}, ag = r.again || {};
   check("Kinect: its own settings on this computer's pages too: its tile's ⚙ (Bodies off and on again there) and the main page's Cameras card (it lists it; its ⚙ changes its picture)",
     g.open && g.tracking && g.picture && g.off && g.on && g.closed && cd.shown && cd.listed && cd.blend, JSON.stringify({ gear: r.gear, card: r.card, error: r.error }));
-  check("Kinect: its pictures stopping as it runs, it starts again by itself", /Starting it again/.test(ag.note || "") && ag.back === true, JSON.stringify(r.again || r.error));
+  check("Kinect: its pictures stopping as it runs, it starts again by itself; one that's stopped answering asks for a power cycle instead, and Retry starts it",
+    /Starting it again/.test(ag.note || "") && ag.back === true && /power off and on/.test(ag.stuck || "") && ag.stuckStayed === true && ag.retried === true, JSON.stringify(r.again || r.error));
   check("Kinect: its views (side by side twice as wide) and night vision (its infrared picture), changed as it runs",
     r.side === "1920x540" && r.night === "512x424 night" && r.state && r.state.kinect === true && r.state.sound && Number.isFinite(r.state.sound.angle) && r.settings && r.settings.picture === "color",
     JSON.stringify({ side: r.side, night: r.night, state: r.state, settings: r.settings }));
@@ -3732,6 +3747,7 @@ async function checkKinectSimulated(js) {
   const ex = r.exported || {};
   check("Kinect: a take's bodies export as a table of their own (a row for each body on each frame, 25 joints' places and states) and in its MCAP file (each body's joints and bones)",
     ex.rows > 5 && ex.columns === 7 + 9 + 25 * 6 && ex.faced && ex.topic === "/hand_tracker/head/bodies" && ex.messages > 5 && (ex.names || []).includes("-bodies.csv"), JSON.stringify(ex));
+  check("A take's annotations (Annotate) go into its MCAP file: each step on /hand_tracker/annotations", ex.steps === 1 && ex.stepLabel === true, JSON.stringify({ steps: ex.steps, stepLabel: ex.stepLabel }));
   check("Kinect: the body and face models (MediaPipe's pose and face landmarkers, up to six people) load in their worker", r.realModel && r.realModel.poses === 0 && r.realModel.faces === 0, JSON.stringify(r.realModel || r.error));
   // Its MCAP file (made after the take is saved): the depth as compressedDepth PNGs (16-bit grey),
   // the infrared as 16-bit PNGs, each at its frame's time, with the cameras' parameters.
@@ -3843,6 +3859,195 @@ function checkCameraSettingsTables() {
   out.rigChoices = Object.entries(here.KINECT_CHOICES).every(([k, [, options]]) => same(rigChoices[k], options.map(([v]) => v)));
   out.rigSwitches = same([...rigSwitches].sort(), Object.keys(here.KINECT_SWITCHES).sort());
   check("A camera's own settings: remote recording's page, this computer's pages and what the rig takes have the same choices and switches", Object.values(out).every(Boolean), JSON.stringify(out));
+}
+
+// Annotating's arithmetic (annotate-core.js): where the hands suggest a step changes (a hand that
+// comes, moves, stops and goes), Claude's steps made end to end with their ends moved to those
+// cuts, the stretches' steps joined, each step's picture verdict and hands, and the useful footage.
+function checkAnnotateCore() {
+  const A = require("../annotate-core.js");
+  // A hand in sight from 5 s to 50 s, moving from 10 s to 30 s.
+  const frames = [], ee = [];
+  for (let t = 5; t < 50; t += 1 / 15) {
+    const x = t >= 10 && t < 30 ? 0.5 + 0.2 * Math.sin(t * 3) : 0.5;
+    frames.push({ t, joints: [] });
+    ee.push([t, x, 0.5, 0]);
+  }
+  const take = { duration: 70, hands: [{ handedness: "Head Right", frames, trajectories: { end_effector: ee } }] };
+  const track = A.handTrack(take, "Head");
+  const cuts = A.candidateCuts(track);
+  const steps = A.cleanSteps([{ start: 0, end: 9.2, label: "Reach for the blocks", description: "d", kind: "task" }, { start: 9.2, end: 31, label: "Stack the blocks", description: "d", kind: "task" },
+    { start: 31, end: 60, label: "Transition or idle", description: "d", kind: "idle" }, { start: 50, end: 49, label: "backwards", kind: "task" }], 0, 60, cuts);
+  const joined = A.joinSteps([steps, A.cleanSteps([{ start: 60, end: 70, label: "transition or idle", description: "d", kind: "idle" }], 60, 70, cuts)]);
+  const samples = Array.from({ length: 140 }, (_, i) => ({ t: i / 2, mean: i >= 40 && i < 60 ? 10 : 120, sharp: 400 }));
+  const q = A.cameraQuality(samples, { duration: 70 });
+  const sq = A.stepQuality({ start: 20, end: 30 }, samples), sqOk = A.stepQuality({ start: 0, end: 10 }, samples);
+  const segs = joined.map((s) => ({ ...s, hands: A.handsShare(s, track) }));
+  const u = A.useful(70, segs);
+  const out = { cuts, steps: steps.map((s) => [s.start, s.end, s.label]), joined: joined.map((s) => [s.start, s.end]), q: { bad: q.bad, dark: q.dark, verdict: q.verdict, longest: q.longestBad }, sq, sqOk, hands: segs.map((s) => s.hands), u };
+  check("Annotate's arithmetic: cuts where the hands come, move, stop and go; steps end to end with ends moved to those cuts; stretches joined; picture and hands per step; the useful footage",
+    cuts.length === 4 && [5, 10, 30, 50].every((c, i) => Math.abs(cuts[i] - c) <= 0.5) && steps.length === 3 && steps[1].start === cuts[1] && steps[1].end === cuts[2] && steps[2].end === 60 && joined.length === 3 && joined[2].end === 70 &&
+      q.dark === 0.143 && q.verdict === "flag" && q.longestBad === 10 && sq.verdict === "reject" && sqOk.verdict === "ok" && segs[1].hands === 1 && u.recorded === 70 && Math.abs(u.useful - 25) < 0.6 && u.handsOut > 0,
+    JSON.stringify(out));
+}
+
+// Annotating a take in the Recording Viewer (electron/annotate.js, annotate-ui.js), with a stand-in
+// for Claude's API on this computer: a take's camera video (70 s, dark from 20 s to 30 s, blurry
+// from 30 s to 40 s) and its hands beside it; the key kept; the cost said first; Claude asked a
+// minute at a time with frames, the hands' hints and the task (Opus 5.5, refusals falling back);
+// the pictures' verdicts; the steps listed; one approved and one rejected with keys; one edited
+// and a subtask added; all of it kept beside the take, and its table saved.
+async function checkAnnotate() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-annotate-"));
+  const vid = path.join(dir, "Annotate check-video-head.mp4");
+  spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=15", "-t", "70",
+    "-vf", "boxblur=luma_radius=24:luma_power=4:enable='between(t,30,40)',drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,20,30)'", "-c:v", "libx264", "-pix_fmt", "yuv420p", vid]);
+  const frames = [], ee = [];
+  for (let t = 5; t < 50; t += 1 / 15) {
+    frames.push({ t, joints: [] });
+    ee.push([t, t >= 10 && t < 30 ? 0.5 + 0.2 * Math.sin(t * 3) : 0.5, 0.5, 0]);
+  }
+  fs.writeFileSync(path.join(dir, "Annotate check.json"), JSON.stringify({ duration: 70, frame_rate: 15, metadata: { task: "Stack the blocks" }, hands: [{ handedness: "Head Right", frames, trajectories: { end_effector: ee } }] }));
+  // The stand-in: two steps for each stretch asked about, the first half hands-on.
+  const asked = [];
+  const http = require("http");
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      let j = {};
+      try {
+        j = JSON.parse(body);
+      } catch {}
+      const content = (j.messages && j.messages[0] && j.messages[0].content) || [];
+      const intro = (content.find((c) => c.type === "text") || {}).text || "";
+      const m = intro.match(/from ([\d.]+) s to ([\d.]+) s/);
+      const from = m ? Number(m[1]) : 0, to = m ? Number(m[2]) : 60, mid = Math.round(((from + to) / 2) * 10) / 10;
+      const images = content.filter((c) => c.type === "image").length;
+      asked.push({ path: req.url, beta: req.headers["anthropic-beta"] || "", key: req.headers["x-api-key"] || "", model: j.model, fallbacks: j.fallbacks, format: j.output_config && j.output_config.format && j.output_config.format.type,
+        images, task: /Stack the blocks/.test(intro), hints: /suggests a change at/.test(intro), from, to });
+      const answer = { steps: [{ start: from, end: mid, label: "Stack the blocks", description: "The person stacks wooden blocks.", kind: "task" }, { start: mid, end: to, label: "Transition or idle", description: "The person waits.", kind: "idle" }],
+        hands_visible: Array.from({ length: images }, (_, i) => i % 2 === 0) };
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_check", type: "message", role: "assistant", model: j.model, content: [{ type: "text", text: JSON.stringify(answer) }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 10, output_tokens: 10 } }));
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${server.address().port}`;
+  const win = new BrowserWindow({ show: false, width: 1000, height: 1600, webPreferences: { preload: path.join(__dirname, "..", "electron", "preload.js"), sandbox: true, contextIsolation: true } });
+  let r = {};
+  try {
+    await win.loadURL("app://hand-tracker/viewer.html");
+    r = await win.webContents.executeJavaScript(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const until = async (fn, ms = 20000) => { for (let i = 0; i < ms / 100; i++) { const v = await fn(); if (v) return v; await sleep(100); } return null; };
+      const $ = (id) => document.getElementById(id);
+      const out = {};
+      const bytes = Uint8Array.from(atob(${JSON.stringify(fs.readFileSync(vid).toString("base64"))}), (c) => c.charCodeAt(0));
+      await RecordingViewer.openVideo(new File([bytes], "Annotate check-video-head.mp4"), ${JSON.stringify(vid)});
+      await until(() => $("annCard") && $("annPrimary").options.length);
+      out.card = { shown: !$("annCard").hidden, cameras: [...$("annPrimary").options].map((o) => o.value) };
+      // No key yet: it asks for one, then keeps it.
+      $("annRun").click();
+      await until(() => !$("annKeyRow").hidden);
+      out.askedKey = !$("annKeyRow").hidden && /key/i.test($("annStatus").textContent);
+      $("annKeyInput").value = "sk-ant-check-key";
+      $("annKeySave").click();
+      out.kept = !!(await until(() => /✓/.test($("annKey").textContent)));
+      $("annTask").value = "Stack the blocks";
+      $("annRun").click();
+      await until(() => !$("annConfirm").hidden);
+      out.estimate = $("annEstimate").textContent;
+      $("annGo").click();
+      await until(() => document.querySelectorAll("#annSegs .ann-seg").length, 90000);
+      out.status = $("annStatus").textContent;
+      out.rows = [...document.querySelectorAll("#annSegs .ann-seg")].map((r) => r.querySelector(".ann-label").textContent + " " + r.querySelector(".ann-time").textContent);
+      out.quality = [...document.querySelectorAll("#annResults tbody tr")].map((r) => [...r.children].slice(0, 6).map((c) => c.textContent));
+      out.useful = document.querySelector(".ann-useful").textContent;
+      const a = AnnotateUI._state().annotations;
+      out.segments = a.segments.map((s) => ({ start: s.start, end: s.end, kind: s.kind, hands: s.hands, q: s.quality.verdict }));
+      out.handsFrom = a.made.handsFrom;
+      // Review with keys: the first approved, the next rejected; the second edited; a subtask.
+      const key = (k) => document.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+      key("j"); key("a"); key("j"); key("r");
+      await sleep(100);
+      const segs = () => AnnotateUI._state().annotations.segments;
+      out.review = segs().slice(0, 2).map((s) => s.review);
+      document.querySelector('#annSegs .ann-seg[data-id="s3"] button[data-act="edit"]').click();
+      await until(() => document.querySelector('#annSegs .ann-seg[data-id="s3"] .ann-edit-label'));
+      document.querySelector('#annSegs .ann-seg[data-id="s3"] .ann-edit-label').value = "Stack the blocks again";
+      document.querySelector('#annSegs .ann-seg[data-id="s3"] button[data-act="save"]').click();
+      document.querySelector('#annSegs .ann-seg[data-id="s1"] button[data-act="sub"]').click();
+      await until(() => document.querySelector('#annSegs .ann-seg[data-id="s1.1"] .ann-edit-label'));
+      document.querySelector('#annSegs .ann-seg[data-id="s1.1"] .ann-edit-label').value = "Pick up the red block";
+      document.querySelector('#annSegs .ann-seg[data-id="s1.1"] button[data-act="save"]').click();
+      out.edited = segs().find((s) => s.id === "s3").label;
+      out.sub = segs().filter((s) => s.parent === "s1").map((s) => s.label);
+      await until(() => /Kept/.test(($("annSaved") || {}).textContent || ""), 5000);
+      $("annCsv").click();
+      out.saved = await until(() => (/Saved/.test($("annSaved").textContent) ? $("annSaved").textContent : null), 5000);
+      return out;
+    })()`, true);
+  } catch (err) {
+    r = { error: String((err && err.message) || err) };
+  } finally {
+    win.destroy();
+  }
+  const viewerAsked = asked.slice(); // (the Recording Viewer's; the session's way below asks again)
+  // A capture session's way: the video read over the web through a link asked for afresh for each
+  // look (signed, as a dashboard's storage gives them), the hands as Capture Sessions just tracked.
+  const served = http.createServer((req, res) => {
+    const size = fs.statSync(vid).size, m = /bytes=(\d+)-(\d*)/.exec(req.headers.range || "");
+    if (!m) {
+      res.writeHead(200, { "content-type": "video/mp4", "content-length": size, "accept-ranges": "bytes" });
+      return fs.createReadStream(vid).pipe(res);
+    }
+    const start = Number(m[1]), end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+    res.writeHead(206, { "content-type": "video/mp4", "content-range": `bytes ${start}-${end}/${size}`, "content-length": end - start + 1, "accept-ranges": "bytes" });
+    fs.createReadStream(vid, { start, end }).pipe(res);
+  });
+  await new Promise((r2) => served.listen(0, "127.0.0.1", r2));
+  let signed = 0, session = {};
+  try {
+    const { Annotator } = require("../electron/annotate.js");
+    const A = require("../annotate-core.js");
+    const track = A.handTrack(JSON.parse(fs.readFileSync(path.join(dir, "Annotate check.json"), "utf8")), "");
+    const a = await new Annotator(app.getPath("userData"), require("electron").safeStorage).run({
+      videos: [{ camera: "head-rgb", name: "head-rgb", url: async () => (signed++, `http://127.0.0.1:${served.address().port}/video.mp4?sig=${signed}`) }], primary: "head-rgb", track, task: "Stack the blocks",
+    });
+    session = { cameras: a.quality.cameras.map((c) => [c.camera, c.verdict, c.samples]), steps: a.segments.length, handsFrom: a.made.handsFrom, useful: a.useful.useful };
+  } catch (err) {
+    session = { error: String((err && err.message) || err) };
+  } finally {
+    delete process.env.ANTHROPIC_BASE_URL;
+    server.close();
+    served.close();
+  }
+  const kept = (() => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(dir, "Annotate check.annotations.json"), "utf8"));
+    } catch {
+      return null;
+    }
+  })();
+  const csv = fs.existsSync(path.join(dir, "Annotate check.annotations.csv")) ? fs.readFileSync(path.join(dir, "Annotate check.annotations.csv"), "utf8") : "";
+  const q = (r.quality || [])[0] || [];
+  check("Annotate (Recording Viewer): a take's video and hands beside it; it asks for the Claude API key and keeps it; says the cost first",
+    r.card && r.card.shown && r.card.cameras.join() === "head" && r.askedKey && r.kept && /About 1\.2 minutes/.test(r.estimate || "") && /2 one-minute stretches/.test(r.estimate || ""), JSON.stringify({ card: r.card, askedKey: r.askedKey, kept: r.kept, estimate: r.estimate, error: r.error, status: r.status }));
+  check("…asks Claude (Opus 5.5, with fallbacks, a JSON schema) a minute at a time with its frames, the take's task and the hands' hints",
+    viewerAsked.length === 2 && viewerAsked.every((a) => /\/v1\/messages/.test(a.path) && a.key === "sk-ant-check-key" && a.model === "claude-opus-5-5" && a.fallbacks === "default" && /server-side-fallback-2026-07-01/.test(a.beta) && a.format === "json_schema" && a.task) &&
+      viewerAsked[0].images === 24 && viewerAsked[1].images === 4 && viewerAsked[0].hints && viewerAsked[1].from === 60, JSON.stringify(viewerAsked));
+  check("…the pictures' verdict (a seventh dark, a seventh blurry: flagged) and each step's, hands in sight from the take, the useful footage",
+    q[0] === "head (main)" && q[1] === "flag" && Math.abs(parseInt(q[3]) - 14) <= 2 && Math.abs(parseInt(q[4]) - 14) <= 2 && r.handsFrom === "take" && (r.segments || []).length === 4 &&
+      r.segments[0].kind === "task" && r.segments[2].start === 60 && r.segments.some((s) => s.q === "reject") && /of 1m 10s recorded/.test(r.useful || ""),
+    JSON.stringify({ quality: r.quality, segments: r.segments, useful: r.useful, rows: r.rows }));
+  check("…reviewed with keys (approved, rejected), a step edited and a subtask added, all of it kept beside the take, and its table saved",
+    JSON.stringify(r.review) === '["approved","rejected"]' && r.edited === "Stack the blocks again" && JSON.stringify(r.sub) === '["Pick up the red block"]' && /Saved/.test(r.saved || "") &&
+      kept && kept.segments.length === 5 && kept.segments[0].review === "approved" && kept.segments.find((s) => s.id === "s1.1") && /Pick up the red block/.test(csv) && /^id,parent,start_s/.test(csv),
+    JSON.stringify({ review: r.review, edited: r.edited, sub: r.sub, saved: r.saved, kept: kept && kept.segments.map((s) => [s.id, s.review, s.label]), csv: csv.split("\n").length }));
+  check("…and a capture session's way: its video read over the web through a link asked for afresh for each look, its hands as just tracked",
+    session.cameras && session.cameras[0][0] === "head-rgb" && session.cameras[0][1] === "flag" && session.cameras[0][2] >= 135 && session.steps === 4 && session.handsFrom === "take" && signed >= 4,
+    JSON.stringify({ ...session, signed }));
 }
 
 async function checkOakCrashAgain(js) {

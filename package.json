@@ -30,6 +30,7 @@
     "deploy:web": "node scripts/build-web.js && npx --yes wrangler@4 pages deploy www --project-name hand-tracker --commit-dirty=true --branch \"hand tracker\" && npx --yes wrangler@4 pages deploy www --project-name hand-tracker --commit-dirty=true --branch main"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
     "@capacitor/ios": "^8.5.3",
     "@mediapipe/drawing_utils": "0.3.1620248257",
     "@mediapipe/hands": "0.4.1646424915",
@@ -105,8 +106,11 @@
       "electron/bt-hid-linux.py",
       "electron/tak-convert.ps1",
       "electron/input-helper.ps1",
-      "electron/input-helper-mac", "electron/bluetooth-helper-mac", "electron/bluetooth-helper-win.cs",
-      "electron/input-helper-linux.py", "electron/bluetooth-helper-linux.py",
+      "electron/input-helper-mac",
+      "electron/bluetooth-helper-mac",
+      "electron/bluetooth-helper-win.cs",
+      "electron/input-helper-linux.py",
+      "electron/bluetooth-helper-linux.py",
       "oak/**",
       "kinect/**"
     ],

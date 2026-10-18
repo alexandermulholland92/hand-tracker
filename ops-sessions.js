@@ -4,7 +4,11 @@
  * dashboard account, pick sessions and the cameras to track, and every frame of each
  * camera's video is tracked (Capture Whole Video) and saved as motion capture files into one
  * folder, named by session and camera. The videos stream from the dashboard's storage as
- * they're tracked; nothing is downloaded first. See electron/ops.js.
+ * they're tracked; nothing is downloaded first. See electron/ops.js. With "Annotate each session
+ * with Claude too", each session is also annotated once its cameras are tracked (electron/
+ * annotate.js: its cameras' picture quality, Claude's steps from its main camera's video, the
+ * useful footage), saved beside them as <its main camera's file name>.annotations.json, so opening
+ * that file in the Recording Viewer shows them to review.
  *
  *   OpsSessions.init({ desktop, prefs, setPref });
  *   OpsSessions.toggleShown();   // shows or hides the Capture Sessions button (remembered)
@@ -122,10 +126,38 @@
       }
       render();
     }
+    annotateCost();
   }
 
   function chosen(container) {
     return [...container.querySelectorAll("input:checked")].map((i) => i.value);
+  }
+
+  // ---------- annotating ----------
+  // What annotating the picked sessions costs, roughly, said before it starts: their main camera's
+  // minutes (the first camera picked, from each manifest) at Claude's rate for a minute.
+  let perMinute = 0;
+  async function annotateCost() {
+    if (!els.annotate || !els.annotateNote) return;
+    if (!els.annotate.checked) return (els.annotateNote.textContent = "");
+    if (!perMinute) perMinute = (await desktop.annotate.status().catch(() => ({}))).dollarsPerMinute || 0;
+    let minutes = 0, known = 0;
+    for (const s of picked.values()) {
+      const st = mainStream(manifests.get(s.id));
+      if (st && st.frames && st.fps) (minutes += st.frames / st.fps / 60), known++;
+    }
+    els.annotateNote.textContent = picked.size
+      ? `About ${minutes.toFixed(1)} minutes of main-camera video${known < picked.size ? " (some sessions' lengths aren't known yet)" : ""}: about $${(Math.max(minutes, known) * perMinute).toFixed(2)} of your Claude API credit.`
+      : "Pick sessions to see what annotating them costs.";
+  }
+  // A session's main camera: the first one picked that it has.
+  function mainStream(m) {
+    if (!m) return null;
+    for (const want of chosen(els.streamPicks)) {
+      const st = m.streams.find((x) => `${x.position}/${x.stream}` === want);
+      if (st) return st;
+    }
+    return null;
   }
 
   // ---------- tracking ----------
@@ -134,6 +166,8 @@
     const formats = chosen(els.formats);
     if (!streams.length) return error("Pick at least one camera to track.");
     if (!formats.length) return error("Pick at least one format to save.");
+    const annotating = !!(els.annotate && els.annotate.checked);
+    if (annotating && !(await desktop.annotate.status().catch(() => ({}))).hasKey) return error("Add your Claude API key first: Recording Viewer, Annotate, Claude API key.");
     const folder = await desktop.chooseFolder("Choose a folder for the tracked sessions");
     if (!folder || folder.canceled) return;
     running = true;
@@ -152,6 +186,7 @@
       manifests.set(s.id, m);
       for (const st of m.streams) if (streams.includes(`${st.position}/${st.stream}`)) jobs.push({ s, m, st });
     }
+    const tracked = new Map(); // this session's cameras' hands as tracked: "position/stream" -> data
     for (const [i, { s, m, st }] of jobs.entries()) {
       if (stopRequested) break;
       const name = `${stamp(s.when)}_${s.id.slice(0, 8)}_${st.position}-${st.stream}`;
@@ -165,6 +200,7 @@
           onProgress: (t, total) => (els.runText.textContent = `Tracking ${label} · ${clock(t)} of ${clock(total)}`),
         });
         done++;
+        tracked.set(`${st.position}/${st.stream}`, data);
         if (!data.hands.length) {
           log.push(`${name}: no hands visible`);
           continue;
@@ -197,6 +233,12 @@
       } finally {
         if (url) desktop.ops.forget(url);
       }
+      // The session's last camera done: annotate it (its main camera's hands as just tracked).
+      const next = jobs[i + 1];
+      if (annotating && !stopRequested && (!next || next.s.id !== s.id)) {
+        await annotateSession(s, m, tracked, folder, log);
+        tracked.clear();
+      }
     }
     running = false;
     els.stop.hidden = true;
@@ -206,6 +248,28 @@
     els.progress.textContent = `${stopRequested ? "Stopped. " : ""}Tracked ${done} of ${jobs.length} camera video${jobs.length === 1 ? "" : "s"}; saved ${saved} file${saved === 1 ? "" : "s"} to ${folder.dir}\n${log.join("\n")}`;
     els.dialog.hidden = false;
     render();
+  }
+
+  async function annotateSession(s, m, tracked, folder, log) {
+    const main = mainStream(m);
+    if (!main) return;
+    const name = `${stamp(s.when)}_${s.id.slice(0, 8)}_${main.position}-${main.stream}`;
+    const streams = m.streams.filter((x) => chosen(els.streamPicks).includes(`${x.position}/${x.stream}`)).map((x) => ({ camera: `${x.position}-${x.stream}`, path: x.path }));
+    const data = tracked.get(`${main.position}/${main.stream}`);
+    const off = desktop.annotate.onProgress((p) => {
+      els.runText.textContent = p.stage === "quality"
+        ? `Annotating ${s.id.slice(0, 8)}: checking the ${p.camera} camera's pictures… ${Math.round((p.progress || 0) * 100)}%`
+        : `Annotating ${s.id.slice(0, 8)}: Claude, stretch ${Math.min(p.total, p.index + 1)} of ${p.total}…`;
+    });
+    try {
+      const res = await desktop.annotate.runSession({ sessionId: s.id, streams, primary: `${main.position}-${main.stream}`, track: data && data.hands.length ? AnnotateCore.handTrack(data, "") : null, task: s.task || "", name, token: folder.token });
+      const u = res.useful || {};
+      log.push(`${name}: annotated · ${res.steps} steps · useful ${clock(u.useful || 0)} (${Math.round((u.share || 0) * 100)}%) · pictures ${res.quality.map((q) => `${q.camera} ${q.verdict}`).join(", ")}`);
+    } catch (err) {
+      log.push(`${name}: not annotated: ${errText(err)}`);
+    } finally {
+      off();
+    }
   }
 
   function stop() {
@@ -227,7 +291,16 @@
       browse: $("opsBrowse"), search: $("opsSearch"), searchBtn: $("opsSearchBtn"), streamPicks: $("opsStreamPicks"), formats: $("opsFormats"),
       list: $("opsList"), more: $("opsMore"), picked: $("opsPicked"), track: $("opsTrack"), stop: $("opsStop"), progress: $("opsProgress"), error: $("opsError"),
       runBar: $("opsRunBar"), runText: $("opsRunText"), runStop: $("opsRunStop"),
+      annotateRow: $("opsAnnotateRow"), annotate: $("opsAnnotate"), annotateNote: $("opsAnnotateNote"),
     };
+    if (desktop.annotate && els.annotateRow) {
+      els.annotateRow.hidden = false;
+      els.annotate.checked = prefs.opsAnnotate === true;
+      els.annotate.addEventListener("change", () => {
+        setPref("opsAnnotate", els.annotate.checked);
+        annotateCost();
+      });
+    }
     els.button.hidden = prefs.captureSessions !== true;
     els.button.addEventListener("click", open);
     els.close.addEventListener("click", () => (els.dialog.hidden = true));
@@ -276,7 +349,10 @@
 
     const savedStreams = Array.isArray(prefs.opsStreams) ? prefs.opsStreams : DEFAULT_STREAMS;
     els.streamPicks.innerHTML = STREAMS.map((s) => `<label><input type="checkbox" value="${s}"${savedStreams.includes(s) ? " checked" : ""} /> ${s}</label>`).join("");
-    els.streamPicks.addEventListener("change", () => setPref("opsStreams", chosen(els.streamPicks)));
+    els.streamPicks.addEventListener("change", () => {
+      setPref("opsStreams", chosen(els.streamPicks));
+      annotateCost();
+    });
     const savedFormats = Array.isArray(prefs.opsFormats) ? prefs.opsFormats : DEFAULT_FORMATS;
     els.formats.innerHTML = MotionExport.FORMATS.map((f) => `<label title="${esc(f.detail || "")}"><input type="checkbox" value="${f.id}"${savedFormats.includes(f.id) ? " checked" : ""} /> ${esc(f.label)}</label>`).join("");
     els.formats.addEventListener("change", () => setPref("opsFormats", chosen(els.formats)));

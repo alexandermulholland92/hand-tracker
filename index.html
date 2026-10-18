@@ -783,6 +783,10 @@
         <span class="bar-label">Save as</span>
         <span id="opsFormats"></span>
       </div>
+      <div class="toolbar" id="opsAnnotateRow" hidden>
+        <label title="Claude divides each session's main camera video into steps, labels and describes them; each camera's picture quality and the useful footage are worked out too. Saved beside the tracked files (open the main camera's file in the Recording Viewer to review it). Your own Claude API key (Recording Viewer, Annotate)."><input type="checkbox" id="opsAnnotate" /> Annotate each session with Claude too</label>
+        <span id="opsAnnotateNote" class="status"></span>
+      </div>
       <div id="opsList" class="ops-list"></div>
       <div class="toolbar"><button id="opsMore">Load more</button><span class="spacer"></span><span id="opsPicked" class="status"></span><button id="opsTrack" class="primary" disabled>Track selected…</button><button id="opsStop" hidden>Stop</button></div>
       <div id="opsProgress" class="note"></div>
@@ -875,6 +879,7 @@
 <script src="phone-link-ui.js"></script>
 <script src="remote-record-ui.js"></script>
 <script src="oak-source.js"></script>
+<script src="annotate-core.js"></script>
 <script src="ops-sessions.js"></script>
 <script src="bt-link-client.js"></script>
 <script src="rig-ble.js"></script>

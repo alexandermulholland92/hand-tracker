@@ -301,6 +301,18 @@ The **Markers** list, the **frame table** and the export **Formats** list start 
 
 In the frame table for hand recordings, joint positions are measured **from the wrist**, so the wrist joint is always 0, 0, 0. *Wrist world* is where the wrist is in the camera image; its z is always 0, because the tracker measures depth relative to the wrist.
 
+### Annotate (Windows, Mac and Linux app)
+
+A take opened in the Recording Viewer (its JSON, with its cameras' videos beside it as `<take>-video-<camera>.mp4`, as Remote recording saves them), or any video, can be **annotated**, as a capture pipeline's QA and annotation would:
+
+- **Picture quality**: each camera's video looked at twice a second, for blurry, too dark and too bright pictures: how much of it, the longest bad stretch, how much was looked at, its size and frame rate, and a verdict (*pass*, *flag*, *fail*).
+- **Steps**: [Claude](https://www.anthropic.com/claude) (Opus 5.5) is shown the main camera's video a minute at a time, a frame every 2.5 seconds, with the take's task and where the hands suggest a step changes (where they come into sight, go, start or stop moving, from the take's tracking). It divides it into steps, each with an instruction-style label ("Fold the towel in half", or *Transition or idle*), a sentence of what the person does, and its kind: hands-on task, setup, waiting, screen, or transition. It also says, for each frame, whether hands are in sight (used where there's no tracking).
+- Each step's **picture verdict** (*reject*, *flag* or ok) and **share of hands in sight**.
+- **Useful footage**: the recorded time, less the time hands weren't in sight, setup, waiting or idle and screen work (each step counted by its share of hands in sight); rejected steps aren't counted. A timeline shows the steps by kind.
+- **Review**: approve or reject each step, edit it (label, description, times, kind), add subtasks inside it. Keys: **j**/**k** next and previous, **a** approve, **r** reject, **e** edit, **,**/**.** a second back or on. Click a step to see it in the video.
+
+It's kept beside the take as `<take>.annotations.json` (saved as the review goes, and shown again when the take is opened), and **Save the table (CSV)** writes `<take>.annotations.csv`. It needs your own **Claude API key** (*Claude API key…*: kept on this computer, encrypted by the operating system); what a video costs is said before it starts (about $0.05 a minute). Only the main camera's frames go to Anthropic's API.
+
 ### OptiTrack .tak takes
 
 `.tak` is OptiTrack's proprietary, undocumented format, which only OptiTrack's own software can read. So Hand Tracker opens takes through the **Motive installed on your PC**. A small script (`electron/tak-convert.ps1`) uses Motive's NMotive API to read the take. None of OptiTrack's software is bundled with Hand Tracker. Your original take is never modified; Motive works on a temporary copy.
@@ -572,6 +584,7 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `phone-control.html`, `phone-control.js` | Android: the small window that tracks your hand while controlling the phone itself |
 | `multi-camera.js`, `camera-tile.html`, `camera-tile.js` | Several cameras at once, each tracked in its own tile |
 | `camera-settings.js` | Each camera's own settings on this computer's pages: under each tile's ⚙ and in the main page's Cameras section |
+| `annotate-core.js`, `annotate-ui.js`, `electron/annotate.js` | Annotate: picture quality, Claude's steps, hands in sight, useful footage, the review (Recording Viewer) |
 | `timing-check.js` | The timing check: how far apart the cameras' timings are, from a flashing beacon |
 | `camera-video.js` | One camera's video (with sound), for remote recording's takes |
 | `stage-overlay.js` | What's drawn over the picture (tags, boxes, far-away search area), for the main view and each tile |

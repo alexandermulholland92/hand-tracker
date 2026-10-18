@@ -562,6 +562,7 @@
   }
   // Retry: at once, and its restarts counted afresh.
   function retryKinect(t) {
+    t.kinectStuck = false;
     clearTimeout(t.kinectTimer);
     t.kinectTimer = null;
     t.kinectAgain = [];
@@ -626,10 +627,13 @@
       applyKinect(t);
     } else if (s.status === "error" || s.status === "stopped") {
       if (t.kinectTimer) return; // (it's starting again: its helper's own end after the error)
+      if (s.status === "stopped" && t.kinectStuck) return; // (its helper's end: the power-cycle message stays)
       const ran = t.oakState === "running";
       t.oakState = s.status;
-      // Stopped while it ran (its pictures stopped coming, or its helper ended badly): again, by itself.
-      if (ran && (s.status === "error" || s.code)) return kinectAgain(t, s.status === "error" ? s.message || "The Kinect stopped." : "The Kinect's helper stopped.");
+      // Stopped while it ran (its pictures stopped coming, or its helper ended badly): again, by itself;
+      // not one that's stopped answering (stuck): only its power going off and on brings that back.
+      if (s.stuck) t.kinectStuck = true;
+      else if (ran && (s.status === "error" || s.code) && !t.kinectStuck) return kinectAgain(t, s.status === "error" ? s.message || "The Kinect stopped." : "The Kinect's helper stopped.");
     }
     if (api && api.kinectStatus) api.kinectStatus(s);
   }

@@ -1065,6 +1065,13 @@
       readings.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
       for (const x of readings) w.message(x.ch, x.t, M.cdr.imu(x.t, x.frame, [x.r[4], x.r[5], x.r[6]], [x.r[1], x.r[2], x.r[3]]));
     }
+    // Its annotations (annotate-core.js), if it has them: each step as a hand_tracker_msgs/Step on
+    // /hand_tracker/annotations, at its start.
+    const steps = data.annotations && Array.isArray(data.annotations.segments) ? data.annotations.segments.filter((s) => s && Number.isFinite(Number(s.start))) : [];
+    if (steps.length) {
+      const ch = w.channel("/hand_tracker/annotations", "cdr", w.schema("hand_tracker_msgs/msg/Step", "ros2msg", M.ROS2.Step), qos);
+      for (const s of [...steps].sort((a, b) => a.start - b.start)) w.message(ch, at(Number(s.start)), M.cdr.step(at(Number(s.start)), MCAP_FRAME, s));
+    }
     const meta = { recorded_at: String(data.recorded_at || ""), hands: prep.tracks.map((tr) => tr.name).join(", "), frame_rate: String(prep.fps), units: "m", frame_id: MCAP_FRAME };
     for (const [k, v] of Object.entries(data.metadata || {})) if (v !== null && v !== undefined && typeof v !== "object") meta[k] = String(v);
     w.metadata("hand_tracker", meta);

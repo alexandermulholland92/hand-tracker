@@ -170,6 +170,28 @@ contextBridge.exposeInMainWorld("desktop", {
     },
   },
 
+  // Annotating a take or a video (electron/annotate.js; the Recording Viewer's Annotate): path is
+  // the take's JSON or a video; its take and cameras' videos are found beside it.
+  annotate: {
+    status: () => ipcRenderer.invoke("annotate:status"), // { hasKey, model }
+    setKey: (key) => ipcRenderer.invoke("annotate:set-key", { key }),
+    find: (path) => ipcRenderer.invoke("annotate:find", { path }), // { takePath, takeName, videos: [{ camera, path }] }
+    estimate: (path) => ipcRenderer.invoke("annotate:estimate", { path }), // { minutes, chunks, frames, dollars, model }
+    run: (path, options) => ipcRenderer.invoke("annotate:run", { ...options, path }), // options: { task, primary } -> annotations
+    cancel: () => ipcRenderer.invoke("annotate:cancel"),
+    save: (annotations, path) => ipcRenderer.invoke("annotate:save", { annotations, path }),
+    load: (path) => ipcRenderer.invoke("annotate:load", { path }), // { file, annotations } | null
+    saveCsv: (csv, path) => ipcRenderer.invoke("annotate:save-csv", { csv, path }),
+    // A capture session (Capture Sessions): { sessionId, streams: [{ camera, path }], primary, track, task,
+    // name, token } -> { file, useful, steps, quality }, saved into the folder chosen for its tracking.
+    runSession: (job) => ipcRenderer.invoke("annotate:run-session", job),
+    media: (path) => ipcRenderer.invoke("annotate:media", { path }), // { url }: a take's video, to play in the page
+    onProgress: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("annotate:progress", listener);
+      return () => ipcRenderer.removeListener("annotate:progress", listener);
+    },
+  },
   // The Kinect for Xbox One (Linux and Windows app, electron/kinect.js): { ok, reason } here, the
   // ones plugged in [{ id, name }], then a stream each by id, as the OAK cameras' streams.
   kinect: {

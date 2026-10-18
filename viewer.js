@@ -154,13 +154,15 @@
       return openTake(desktop.pathForFile(file), file.name);
     }
     try {
-      await openBytes(file.name, await file.arrayBuffer());
+      const desktop = window.desktop;
+      await openBytes(file.name, await file.arrayBuffer(), { filePath: desktop && desktop.pathForFile ? desktop.pathForFile(file) : "" });
     } catch (err) {
       showError(err.message);
     }
   }
 
-  async function openBytes(name, buffer) {
+  // extra: { filePath } where it is on disk (the Windows, Mac and Linux app: a take can be annotated).
+  async function openBytes(name, buffer, extra = {}) {
     let parsed;
     try {
       parsed = await MotionImport.parseFileAsync(name, buffer);
@@ -168,7 +170,7 @@
       showError(err.message);
       return false;
     }
-    show(parsed, name);
+    show(parsed, name, extra);
     return true;
   }
 
@@ -504,6 +506,7 @@
       </div>
 
       ${playerCard("Playback", `${hands.map((h) => `<span style="color:${handColor(h.handedness)}">■ ${esc(h.handedness || "Hand")}</span>`).join(" &nbsp; ")} &nbsp;•&nbsp; ${mirrored ? "mirrored, as shown in the app" : "camera view"}`)}
+      ${annotatable(current.filePath) ? AnnotateUI.card() : ""}
 
       <div class="card">
         <div class="section-label">Task Phases Over Time</div>
@@ -532,6 +535,7 @@
 
     drawTrajectories(hands, mirrored, data.image_size);
     setupHandPlayer(data, duration);
+    if (annotatable(current.filePath)) AnnotateUI.attach({ path: current.filePath, take: data, player });
     setupHandTable(data);
     setupExport(withVideoFormats(MotionExport.FORMATS), ["bvh"], baseNameOf(current.name), (ids, name) =>
       saveRecording({ ids, baseName: name, build: (motionIds) => MotionExport.build(data, motionIds, name), scene: handScene(data), progress: exportProgress })
@@ -985,6 +989,9 @@
     return VideoConvert.supported() ? VideoConvert.formats() : [];
   }
 
+  // A take or video on disk can be annotated (the Windows, Mac and Linux app: annotate-ui.js).
+  const annotatable = (p) => !!(p && window.desktop && window.desktop.annotate && window.AnnotateUI);
+
   // filePath: where the file is on disk (Windows app); found from the file when not given.
   async function openVideo(file, filePath) {
     stopPlayer();
@@ -1002,6 +1009,7 @@
         <div id="videoMeta" class="video-meta"><b>${esc(file.name)}</b> · ${size}</div>
         <div id="videoStatus" class="note"></div>
       </div>
+      ${annotatable(video.path) ? AnnotateUI.card() : ""}
       <div class="card">
         <div class="section-label">Convert to</div>
         <label class="field">File name <input id="exportName" type="text" spellcheck="false" autocomplete="off" /></label>
@@ -1016,6 +1024,7 @@
       </div>`;
     const preview = $("videoPreview"), status = $("videoStatus"), meta = $("videoMeta");
     $("exportName").value = baseNameOf(file.name);
+    if (annotatable(video.path)) AnnotateUI.attach({ path: video.path, video: preview });
 
     const appInfo = desktop ? await desktop.getInfo().catch(() => null) : null;
     const formats = videoFormats(appInfo);

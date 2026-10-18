@@ -667,6 +667,7 @@ class SimulatedKinect {
   command(line) {
     const [cmd, a] = String(line).split(" ");
     if (cmd === "stall") return this.stall();
+    if (cmd === "stuck") return this.stall(true);
     if (cmd === "record") this.recording = a === "on";
     else if (cmd === "rawcolor") this.rawcolor = a === "on";
     else if (cmd === "source" && this.source) this.source(a);
@@ -681,14 +682,15 @@ class SimulatedKinect {
     this.onMessage({ status: "stopped", code: 0, detail: "" });
   }
 
-  // As a Kinect whose pictures stop coming: the helper says so and ends.
-  stall() {
+  // As a Kinect whose pictures stop coming (stuck: one that's stopped answering): the helper says so and ends.
+  stall(stuck = false) {
     if (!this.timer) return;
     clearInterval(this.timer);
     clearInterval(this.audioTimer);
     this.timer = this.audioTimer = null;
     setTimeout(() => {
-      this.onMessage({ status: "error", message: "The Kinect stopped sending pictures.", colors: 10, depths: 10 });
+      this.onMessage(stuck ? { status: "error", message: "The Kinect isn't answering: turn its power off and on (unplug its power adapter for 5 seconds), then press Retry.", stuck: true }
+        : { status: "error", message: "The Kinect stopped sending pictures.", colors: 10, depths: 10 });
       this.onMessage({ status: "stopped", code: 0, detail: "" });
     }, 200);
   }

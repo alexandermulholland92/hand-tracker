@@ -155,9 +155,13 @@ class Logger : public libfreenect2::Logger {
  public:
   std::mutex mu;
   std::string last_error;
+  // A Kinect that's stopped answering (its start's status request times out): only its power going
+  // off and on brings it back, so it says so at once rather than being tried again and again.
+  std::atomic<bool> stuck{false};
   Logger() { level_ = Info; }
   void log(Level level, const std::string &message) override {
     std::cerr << clock_text() << " [libfreenect2] " << message << std::endl;
+    if (message.find("status 0x090000: timeout") != std::string::npos) stuck = true;
     if (level == Error) {
       std::lock_guard<std::mutex> l(mu);
       last_error = message;
@@ -695,6 +699,13 @@ static int run_device(libfreenect2::Freenect2 &ctx) {
     dev->close();
     delete dev;
     return 3;
+  }
+  if (logger->stuck) {
+    status("error", "The Kinect isn't answering: turn its power off and on (unplug its power adapter for 5 seconds), then press Retry.", "\"stuck\":true");
+    dev->stop();
+    dev->close();
+    delete dev;
+    return 4;
   }
   // (Its cameras' own parameters are read as it starts: only then can depth be lined up with colour.)
   const auto cp = dev->getColorCameraParams();

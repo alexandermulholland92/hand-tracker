@@ -22,6 +22,7 @@ const { KinectCamera, KinectTake, SimulatedKinect } = require("./kinect");
 const { writeKinectMcap } = require("./kinect-mcap");
 const { OpsClient } = require("./ops");
 const { FleetClient } = require("./fleet");
+const { Annotator, MODEL: annotateModel, DOLLARS_PER_MINUTE: annotateDollarsPerMinute } = require("./annotate");
 const mcapVideo = require("./mcap-video");
 const { PhoneLinkServer } = require("./phone-link");
 const { RemoteRecordServer, RIG_HOST, RIG_PATH } = require("./remote-record");
@@ -120,7 +121,8 @@ const exportedPaths = new Set(); // files this session wrote; the only ones "sho
 const remoteStandby = process.argv.includes("--remote-standby");
 let remoteRecord = null;
 let rigBluetooth = null; // remote recording over Bluetooth (bluetooth.js), on with it
-// Imported videos converted to MP4 for playback: id -> { file, owner: webContents id }. Only these are served under /__media/.
+// Imported videos converted to MP4 for playback: id -> { file, owner: webContents id }, and a take's
+// own videos shown as they are (original: never deleted here; type: theirs). Only these are served under /__media/.
 const mediaFiles = new Map();
 let mediaDir = null;
 
@@ -152,10 +154,10 @@ function writeSettings(patch) {
 
 // Serves a converted video with HTTP range support, which video seeking relies on.
 async function serveMedia(request, id) {
-  const file = mediaFiles.has(id) && mediaFiles.get(id).file;
+  const media = mediaFiles.get(id), file = media && media.file;
   if (!file) return new Response("Not found", { status: 404 });
   const size = (await fs.promises.stat(file)).size;
-  const headers = { "Content-Type": "video/mp4", "Accept-Ranges": "bytes" };
+  const headers = { "Content-Type": media.type || "video/mp4", "Accept-Ranges": "bytes" };
   const m = /bytes=(\d*)-(\d*)/.exec(request.headers.get("Range") || "");
   if (!m) return new Response(Readable.toWeb(fs.createReadStream(file)), { headers: { ...headers, "Content-Length": String(size) } });
   let start = m[1] === "" ? size - Number(m[2]) : Number(m[1]);
@@ -790,7 +792,7 @@ function registerKinectIpc() {
   });
   handle("kinect:command", (event, { id, line } = {}) => {
     const stream = kinectStreams.get(String(id));
-    if (stream && simulated() && line === "stall") return stream.cam.command("stall"), true; // (the checks' stand-in Kinect stopping)
+    if (stream && simulated() && (line === "stall" || line === "stuck")) return stream.cam.command(line), true; // (the checks' stand-in Kinect stopping)
     if (!stream || !KINECT_COMMAND.test(String(line || ""))) return false;
     stream.cam.command(String(line));
     return true;
@@ -1197,6 +1199,80 @@ function registerFleetIpc() {
   handle("fleet:set-ble-password", (event, { password }) => fleet.setBlePassword(password));
 }
 
+// ---------- annotating a take or a video (annotate.js; the Recording Viewer's Annotate) ----------
+// A take (its JSON) or a video opened there: the take and its cameras' videos beside it
+// (<take>.json and <take>-video-<camera>.mp4), Claude's look at the main one (the user's own API
+// key, kept encrypted), and the annotations saved beside them.
+const VIDEO_EXT = /\.(mp4|webm|mkv|mov|m4v|avi)$/i;
+function annotateFiles(file) {
+  const f = String(file || "");
+  if (!f || !fs.existsSync(f) || !fs.statSync(f).isFile()) throw new Error("That file isn't there any more.");
+  const dir = path.dirname(f), name = path.basename(f);
+  const m = name.match(/^(.*)-video-([a-z0-9-]+)\.[^.]+$/i);
+  const base = /\.json$/i.test(name) ? name.replace(/\.json$/i, "") : m ? m[1] : null;
+  if (!base) return { takePath: "", takeName: "", videos: [{ camera: "", path: f }] };
+  const takePath = path.join(dir, `${base}.json`);
+  const videos = fs.readdirSync(dir)
+    .map((n) => n.match(new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-video-([a-z0-9-]+)\\.[^.]+$`, "i")) && VIDEO_EXT.test(n) ? { camera: n.slice(base.length + 7).replace(/\.[^.]+$/, ""), path: path.join(dir, n) } : null)
+    .filter(Boolean);
+  if (!videos.length && VIDEO_EXT.test(name)) videos.push({ camera: m ? m[2] : "", path: f });
+  return { takePath: fs.existsSync(takePath) ? takePath : "", takeName: base, videos };
+}
+function registerAnnotateIpc() {
+  const annotator = new Annotator(app.getPath("userData"), safeStorage);
+  handle("annotate:status", () => ({ hasKey: annotator.hasKey(), model: annotateModel, dollarsPerMinute: annotateDollarsPerMinute }));
+  handle("annotate:set-key", (event, { key } = {}) => annotator.setKey(key));
+  handle("annotate:find", (event, { path: file } = {}) => annotateFiles(file));
+  handle("annotate:estimate", (event, { path: file } = {}) => annotator.estimate(annotateFiles(file)));
+  handle("annotate:run", async (event, { path: file, task, primary } = {}) => {
+    const found = annotateFiles(file);
+    let take = null;
+    if (found.takePath) {
+      try {
+        take = JSON.parse(fs.readFileSync(found.takePath, "utf8"));
+      } catch {
+        take = null; // (not Hand Tracker's JSON: the hands then come from Claude's look)
+      }
+    }
+    const job = { ...found, take, task: String(task || (take && take.metadata && take.metadata.task) || "").slice(0, 300), primary: String(primary || "") };
+    return annotator.run(job, (p) => !event.sender.isDestroyed() && event.sender.send("annotate:progress", p));
+  });
+  // A capture session's (Capture Sessions, ops.js): its cameras' videos streamed from the dashboard's
+  // storage (signed afresh for each look), the hands as just tracked (track: annotate-core's
+  // handTrack of the main camera's), and the annotations saved into the folder chosen for its
+  // tracking (token), as <name>.annotations.json, with where its videos are for the review.
+  handle("annotate:run-session", async (event, { sessionId, streams, primary, track, task, name, token } = {}) => {
+    if (!ops || !ops.status().signedIn) throw new Error("Sign in to the capture dashboard first.");
+    const dir = outputFolders.get(String(token || ""));
+    if (!dir) throw new Error("Choose the folder again.");
+    const list = (Array.isArray(streams) ? streams : []).filter((x) => x && typeof x.path === "string" && typeof x.camera === "string").slice(0, 8);
+    const videos = list.map((x) => ({ camera: x.camera, name: x.camera, url: async () => (await ops.sign(String(sessionId), [ops.videoPath(String(sessionId), x.path)]))[ops.videoPath(String(sessionId), x.path)] }));
+    const job = { videos, primary: String(primary || ""), track: track && Array.isArray(track.visible) ? track : null, task: String(task || "").slice(0, 300), takeName: String(name || "") };
+    const a = await annotator.run(job, (p) => !event.sender.isDestroyed() && event.sender.send("annotate:progress", p));
+    a.source.session = { id: String(sessionId), streams: list };
+    const file = path.join(dir, `${exporter.sanitizeBaseName(String(name || "session"))}.annotations.json`);
+    fs.writeFileSync(file, JSON.stringify(a, null, 2));
+    return { file, useful: a.useful, steps: a.segments.length, quality: a.quality.cameras.map((c) => ({ camera: c.camera, verdict: c.verdict })) };
+  });
+  handle("annotate:cancel", () => annotator.cancel());
+  handle("annotate:save", (event, { annotations, path: file } = {}) => {
+    if (!annotations || annotations.format !== "hand-tracker-annotations" || !Array.isArray(annotations.segments)) throw new Error("Those aren't annotations.");
+    return Annotator.save(annotations, file);
+  });
+  handle("annotate:load", (event, { path: file } = {}) => Annotator.load(file));
+  // The segments as a table, beside the take (<take>.annotations.csv).
+  handle("annotate:save-csv", (event, { csv, path: file } = {}) => Annotator.saveCsv(String(csv || ""), file));
+  // One of a take's videos, to play in the page as it is (no copy made).
+  handle("annotate:media", (event, { path: file } = {}) => {
+    const f = String(file || "");
+    if (!VIDEO_EXT.test(f) || !fs.existsSync(f) || !fs.statSync(f).isFile()) throw new Error("That video isn't there.");
+    const ext = path.extname(f).slice(1).toLowerCase();
+    const id = `original-${Date.now()}-${mediaFiles.size}.${ext}`;
+    mediaFiles.set(id, { file: f, owner: event.sender.id, original: true, type: ext === "webm" ? "video/webm" : ext === "mkv" ? "video/x-matroska" : ext === "mov" ? "video/quicktime" : "video/mp4" });
+    return { url: `${SCHEME}://${HOST}/__media/${id}` };
+  });
+}
+
 function signInWithSite(parent) {
   const site = ops.status().site;
   if (!site) throw new Error("Connect to the dashboard first.");
@@ -1512,7 +1588,7 @@ function registerIpc() {
     // Each window keeps only its latest copy (the viewer's preview mustn't delete the video the main window tracks).
     const owner = event.sender.id;
     for (const [id, media] of mediaFiles) {
-      if (media.owner !== owner) continue;
+      if (media.owner !== owner || media.original) continue;
       fs.rm(media.file, { force: true }, () => {});
       mediaFiles.delete(id);
     }
@@ -1547,6 +1623,7 @@ app.whenReady().then(() => {
   registerKinectIpc();
   registerOpsIpc();
   registerFleetIpc();
+  registerAnnotateIpc();
   registerLinkIpc();
   registerRemoteIpc();
   buildMenu();
