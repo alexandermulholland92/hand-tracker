@@ -626,7 +626,10 @@
   const fromZUp = (q) => [q[0], -q[2], q[1]]; // inverse of the exports' (x, z, -y)
 
   // handFrames: { prefix: [{ t, pts: 21 x [x, y, z] mm Z-up }] } -> hand recording, or null.
-  function handsFromPointFrames(handFrames, source, notes, warnings) {
+  // rate: the file's own frame rate, when it has one (a C3D's or TRC's): kept, since frames ÷ time
+  // comes out lower when a hand wasn't seen for a while, and exporting again would then put the
+  // points on a coarser grid of times than the file's.
+  function handsFromPointFrames(handFrames, source, notes, warnings, rate = 0) {
     const prefixes = Object.keys(handFrames).filter((p) => handFrames[p].length);
     if (!prefixes.length) return null;
     const chains = [];
@@ -655,9 +658,11 @@
           distance: null,
         };
       });
-      return buildHand(HAND_NAMES[p] || (p === "H0" ? "Hand" : `Hand ${Number(p.slice(1)) + 1}`), rows, warnings);
+      const hand = buildHand(HAND_NAMES[p] || (p === "H0" ? "Hand" : `Hand ${Number(p.slice(1)) + 1}`), rows, warnings);
+      if (rate > 0) hand.frame_rate = rate;
+      return hand;
     });
-    const out = finish(hands, DEFAULT_IMAGE_SIZE, true, notes, warnings);
+    const out = finish(hands, DEFAULT_IMAGE_SIZE, true, notes, warnings, rate > 0 ? { frame_rate: rate } : {});
     out.source = source;
     return out;
   }
@@ -683,7 +688,7 @@
     const other = md.labels.length - prefixes.length * 21;
     const warnings = [...(md.warnings || [])];
     if (other > 0) warnings.push(`${other} other point${other === 1 ? " was" : "s were"} left out: only the hands were kept.`);
-    return handsFromPointFrames(handFrames, md.source, [`Imported from ${fileName || `a ${kind} file`}: Hand Tracker hands, rebuilt from their points (joint orientations, velocities and accelerations recalculated).`], warnings);
+    return handsFromPointFrames(handFrames, md.source, [`Imported from ${fileName || `a ${kind} file`}: Hand Tracker hands, rebuilt from their points (joint orientations, velocities and accelerations recalculated).`], warnings, Number(md.frame_rate) || 0);
   }
 
   // ---------- MCAP ----------

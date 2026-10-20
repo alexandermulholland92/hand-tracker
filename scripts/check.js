@@ -5182,6 +5182,54 @@ async function checkMotionConversion(vjs, files) {
     } catch (err) {
       out.bvh = { error: String(err.message || err) };
     }
+    // A hand that wasn't seen for a while, as live tracking leaves now and then (whatever this
+    // capture's own tracking did): the left hand gone for a fifth of the recording, the right for
+    // a shorter stretch, then both, each longer than a gap that's filled in. The C3D and TRC read
+    // back as hands and saved again keep the file's frame rate, so they come back the same.
+    try {
+      const rec = JSON.parse(new TextDecoder().decode(bytes(files.json)));
+      const end = Math.max(...rec.hands.map((h) => h.frames[h.frames.length - 1].t));
+      const cut = (h, from, to) => {
+        const keep = h.frames.map((f) => !(f.t >= from && f.t < to));
+        const pick = (list) => (list || []).filter((_, i) => keep[i]);
+        h.frames = pick(h.frames).map((f, i) => ({ ...f, frame_index: i }));
+        h.trajectories = { end_effector: pick(h.trajectories.end_effector), palm_orientation: pick(h.trajectories.palm_orientation) };
+        h.task_segments = [];
+      };
+      const left = rec.hands.find((h) => h.handedness === "Left"), right = rec.hands.find((h) => h.handedness === "Right");
+      cut(left, end * 0.3, end * 0.5);
+      cut(right, end * 0.6, end * 0.75);
+      for (const h of rec.hands) cut(h, end * 0.82, end * 0.95);
+      const gapRef = MotionImport.fromC3D(MotionExport.build(rec, ["c3d"], "gap")[0].data.slice().buffer, "gap.c3d").data;
+      const empty = (prefix) => {
+        const i0 = gapRef.labels.indexOf(prefix + "_wrist");
+        let n = 0;
+        for (let k = 0; k < gapRef.frame_count; k++) if (Number.isNaN(gapRef.positions[(k * gapRef.labels.length + i0) * 3])) n++;
+        return n;
+      };
+      out.gap = { emptyLeft: empty("L"), emptyRight: empty("R"), frames: gapRef.frame_count };
+      // (Saved again, the hands are scaled to the standard hand measured over the frames read back,
+      // which with stretches missing are fewer: their size comes out a few hundredths of a percent
+      // apart. So: the size factor, and how far apart they are once it's taken out.)
+      const scaled = (a, b) => {
+        if (diff(a, b) === Infinity) return { scale: null, mm: null };
+        const ratios = [];
+        for (let i = 0; i < a.positions.length; i++) if (Math.abs(a.positions[i]) > 50) ratios.push(b.positions[i] / a.positions[i]);
+        ratios.sort((x, y) => x - y);
+        const k = ratios[Math.floor(ratios.length / 2)];
+        let worst = 0;
+        for (let i = 0; i < a.positions.length; i++) if (!Number.isNaN(a.positions[i])) worst = Math.max(worst, Math.abs(b.positions[i] - a.positions[i] * k));
+        return { scale: +k.toFixed(6), mm: +worst.toFixed(4) };
+      };
+      for (const ext of ["c3d", "trc"]) {
+        const f = MotionExport.build(rec, [ext], "gap")[0];
+        const buf = typeof f.data === "string" ? new TextEncoder().encode(f.data).buffer : f.data.slice().buffer;
+        const back = (await MotionImport.parseFileAsync("gap." + ext, buf)).data;
+        out.gap[ext] = back.hands ? scaled(gapRef, asC3D(back)) : "not hands";
+      }
+    } catch (err) {
+      out.gap = { error: String(err.message || err) };
+    }
     // Markers (an OptiTrack take): through every marker format and back.
     const md = MotionImport.fromC3D(bytes(files.markers), "take.c3d").data;
     out.markers = { labels: md.labels.length, frames: md.frame_count };
@@ -5203,6 +5251,10 @@ async function checkMotionConversion(vjs, files) {
   check("Hand Tracker's own C3D, TRC, GLB and NPZ (and CSV, JSON) read back as both hands and convert to all 8 formats; C3D again matches the original",
     ["c3d", "trc", "glb", "npz", "csv", "json"].every((ext) => handOk(r[ext], "Left+Right", 0.05)),
     JSON.stringify(Object.fromEntries(["c3d", "trc", "glb", "npz", "csv", "json"].map((k) => [k, r[k]]))));
+  const gap = r.gap || {};
+  const sameBut = (x) => x && x.mm !== null && x.mm <= 0.05 && Math.abs(x.scale - 1) < 0.001;
+  check("A recording where a hand wasn't seen for a while (one hand, the other, then both) goes through C3D and TRC and back the same: its frames, gaps and points (the file's frame rate kept; the hand's size within 0.1%)",
+    !gap.error && gap.emptyLeft > 0 && gap.emptyRight > 0 && gap.emptyLeft !== gap.emptyRight && sameBut(gap.c3d) && sameBut(gap.trc), JSON.stringify(gap));
   check("A BVH reads back as its hand (fingertips from its end sites) and converts to all 8 formats; BVH → hands → BVH keeps every joint",
     r.bvh && !r.bvh.error && r.bvh.hands === "Left" && r.bvh.frames > 10 && r.bvh.worstMm <= 0.05 && r.bvh.formats >= 8, JSON.stringify(r.bvh));
   check("MCAP (ROS 2): Hand Tracker's own reads back exactly, and as both hands from its ROS 2 messages alone; it converts to all 8 formats",

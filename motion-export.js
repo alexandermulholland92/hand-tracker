@@ -230,6 +230,10 @@
       else hi = mid;
     }
     const a = S[lo], b = S[hi];
+    // (a time on a recorded frame is that frame, even with a gap after it: as a file's own frames
+    // read back are, the last one before the hand went out of sight included)
+    if (t - a.t < 1e-6) return a.world;
+    if (b.t - t < 1e-6) return b.world;
     if (b.t - a.t > MAX_GAP_S) return hold ? (t - a.t < b.t - t ? a.world : b.world) : null;
     const u = (t - a.t) / (b.t - a.t);
     return a.world.map((p, j) => lerp(p, b.world[j], u));
