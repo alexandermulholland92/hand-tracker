@@ -683,7 +683,7 @@ class SimulatedOak {
     };
     if (frozen) SimulatedOak.frozeOnce.add(options.device);
     this.onMessage = onMessage;
-    onMessage({ status: "running", camera: options.device ? `Simulated OAK ${options.device}` : "Simulated OAK", width: w, height: h, depth: true, id: options.device || "SIMULATED-OAK", usb: "SUPER",
+    onMessage({ status: "running", camera: options.device ? `Simulated OAK ${options.device}` : "Simulated OAK", width: w, height: h, depth: true, depthCameras: true, id: options.device || "SIMULATED-OAK", usb: "SUPER",
       far: options.far || null, // (the checks see which far-away mode it was started in)
       detect: !!options.detect, picture: ["depth", "blend", "side", "left", "right"].includes(options.picture) ? options.picture : "color", motion: !!options.motion, fps: options.fps || null, hands: options.hands !== false,
       // (an infrared camera, as an OAK-D Pro: night vision as asked, Automatic taken to be light)

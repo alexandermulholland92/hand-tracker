@@ -834,7 +834,9 @@
       // Remembered by model, so the picker can name it next time; and what it has (an infrared
       // light, depth cameras), for its settings on remote recording's page.
       if (s.camera && (prefs.oakNames || {})[s.id] !== s.camera) setPref("oakNames", { ...(prefs.oakNames || {}), [s.id]: s.camera });
-      const kind = { infrared: !!s.infrared, depth: !!s.depth };
+      // (depth: whether it has depth cameras, not whether they're on: one started with Depth off
+      // still has them, and its Depth and Picture settings stay on remote recording's page)
+      const kind = { infrared: !!s.infrared, depth: typeof s.depthCameras === "boolean" ? s.depthCameras : !!s.depth };
       if (JSON.stringify((prefs.oakKinds || {})[s.id]) !== JSON.stringify(kind)) setPref("oakKinds", { ...(prefs.oakKinds || {}), [s.id]: kind });
       t.label = `Luxonis ${s.camera || "OAK camera"}${s.depth ? " · depth" : ""}${s.night ? " · night vision" : ""}${s.usb === "HIGH" ? " · USB 2" : ""}`;
       t.night = !!s.night;

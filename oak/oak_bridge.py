@@ -42,8 +42,9 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
      once it's been too dark for the colour camera for a few seconds, off once it's been light
      again for a while (the camera is started again each time, a few seconds); the "running"
      status says which ("night"). A camera without an infrared light stays in colour.
-     --ir-dots: with night vision, the infrared dot projector on too: better depth in the dark,
-     but a pattern of dots on the picture.)
+     --ir-dots: the infrared dot projector on (a camera with one), in colour or night vision:
+     better depth, in the dark too, but a pattern of dots on the black-and-white pictures (night
+     vision's, left / right; the colour camera doesn't see them).)
     python oak_bridge.py --check        prints the versions it would use
     python oak_bridge.py --list         prints the OAK cameras found
     python oak_bridge.py --simulate     no camera: a moving synthetic hand, for testing
@@ -171,7 +172,7 @@ def depth_picture(disparity, max_disparity, w, h):
 # stays in colour, but once in night vision it stays there.
 NIGHT_SIZE = (1280, 720)
 NIGHT_FLOOD = 0.5
-NIGHT_DOTS = 0.5
+IR_DOTS = 0.5
 DARK_ISO = 1500
 LIGHT_AT = 36000
 NIGHT_AFTER_S, DAY_AFTER_S = 8, 20
@@ -186,10 +187,11 @@ def has_infrared(device):
 
 
 def set_infrared(device, night, dots):
-    """The infrared flood light on with night vision (and the dot projector, if asked), else off."""
+    """The infrared flood light on with night vision, else off; the dot projector on whenever it's
+    asked for, day or night (the depth cameras see its dots, the colour camera doesn't)."""
     try:
         device.setIrFloodLightIntensity(NIGHT_FLOOD if night else 0.0)
-        device.setIrLaserDotProjectorIntensity(NIGHT_DOTS if night and dots else 0.0)
+        device.setIrLaserDotProjectorIntensity(IR_DOTS if dots else 0.0)
     except Exception as err:
         print(f"Infrared light: {err}", file=sys.stderr)
 
@@ -487,7 +489,7 @@ def simulate(args):
     w, h = 1152, 648
     base = [(0, 0), (-.04, -.03), (-.08, -.07), (-.11, -.10), (-.13, -.13), (-.035, -.12), (-.04, -.17), (-.043, -.20), (-.045, -.23),
             (0, -.125), (0, -.18), (0, -.215), (0, -.245), (.03, -.115), (.035, -.165), (.038, -.195), (.04, -.22), (.055, -.10), (.065, -.135), (.07, -.16), (.075, -.18)]
-    status("running", camera="Simulated OAK camera", width=w, height=h, depth=True, detect=bool(args.detect), picture=args.picture, motion=bool(args.motion),
+    status("running", camera="Simulated OAK camera", width=w, height=h, depth=True, depthCameras=True, detect=bool(args.detect), picture=args.picture, motion=bool(args.motion),
            hands=not args.no_hands, night=False, infrared=False,
            warning="This camera has no infrared light, so it can't use night vision." if args.night == "on" else None)
     t0 = time.time()
@@ -941,11 +943,14 @@ def run(args):
             return 4
 
         streams = getattr(tracker, "extra_streams", [])
+        # (whether it has depth cameras at all; "depth" says whether they're in use)
+        stereo = dai.CameraBoardSocket.LEFT in cameras and dai.CameraBoardSocket.RIGHT in cameras
         if view in DEPTH_VIEWS and "pic_out" not in streams:
-            warnings.append("This camera has no depth cameras, so its colour picture is shown.")
+            warnings.append("Depth is off, so its usual picture is shown: turn Depth on for the depth picture." if stereo else
+                            "This camera has no depth cameras, so its colour picture is shown.")
             view = "color"
         status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h,
-               depth=bool(getattr(tracker, "xyz", False) or getattr(tracker, "has_depth", False)), id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
+               depth=bool(getattr(tracker, "xyz", False) or getattr(tracker, "has_depth", False)), depthCameras=stereo, id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
                detect="det_out" in streams, picture=view, motion="motion_out" in streams, imu="imu_out" in streams, hands=hands,
                night=night, infrared=infrared, warning=" ".join(dict.fromkeys(warnings)) or None)
         if retried:
@@ -1009,7 +1014,7 @@ def main():
     ap.add_argument("--imu", action="store_true", help="its motion sensor's readings too (accelerometer, gyroscope)")
     ap.add_argument("--no-hands", action="store_true", help="no hand tracking: only the picture and what else is asked for (Sentry mode)")
     ap.add_argument("--night", choices=["auto", "on", "off"], default="off", help="night vision by the camera's infrared light (OAK-D Pro)")
-    ap.add_argument("--ir-dots", action="store_true", help="night vision: the infrared dot projector on too (better depth; dots on the picture)")
+    ap.add_argument("--ir-dots", action="store_true", help="the infrared dot projector on, day or night (better depth; dots on the black-and-white pictures)")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--simulate", action="store_true")

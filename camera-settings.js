@@ -25,7 +25,7 @@
     picture: ["Picture", [["color", "Colour"], ["depth", "Depth"], ["blend", "Colour + depth"], ["side", "Colour | depth"], ["left", "Left mono"], ["right", "Right mono"]]],
     night: ["Night vision", [["auto", "Automatic"], ["on", "On"], ["off", "Off"]]],
   };
-  const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", dots: "Infrared dots (better depth in the dark, dots on the picture)" };
+  const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", dots: "Infrared dots (better depth, day or night; dots on the black-and-white pictures)" };
   const OAK_NUMBERS = new Set(["hands", "fps"]);
   const KINECT_CHOICES = {
     picture: ["Picture", [["color", "Colour (infrared at night)"], ["depth", "Depth"], ["blend", "Colour + depth"], ["side", "Colour | depth"]]],
