@@ -1000,8 +1000,8 @@ async function checkOwnApps() {
 // the browser's buttons); the hand mouse's calls point at its link and click it (the next page
 // opens), click into its text box and type; the ⚙ button shows the app over the website and
 // back; Back goes back, Close closes it. Its self-test (what the build runs in the iPhone
-// simulator: the layout, the small window moving out of the pointer's way, a drag scrolling)
-// passes too.
+// simulator: the layout, the small window moving out of the pointer's way, a drag scrolling,
+// the website and the app ending at the keyboard's top) passes too.
 async function checkIphoneApp() {
   const win = new BrowserWindow({
     show: false, width: 390, height: 844, useContentSize: true,
@@ -1067,7 +1067,7 @@ async function checkIphoneApp() {
     win.destroy();
   }
   const st = out.selfTest || {}, pg = out.page || {};
-  check("The iPhone app: only its own plugins, the Android-only parts hidden, remote recording on it there (its self-test: the server, the key needed, its state and a command through the app's own requests; its Bluetooth link with the right password and a wrong one); the hand browser opens a website full screen with the hand-mouse pointer on it and the app as just its camera, and the hand mouse's calls click its link (the next page opens), click into a box and type; the app shows over it and back; Back and Close work; and its self-test (as in the iPhone simulator: full screen, the small window moving off, a drag scrolling) passes",
+  check("The iPhone app: only its own plugins, the Android-only parts hidden, remote recording on it there (its self-test: the server, the key needed, its state and a command through the app's own requests; its Bluetooth link with the right password and a wrong one); the hand browser opens a website full screen with the hand-mouse pointer on it and the app as just its camera, and the hand mouse's calls click its link (the next page opens), click into a box and type; the app shows over it and back; Back and Close work; and its self-test (as in the iPhone simulator: full screen, the small window moving off, a drag scrolling, the website and the app ending at the keyboard's top while it's up) passes",
     !out.error && st.ok === true && st.plugins.join() === "BtLink,Filesystem,HandBrowser,RigLink,RigServer,Share" && pg.platform === "ios" && pg.label === "Hand mouse" && pg.shown &&
       st.rig && st.rig.ok === true && pg.android.every(Boolean) && pg.noKeyboard && pg.noRemote && pg.rigCard && pg.opened && pg.mouseOn && /Example Domain/.test(pg.barTitle) && pg.small && pg.appShown && pg.siteShown && pg.followed && pg.typed === "hello" && pg.back && pg.closed &&
       pg.opens.length >= 2 && pg.opens.every(([url, aspect, script]) => /^https:\/\/example\.com\/?$/.test(url) && aspect > 0 && script),

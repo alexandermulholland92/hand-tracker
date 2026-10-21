@@ -717,6 +717,21 @@
     };
   }
 
+  // On an iPhone or iPad, while the keyboard is up the app's screen (and the hand browser's
+  // website) ends at its top (HandBrowser.swift): as a page gets shorter, the box being typed
+  // into is scrolled back into view (one low in a panel would otherwise be just below its new
+  // bottom edge). Self-contained: it's also put into each website the hand browser opens.
+  function keepTypingInView(win) {
+    var timer = 0;
+    win.addEventListener("resize", function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        var e = win.document.activeElement;
+        if (e && (e.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName))) e.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }, 60);
+    });
+  }
+
   // The iPhone and iPad app's hand mouse (HandBrowserPlugin, ios/App/App/HandBrowser.swift).
   // iOS lets no app tap inside other apps, so it works websites in a browser inside the app,
   // filling the screen with the app in a small window in a corner, with web-pc.js's page
@@ -736,7 +751,8 @@
       const css = "#handPointer{position:fixed;left:-11px;top:-11px;width:22px;height:22px;border-radius:50%;z-index:2147483647;pointer-events:none;" +
         "border:2px solid #fff;background:rgba(77,171,247,.45);box-shadow:0 0 0 2px rgba(0,0,0,.45);transition:background .1s}#handPointer.down{background:rgba(255,146,43,.85)}";
       return `(function(){if(window.__htPointer)return;var s=document.createElement("style");s.textContent=${JSON.stringify(css)};(document.head||document.documentElement).appendChild(s);
-var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=document.querySelector(sel);if(!e)return null;var r=e.getBoundingClientRect();return{x:(r.left+r.width/2)/innerWidth,y:(r.top+r.height/2)/innerHeight};};window.__htPointer=p;})();`;
+var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=document.querySelector(sel);if(!e)return null;var r=e.getBoundingClientRect();return{x:(r.left+r.width/2)/innerWidth,y:(r.top+r.height/2)/innerHeight};};window.__htPointer=p;
+(${keepTypingInView.toString()})(window);})();`;
     };
     const call = (method, ...args) => B.call({ method, args: JSON.stringify(args) }).then((r) => r && r.value);
     // Pointer moves come every frame: only the newest is sent once the last has arrived.
@@ -788,6 +804,7 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
       open: (url, aspect) => B.open({ url, aspect, script: script() }),
       show: (app) => B.show({ app: !!app }),
       layout: () => B.layout(),
+      keyboardTest: (height) => B.keyboardTest({ height }), // (the self-test only)
       back: () => B.back(),
       close: () => B.close(),
       status: () => B.status(),
@@ -881,6 +898,7 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
   Object.assign(api, createRemote(), createLink());
   if (api.pc) api.pc = withDevice(api.pc, createBtHid());
   else Object.assign(api, createHandBrowser() || {}); // the iPhone app
+  if (api.platform === "ios") keepTypingInView(global);
   api.phoneControl = createPhoneControl();
   // Saving many results "into one folder" (the desktop app's chooseFolder / saveFilesTo):
   // on the phone that's always Documents/Hand Tracker.

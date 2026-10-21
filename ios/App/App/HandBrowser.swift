@@ -10,8 +10,12 @@
 //   call({ method, args })          window.__htPointer[method](...args) in the page shown
 //                                   (pointer, button, wheel, swipe, key, text, where), its result back
 //   back(), close(), status() -> { open, app, url, title, loading }
-//   layout() -> { screen, browser, app }   where each is on the screen (for the self-test)
+//   layout() -> { screen, browser, app, keyboard }   where each is on the screen (for the self-test)
+//   keyboardTest({ height })         the self-test only: a keyboard that high, as iOS tells of one
 //   "page" events { open, app, url, title, loading, error }
+//
+// While the on-screen keyboard is up, the app (and the website) end at its top, so what's being
+// typed into is laid out above it rather than behind it.
 //
 // HandTrackerHost is the app's main screen (SceneDelegate.swift): Capacitor's own screen
 // (HandTrackerViewController, with this plugin registered) and the browser behind it. Launched
@@ -53,6 +57,10 @@ class HandTrackerHost: UIViewController, UIGestureRecognizerDelegate {
     private var right = true, bottom = false // the small window's corner
     private var dragging = false
     private lazy var drag = UIPanGestureRecognizer(target: self, action: #selector(dragged(_:)))
+    // How much of the screen's bottom the on-screen keyboard covers (0 without one): the app and
+    // the website end where it starts, so a box being typed into is laid out above it rather than
+    // behind it (iOS doesn't shrink a web view for its keyboard itself).
+    private(set) var keyboard: CGFloat = 0
 
     override func loadView() {
         view = UIView()
@@ -67,6 +75,31 @@ class HandTrackerHost: UIViewController, UIGestureRecognizerDelegate {
         drag.delegate = self
         drag.isEnabled = false
         app.view.addGestureRecognizer(drag)
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        center.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    // The keyboard coming, going or changing size (its suggestions bar, another language's): the
+    // part of the screen it covers, followed as it moves. A floating or undocked keyboard (iPad)
+    // covers no strip of the bottom: nothing changes for it.
+    @objc private func keyboardChanged(_ note: Notification) {
+        let info = note.userInfo ?? [:]
+        let seconds = (info[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
+        var covered: CGFloat = 0
+        if note.name != UIResponder.keyboardWillHideNotification,
+           let end = (info[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue, !end.isEmpty {
+            let screen = view.window?.windowScene?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+            let k = view.convert(end, from: screen)
+            if k.maxY >= view.bounds.maxY - 1 { covered = max(0, min(view.bounds.height, view.bounds.maxY - k.minY)) }
+        }
+        setKeyboard(covered, seconds)
+    }
+
+    func setKeyboard(_ covered: CGFloat, _ seconds: TimeInterval = 0.25) {
+        guard abs(covered - keyboard) > 0.5 else { return }
+        keyboard = covered
+        animate(seconds)
     }
 
     override var childForStatusBarStyle: UIViewController? { app }
@@ -79,20 +112,21 @@ class HandTrackerHost: UIViewController, UIGestureRecognizerDelegate {
         if !dragging { place() }
     }
 
-    // The website: below the status bar, to the bottom of the screen.
+    // The website: below the status bar, to the bottom of the screen (or the keyboard's top).
     private func browserFrame() -> CGRect {
         let top = view.safeAreaInsets.top
-        return CGRect(x: 0, y: top, width: view.bounds.width, height: view.bounds.height - top)
+        return CGRect(x: 0, y: top, width: view.bounds.width, height: max(0, view.bounds.height - top - keyboard))
     }
 
-    // The app's small window: about a tenth of the screen, in its corner.
+    // The app's small window: about a tenth of the screen, in its corner (a bottom one above the
+    // keyboard while it's up).
     private func pipFrame() -> CGRect {
         let b = view.bounds, safe = view.safeAreaInsets, gap: CGFloat = 10
         let a = max(0.45, min(aspect, 2.2))
         let w = max(120, (b.width * b.height * 0.09 * a).squareRoot())
         let h = w / a
         let x = right ? b.width - safe.right - gap - w : safe.left + gap
-        let y = bottom ? b.height - safe.bottom - gap - h : safe.top + gap
+        let y = bottom ? max(safe.top + gap, b.height - max(safe.bottom, keyboard) - gap - h) : safe.top + gap
         return CGRect(x: x, y: y, width: w, height: h)
     }
 
@@ -102,7 +136,8 @@ class HandTrackerHost: UIViewController, UIGestureRecognizerDelegate {
             w.isHidden = appFull
         }
         let pip = browser != nil && !appFull
-        app.view.frame = pip ? pipFrame() : view.bounds
+        let full = CGRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - keyboard))
+        app.view.frame = pip ? pipFrame() : full
         app.view.layer.cornerRadius = pip ? 12 : 0
         app.view.layer.borderWidth = pip ? 1 : 0
         app.view.layer.borderColor = UIColor(white: 1, alpha: 0.6).cgColor
@@ -174,7 +209,7 @@ class HandTrackerHost: UIViewController, UIGestureRecognizerDelegate {
 
     func layout() -> [String: Any] {
         let r = { (f: CGRect) -> [Double] in [f.minX, f.minY, f.width, f.height].map { Double($0) } }
-        var out: [String: Any] = ["screen": [Double(view.bounds.width), Double(view.bounds.height)], "app": r(app.view.frame)]
+        var out: [String: Any] = ["screen": [Double(view.bounds.width), Double(view.bounds.height)], "app": r(app.view.frame), "keyboard": Double(keyboard)]
         if let w = browser, !w.isHidden { out["browser"] = r(w.frame) } else { out["browser"] = NSNull() }
         return out
     }
@@ -192,6 +227,7 @@ public class HandBrowserPlugin: CAPPlugin, CAPBridgedPlugin, WKNavigationDelegat
         CAPPluginMethod(name: "close", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "status", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "layout", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "keyboardTest", returnType: CAPPluginReturnPromise),
     ]
 
     private var web: WKWebView?
@@ -325,6 +361,30 @@ public class HandBrowserPlugin: CAPPlugin, CAPBridgedPlugin, WKNavigationDelegat
                 call.reject("The app isn't ready yet.")
                 return
             }
+            call.resolve(host.layout())
+        }
+    }
+
+    // The build's simulator check only (launched with -HTSelfTest): a keyboard this high (0: none),
+    // told the way iOS tells of its own (the simulator shows none while a computer's keyboard is
+    // connected), then where everything is.
+    @objc func keyboardTest(_ call: CAPPluginCall) {
+        guard ProcessInfo.processInfo.arguments.contains("-HTSelfTest") else {
+            call.reject("Only for the build's own check.")
+            return
+        }
+        let height = CGFloat(call.getDouble("height") ?? 0)
+        DispatchQueue.main.async {
+            guard let host = self.host else {
+                call.reject("The app isn't ready yet.")
+                return
+            }
+            let screen = host.view.window?.windowScene?.screen.bounds ?? UIScreen.main.bounds
+            let end = CGRect(x: 0, y: screen.height - height, width: screen.width, height: height)
+            NotificationCenter.default.post(name: height > 0 ? UIResponder.keyboardWillChangeFrameNotification : UIResponder.keyboardWillHideNotification,
+                                            object: nil, userInfo: [UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect: end),
+                                                                    UIResponder.keyboardAnimationDurationUserInfoKey: NSNumber(value: 0)])
+            host.view.layoutIfNeeded()
             call.resolve(host.layout())
         }
     }

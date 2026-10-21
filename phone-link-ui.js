@@ -325,7 +325,22 @@
           await sleep(300);
           await pc.button("left", "click");
           out.after = await next;
-          out.ok = !!(out.after && out.after.url) && out.full && out.small && out.moved && out.scrolled > 0.2 && out.stayed && out.back;
+          // The keyboard up (300 high, as iOS tells of one): the website ends at its top and the
+          // app's small window stays above it; the app shown full ends there too; the keyboard
+          // gone, all as they were.
+          const KB = 300, near = (a, b) => Math.abs(a - b) <= 1;
+          const k1 = await browser.keyboardTest(KB);
+          await browser.show(true);
+          const k2 = await browser.layout();
+          const k3 = await browser.keyboardTest(0);
+          await browser.show(false);
+          const k4 = await browser.layout();
+          out.keyboard = {
+            site: !!k1.browser && near(k1.browser[1] + k1.browser[3], sh - KB) && k1.app[1] + k1.app[3] <= sh - KB,
+            app: near(k2.app[3], sh - KB), gone: near(k3.app[3], sh) && !!k4.browser && near(k4.browser[1] + k4.browser[3], sh),
+          };
+          out.ok = !!(out.after && out.after.url) && out.full && out.small && out.moved && out.scrolled > 0.2 && out.stayed && out.back &&
+            out.keyboard.site && out.keyboard.app && out.keyboard.gone;
         } catch (err) {
           out.error = String((err && err.message) || err);
         }

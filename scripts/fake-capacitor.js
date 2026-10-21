@@ -525,7 +525,7 @@
   // the same way, and it moves away from the pointer the same way.
   const HandBrowser = (() => {
     const ev = events();
-    let frame = null, script = "", url = "", history = [], app = true, aspect = 0.75, right = true;
+    let frame = null, script = "", url = "", history = [], app = true, aspect = 0.75, right = true, keyboard = 0;
     const PAGES = {
       "https://example.com/": '<title>Example Domain</title><h1>Example Domain</h1><p style="margin-top:40vh"><a id="more" href="https://www.iana.org/help/example-domains">Learn more</a></p><div style="height:300vh"></div>',
       "https://www.iana.org/help/example-domains": '<title>Example Domains</title><h1>Example Domains</h1><input id="box" style="margin-top:30vh;width:60vw;height:40px" />',
@@ -577,9 +577,15 @@
         ev.emit("page", state());
         return state();
       },
+      // (The keyboard: the website and the app full end at its top, as the real one has them.)
       async layout() {
-        const screen = [innerWidth, innerHeight], site = frame && !app;
-        return { screen, browser: site ? [0, 0, innerWidth, innerHeight] : null, app: site ? pip() : [0, 0, innerWidth, innerHeight] };
+        const screen = [innerWidth, innerHeight], site = frame && !app, h = innerHeight - keyboard;
+        return { screen, browser: site ? [0, 0, innerWidth, h] : null, app: site ? pip() : [0, 0, innerWidth, h], keyboard };
+      },
+      async keyboardTest({ height }) {
+        keyboard = Math.max(0, Number(height) || 0);
+        const screen = [innerWidth, innerHeight], site = frame && !app, h = innerHeight - keyboard;
+        return { screen, browser: site ? [0, 0, innerWidth, h] : null, app: site ? pip() : [0, 0, innerWidth, h], keyboard };
       },
       async call({ method, args }) {
         const p = frame && frame.contentWindow.__htPointer;
