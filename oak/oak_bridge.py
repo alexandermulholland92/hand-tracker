@@ -27,7 +27,7 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
      for everything (the hands are found on it, as with night vision, which is the left one with
      the infrared light on; --night on turns the light on here too).
      --motion: the camera also makes a small grey picture (64 x 36) each frame, sent along for
-     Sentry mode to measure movement on.
+     Sentry mode to measure movement on (in night vision's Automatic it's made here instead).
      --imu: its motion sensor's readings too (a camera that has one): accelerometer (m/s²) and
      gyroscope (rad/s), IMU_HZ a second, each frame bringing those since the last as "imu":
      [[when (ms since 1970, on this computer's clock), ax, ay, az, gx, gy, gz]], on the sensor's
@@ -110,6 +110,21 @@ def grey_text(grey):
         g = g[:, :, 0]
     h, w = g.shape[:2]
     return {"w": int(w), "h": int(h), "data": base64.b64encode(np.ascontiguousarray(g, dtype=np.uint8).tobytes()).decode("ascii")}
+
+
+def host_grey(jpeg, frame):
+    """The small grey picture made here rather than on the camera (see add_extras): from the
+    camera's JPEG, decoded at an eighth of its size, or from its picture. None if there's neither."""
+    import cv2
+    import numpy as np
+
+    if jpeg:
+        g = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_REDUCED_GRAYSCALE_8)
+    elif frame is not None and frame.size:
+        g = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    else:
+        return None
+    return None if g is None else cv2.resize(g, MOTION_SIZE, interpolation=cv2.INTER_AREA)
 
 
 def object_of(det):
@@ -212,6 +227,7 @@ class NightCamera:
 
     def __init__(self, dai, pipeline, fps, meter, socket=None):
         self.night = True
+        self.meter = meter
         self.resolution = dai.MonoCameraProperties.SensorResolution.THE_720_P
         self.socket = socket if socket is not None else dai.CameraBoardSocket.LEFT
         self.mono = pipeline.createMonoCamera()
@@ -316,7 +332,14 @@ def add_extras(dai, pipeline, cam, stereo, extras, tracker):
         x.input.setQueueSize(8)
         imu.out.link(x.input)
         tracker.extra_streams.append("imu_out")
-    if extras.get("motion"):
+    if extras.get("motion") and getattr(cam, "meter", False):
+        # Night vision's Automatic (its colour camera running alongside, to tell when it's light
+        # again): with the small picture made on the camera too, every picture stopped after 153
+        # (about 5 s), then X_LINK_ERROR, each time (an OAK-D-PRO-W on a Pi 5, depthai 2.30; not
+        # with night vision On, nor without the small picture). So it's made here from each
+        # picture instead (host_grey).
+        tracker.host_motion = True
+    elif extras.get("motion"):
         small = pipeline.create(dai.node.ImageManip)
         small.initialConfig.setResize(*MOTION_SIZE)
         small.initialConfig.setFrameType(dai.ImgFrame.Type.GRAY8)
@@ -768,6 +791,10 @@ def run(args):
                 small = queues["motion_out"].tryGet()
                 if small is not None:
                     grey = grey_text(small.getFrame())
+            elif getattr(tracker, "host_motion", False):
+                small = host_grey(tracker.jpeg if mjpeg else None, frame)
+                if small is not None:
+                    grey = grey_text(small)
             if "pic_out" in queues:
                 disparity = queues["pic_out"].tryGet()
                 if disparity is not None:
@@ -951,7 +978,7 @@ def run(args):
             view = "color"
         status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h,
                depth=bool(getattr(tracker, "xyz", False) or getattr(tracker, "has_depth", False)), depthCameras=stereo, id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
-               detect="det_out" in streams, picture=view, motion="motion_out" in streams, imu="imu_out" in streams, hands=hands,
+               detect="det_out" in streams, picture=view, motion="motion_out" in streams or getattr(tracker, "host_motion", False), imu="imu_out" in streams, hands=hands,
                night=night, infrared=infrared, warning=" ".join(dict.fromkeys(warnings)) or None)
         if retried:
             usb2.add(wanted)
