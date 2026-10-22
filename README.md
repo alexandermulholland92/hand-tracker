@@ -4,7 +4,7 @@ Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmark
 
 ## Run it
 
-**On the web:** open **https://hand-tracker.pages.dev** in Chrome, Edge or Safari, on a computer or a phone. Nothing to install, and tracking runs entirely on your device; no video leaves it.
+**On the web:** open **https://hand-tracker.pages.dev** in Chrome, Edge or Safari, on a computer or a phone. Nothing to install, and tracking runs entirely on your device; no video leaves it. Its **Download** menu (top right) has each app for each device, from the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release, and shows how to install the one picked as it downloads.
 
 **Windows app:** double-click `dist/HandTracker-1.1.0-portable.exe`. Nothing to install; it works offline.
 
@@ -580,6 +580,7 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `pc-control.js` | Hand mouse, gesture actions and the Control your PC card |
 | `hid-core.js`, `electron/bt-hid.js`, `electron/bt-hid-win.cs`, `electron/bt-hid-linux.py`, `BtHidPlugin.java` | An iPhone or iPad worked as a Bluetooth mouse and keyboard: the reports, and the Windows, Linux and Android Bluetooth helpers |
 | `web-pc.js`, `electron/web-link.js` | The website's hand mouse: this page's pointer, or this computer's through the app |
+| `download-menu.js` | The website's Download menu: each app for each device, and how to install it |
 | `gestures.js` | Names each hand's gesture from its landmarks (shared by the main window and phone control) |
 | `phone-link-protocol.js`, `phone-link-ui.js`, `qr-code.js` | A phone controlling a PC over Wi-Fi: the signed messages, the pairing (with the QR code) on both sides |
 | `phone-control.html`, `phone-control.js` | Android: the small window that tracks your hand while controlling the phone itself |

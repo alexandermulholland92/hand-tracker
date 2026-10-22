@@ -153,6 +153,7 @@ const STEPS = [
   ["sentry", [], ({ js }) => checkSentry(js)],
   ["web-link", [], () => checkWebLink()],
   ["web-mouse", [], ({ js }) => checkWebMouse(js)],
+  ["website-downloads", [], ({ js }) => checkWebsiteDownloads(js)],
   ["iphone-mouse", [], ({ js }) => checkIphoneMouse(js)],
   ["mac-app", [], () => checkMacApp()],
   ["linux-input", [], () => checkLinuxInput()],
@@ -1712,6 +1713,60 @@ async function checkWebLink() {
       out.status === 200 && out.move === 200 && out.click === 200 && out.otherSite === 403 && out.noOrigin === 403 && out.otherHost === 403 &&
       out.nonsense === 400 && out.badKey === 400 && out.clean.every((c) => c === null) &&
       out.done.join(" | ") === 'pointer:{"nx":0.25,"ny":0.75,"screen":"primary"} | button:{"which":"left","action":"click"}',
+    JSON.stringify(out));
+}
+
+// The website's Download menu (download-menu.js): not in the app; on the website, each app's file
+// for each device on the "Latest build" release (named with the website's version), and picking one
+// shows how to install it on that device (the link itself downloads it). A copy run from the source
+// folder has no version: just the release's page.
+async function checkWebsiteDownloads(js) {
+  const out = { inApp: await js("document.getElementById('downloadMenu').hidden") };
+  let win = null;
+  try {
+    // The website: the page without the app's bridge.
+    win = new BrowserWindow({ show: false, width: 1100, height: 800, webPreferences: { partition: "check-website-downloads", backgroundThrottling: false } });
+    await win.loadFile(path.join(__dirname, "..", "index.html"));
+    out.site = await withLimit(win.webContents.executeJavaScript(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      for (let i = 0; i < 100 && $("downloadMenu").hidden; i++) await sleep(100);
+      const unversioned = [...$("downloadList").querySelectorAll("a")].map((a) => a.href);
+      DownloadMenu.init("1.2.3"); // (as the website's build has it)
+      // (the file links download: kept from leaving this page)
+      window.addEventListener("click", (e) => e.target.closest && e.target.closest("#downloadList .dl-files a") && e.preventDefault());
+      const apps = [...document.querySelectorAll("#downloadList .dl-app")].map((e) => e.textContent);
+      const files = [...document.querySelectorAll("#downloadList .dl-files a")].map((a) => a.textContent + "=" + a.href.split("/").pop());
+      const pick = async (app, device) => {
+        $("downloadMenu").querySelector("summary").click();
+        await sleep(50);
+        const open = $("downloadMenu").open;
+        const block = [...document.querySelectorAll("#downloadList .dl-app")].find((e) => e.textContent === app).nextElementSibling;
+        [...block.querySelectorAll("a")].find((a) => a.textContent === device).click();
+        await sleep(50);
+        const shown = { open, menuClosed: !$("downloadMenu").open, dialog: !$("installDialog").hidden, title: $("installTitle").textContent, steps: [...$("installSteps").children].map((li) => li.textContent).join(" | "), again: $("installAgain").href.split("/").pop() };
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+        shown.closed = $("installDialog").hidden;
+        return shown;
+      };
+      return { unversioned, apps, files, android: await pick("Hand Tracker", "Android"), pi: await pick("Remote Recording", "Raspberry Pi"), iphone: await pick("Hand Mouse", "iPhone"), chrome: await pick("Chrome extension", "Chrome, Edge") };
+    })()`, true), "the website's Download menu");
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    if (win && !win.isDestroyed()) win.destroy();
+  }
+  const s = out.site || {};
+  const each = (file, deb) => [`Windows=${file}-1.2.3-portable.exe`, `Mac (Apple chip)=${file}-1.2.3-mac-arm64.dmg`, `Mac (Intel)=${file}-1.2.3-mac-x64.dmg`, `Linux=${deb}_1.2.3_amd64.deb`, `Raspberry Pi=${deb}_1.2.3_arm64.deb`, `Android=${file}-1.2.3.apk`, `iPhone=${file}-1.2.3-ios-unsigned.ipa`];
+  const files = [...each("HandTracker", "hand-tracker"), ...each("HandMouse", "hand-mouse"), ...each("RemoteRecording", "remote-recording"), "Chrome, Edge=HandTracker-1.2.3-chrome-extension.zip"];
+  const shown = (p, title, again, words) => p && p.open && p.menuClosed && p.dialog && p.closed && p.title === title && p.again === again && words.every((w) => p.steps.includes(w));
+  check("The website's Download menu (not in the app): each app's file for each device on the Latest build release, named with the website's version (just the release's page without one); picking one shows how to install it on that device",
+    !out.error && out.inApp === true && (s.unversioned || []).join() === "https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build" &&
+      (s.apps || []).join() === "Hand Tracker,Hand Mouse,Remote Recording,Chrome extension" && (s.files || []).join() === files.join() &&
+      shown(s.android, "Hand Tracker for Android", "HandTracker-1.2.3.apk", ["HandTracker-1.2.3.apk", "install unknown apps", "Allow restricted settings"]) &&
+      shown(s.pi, "Remote Recording for Raspberry Pi", "remote-recording_1.2.3_arm64.deb", ["sudo apt install ./remote-recording_1.2.3_arm64.deb", "Open Remote Recording from the app menu"]) &&
+      shown(s.iphone, "Hand Mouse for iPhone and iPad", "HandMouse-1.2.3-ios-unsigned.ipa", ["Sideloadly", "VPN & Device Management", "7 days"]) &&
+      shown(s.chrome, "Hand Tracker Chrome extension", "HandTracker-1.2.3-chrome-extension.zip", ["Load unpacked", "Developer mode"]),
     JSON.stringify(out));
 }
 

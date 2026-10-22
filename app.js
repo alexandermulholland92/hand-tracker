@@ -1854,6 +1854,8 @@
     const buildMeta = document.querySelector('meta[name="hand-tracker-build"]');
     if (buildMeta) showBuild(buildMeta.dataset.version, buildMeta.content);
     else if (!desktop) showBuild(null, null);
+    // The website's Download menu (download-menu.js): each app for each device, with how to install it.
+    if (!desktop && !mobile && !rigApp) DownloadMenu.init(buildMeta && buildMeta.dataset.version);
     if (desktop) {
       desktop
         .getInfo()
