@@ -1181,7 +1181,7 @@ async function checkPhoneAsRig(win, js) {
       out.mode.ok && out.defaultRequired === false && out.refused.ok === false && (out.refused.missing || []).length === 3 &&
       out.record.ok && out.recording.recording && out.recording.locked && out.recording.cameras === out.available.length &&
       out.preview.status === 200 && out.preview.full === 200 && out.preview.big > out.preview.small &&
-      out.stop.ok && t.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_/.test((t.files || [])[0] || "") && out.saved.length >= 1 && out.close.ok && out.closed && out.off,
+      out.stop.ok && t.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_\d+s[.-]/.test((t.files || [])[0] || "") && out.saved.length >= 1 && out.close.ok && out.closed && out.off,
     JSON.stringify(out));
 }
 
@@ -1203,7 +1203,7 @@ async function checkRemoteFromPhone(win, js) {
   const asked = [];
   // Its takes folder: one take, to download to the phone and then delete from the computer.
   const takesDir = fs.mkdtempSync(path.join(require("os").tmpdir(), "hand-tracker-android-takes-"));
-  fs.writeFileSync(path.join(takesDir, "Phone-Take_1s_2026-10-02_12-00-00.json"), JSON.stringify({ format_version: 2, hands: [] }));
+  fs.writeFileSync(path.join(takesDir, "Phone-Take_2026-10-02_12-00-00_1s.json"), JSON.stringify({ format_version: 2, hands: [] }));
   const server = new RemoteRecordServer({
     keyStore: null, host: "rig-test", hotspot: () => null, takes: () => takesDir,
     page: (name) => fs.readFileSync(path.join(ROOT, name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8"),
@@ -1293,7 +1293,7 @@ async function checkRemoteFromPhone(win, js) {
       c.path === "/remote-client.html" && c.hash === "" && c.title === "Hand Tracker on rig-test" && /Cameras off/.test(c.status) && c.rows.length === 1 &&
       c.before === "Stereo" && c.after === "Ego" && c.back && c.calls > 2 && c.fits && out.asked.includes("mode") &&
       out.takes && out.takes.listed === 1 && /on this device \(Documents\/Hand Tracker\/Takes from rig-test\)/.test(out.takes.note) &&
-      out.takes.saved.join() === "Hand Tracker/Takes from rig-test/Phone-Take_1s_2026-10-02_12-00-00.json" && out.takes.after === 0 && out.takesLeft.length === 0 &&
+      out.takes.saved.join() === "Hand Tracker/Takes from rig-test/Phone-Take_2026-10-02_12-00-00_1s.json" && out.takes.after === 0 && out.takesLeft.length === 0 &&
       out.one && out.one.one && out.one.boxes === 1 && out.one.missing === "Not connected: Chest, Left wrist, Right wrist" && out.one.ratio === "180 / 320" && out.one.h > out.one.w * 1.5,
     JSON.stringify(out));
 }

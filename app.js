@@ -1097,7 +1097,7 @@
       : "No hand was visible";
     const motiveText = motive ? ` · Motive: ${motive.labels.length} points × ${motive.frame_count} frames at ${motive.frame_rate} Hz` : "";
     motionInfo.textContent = handText + motiveText;
-    motionName.value = `robot-motion-${timestampName()}`;
+    motionName.value = timestampName();
     motionName.readOnly = false;
     motionName.title = "";
     motionResults.innerHTML = "";
@@ -1120,7 +1120,7 @@
   function motionFiles() {
     const formats = checkedIds(motionFormatGrid);
     if (!formats.length) throw new Error("pick at least one format");
-    const baseName = motionName.value.trim() || `robot-motion-${timestampName()}`;
+    const baseName = motionName.value.trim() || timestampName();
     let files = [];
     if (motion.data.hands.length) files = MotionExport.build(motion.data, formats, baseName);
     if (motion.motive) {

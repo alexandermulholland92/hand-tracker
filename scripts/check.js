@@ -269,8 +269,8 @@ async function checkCaptureAndMotionFiles(ctx) {
     await sleep(250);
     saved = await js("document.querySelectorAll('#motionResults li.ok').length");
   }
-  const motionFiles = fs.readdirSync(outDir).filter((f) => f.startsWith("robot-motion-"));
-  check("All 8 motion formats saved (9 files: one BVH per hand)", saved === 9, motionFiles.map((f) => f.replace(/^robot-motion-[\d_-]+?(?=[-.][a-z])/, "…")).join(" "));
+  const motionFiles = fs.readdirSync(outDir).filter((f) => /^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d[-.]/.test(f)); // (named after the time: no name typed)
+  check("All 8 motion formats saved (9 files: one BVH per hand)", saved === 9, motionFiles.map((f) => f.replace(/^[\d_-]+?(?=[-.][a-z])/, "…")).join(" "));
   const mfile = (ending) => {
     const f = motionFiles.find((n) => n.endsWith(ending));
     return f ? path.join(outDir, f) : null;
@@ -3210,7 +3210,7 @@ async function checkRemoteRecording(js) {
       out.preview.status === 200 && /^image\/jpeg; seq=\d+$/.test(out.preview.type) && out.preview.jpeg && out.preview.kb > 1 &&
       out.full.frames >= 12 && out.full.size && out.full.small && out.full.size.w > out.full.small.w && out.full.fps >= 6 &&
       out.numbered.got >= 12 && out.numbered.distinct === out.numbered.got &&
-      out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
+      out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_\d+s\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
       out.videos.map((v) => v.f).sort().join() === "-video-chest.mp4,-video-head.mp4" && out.videos.every((v) => v.plain && v.video === "h264" && ["aac", "none"].includes(v.sound) && v.kb > 5 && v.fps > 16) &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
       /^0:\d\d$/.test(out.metadata.length) && out.metadata.length_s > 1 &&
@@ -3357,11 +3357,12 @@ async function checkRemoteLauncher(js) {
 async function checkRemoteTakeDetails(js) {
   const { RemoteRecordServer } = require("../electron/remote-record.js");
   const { readMetadata } = require("../electron/mcap-video.js");
+  const TakeNames = require("../take-names.js");
   require("../mcap.js");
   const Mcap = globalThis.Mcap;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-details-"));
-  const ID = "Sam-Smith_Lab-2_Pick-up-cup_1m05s_2026-10-02_10-30-24";
-  const NEW = "Ana-Lee_Wave-hello_1m05s_2026-10-02_10-30-24";
+  const ID = "Sam-Smith_Lab-2_Pick-up-cup_2026-10-02_10-30-24_1m05s";
+  const NEW = "Ana-Lee_Wave-hello_2026-10-02_10-30-24_1m05s";
   const OLD = Date.now() / 1000 - 60;
   const capture = (d) => JSON.stringify({ format: "hand-tracker-motion", recorded_at: "2026-10-02T10:30:24Z", metadata: { ...d, length: "1:05", length_s: 65 }, hands: [] }, null, 2);
   const write = (name, data, old = true) => {
@@ -3379,9 +3380,10 @@ async function checkRemoteTakeDetails(js) {
   write(`${ID}-video-north.webm`, Buffer.from([1, 2, 3]));
   write(`${ID}.annotations.json`, '{"steps":[]}');
   write("my-own-name.json", "{}");
-  write("robot-motion_5s_2026-10-02_11-00-00.json", capture({}), false); // (just written: being saved)
-  write("A_5s_2026-10-02_12-00-00.json", capture({ contributor: "A" }));
-  write("B_5s_2026-10-02_12-00-00.json", capture({ contributor: "B" }));
+  write("2026-10-02_11-00-00_5s.json", capture({}), false); // (just written: being saved)
+  write("A_2026-10-02_12-00-00_5s.json", capture({ contributor: "A" }));
+  write("B_2026-10-02_12-00-00_5s.json", capture({ contributor: "B" }));
+  write("robot-motion_7s_2026-10-02_13-00-00.json", capture({})); // (named the way takes were before 2026-10-22)
   const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8");
   const server = new RemoteRecordServer({ keyStore: null, page, ask: async () => ({ ok: true, message: "" }), host: "rig-test", hotspot: () => null, takes: () => dir });
   server.setState({
@@ -3404,8 +3406,11 @@ async function checkRemoteTakeDetails(js) {
     out.trc = fs.readFileSync(path.join(dir, `${NEW}.trc`), "utf8").split("\n")[0];
     out.readBack = await command({ action: "takeDetails", take: { id: NEW } });
     out.notOurs = await command({ action: "editTake", take: { id: "my-own-name", details: { task: "x" } } });
-    out.saving = await command({ action: "editTake", take: { id: "robot-motion_5s_2026-10-02_11-00-00", details: { task: "x" } } });
-    out.taken = await command({ action: "editTake", take: { id: "B_5s_2026-10-02_12-00-00", details: { contributor: "A" } } });
+    out.saving = await command({ action: "editTake", take: { id: "2026-10-02_11-00-00_5s", details: { task: "x" } } });
+    out.taken = await command({ action: "editTake", take: { id: "B_2026-10-02_12-00-00_5s", details: { contributor: "A" } } });
+    out.older = await command({ action: "editTake", take: { id: "robot-motion_7s_2026-10-02_13-00-00", details: { task: "Wave" } } });
+    out.cleared = await command({ action: "editTake", take: { id: "Wave_2026-10-02_13-00-00_7s", details: {} } });
+    out.olderFiles = fs.readdirSync(dir).filter((n) => n.includes("7s")).sort();
     out.gone = await command({ action: "editTake", take: { id: ID, details: { task: "x" } } });
     // The page: the take details folded away (optional); a take's Edit details, Save.
     win = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-take-details" } });
@@ -3440,7 +3445,7 @@ async function checkRemoteTakeDetails(js) {
   }
   // The computer's own screen: Takes…, a take's Edit details, Save.
   const here = process.env.HAND_TRACKER_REMOTE_DIR;
-  const MINE = "Rig-test_Room-1_Stack-cups_12s_2026-10-03_09-00-00";
+  const MINE = "Rig-test_Room-1_Stack-cups_2026-10-03_09-00-00_12s";
   try {
     fs.writeFileSync(path.join(here, `${MINE}.json`), capture({ contributor: "Rig test", location: "Room 1", task: "Stack cups" }));
     fs.utimesSync(path.join(here, `${MINE}.json`), OLD, OLD);
@@ -3469,13 +3474,16 @@ async function checkRemoteTakeDetails(js) {
     out.ownError = String((err && err.stack) || err);
   }
   const pg = out.page || {}, own = out.own || {};
-  check("A take's details changed after recording, on the computer that keeps it: read back from its files, then changed in its JSON and MCAP file (its messages kept) and the name in its TRC file, every file renamed to match (its .annotations.json too), its length and time kept; refused for a take Hand Tracker didn't name, one being saved, a name already taken, or one that's gone",
+  check("A take's details changed after recording, on the computer that keeps it: read back from its files, then changed in its JSON and MCAP file (its messages kept) and the name in its TRC file, every file renamed to match (its .annotations.json too), its time and length kept (one named the older way, \"robot-motion_<length>_<time>\", too: in the new order, without \"robot-motion\"); a take without details named after just its time and length; refused for a take Hand Tracker didn't name, one being saved, a name already taken, or one that's gone",
     !out.error && out.read.ok && out.read.details.task === "Pick up cup" && out.read.details.contributor === "Sam Smith" && out.edited.ok && out.edited.id === NEW &&
       out.files.join() === [`${NEW}-video-north.webm`, `${NEW}.annotations.json`, `${NEW}.json`, `${NEW}.mcap`, `${NEW}.trc`].join() &&
       out.json.contributor === "Ana Lee" && out.json.location === "" && out.json.task === "Wave hello" && out.json.length === "1:05" &&
       out.mcap.contributor === "Ana Lee" && out.mcap.task === "Wave hello" && out.mcap.units === "m" && out.mcap.messages === 3 && out.trc === `PathFileType\t4\t(X/Y/Z)\t${NEW}.trc` &&
       out.readBack.ok && out.readBack.details.task === "Wave hello" && !out.notOurs.ok && /didn't|isn't one/.test(out.notOurs.message) && !out.saving.ok && /being saved/.test(out.saving.message) &&
-      !out.taken.ok && /already/.test(out.taken.message) && !out.gone.ok,
+      !out.taken.ok && /already/.test(out.taken.message) && !out.gone.ok &&
+      out.older.ok && out.older.id === "Wave_2026-10-02_13-00-00_7s" && out.cleared.ok && out.cleared.id === "2026-10-02_13-00-00_7s" && out.olderFiles.join() === "2026-10-02_13-00-00_7s.json" &&
+      TakeNames.takeName({}, new Date(2026, 9, 2, 10, 30, 24), 65.4) === "2026-10-02_10-30-24_1m05s" &&
+      TakeNames.takeName(sam, new Date(2026, 9, 2, 10, 30, 24), 3725) === "Sam-Smith_Lab-2_Pick-up-cup_2026-10-02_10-30-24_1h02m05s",
     JSON.stringify(out));
   check("The remote recording page: the take details folded away by default (optional, what they are in one line, Show opens them), and a take's Edit details shows its details as saved; Save changes them and it's listed by its new name",
     !out.error && pg.folded && pg.folded.body === true && pg.folded.show === "Show" && /None/.test(pg.folded.summary) && /Optional/.test(pg.folded.note) && pg.opened.body === false && pg.opened.show === "Hide" &&
@@ -3496,7 +3504,7 @@ async function checkRemoteTakes() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-takes-"));
   const big = Buffer.alloc(5 * 1024 * 1024 + 321); // more than one slice
   for (let i = 0; i < big.length; i++) big[i] = (i * 31) & 255;
-  const SAM = "Sam-Smith_Lab-2_Pick-up-cup_2s_2026-10-02_10-30-24", ANA = "Ana_Lab-1_Wave_1s_2026-10-02_11-00-00";
+  const SAM = "Sam-Smith_Lab-2_Pick-up-cup_2026-10-02_10-30-24_2s", ANA = "Ana_Lab-1_Wave_2026-10-02_11-00-00_1s";
   fs.writeFileSync(path.join(dir, `${SAM}.json`), big);
   fs.writeFileSync(path.join(dir, `${SAM}-left.bvh`), "HIERARCHY left\n");
   fs.writeFileSync(path.join(dir, `${SAM}-right.bvh`), "HIERARCHY right\n");

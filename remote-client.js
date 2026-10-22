@@ -333,8 +333,8 @@
   const FIELDS = ["contributor", "location", "task"];
   const LABELS = { contributor: "Contributor", location: "Location", task: "Task" };
   const NOTE = {
-    required: "All three are needed to start recording. Each take is named after them and its length, and keeps them in its files.",
-    optional: "Optional. Each take is named after these and its length (\"robot-motion\" without them), and keeps them in its files. They can be changed after recording too, under Takes.",
+    required: "All three are needed to start recording. Each take is named after them, its time and its length, and keeps them in its files.",
+    optional: "Optional. Each take is named after these, its time and its length (just its time and length without them), and keeps them in its files. They can be changed after recording too, under Takes.",
   };
   const LOCKED_NOTE = "Locked: this take is named after these; change them under Takes once it's saved.";
   let edits = 0, sentEdits = 0, detailsTimer = null, locked = false, required = false, savedNote = false;
@@ -358,7 +358,7 @@
     $("detailsShow").setAttribute("aria-expanded", String(open));
     const now = FIELDS.map((k) => $(k).value.trim()).filter(Boolean);
     $("detailsSummary").hidden = open;
-    $("detailsSummary").textContent = now.length ? now.join(" · ") : "None: takes are named \"robot-motion\" and their length.";
+    $("detailsSummary").textContent = now.length ? now.join(" · ") : "None: takes are named after their time and length.";
   }
   function showDetails(open, remember = true) {
     detailsOpen = open;

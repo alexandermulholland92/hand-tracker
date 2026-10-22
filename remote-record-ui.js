@@ -124,7 +124,7 @@
   const DETAILS = ["contributor", "location", "task"];
   const DETAIL_LABELS = { contributor: "Contributor", location: "Location", task: "Task" };
   const details = () => Object.fromEntries(DETAILS.map((k) => [k, String((prefs.remoteDetails || {})[k] || "")]));
-  // Optional (a take without them is named "robot-motion_…"), unless the page's hidden switch
+  // Optional (a take without them is named after its time and length), unless the page's hidden switch
   // makes all three needed before a take can start.
   const detailsRequired = () => prefs.remoteDetailsRequired === true;
   const missingDetails = () => (detailsRequired() ? DETAILS.filter((k) => !details()[k].trim()) : []);
@@ -143,9 +143,9 @@
   }
 
   // A recording's length: "1:05" (or "1:02:03") for the metadata; "1m05s" (or "1h02m03s", "42s")
-  // for names. A take's name: its details and length, then when it started
-  // ("Sam_Lab-2_Pick-up-cup_1m05s_2026-10-01_16-30-00"), or "robot-motion_<length>_<when>"
-  // without any details (take-names.js: the computer renames takes the same way).
+  // for names. A take's name: its details, when it started, then its length
+  // ("Sam_Lab-2_Pick-up-cup_2026-10-01_16-30-00_1m05s"), or "<when>_<length>" without any
+  // details (take-names.js: the computer renames takes the same way).
   const { lengthText, takeName } = global.TakeNames;
 
   // ---------- what the phone's page shows ----------
