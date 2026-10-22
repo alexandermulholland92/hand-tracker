@@ -316,6 +316,17 @@ contextBridge.exposeInMainWorld("desktop", {
       return () => ipcRenderer.removeListener("remote:bluetooth", listener);
     },
     chooseFolder: () => ipcRenderer.invoke("remote:choose-folder"),
+    // Its takes (the remote recording folder's): takes() -> { takes: [{ id, at, size, files }], more };
+    // takeDetails(id) -> { ok, details }; editTake(id, details) -> { ok, id, message } (renamed to
+    // match); onTakesChanged(cb) when one is changed here or from a phone.
+    takes: () => ipcRenderer.invoke("remote:takes"),
+    takeDetails: (id) => ipcRenderer.invoke("remote:take-details", id),
+    editTake: (id, details) => ipcRenderer.invoke("remote:edit-take", { id, details }),
+    onTakesChanged: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("remote:takes-changed", listener);
+      return () => ipcRenderer.removeListener("remote:takes-changed", listener);
+    },
     // This computer restarted, and its cameras' USB turned off and on, from the device settings
     // page (electron/system-control.js): system() -> { reboot, powerOff, cameraReset }; turned off.
     system: () => ipcRenderer.invoke("remote:system"),

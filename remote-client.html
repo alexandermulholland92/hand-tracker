@@ -107,6 +107,11 @@
   .takerow .meta { font-size: 13px; color: var(--muted); margin: 2px 0 0 28px; }
   .takerow .meta .ok { color: var(--ok); }
   .takerow .meta .err { color: var(--err); }
+  .takerow .takeedit { margin: 8px 0 0 28px; }
+  .takerow .takeedit label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 7px; }
+  .takerow .takeedit input { display: block; width: 100%; height: auto; margin-top: 3px; font: inherit; font-size: 16px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; }
+  .takerow .takeedit .erow { display: flex; gap: 8px; align-items: center; }
+  .takerow .takeedit .enote { font-size: 13px; color: var(--muted); margin-top: 5px; }
   .takebtns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
   .takebtns button { flex: 1 1 150px; padding: 11px 14px; font-weight: 600; }
   #takesNote { font-size: 13px; color: var(--muted); min-height: 1.3em; margin-top: 6px; }
@@ -187,12 +192,15 @@
   </section>
 
   <section class="panel details" id="detailsPanel" aria-labelledby="detailsTitle">
-    <h2 id="detailsTitle">Take details</h2>
-    <div id="requiredRow" hidden><span>Needed before recording:</span><button type="button" id="requiredBtn" class="small" aria-pressed="true">On</button></div>
-    <label>Contributor <input id="contributor" type="text" maxlength="200" autocomplete="off" enterkeyhint="next" /></label>
-    <label>Location <input id="location" type="text" maxlength="200" autocomplete="off" enterkeyhint="next" /></label>
-    <label>Task <input id="task" type="text" maxlength="200" autocomplete="off" enterkeyhint="done" /></label>
-    <div id="detailsNote"></div>
+    <h2><span id="detailsTitle" class="grow">Take details</span><button type="button" id="detailsShow" class="small" aria-expanded="false" aria-controls="detailsBody">Show</button></h2>
+    <div id="detailsSummary" class="muted"></div>
+    <div id="detailsBody" hidden>
+      <div id="requiredRow" hidden><span>Needed before recording:</span><button type="button" id="requiredBtn" class="small" aria-pressed="true">On</button></div>
+      <label>Contributor <input id="contributor" type="text" maxlength="200" autocomplete="off" enterkeyhint="next" /></label>
+      <label>Location <input id="location" type="text" maxlength="200" autocomplete="off" enterkeyhint="next" /></label>
+      <label>Task <input id="task" type="text" maxlength="200" autocomplete="off" enterkeyhint="done" /></label>
+      <div id="detailsNote"></div>
+    </div>
   </section>
 
   <div class="controls">

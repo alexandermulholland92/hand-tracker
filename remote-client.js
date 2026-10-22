@@ -148,23 +148,36 @@
   const loops = [];
 
   // ---------- roles ----------
-  const ROLES = [["head", "Head"], ["chest", "Chest"], ["wrist_left", "Left wrist"], ["wrist_right", "Right wrist"]];
+  // (camera-roles.js's: worn, then around the scene)
+  const WORN = [["head", "Head"], ["chest", "Chest"], ["wrist_left", "Left wrist"], ["wrist_right", "Right wrist"]];
+  const AROUND = [["north", "North"], ["south", "South"], ["east", "East"], ["west", "West"]];
+  const ROLES = [...WORN, ...AROUND];
   const roleLabel = (id) => (ROLES.find((r) => r[0] === id) || [])[1] || "";
   const roleOptions = (selected) => `<option value=""${selected ? "" : " selected"}>No role</option>` + ROLES.map(([id, label]) => `<option value="${id}"${id === selected ? " selected" : ""}>${label}</option>`).join("");
-  // The grid by role, as in Hand Tracker: head, chest, left wrist, right wrist (two to a row; a
-  // single camera takes the whole grid); a camera with no role takes the first free role's place.
-  // The roles with no camera are listed under it.
+  // The grid by role, as in Hand Tracker: head or north, chest or south, left wrist or east, right
+  // wrist or west (two to a row; a single camera takes the whole grid); a camera with no role (or
+  // whose place is taken) takes the first free place. The roles with no camera are listed under it.
   function blocks(roles) {
-    const ids = ROLES.map((r) => r[0]);
-    const slots = roles.map((r) => ids.indexOf(r));
-    const used = new Set(slots.filter((b) => b >= 0));
+    const blockOf = (id) => {
+      const w = WORN.findIndex((r) => r[0] === id);
+      return w >= 0 ? w : AROUND.findIndex((r) => r[0] === id);
+    };
+    const used = new Set();
+    const slots = roles.map((r) => {
+      const b = blockOf(r);
+      if (b < 0 || used.has(b)) return -1;
+      used.add(b);
+      return b;
+    });
     slots.forEach((b, i) => {
       if (b >= 0) return;
-      const free = ids.findIndex((_, k) => !used.has(k));
-      slots[i] = free >= 0 ? free : ids.length + i;
-      if (free >= 0) used.add(free);
+      const free = [0, 1, 2, 3].find((k) => !used.has(k));
+      slots[i] = free !== undefined ? free : 4 + i;
+      if (free !== undefined) used.add(free);
     });
-    return { slots, empty: ids.map((_, k) => k).filter((k) => !used.has(k)) };
+    const empty = [0, 1, 2, 3].filter((k) => !used.has(k));
+    const set = roles.some((r) => AROUND.some((a) => a[0] === r)) && !roles.some((r) => WORN.some((w) => w[0] === r)) ? AROUND : WORN;
+    return { slots, empty, emptyLabels: empty.map((k) => set[k][1]) };
   }
 
   // ---------- the mode ----------
@@ -312,23 +325,61 @@
     if (busy) note.textContent = s.recording ? "Recording with the cameras ticked. Stop recording, then Stop cameras, to choose others." : "The cameras ticked are on. Stop cameras to choose others (each one's role can be changed under its picture).";
     else if (a.scanning) note.textContent = "Looking for cameras…";
     else if (!list.length) note.textContent = a.note || "No cameras found. Plug one in, then Refresh.";
-    else note.textContent = a.note || "Tick the cameras to start; each one's role is where it's worn.";
+    else note.textContent = a.note || "Tick the cameras to start; each one's role is where it's worn, or where it stands (north, south, east, west).";
     $("scanBtn").disabled = busy || !!a.scanning || sending;
   }
 
   // ---------- take details: kept by Hand Tracker (every phone sees the same), sent as typed ----------
   const FIELDS = ["contributor", "location", "task"];
   const LABELS = { contributor: "Contributor", location: "Location", task: "Task" };
-  const NOTE = { required: "All three are needed to start recording. Each take is named after them and its length, and keeps them in its file.", optional: "Each take is named after these and its length, and keeps them in its file." };
-  const LOCKED_NOTE = "Locked: this take is named after these, and they can't be changed for it.";
-  let edits = 0, sentEdits = 0, detailsTimer = null, locked = false, required = true, savedNote = false;
+  const NOTE = {
+    required: "All three are needed to start recording. Each take is named after them and its length, and keeps them in its files.",
+    optional: "Optional. Each take is named after these and its length (\"robot-motion\" without them), and keeps them in its files. They can be changed after recording too, under Takes.",
+  };
+  const LOCKED_NOTE = "Locked: this take is named after these; change them under Takes once it's saved.";
+  let edits = 0, sentEdits = 0, detailsTimer = null, locked = false, required = false, savedNote = false;
   const readDetails = () => Object.fromEntries(FIELDS.map((k) => [k, $(k).value.trim()]));
   const showNote = () => ($("detailsNote").textContent = locked ? LOCKED_NOTE : savedNote ? "Saved: the next take is named after these." : NOTE[required ? "required" : "optional"]);
-  // All three are needed to start recording (unless that's turned off): the empty ones are
+  // Folded away until wanted (they're optional), with what they are now in one line; open while
+  // they're needed before recording, and opened by itself when a take can't start without them.
+  // Open or not is remembered on this device.
+  let detailsOpen = (() => {
+    try {
+      return localStorage.getItem("ht.detailsOpen") === "1";
+    } catch {
+      return false;
+    }
+  })();
+  function foldDetails() {
+    const open = detailsOpen || required;
+    $("detailsBody").hidden = !open;
+    $("detailsShow").hidden = required;
+    $("detailsShow").textContent = open ? "Hide" : "Show";
+    $("detailsShow").setAttribute("aria-expanded", String(open));
+    const now = FIELDS.map((k) => $(k).value.trim()).filter(Boolean);
+    $("detailsSummary").hidden = open;
+    $("detailsSummary").textContent = now.length ? now.join(" · ") : "None: takes are named \"robot-motion\" and their length.";
+  }
+  function showDetails(open, remember = true) {
+    detailsOpen = open;
+    if (remember) {
+      try {
+        localStorage.setItem("ht.detailsOpen", open ? "1" : "0");
+      } catch {
+        // (not remembered here)
+      }
+    }
+    foldDetails();
+  }
+  $("detailsShow").addEventListener("click", () => showDetails(!detailsOpen));
+  // All three are needed to start recording (when that's turned on): the empty ones are
   // marked, and the first gets the cursor.
   function markMissing(missing) {
     FIELDS.forEach((k) => $(k).classList.toggle("missing", missing.includes(k)));
-    if (missing.length) $(missing[0]).focus();
+    if (missing.length) {
+      showDetails(true, false);
+      $(missing[0]).focus();
+    }
     return listOf(missing.map((k) => LABELS[k]));
   }
   // From Start recording until the take is saved the details are the take's (Hand Tracker says
@@ -395,6 +446,7 @@
     if (taps.length >= 5) {
       taps = [];
       $("requiredRow").hidden = false;
+      showDetails(true, false);
     }
   });
   $("requiredBtn").addEventListener("click", () => command("settings", { settings: { detailsRequired: !required } }));
@@ -863,6 +915,7 @@
   // be deleted from the computer (two taps), which first checks every file against the same
   // CRC32s: one that didn't arrive whole, or changed since, stays.
   let takes = [], takesHere = false, takesAsked = false, takesBusy = false, takesArmed = 0, lastTakeAt = null;
+  let editing = null; // a take whose details are being changed here: { id, details, loading, saving, note }
   const picked = new Set();
   const got = new Map(); // take id -> [{ name, size, crc }]: on this device, whole
   const failed = new Map(); // take id -> why it didn't come
@@ -1040,6 +1093,7 @@
         const ids = new Set(takes.map((t) => t.id));
         for (const id of [...picked]) if (!ids.has(id)) picked.delete(id);
         for (const id of [...got.keys()]) if (!ids.has(id)) got.delete(id);
+        if (editing && !ids.has(editing.id)) editing = null;
         if (list.more) takesNote(`The newest ${takes.length} are listed (${list.more} older not).`);
       }
     } catch {
@@ -1060,8 +1114,10 @@
         // Each of its videos, to play here.
         const videos = t.files.filter((f) => VIDEO_FILE.test(f.name));
         const plays = videos.map((f) => `<button type="button" class="small" data-play="${esc(f.name)}"${takesBusy ? " disabled" : ""}>▶ ${esc(videoLabel(f.name))}</button>`).join("");
+        const edit = `<button type="button" class="small" data-edit="${esc(t.id)}"${takesBusy || editing ? " disabled" : ""}>Edit details</button>`;
         return `<div class="takerow"><label><input type="checkbox" data-id="${esc(t.id)}"${picked.has(t.id) ? " checked" : ""}${takesBusy ? " disabled" : ""} /> <span>${esc(t.id)}</span></label>` +
-          `<div class="meta">${esc(whenText(t.at))} · ${esc(sizeText(t.size))} · ${esc(kinds)}${status}</div>${plays ? `<div class="plays">${plays}</div>` : ""}</div>`;
+          `<div class="meta">${esc(whenText(t.at))} · ${esc(sizeText(t.size))} · ${esc(kinds)}${status}</div><div class="plays">${plays}${edit}</div>` +
+          (editing && editing.id === t.id ? editorHtml() : "") + "</div>";
       }).join("")
       : '<div class="muted">None yet: each take is saved here when recording stops.</div>';
     const all = $("takesAll");
@@ -1088,7 +1144,78 @@
     takesArmed = 0;
     renderTakes();
   });
+  // A take's details changed after recording, here: its details as saved (the computer reads them
+  // from its files) in boxes under it; Save changes them in its files and renames them to match.
+  function editorHtml() {
+    const e = editing;
+    if (e.loading) return '<div class="takeedit"><div class="enote">Reading its details…</div></div>';
+    const field = (k) => `<label>${LABELS[k]} <input type="text" maxlength="200" autocomplete="off" data-ek="${k}" value="${esc(e.details[k] || "")}"${e.saving ? " disabled" : ""} /></label>`;
+    return `<div class="takeedit">${FIELDS.map(field).join("")}<div class="erow"><button type="button" data-esave${e.saving ? " disabled" : ""}>${e.saving ? "Saving…" : "Save"}</button>` +
+      `<button type="button" class="small" data-ecancel${e.saving ? " disabled" : ""}>Cancel</button></div>` +
+      `<div class="enote">${esc(e.note || "Its files are renamed to match, and keep these inside them.")}</div></div>`;
+  }
+  async function startEdit(id) {
+    editing = { id, details: {}, loading: true };
+    renderTakes();
+    try {
+      const r = await post({ action: "takeDetails", take: { id } });
+      if (!editing || editing.id !== id) return;
+      if (r && r.ok) editing = { id, details: { ...r.details }, loading: false };
+      else {
+        editing = null;
+        takesNote((r && (r.message || r.error)) || "Its details couldn't be read.", true);
+      }
+    } catch {
+      editing = null;
+      takesNote("Can't reach Hand Tracker.", true);
+    }
+    renderTakes();
+    const first = $("takeRows").querySelector("input[data-ek]");
+    if (first) first.focus();
+  }
+  async function saveEdit() {
+    const e = editing;
+    if (!e || e.loading || e.saving) return;
+    e.saving = true;
+    renderTakes();
+    try {
+      const r = await post({ action: "editTake", take: { id: e.id, details: e.details } });
+      if (r && r.ok) {
+        const here = got.has(e.id);
+        editing = null;
+        picked.delete(e.id);
+        got.delete(e.id);
+        failed.delete(e.id);
+        takesNote(`${r.message}${here ? " The copy on this device keeps its old name." : ""}`);
+        return loadTakes();
+      }
+      e.note = (r && (r.message || r.error)) || "Not changed.";
+    } catch {
+      e.note = "Can't reach Hand Tracker.";
+    }
+    e.saving = false;
+    renderTakes();
+  }
+  $("takeRows").addEventListener("input", (e) => {
+    const k = e.target.dataset && e.target.dataset.ek;
+    if (k && editing && editing.details) editing.details[k] = e.target.value;
+  });
+  $("takeRows").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || !(e.target.dataset && e.target.dataset.ek)) return;
+    e.preventDefault();
+    const boxes = [...$("takeRows").querySelectorAll("input[data-ek]")];
+    const next = boxes[boxes.indexOf(e.target) + 1];
+    if (next) next.focus();
+    else saveEdit();
+  });
   $("takeRows").addEventListener("click", (e) => {
+    const tapped = e.target.closest && e.target.closest("button");
+    if (tapped && !tapped.disabled && tapped.dataset.edit) return startEdit(tapped.dataset.edit);
+    if (tapped && !tapped.disabled && tapped.hasAttribute("data-esave")) return saveEdit();
+    if (tapped && !tapped.disabled && tapped.hasAttribute("data-ecancel")) {
+      editing = null;
+      return renderTakes();
+    }
     const b = e.target.closest && e.target.closest("button[data-play]");
     if (!b || b.disabled) return;
     const t = takes.find((x) => x.files.some((f) => f.name === b.dataset.play));
@@ -1712,13 +1839,14 @@
 
     if (full && !cams[full.i]) closeFull(false);
     if (cams.length !== shownCams) buildGrid(cams.length);
-    const { slots, empty } = blocks(cams.map((c) => c.roleId));
+    const { slots, emptyLabels } = blocks(cams.map((c) => c.roleId));
     cams.forEach((c, i) => {
       const box = $(`cam${i}`);
       if (!box) return;
       box.style.order = slots[i];
-      const hands = c.tracking === false ? "hand tracking off" : c.hands && c.hands.length ? esc(c.hands.join(" + ")) : "no hands";
-      const what = c.error ? `<span class="err">${esc(c.error)}</span>` : c.fps > 0 ? `${c.fps} fps · ${hands}` : '<span class="muted">starting…</span>';
+      // (With hand tracking off, nothing about the hands.)
+      const hands = c.tracking === false ? "" : c.hands && c.hands.length ? esc(c.hands.join(" + ")) : "no hands";
+      const what = c.error ? `<span class="err">${esc(c.error)}</span>` : c.fps > 0 ? `${c.fps} fps${hands ? ` · ${hands}` : ""}` : '<span class="muted">starting…</span>';
       box.querySelector(".what").innerHTML = `<span class="muted">${esc(c.label || c.name)}</span><br />${what}`;
       const role = box.querySelector("select");
       if (document.activeElement !== role) role.value = c.roleId || "";
@@ -1728,15 +1856,16 @@
       flip.setAttribute("aria-pressed", String(!!c.mirror));
     });
     $("grid").classList.toggle("one", cams.length === 1);
-    $("missing").textContent = cams.length && empty.length ? `Not connected: ${empty.map((b) => ROLES[b][1]).join(", ")}` : "";
+    $("missing").textContent = cams.length && emptyLabels.length ? `Not connected: ${emptyLabels.join(", ")}` : "";
 
-    required = s.detailsRequired !== false;
+    required = s.detailsRequired === true;
     $("requiredBtn").textContent = required ? "On" : "Off";
     $("requiredBtn").setAttribute("aria-pressed", String(required));
     $("requiredBtn").disabled = sending || !!s.recording;
     lockDetails(!!s.detailsLocked);
     showNote();
     fillDetails(s.details);
+    foldDetails();
 
     // The takes: listed once the page opens, and again when a take has been saved.
     const takeAt = s.lastTake ? s.lastTake.at : null;

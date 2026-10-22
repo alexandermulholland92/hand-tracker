@@ -3,7 +3,7 @@
  * (camera-tile.html: its own hand tracker, so each has its own left and right hand), side
  * by side in the "Several cameras" card, which takes the main view's place while they run (the
  * main camera is paused meanwhile) and goes back when they close. Each camera has a role, where it's worn (head,
- * chest, left or right wrist: camera-roles.js), remembered for that camera. Motion capture
+ * chest, left or right wrist) or stands (north, south, east, west: camera-roles.js), remembered for that camera. Motion capture
  * records every camera together; stopping merges them into one recording on a shared clock,
  * with each hand named after its camera's role ("Head Left", "Chest Right"…, or "Cam 1 Left"
  * for a camera with no role), which then exports like any recording.
@@ -279,10 +279,10 @@
 
   // Each tile in its role's block (by CSS order, so no tile's page reloads), the rest "no camera".
   function layout() {
-    const { slots, empty } = CameraRoles.blocks(tiles.map((t) => t.role));
+    const { slots, emptyLabels } = CameraRoles.blocks(tiles.map((t) => t.role));
     tiles.forEach((t, i) => (t.el.style.order = slots[i]));
     els.grid.classList.toggle("one", tiles.length === 1);
-    if (els.missing) els.missing.textContent = tiles.length && empty.length ? `Not connected: ${empty.map((b) => CameraRoles.ROLES[b].label).join(", ")}` : "";
+    if (els.missing) els.missing.textContent = tiles.length && emptyLabels.length ? `Not connected: ${emptyLabels.join(", ")}` : "";
   }
 
   // A tile in its camera's shape (once its size is known), no taller than most of the window.
@@ -436,8 +436,9 @@
     for (const t of tiles) {
       const api = tileApi(t);
       const st = api ? api.status() : null;
-      const hands = st && st.tracking === false ? "hand tracking off" : st && st.hands.length ? st.hands.join(" + ") : "no hands";
-      t.el.querySelector(".st").textContent = !st ? "starting…" : st.error ? st.error : `${st.fps} fps · ${hands}${st.recording ? " · recording" : ""}${t.oak && !screenPictures() ? " · picture off" : ""}`;
+      // (With hand tracking off, nothing about the hands.)
+      const hands = st && st.tracking === false ? "" : st && st.hands.length ? st.hands.join(" + ") : "no hands";
+      t.el.querySelector(".st").textContent = !st ? "starting…" : st.error ? st.error : `${st.fps} fps${hands ? ` · ${hands}` : ""}${st.recording ? " · recording" : ""}${t.oak && !screenPictures() ? " · picture off" : ""}`;
       t.el.querySelector(".retry").hidden = !((t.oak || t.kinect) && st && st.error && t.oakState !== "starting");
       if (st && !st.error) shape(t, st);
     }

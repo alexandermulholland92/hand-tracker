@@ -1,13 +1,13 @@
 /**
- * camera-roles.js — where each of several cameras is worn: head, chest, left wrist or right
- * wrist (the same names as a capture session's camera positions, ops-sessions.js). Several
- * cameras (multi-camera.js) and several videos (multi-video.js) give each camera a role;
- * its hands and files are named after it.
+ * camera-roles.js — where each of several cameras is: worn (head, chest, left wrist or right
+ * wrist: the same names as a capture session's camera positions, ops-sessions.js) or set up
+ * around the scene (north, south, east or west). Several cameras (multi-camera.js) and several
+ * videos (multi-video.js) give each camera a role; its hands and files are named after it.
  *
- *   CameraRoles.ROLES                    [{ id: "head", label: "Head" }, …]
+ *   CameraRoles.ROLES                    [{ id: "head", label: "Head" }, …, { id: "north", … }, …]
  *   CameraRoles.label(id)                "Left wrist" ("" for no role)
  *   CameraRoles.guess(name)              a role from a camera's or file's name ("…_head.mp4",
- *                                        "wrist_left"), or ""
+ *                                        "wrist_left", "north"), or ""
  *   CameraRoles.assign(sources)          roles for [{ name, saved }]: each one's saved role ("" if
  *                                        set to none), else the one its name says, else the next
  *                                        free one in order; no role twice
@@ -15,19 +15,34 @@
  *                                        takes source i's old one instead, so no role is used twice
  *   CameraRoles.options(selected)        the <option>s for a role <select>
  *   CameraRoles.blocks(roles)            where each of up to four sources goes in a 2 × 2 grid,
- *                                        by role: head top left, chest top right, left wrist bottom
- *                                        left, right wrist bottom right (one with no role takes the
- *                                        first free block) -> { slots: [block per source], empty: [blocks] }
+ *                                        by role: head or north top left, chest or south top right,
+ *                                        left wrist or east bottom left, right wrist or west bottom
+ *                                        right (one with no role, or whose block is taken, takes the
+ *                                        first free block) -> { slots: [block per source],
+ *                                        empty: [blocks], emptyLabels: [the roles they'd hold] }
  */
 
 (function (global) {
-  const ROLES = [
+  const WORN = [
     { id: "head", label: "Head" },
     { id: "chest", label: "Chest" },
     { id: "wrist_left", label: "Left wrist" },
     { id: "wrist_right", label: "Right wrist" },
   ];
+  // Around the scene, in the grid's order (top left, top right, bottom left, bottom right).
+  const AROUND = [
+    { id: "north", label: "North" },
+    { id: "south", label: "South" },
+    { id: "east", label: "East" },
+    { id: "west", label: "West" },
+  ];
+  const ROLES = [...WORN, ...AROUND];
   const ids = ROLES.map((r) => r.id);
+  // A role's block in the grid: its place in its own set.
+  const blockOf = (id) => {
+    const w = WORN.findIndex((r) => r.id === id);
+    return w >= 0 ? w : AROUND.findIndex((r) => r.id === id);
+  };
 
   const label = (id) => (ROLES.find((r) => r.id === id) || {}).label || "";
 
@@ -47,6 +62,7 @@
     }
     if (has("lwrist", "leftwrist", "wristleft")) return "wrist_left";
     if (has("rwrist", "rightwrist", "wristright")) return "wrist_right";
+    for (const r of AROUND) if (has(r.id)) return r.id;
     return "";
   }
 
@@ -78,16 +94,24 @@
     [{ id: "", label: "No role" }, ...ROLES].map((r) => `<option value="${esc(r.id)}"${r.id === (selected || "") ? " selected" : ""}>${esc(r.label)}</option>`).join("");
 
   function blocks(roles) {
-    const slots = roles.map((r) => ids.indexOf(r));
-    const used = new Set(slots.filter((b) => b >= 0));
+    const used = new Set();
+    const slots = roles.map((r) => {
+      const b = blockOf(r);
+      if (b < 0 || used.has(b)) return -1;
+      used.add(b);
+      return b;
+    });
     slots.forEach((b, i) => {
       if (b >= 0) return;
-      const free = ids.findIndex((_, k) => !used.has(k));
-      slots[i] = free >= 0 ? free : ids.length + i;
-      if (free >= 0) used.add(free);
+      const free = [0, 1, 2, 3].find((k) => !used.has(k));
+      slots[i] = free !== undefined ? free : 4 + i;
+      if (free !== undefined) used.add(free);
     });
-    return { slots, empty: ids.map((_, k) => k).filter((k) => !used.has(k)) };
+    const empty = [0, 1, 2, 3].filter((k) => !used.has(k));
+    // (what an empty block is waiting for: the set in use, around the scene if any camera is)
+    const set = roles.some((r) => AROUND.some((a) => a.id === r)) && !roles.some((r) => WORN.some((w) => w.id === r)) ? AROUND : WORN;
+    return { slots, empty, emptyLabels: empty.map((k) => set[k].label) };
   }
 
-  global.CameraRoles = { ROLES, label, guess, assign, pick, options, blocks };
+  global.CameraRoles = { ROLES, WORN, AROUND, label, guess, assign, pick, options, blocks };
 })(window);

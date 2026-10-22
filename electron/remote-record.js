@@ -52,7 +52,10 @@
  * saved for it) are listed at /api/takes, downloaded in slices (/api/take?f=<file>&at=<byte>:
  * every way of reaching this computer carries those, the apps' included), and deleted by the
  * "deleteTakes" command only with each file's size and CRC32 as a page received them, which
- * must match the files here (so a take is deleted only once it's safely on that device).
+ * must match the files here (so a take is deleted only once it's safely on that device). A take's
+ * details can be changed after recording: "takeDetails" ({ take: { id } }) gives them, and
+ * "editTake" ({ take: { id, details } }) changes them in its files and renames them to match
+ * (take-names.js); editTake(id, details) does the same for this computer's own screen.
  */
 
 const crypto = require("crypto");
@@ -62,6 +65,10 @@ const { execFile } = require("child_process");
 const http = require("http");
 const os = require("os");
 const { EventEmitter } = require("events");
+const TakeNames = require("../take-names.js");
+// (MCAP files' metadata, read and changed only when a take's details are: mcap-video.js)
+const readMetadata = (...a) => require("./mcap-video.js").readMetadata(...a);
+const setMetadata = (...a) => require("./mcap-video.js").setMetadata(...a);
 
 const FIRST_PORT = 47821;
 const PORTS_TRIED = 10;
@@ -70,10 +77,10 @@ const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it t
 const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
-const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "sentry", "oak", "kinect", "resetCameras", "reboot", "powerOff", "timing"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "takeDetails", "editTake", "sentry", "oak", "kinect", "resetCameras", "reboot", "powerOff", "timing"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
-const ROLES = ["", "head", "chest", "wrist_left", "wrist_right"];
+const ROLES = ["", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"]; // (camera-roles.js's)
 const MODES = ["ego", "stereo", "freeform"];
 const VIDEO_QUALITIES = ["low", "standard", "high", "best"]; // (camera-video.js's)
 // The page's script and style are its own (nothing inline); pictures come as blobs.
@@ -196,6 +203,8 @@ function cleanSentry(s) {
 const TAKE_FILE = /^[^/\\:*?"<>|\u0000-\u001f]{1,240}\.(json|csv|bvh|glb|c3d|trc|npz|mcap|webm|mp4|jpg|mkv|wav)$/i;
 const TAKE_SLICE = 2 << 20; // bytes per download request (the apps carry up to 4 MB an answer)
 const MAX_TAKES = 500;
+const EDIT_QUIET_MS = 8000; // a take whose files were written this recently may still be being saved
+const EDIT_MCAP_MAX = 400e6; // an MCAP file read for a take's details (one with its videos can be big)
 const takeOf = (file) =>
   file.replace(/\.[a-z0-9]+$/i, "").replace(/ \(\d+\)$/, "").replace(/-(depth|infrared|colour|kinect|sound(-beam|-direction)?)-[a-z0-9-]+?(-times)?( \(\d+\))?$/i, "")
     .replace(/-video(-[a-z0-9-]+)?$/i, "").replace(/(-motive)?(-left|-right)?$/, "");
@@ -223,6 +232,7 @@ async function fileCrc(file) {
 class Takes {
   constructor(folder) {
     this.folder = folder;
+    this.edited = new Map(); // take -> when its files were last written by a change of its details here
   }
   // -> [{ id, at (ms, its newest file), size, files: [{ name, size }] }], newest first.
   async all() {
@@ -273,6 +283,117 @@ class Takes {
       if (fh) await fh.close().catch(() => {});
     }
   }
+  // Its files: those listed for it, and the others named after it (Annotate's <take>.annotations.json).
+  async filesOf(id) {
+    let names = [];
+    try {
+      names = await fs.promises.readdir(this.folder());
+    } catch {
+      return [];
+    }
+    return names.filter((n) => TAKE_FILE.test(n) && (takeOf(n) === id || n.startsWith(`${id}.`)));
+  }
+
+  // The details a take was saved with: from its JSON (the capture's metadata), else its MCAP
+  // file's ("hand_tracker"), else none. -> { ok, details } or { ok: false, message }
+  async details(id) {
+    const files = await this.filesOf(id);
+    if (!files.length) return { ok: false, message: "That take isn't there any more." };
+    const dir = this.folder();
+    const pick = (m) => Object.fromEntries(DETAILS.map((k) => [k, String((m && m[k]) || "")]));
+    for (const name of files.filter((n) => /\.json$/i.test(n)).sort((a, b) => a.length - b.length)) {
+      try {
+        const m = JSON.parse(await fs.promises.readFile(path.join(dir, name), "utf8")).metadata;
+        if (m && typeof m === "object") return { ok: true, details: pick(m) };
+      } catch {
+        // (not a capture's JSON)
+      }
+    }
+    for (const name of files.filter((n) => /\.mcap$/i.test(n))) {
+      try {
+        const st = await fs.promises.stat(path.join(dir, name));
+        if (st.size > EDIT_MCAP_MAX) continue;
+        const m = readMetadata(path.join(dir, name), "hand_tracker");
+        if (m) return { ok: true, details: pick(m) };
+      } catch {
+        // (unreadable: none from it)
+      }
+    }
+    return { ok: true, details: pick(null) };
+  }
+
+  // A take's details changed after recording: in its files (its JSON's metadata, its MCAP file's
+  // "hand_tracker" record, a TRC file's own name inside it), then every file renamed to match
+  // (take-names.js: its length and time kept). Not while it's being saved (busy: the computer is
+  // in the middle of a step, or one of its files was written in the last few seconds).
+  // -> { ok, id (its name now), message }
+  async edit(id, wanted, busy = false) {
+    const dir = this.folder();
+    const files = await this.filesOf(id);
+    if (!files.length) return { ok: false, message: "That take isn't there any more." };
+    const d = Object.fromEntries(DETAILS.map((k) => [k, String((wanted && wanted[k]) || "")]));
+    const next = TakeNames.renamed(id, d);
+    if (!next) return { ok: false, message: "This take's name isn't one Hand Tracker gave it, so its details can't be changed here." };
+    let all = [];
+    try {
+      all = await fs.promises.readdir(dir);
+    } catch {
+      return { ok: false, message: "The takes folder can't be read." };
+    }
+    const newest = Math.max(...(await Promise.all(files.map((n) => fs.promises.stat(path.join(dir, n)).then((s) => s.mtimeMs, () => 0)))));
+    // (written just now by a change here, not a save: it can be changed again at once)
+    const ours = newest <= (this.edited.get(id) || 0);
+    if (busy || (!ours && Date.now() - newest < EDIT_QUIET_MS) || all.some((n) => n.startsWith(`.${id}`) && n.endsWith(".tmp"))) {
+      return { ok: false, message: "It's still being saved: try again in a moment." };
+    }
+    const moves = files.map((n) => [n, next + n.slice(id.length)]);
+    const taken = new Set(all);
+    if (next !== id && moves.some(([, to]) => taken.has(to))) return { ok: false, message: "A take with those details and that time is there already." };
+    try {
+      for (const [from, to] of moves) {
+        const file = path.join(dir, from);
+        if (/\.json$/i.test(from)) {
+          let data = null;
+          try {
+            data = JSON.parse(await fs.promises.readFile(file, "utf8"));
+          } catch {
+            data = null; // (not JSON Hand Tracker can read: renamed only)
+          }
+          if (data && data.metadata && typeof data.metadata === "object") {
+            Object.assign(data.metadata, d);
+            await writeInPlace(file, JSON.stringify(data, null, 2));
+          }
+        } else if (/\.mcap$/i.test(from)) {
+          setMetadata(file, "hand_tracker", d);
+        } else if (/\.trc$/i.test(from) && to !== from) {
+          const text = await fs.promises.readFile(file, "utf8");
+          const fixed = text.replace(/^(PathFileType\t4\t\(X\/Y\/Z\)\t).*$/m, (_, head) => head + to);
+          if (fixed !== text) await writeInPlace(file, fixed);
+        }
+      }
+    } catch (err) {
+      return { ok: false, message: `Its details couldn't be changed: ${err.message}` };
+    }
+    const done = [];
+    try {
+      for (const [from, to] of moves) {
+        if (from === to) continue;
+        await fs.promises.rename(path.join(dir, from), path.join(dir, to));
+        done.push([from, to]);
+      }
+    } catch (err) {
+      // Put back as it was (its details inside are the new ones either way).
+      for (const [from, to] of done.reverse()) await fs.promises.rename(path.join(dir, to), path.join(dir, from)).catch(() => {});
+      return { ok: false, message: `Its files couldn't be renamed: ${err.message}` };
+    }
+    // (When its files were last written by a change here.)
+    const at = Math.max(...(await Promise.all(moves.map(([, to]) => fs.promises.stat(path.join(dir, to)).then((s) => s.mtimeMs, () => 0)))));
+    this.edited.delete(id);
+    this.edited.set(next, at);
+    if (this.edited.size > 50) this.edited.delete(this.edited.keys().next().value);
+    return { ok: true, id: next, renamed: done.length, message: next === id ? "Its details are changed." : `Its details are changed, and it's now ${next}.` };
+  }
+
   // Deletes the takes whose every file a page has, as it received them:
   // [{ id, files: [{ name, size, crc }] }]; each file's size and CRC32 must match the one here.
   async remove(wanted) {
@@ -309,6 +430,19 @@ class Takes {
     return { ok: !refused.length, deleted, refused, message: `Deleted ${n} take${n === 1 ? "" : "s"}${refused.length ? `; ${refused.length} not` : ""}.` };
   }
 }
+// A file written again: beside it first, then put in its place.
+async function writeInPlace(file, text) {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
+  await fs.promises.writeFile(tmp, text);
+  await fs.promises.rename(tmp, file);
+}
+
+// A take whose details a page asks for, or changes: { id[, details] }.
+function cleanTake(t) {
+  if (!t || typeof t.id !== "string" || !t.id || t.id.length > 240 || /[/\\]/.test(t.id)) return null;
+  return t.details === undefined ? { id: t.id } : { id: t.id, details: cleanDetails(t.details) || cleanDetails({}) };
+}
+
 // The takes a page asks to delete, with what it received of each file.
 function cleanTakes(list) {
   if (!Array.isArray(list) || !list.length || list.length > 20) return null;
@@ -438,6 +572,15 @@ class RemoteRecordServer extends EventEmitter {
 
   emitStatus() {
     this.emit("status", this.status());
+  }
+
+  // A take's details changed (from a page, or this computer's own screen): not while the main
+  // window is in the middle of a step (saving a take, say). Every list of takes shown is told.
+  async editTake(id, details) {
+    const busy = !!(this.state && (this.state.pending || this.state.saving));
+    const r = await this.takes.edit(id, details, busy);
+    if (r.ok) this.emit("takes", { changed: id, id: r.id });
+    return r;
   }
 
   ensureKey() {
@@ -711,7 +854,7 @@ class RemoteRecordServer extends EventEmitter {
         body += chunk;
         if (body.length > 8192) return this.send(res, 413, { error: "Too long" });
       }
-      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null, sentry = null, oak = null, kinect = null;
+      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null, take = null, sentry = null, oak = null, kinect = null;
       try {
         const msg = JSON.parse(body);
         action = String(msg.action || "");
@@ -722,6 +865,7 @@ class RemoteRecordServer extends EventEmitter {
         settings = cleanSettings(msg.settings);
         wifi = cleanWifi(msg.wifi);
         takes = cleanTakes(msg.takes);
+        take = cleanTake(msg.take);
         sentry = cleanSentry(msg.sentry);
         oak = cleanOak(msg.oak);
         kinect = cleanKinect(msg.kinect);
@@ -741,6 +885,12 @@ class RemoteRecordServer extends EventEmitter {
         if (!this.takes) return this.send(res, 404, { error: "No takes here." });
         if (!takes) return this.send(res, 400, { error: "Which takes?" });
         return this.send(res, 200, await this.takes.remove(takes));
+      }
+      // A take's details: asked for (to change them), or changed (its files renamed to match).
+      if (action === "takeDetails" || action === "editTake") {
+        if (!this.takes) return this.send(res, 404, { error: "No takes here." });
+        if (!take || (action === "editTake" && !take.details)) return this.send(res, 400, { error: "Which take?" });
+        return this.send(res, 200, action === "takeDetails" ? await this.takes.details(take.id) : await this.editTake(take.id, take.details));
       }
       if (action === "wifi") {
         if (!wifiHere) return this.send(res, 403, { error: "The Wi-Fi can be changed only from this computer's hotspot or over Tailscale." });

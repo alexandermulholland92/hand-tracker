@@ -147,6 +147,7 @@ const STEPS = [
   ["remote-settings-page", [], () => checkRemoteSettingsPage()],
   ["wifi-join", [], () => checkWifiJoin()],
   ["remote-takes", [], () => checkRemoteTakes()],
+  ["remote-take-details", [], ({ js }) => checkRemoteTakeDetails(js)],
   ["sentry-math", [], () => checkSentryMath()],
   ["ntfy", [], () => checkNtfy()],
   ["sentry", [], ({ js }) => checkSentry(js)],
@@ -1050,10 +1051,10 @@ async function checkSentry(js) {
     Object.assign(out, await pjs(`(async () => {
       ${PAGE}
       const out = {};
-      out.detailsShown = !!(await until(() => !$("detailsPanel").hidden && /hand tracking off/.test(document.querySelector("#cam0 .what").textContent)));
+      out.detailsShown = !!(await until(() => !$("detailsPanel").hidden && /\\d fps$/.test(document.querySelector("#cam0 .what").textContent)));
       out.handsSwitch = !$("sentryHandsBox").hidden && $("sentryHands").textContent;
       $("sentryHands").click();
-      out.handsOn = !!(await until(() => $("sentryHands").classList.contains("on") && !$("detailsPanel").hidden && !/hand tracking off/.test(document.querySelector("#cam0 .what").textContent)));
+      out.handsOn = !!(await until(() => $("sentryHands").classList.contains("on") && !$("detailsPanel").hidden && /\\d fps · /.test(document.querySelector("#cam0 .what").textContent)));
       return out;
     })()`));
     out.handsOnHere = await tracked();
@@ -2396,10 +2397,21 @@ async function checkSeveralCameras(js) {
     assigned: CameraRoles.assign([{ name: "b_chest.mp4" }, { name: "x.mp4" }, { name: "head.mp4" }]),
     savedNone: CameraRoles.assign([{ name: "head.mp4", saved: "" }, { name: "y.mp4" }]),
     savedTwice: CameraRoles.assign([{ name: "a", saved: "chest" }, { name: "b", saved: "chest" }]),
+    around: ["north_cam.mp4", "South.mov", "cam-east", "WEST", "northern.mp4"].map(CameraRoles.guess),
+    labels: ["north", "south", "east", "west"].map(CameraRoles.label),
+    options: (CameraRoles.options("east").match(/<option/g) || []).length,
+    grid: CameraRoles.blocks(["west", "east", "north", "south"]),
+    oneAround: CameraRoles.blocks(["east"]),
+    mixed: CameraRoles.blocks(["head", "north"]),
   })`);
-  check("Camera roles are guessed from names (head, chest, left/right wrist), the rest given in order, no role twice, and \"No role\" is kept",
+  check("Camera roles are guessed from names (head, chest, left/right wrist, north, south, east, west), the rest given in order, no role twice, and \"No role\" is kept",
     guessed.guesses.join() === "head,chest,wrist_left,wrist_right,wrist_left,wrist_right,," && guessed.assigned.join() === "chest,wrist_left,head" &&
-      guessed.savedNone.join() === ",head" && guessed.savedTwice.join() === "chest,head",
+      guessed.savedNone.join() === ",head" && guessed.savedTwice.join() === "chest,head" && guessed.around.join() === "north,south,east,west,",
+    JSON.stringify(guessed));
+  check("Roles around the scene (North, South, East, West) beside the worn ones: in the menu (eight and No role); in the grid North top left, South top right, East bottom left, West bottom right; the empty places named for the set in use; a place taken by the other set's role goes to the next free one",
+    guessed.labels.join() === "North,South,East,West" && guessed.options === 9 && guessed.grid.slots.join() === "3,2,0,1" && !guessed.grid.empty.length &&
+      guessed.oneAround.slots.join() === "2" && guessed.oneAround.emptyLabels.join() === "North,South,West" &&
+      guessed.mixed.slots.join() === "0,1" && guessed.mixed.emptyLabels.join() === "Left wrist,Right wrist",
     JSON.stringify(guessed));
 }
 
@@ -2637,7 +2649,7 @@ async function checkSeveralOakCameras(js) {
     r.boxes && r.boxes.filter((b) => b.startsWith("oak:")).length === 2 &&
       r.tiles.length === 2 && r.tiles.every((t) => t.fps > 0 && t.hands.length === 1 && !t.error) && r.tiles.map((t) => t.role).join() === "head,chest" &&
       r.messages.every((d) => d === "none") &&
-      r.restartedOff === true && r.trackingOff.every((t) => t.fps > 0 && t.drawn > 0) && r.trackingOffShown.every((t) => /hand tracking off/.test(t)) &&
+      r.restartedOff === true && r.trackingOff.every((t) => t.fps > 0 && t.drawn > 0) && r.trackingOffShown.every((t) => /^\d+ fps/.test(t) && !/hand|Left|Right/.test(t)) &&
       r.videoOnly.recording === true && /videos only/.test(r.videoOnly.note) && r.videoOnly.tracked === "false:false:0,false:false:0" && /No hands were recorded/.test(r.videoOnlyStopped) && r.restartedOn === true &&
       r.whileRecording === "true:true:1,true:true:1" && r.afterRecording === "false:false:0,false:false:0" && r.trackingOn === "true:true:1,true:true:1" &&
       r.labels.every((l) => /Luxonis Simulated OAK SIMULATED-OAK-[AB] · depth/.test(l)) && r.names["SIMULATED-OAK-A"] === "Simulated OAK SIMULATED-OAK-A" &&
@@ -3022,11 +3034,11 @@ async function checkRemoteRecording(js) {
     await post("pick", { pick: { id: webcam.id, use: false } });
     out.webcamOut = !(await state()).available.cameras.find((c) => c.id === webcam.id).use;
     // Ego needs all four roles (only head and chest are picked): neither Start cameras nor
-    // Start recording go. The take details come first; with them made optional (the page's
-    // hidden switch), it's the mode that says what's missing. Stereo needs only a head camera.
+    // Start recording go. The take details are optional, so it's the mode that says what's
+    // missing (with the page's hidden switch on, the details come first). Stereo needs only a head camera.
     await post("mode", { mode: "ego" });
     const ego = await state();
-    out.ego = { mode: ego.mode, need: ego.requirement, start: await (await post("cameras")).json() };
+    out.ego = { mode: ego.mode, need: ego.requirement, required: ego.detailsRequired, start: await (await post("cameras")).json() };
     out.egoRecord = await (await post("record")).json();
     out.optional = await (await post("settings", { settings: { detailsRequired: false } })).json();
     out.optionalState = (await state()).detailsRequired;
@@ -3118,6 +3130,7 @@ async function checkRemoteRecording(js) {
     out.numbered = { got: seqs.length, distinct: new Set(seqs).size, fps: Math.round(seqs.length / 2) };
     await sleep(1500);
     out.stop = await (await post("stop")).json();
+    await post("settings", { settings: { detailsRequired: false } }); // (as it was: optional)
     const after = await state();
     out.take = after.lastTake;
     const file = after.lastTake && after.lastTake.ok ? path.join(process.env.HAND_TRACKER_REMOTE_DIR, after.lastTake.files[0]) : null;
@@ -3170,7 +3183,7 @@ async function checkRemoteRecording(js) {
   out.tailnet = [tailnetPeer("100.104.1.2", "::ffff:100.90.3.4"), tailnetPeer("192.168.1.5", "100.90.3.4"), tailnetPeer("100.104.1.2", "192.168.1.9")];
   const probe = new RemoteRecordServer({ keyStore: null, page: () => "", ask: async () => ({}) });
   out.ownHost = [probe.ownHost({ headers: { host: "localhost:47821" } }), probe.ownHost({ headers: { host: "evil.example:47821" } })];
-  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so, and unticked is off the list) and picked, with roles; Ego needs all four roles, Stereo a head camera; Start recording needs all three take details (unless the hidden switch makes them optional; then locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras mirrored like webcams; every camera found is ticked unless unticked before), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself (with each camera's video, named after its role), Stop cameras stops them",
+  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so, and unticked is off the list) and picked, with roles; Ego needs all four roles, Stereo a head camera; the take details are optional (with the hidden switch on, Start recording needs all three; either way they're locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras mirrored like webcams; every camera found is ticked unless unticked before), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself (with each camera's video, named after its role), Stop cameras stops them",
     out.setup.on && out.setup.card && !out.setup.runningBefore && key.length > 10 && out.page && out.noKey === 401 && out.wrongKey === 401 &&
       ["oak:SIMULATED-OAK-A", "oak:SIMULATED-OAK-B"].every((id) => (out.setup.ticked || []).includes(id)) &&
       out.before.running === false && out.script && out.scan &&
@@ -3179,7 +3192,7 @@ async function checkRemoteRecording(js) {
       out.untick && out.untick.ticked && out.untick.enabled && out.untick.seen && out.untick.gone && out.untickListed === false &&
       out.pickWebcam && out.webcam.use && /^wrist_/.test(out.webcam.role) && out.webcam.given === out.webcam.asked && out.webcamOut &&
       out.ego.mode === "ego" && !out.ego.need.ok && out.ego.need.missing.join() === "wrist_left,wrist_right" && out.ego.start.ok === false &&
-      /Ego needs the Left wrist and Right wrist cameras/.test(out.ego.start.message) && (out.egoRecord.missing || []).length === 3 &&
+      /Ego needs the Left wrist and Right wrist cameras/.test(out.ego.start.message) && out.ego.required === false && out.egoRecord.ok === false && /Ego needs/.test(out.egoRecord.message) && !(out.egoRecord.missing || []).length &&
       out.optional.ok && out.optionalState === false && out.egoRecordOptional.ok === false && /Ego needs/.test(out.egoRecordOptional.message) &&
       out.quality.ok && /at high quality/.test(out.quality.message) && out.qualityState.join() === "high,high" && out.qualityBad === 400 &&
       out.stereo.mode === "stereo" && out.stereo.need.ok && !out.stereo.running &&
@@ -3332,6 +3345,145 @@ async function checkRemoteLauncher(js) {
       p.ownOff && p.ownOff.hidden && p.ownOff.pressed === "false" && p.ownOff.kept.off.length === 1 && p.ownOn &&
       p.allOff && p.allOff.hidden && p.allOff.ownHidden && p.allOff.pressed === "false" && p.allOff.kept.all === false && p.allOn,
     JSON.stringify(out));
+}
+
+// A take's details changed after recording. On the computer that keeps it: its details read back
+// (from its JSON), then changed: its JSON's metadata and its MCAP file's "hand_tracker" record (its
+// messages kept), a TRC file's own name inside it, and every file renamed to match (Annotate's
+// .annotations.json too), its length and time kept. Not for a take Hand Tracker didn't name, one
+// being saved, or one whose new name is taken. From the remote recording page (the take details
+// folded away by default, optional): Edit details under a take, Save, and it's listed by its new
+// name. On the computer's own screen: Takes…, Edit details, Save, the same.
+async function checkRemoteTakeDetails(js) {
+  const { RemoteRecordServer } = require("../electron/remote-record.js");
+  const { readMetadata } = require("../electron/mcap-video.js");
+  require("../mcap.js");
+  const Mcap = globalThis.Mcap;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-details-"));
+  const ID = "Sam-Smith_Lab-2_Pick-up-cup_1m05s_2026-10-02_10-30-24";
+  const NEW = "Ana-Lee_Wave-hello_1m05s_2026-10-02_10-30-24";
+  const OLD = Date.now() / 1000 - 60;
+  const capture = (d) => JSON.stringify({ format: "hand-tracker-motion", recorded_at: "2026-10-02T10:30:24Z", metadata: { ...d, length: "1:05", length_s: 65 }, hands: [] }, null, 2);
+  const write = (name, data, old = true) => {
+    fs.writeFileSync(path.join(dir, name), data);
+    if (old) fs.utimesSync(path.join(dir, name), OLD, OLD);
+  };
+  const sam = { contributor: "Sam Smith", location: "Lab 2", task: "Pick up cup" };
+  write(`${ID}.json`, capture(sam));
+  const w = Mcap.writer({ profile: "ros2", library: "check" });
+  const ch = w.channel("/hand_tracker/test", "json", w.schema("test", "jsonschema", ""));
+  for (let i = 0; i < 3; i++) w.message(ch, BigInt(i) * 1000000n, new TextEncoder().encode(`{"i":${i}}`));
+  w.metadata("hand_tracker", { recorded_at: "2026-10-02T10:30:24Z", ...sam, units: "m" });
+  write(`${ID}.mcap`, Buffer.from(w.finish()));
+  write(`${ID}.trc`, `PathFileType\t4\t(X/Y/Z)\t${ID}.trc\nDataRate\tCameraRate\n30\t30\n`);
+  write(`${ID}-video-north.webm`, Buffer.from([1, 2, 3]));
+  write(`${ID}.annotations.json`, '{"steps":[]}');
+  write("my-own-name.json", "{}");
+  write("robot-motion_5s_2026-10-02_11-00-00.json", capture({}), false); // (just written: being saved)
+  write("A_5s_2026-10-02_12-00-00.json", capture({ contributor: "A" }));
+  write("B_5s_2026-10-02_12-00-00.json", capture({ contributor: "B" }));
+  const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8");
+  const server = new RemoteRecordServer({ keyStore: null, page, ask: async () => ({ ok: true, message: "" }), host: "rig-test", hotspot: () => null, takes: () => dir });
+  server.setState({
+    kind: "rig", running: false, recording: false, mode: "freeform", requirement: { ok: true, missing: [], message: "" }, detailsRequired: false,
+    details: { contributor: "", location: "", task: "" }, cameras: [], available: { at: 1, scanning: false, note: "", cameras: [] },
+  });
+  const { port } = await server.start();
+  const base = `http://127.0.0.1:${port}`;
+  const command = async (body) => (await fetch(`${base}/api/command`, { method: "POST", headers: { "X-Key": server.key, "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+  const out = {};
+  let win = null;
+  try {
+    out.read = await command({ action: "takeDetails", take: { id: ID } });
+    out.edited = await command({ action: "editTake", take: { id: ID, details: { contributor: "Ana Lee", location: "", task: "Wave hello" } } });
+    out.files = fs.readdirSync(dir).filter((n) => n.includes("1m05s")).sort();
+    const json = JSON.parse(fs.readFileSync(path.join(dir, `${NEW}.json`), "utf8")).metadata;
+    out.json = { contributor: json.contributor, location: json.location, task: json.task, length: json.length };
+    const meta = readMetadata(path.join(dir, `${NEW}.mcap`), "hand_tracker");
+    out.mcap = { contributor: meta.contributor, task: meta.task, units: meta.units, messages: Mcap.read(new Uint8Array(fs.readFileSync(path.join(dir, `${NEW}.mcap`)))).messages.length };
+    out.trc = fs.readFileSync(path.join(dir, `${NEW}.trc`), "utf8").split("\n")[0];
+    out.readBack = await command({ action: "takeDetails", take: { id: NEW } });
+    out.notOurs = await command({ action: "editTake", take: { id: "my-own-name", details: { task: "x" } } });
+    out.saving = await command({ action: "editTake", take: { id: "robot-motion_5s_2026-10-02_11-00-00", details: { task: "x" } } });
+    out.taken = await command({ action: "editTake", take: { id: "B_5s_2026-10-02_12-00-00", details: { contributor: "A" } } });
+    out.gone = await command({ action: "editTake", take: { id: ID, details: { task: "x" } } });
+    // The page: the take details folded away (optional); a take's Edit details, Save.
+    win = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-take-details" } });
+    await win.loadURL(`${base}/#k=${server.key}`);
+    out.page = await withLimit(win.webContents.executeJavaScript(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      const row = (id) => [...document.querySelectorAll("#takeRows .takerow")].find((r) => r.querySelector("[data-edit]") && r.querySelector("[data-edit]").dataset.edit === id);
+      for (let i = 0; i < 100 && !row(${JSON.stringify(NEW)}); i++) await sleep(100);
+      const folded = { body: $("detailsBody").hidden, show: $("detailsShow").textContent, summary: $("detailsSummary").textContent, note: $("detailsNote").textContent };
+      $("detailsShow").click();
+      const opened = { body: $("detailsBody").hidden, show: $("detailsShow").textContent };
+      $("detailsShow").click();
+      row(${JSON.stringify(NEW)}).querySelector("[data-edit]").click();
+      for (let i = 0; i < 50 && !document.querySelector("#takeRows input[data-ek]"); i++) await sleep(100);
+      const boxes = () => Object.fromEntries([...document.querySelectorAll("#takeRows input[data-ek]")].map((b) => [b.dataset.ek, b.value]));
+      const shown = boxes();
+      const task = document.querySelector('#takeRows input[data-ek="task"]');
+      task.value = "Wave goodbye";
+      task.dispatchEvent(new Event("input", { bubbles: true }));
+      document.querySelector("#takeRows [data-esave]").click();
+      const renamed = ${JSON.stringify(NEW.replace("Wave-hello", "Wave-goodbye"))};
+      for (let i = 0; i < 100 && !row(renamed); i++) await sleep(100);
+      return { folded, opened, shown, listed: !!row(renamed), note: $("takesNote").textContent };
+    })()`, true), "the take details page");
+    out.afterPage = fs.readdirSync(dir).filter((n) => n.includes("1m05s")).sort();
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    if (win && !win.isDestroyed()) win.destroy();
+    server.stop();
+  }
+  // The computer's own screen: Takes…, a take's Edit details, Save.
+  const here = process.env.HAND_TRACKER_REMOTE_DIR;
+  const MINE = "Rig-test_Room-1_Stack-cups_12s_2026-10-03_09-00-00";
+  try {
+    fs.writeFileSync(path.join(here, `${MINE}.json`), capture({ contributor: "Rig test", location: "Room 1", task: "Stack cups" }));
+    fs.utimesSync(path.join(here, `${MINE}.json`), OLD, OLD);
+    out.own = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      const row = (id) => [...document.querySelectorAll("#remoteTakes .take-row")].find((r) => r.dataset.id === id);
+      const shown = !$("remoteTakesRow").hidden;
+      if ($("remoteTakes").hidden) $("remoteTakesBtn").click();
+      for (let i = 0; i < 50 && !row(${JSON.stringify(MINE)}); i++) await sleep(100);
+      row(${JSON.stringify(MINE)}).querySelector("[data-edit]").click();
+      for (let i = 0; i < 50 && !document.querySelector("#remoteTakes input[data-ek]"); i++) await sleep(100);
+      const before = document.querySelector('#remoteTakes input[data-ek="location"]').value;
+      const loc = document.querySelector('#remoteTakes input[data-ek="location"]');
+      loc.value = "Room 2";
+      loc.dispatchEvent(new Event("input", { bubbles: true }));
+      document.querySelector("#remoteTakes [data-esave]").click();
+      const renamed = ${JSON.stringify(MINE.replace("Room-1", "Room-2"))};
+      for (let i = 0; i < 100 && !row(renamed); i++) await sleep(100);
+      const out = { shown, before, listed: !!row(renamed), note: $("remoteTakesNote").textContent };
+      $("remoteTakesBtn").click();
+      return out;
+    })()`);
+    out.ownFiles = fs.readdirSync(here).filter((n) => n.includes("Stack-cups"));
+  } catch (err) {
+    out.ownError = String((err && err.stack) || err);
+  }
+  const pg = out.page || {}, own = out.own || {};
+  check("A take's details changed after recording, on the computer that keeps it: read back from its files, then changed in its JSON and MCAP file (its messages kept) and the name in its TRC file, every file renamed to match (its .annotations.json too), its length and time kept; refused for a take Hand Tracker didn't name, one being saved, a name already taken, or one that's gone",
+    !out.error && out.read.ok && out.read.details.task === "Pick up cup" && out.read.details.contributor === "Sam Smith" && out.edited.ok && out.edited.id === NEW &&
+      out.files.join() === [`${NEW}-video-north.webm`, `${NEW}.annotations.json`, `${NEW}.json`, `${NEW}.mcap`, `${NEW}.trc`].join() &&
+      out.json.contributor === "Ana Lee" && out.json.location === "" && out.json.task === "Wave hello" && out.json.length === "1:05" &&
+      out.mcap.contributor === "Ana Lee" && out.mcap.task === "Wave hello" && out.mcap.units === "m" && out.mcap.messages === 3 && out.trc === `PathFileType\t4\t(X/Y/Z)\t${NEW}.trc` &&
+      out.readBack.ok && out.readBack.details.task === "Wave hello" && !out.notOurs.ok && /didn't|isn't one/.test(out.notOurs.message) && !out.saving.ok && /being saved/.test(out.saving.message) &&
+      !out.taken.ok && /already/.test(out.taken.message) && !out.gone.ok,
+    JSON.stringify(out));
+  check("The remote recording page: the take details folded away by default (optional, what they are in one line, Show opens them), and a take's Edit details shows its details as saved; Save changes them and it's listed by its new name",
+    !out.error && pg.folded && pg.folded.body === true && pg.folded.show === "Show" && /None/.test(pg.folded.summary) && /Optional/.test(pg.folded.note) && pg.opened.body === false && pg.opened.show === "Hide" &&
+      pg.shown.contributor === "Ana Lee" && pg.shown.task === "Wave hello" && pg.listed && (out.afterPage || []).some((n) => n.includes("Wave-goodbye")),
+    JSON.stringify(out.page));
+  check("The computer's own screen: Takes… lists the remote recording takes, Edit details shows a take's details as saved, and Save renames it to match",
+    !out.ownError && own.shown && own.before === "Room 1" && own.listed && (out.ownFiles || []).join() === `${MINE.replace("Room-1", "Room-2")}.json`,
+    JSON.stringify({ own, files: out.ownFiles, error: out.ownError }));
 }
 
 // The takes on a computer, from its remote recording page in a browser: listed (a take is

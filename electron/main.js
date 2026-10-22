@@ -25,7 +25,7 @@ const { FleetClient } = require("./fleet");
 const { Annotator, MODEL: annotateModel, DOLLARS_PER_MINUTE: annotateDollarsPerMinute } = require("./annotate");
 const mcapVideo = require("./mcap-video");
 const { PhoneLinkServer } = require("./phone-link");
-const { RemoteRecordServer, RIG_HOST, RIG_PATH } = require("./remote-record");
+const { RemoteRecordServer, RIG_HOST, RIG_PATH, cleanDetails } = require("./remote-record");
 const { RigBluetooth } = require("./bluetooth");
 const systemControl = require("./system-control");
 const { checkPassword: checkBluetoothPassword } = require("./bluetooth-link");
@@ -1145,6 +1145,12 @@ function registerRemoteIpc() {
     return { ok: true, message: "The cameras' USB was turned off and on (simulated).", how: "power", count: 1 };
   });
   handle("remote:new-key", () => remoteRecord.newKey());
+  // The takes in the remote recording folder, on this computer's own screen too: listed, and
+  // their details asked for and changed (their files renamed to match: remote-record.js).
+  handle("remote:takes", () => remoteRecord.takes.list());
+  handle("remote:take-details", (event, id) => remoteRecord.takes.details(String(id || "")));
+  handle("remote:edit-take", (event, { id, details } = {}) => remoteRecord.editTake(String(id || ""), cleanDetails(details) || cleanDetails({})));
+  remoteRecord.on("takes", (x) => toWindow("remote:takes-changed", x));
   handle("remote:settings", () => ({ standby: remoteStandby, folder: remoteFolder(), autostart: { available: autostart.available(), on: autostart.get() } }));
   handle("remote:set-autostart", (event, on) => autostart.set(!!on));
   // The remote recording page in this app (remote-client.html?rig=…, opened from remote.html)

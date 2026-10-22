@@ -64,6 +64,7 @@
   let onPhone = false;
   const cams = () => global.MultiCamera;
   let on = false, pending = "", lastTake = null, settings = {}, lastStatus = null;
+  let saving = false; // a take being saved (its details can't be changed meanwhile: electron/remote-record.js)
   let videos = []; // each camera's video while a take records: { role, rec, view }
   let host = null; // desktop or mobile: saving the videos
   const remoteVideo = () => prefs.remoteVideo !== false;
@@ -123,9 +124,9 @@
   const DETAILS = ["contributor", "location", "task"];
   const DETAIL_LABELS = { contributor: "Contributor", location: "Location", task: "Task" };
   const details = () => Object.fromEntries(DETAILS.map((k) => [k, String((prefs.remoteDetails || {})[k] || "")]));
-  // A take can't start without all three (each take is named after them), unless that's
-  // turned off (the page's hidden switch).
-  const detailsRequired = () => prefs.remoteDetailsRequired !== false;
+  // Optional (a take without them is named "robot-motion_…"), unless the page's hidden switch
+  // makes all three needed before a take can start.
+  const detailsRequired = () => prefs.remoteDetailsRequired === true;
   const missingDetails = () => (detailsRequired() ? DETAILS.filter((k) => !details()[k].trim()) : []);
   const listOf = (words) => (words.length > 1 ? `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}` : words[0] || "");
   // The details a take started with: locked from when recording is asked for until the take is
@@ -141,31 +142,17 @@
     if (DETAILS.some((k) => next[k] !== details()[k])) setPref("remoteDetails", next);
   }
 
-  const p2 = (n) => String(n).padStart(2, "0");
-  // A recording's length: "1:05" (or "1:02:03") for the metadata; "1m05s" (or "1h02m03s", "42s") for names.
-  function lengthText(seconds, forName) {
-    const s = Math.max(0, Math.floor(seconds || 0)); // whole seconds, as the timer showed them
-    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-    if (forName) return h ? `${h}h${p2(m)}m${p2(sec)}s` : m ? `${m}m${p2(sec)}s` : `${sec}s`;
-    return h ? `${h}:${p2(m)}:${p2(sec)}` : `${m}:${p2(sec)}`;
-  }
-
-  // A take's name: its details and length, then when it started
+  // A recording's length: "1:05" (or "1:02:03") for the metadata; "1m05s" (or "1h02m03s", "42s")
+  // for names. A take's name: its details and length, then when it started
   // ("Sam_Lab-2_Pick-up-cup_1m05s_2026-10-01_16-30-00"), or "robot-motion_<length>_<when>"
-  // without any details. (Each part is kept short, so the length and time always fit.)
-  function takeName(d, when, seconds) {
-    const part = (v) => String(v || "").trim().replace(/[<>:"/\\|?*]+/g, "-").replace(/\s+/g, "-").replace(/-{2,}/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 28).replace(/[-.]+$/, "");
-    const parts = DETAILS.map((k) => part(d[k])).filter(Boolean);
-    const t = new Date(when);
-    const stamp = `${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())}_${p2(t.getHours())}-${p2(t.getMinutes())}-${p2(t.getSeconds())}`;
-    return [...(parts.length ? parts : ["robot-motion"]), lengthText(seconds, true), stamp].join("_");
-  }
+  // without any details (take-names.js: the computer renames takes the same way).
+  const { lengthText, takeName } = global.TakeNames;
 
   // ---------- what the phone's page shows ----------
   function state() {
     const st = cams().remoteState();
     const locked = detailsLocked();
-    const common = { ...st, pending, lastTake, notice, details: takeDetails || details(), detailsLocked: locked, detailsRequired: detailsRequired() };
+    const common = { ...st, pending, saving, lastTake, notice, details: takeDetails || details(), detailsLocked: locked, detailsRequired: detailsRequired() };
     return {
       ...common, kind: "rig", video: remoteVideo(), sound: remoteSound(), videoQuality: remoteQuality(),
       sentry: global.Sentry ? global.Sentry.remoteState() : null,
@@ -566,8 +553,19 @@
   }
 
   // The take gets the details it started with (they can't change meanwhile) and its length,
-  // from Start to Stop, as metadata and in its name.
+  // from Start to Stop, as metadata and in its name. Saving says so (no take's details are changed
+  // meanwhile).
   async function stopAndSave() {
+    saving = true;
+    push();
+    try {
+      return await saveTake();
+    } finally {
+      saving = false;
+      push();
+    }
+  }
+  async function saveTake() {
     const d = takeDetails || details();
     const seconds = Math.round(cams().remoteState().elapsed_s * 100) / 100;
     const startedAt = Date.now() - seconds * 1000;
@@ -807,6 +805,122 @@
     return { ok: false, message: `Unknown request: ${action}` };
   }
 
+  // ---------- the takes saved here, on this computer's own screen ----------
+  // Under "Takes…", newest first, each with Edit details: its details as saved, changed in its
+  // files and its files renamed to match (as from a phone's page: electron/remote-record.js).
+  // Only in the computer apps (a phone keeps no list of its takes).
+  function initTakes() {
+    if (!remote || !remote.takes || !$("remoteTakesBtn")) return;
+    $("remoteTakesRow").hidden = false;
+    const box = $("remoteTakes");
+    let list = [], open = false, edit = null; // edit: { id, details, loading, saving, note }
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+    const note = (text, err = false) => {
+      $("remoteTakesNote").textContent = text || "";
+      $("remoteTakesNote").classList.toggle("err", !!err);
+    };
+    async function load() {
+      try {
+        const r = await remote.takes();
+        list = r.takes || [];
+        if (r.more) note(`The newest ${list.length} are listed (${r.more} older not).`);
+      } catch (err) {
+        note(errText(err), true);
+      }
+      if (edit && !list.some((t) => t.id === edit.id)) edit = null;
+      render();
+    }
+    function render() {
+      $("remoteTakesBtn").textContent = open ? "Hide takes" : "Takes…";
+      $("remoteTakesBtn").setAttribute("aria-expanded", String(open));
+      box.hidden = !open;
+      if (!open) return;
+      box.innerHTML = list.length
+        ? list.map((t) => {
+          const row = `<div class="take-row" data-id="${esc(t.id)}"><div class="take-name">${esc(t.id)}</div>` +
+            `<div class="note">${esc(new Date(t.at).toLocaleString())} · ${t.files.length} file${t.files.length === 1 ? "" : "s"}</div>`;
+          if (!edit || edit.id !== t.id) return `${row}<button type="button" data-edit${edit ? " disabled" : ""}>Edit details</button></div>`;
+          if (edit.loading) return `${row}<div class="note">Reading its details…</div></div>`;
+          const dis = edit.saving ? " disabled" : "";
+          const field = (k) => `<label>${DETAIL_LABELS[k]} <input type="text" maxlength="200" autocomplete="off" data-ek="${k}" value="${esc(edit.details[k] || "")}"${dis} /></label>`;
+          return `${row}<div class="take-edit">${DETAILS.map(field).join("")}` +
+            `<button type="button" class="primary" data-esave${dis}>${edit.saving ? "Saving…" : "Save"}</button> <button type="button" data-ecancel${dis}>Cancel</button>` +
+            `<div class="note">${esc(edit.note || "Its files are renamed to match, and keep these inside them.")}</div></div></div>`;
+        }).join("")
+        : '<div class="note">None yet: each take is saved here when recording stops.</div>';
+    }
+    async function startEdit(id) {
+      edit = { id, details: {}, loading: true };
+      render();
+      const r = await remote.takeDetails(id).catch((err) => ({ ok: false, message: errText(err) }));
+      if (!edit || edit.id !== id) return;
+      if (r && r.ok) edit = { id, details: { ...r.details } };
+      else {
+        edit = null;
+        note((r && r.message) || "Its details couldn't be read.", true);
+      }
+      render();
+      const first = box.querySelector("input[data-ek]");
+      if (first) first.focus();
+    }
+    async function save() {
+      if (!edit || edit.loading || edit.saving) return;
+      edit.saving = true;
+      render();
+      const r = await remote.editTake(edit.id, edit.details).catch((err) => ({ ok: false, message: errText(err) }));
+      if (r && r.ok) {
+        edit = null;
+        note(r.message);
+        return load();
+      }
+      edit.saving = false;
+      edit.note = (r && r.message) || "Not changed.";
+      render();
+    }
+    $("remoteTakesBtn").addEventListener("click", () => {
+      open = !open;
+      note("");
+      if (open) load();
+      else {
+        edit = null;
+        render();
+      }
+    });
+    box.addEventListener("click", (e) => {
+      const b = e.target.closest && e.target.closest("button");
+      if (!b || b.disabled) return;
+      const row = b.closest(".take-row");
+      if (b.hasAttribute("data-edit") && row) startEdit(row.dataset.id);
+      else if (b.hasAttribute("data-esave")) save();
+      else if (b.hasAttribute("data-ecancel")) {
+        edit = null;
+        render();
+      }
+    });
+    box.addEventListener("input", (e) => {
+      const k = e.target.dataset && e.target.dataset.ek;
+      if (k && edit && edit.details) edit.details[k] = e.target.value;
+    });
+    box.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || !(e.target.dataset && e.target.dataset.ek)) return;
+      e.preventDefault();
+      const boxes = [...box.querySelectorAll("input[data-ek]")];
+      const next = boxes[boxes.indexOf(e.target) + 1];
+      if (next) next.focus();
+      else save();
+    });
+    // (One changed from a phone's page meanwhile, or a new take saved: the list again.)
+    if (remote.onTakesChanged) remote.onTakesChanged(() => open && !edit && load());
+    let lastAt = null;
+    setInterval(() => {
+      const at = lastTake && lastTake.at;
+      if (at !== lastAt) {
+        lastAt = at;
+        if (open && !edit) load();
+      }
+    }, 2000);
+  }
+
   function init(opts) {
     // A link to the page for opening a rig's remote page (remote.html): in place on the website
     // and in the Android app (it has a way back), a window of its own in the Windows, Mac and Linux app.
@@ -835,6 +949,7 @@
     setPref = opts.setPref;
     app = opts.app;
     $("remoteRec").hidden = false;
+    initTakes();
     remote.onStatus(show);
     remote.onWantPreviews(setPreviews);
     remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st, sentry, oak, kinect }) => {

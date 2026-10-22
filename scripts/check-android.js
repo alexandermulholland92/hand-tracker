@@ -1127,6 +1127,9 @@ async function checkPhoneAsRig(win, js) {
     // (Listed by name: Android gives cameras new ids every start, so picks and roles kept by id would be lost.)
     out.available = (a.cameras || []).map((c) => ({ present: c.present, use: c.use, byName: c.id.startsWith("cam:") }));
     out.mode = await post({ action: "mode", mode: "freeform" });
+    // (The take details are optional; with the page's hidden switch on, needed first.)
+    out.defaultRequired = (await state()).detailsRequired;
+    await post({ action: "settings", settings: { detailsRequired: true } });
     out.refused = await post({ action: "record" });
     await post({ action: "details", details: { contributor: "Sam Smith", location: "Lab 2", task: "Pick up cup" } });
     // Start recording starts the cameras picked first.
@@ -1160,6 +1163,7 @@ async function checkPhoneAsRig(win, js) {
     const after = await state();
     out.take = after.lastTake;
     out.saved = await js(`[...window.__fakeCapacitor.files.keys()].filter((k) => /Sam-Smith_Lab-2_Pick-up-cup_/.test(k))`);
+    await post({ action: "settings", settings: { detailsRequired: false } });
     out.close = await post({ action: "close" });
     await sleep(500);
     out.closed = !(await state()).running;
@@ -1168,13 +1172,13 @@ async function checkPhoneAsRig(win, js) {
   }
   out.off = await js(`(async () => { document.getElementById("remoteToggle").click(); await new Promise((r) => setTimeout(r, 300)); return !(await mobile.remote.status()).on; })()`);
   const t = out.take || {};
-  check("Remote recording on the phone: over Bluetooth too once its password is set (too short refused); another device lists the phone's cameras (new ones ticked), picks the mode, starts them and recording (the take details needed and locked), sees each camera (bigger full screen), and the take is saved on the phone, named after its details",
+  check("Remote recording on the phone: over Bluetooth too once its password is set (too short refused); another device lists the phone's cameras (new ones ticked), picks the mode, starts them and recording (the take details optional; with the hidden switch on, needed; locked while recording), sees each camera (bigger full screen), and the take is saved on the phone, named after its details",
     !out.error && out.on.card && out.on.on && out.on.pair && out.on.pasteable && !out.on.folderBtn && out.page && out.noKey === 401 &&
       out.bluetooth.before.row && /set a password/.test(out.bluetooth.before.status) && /8 to 63/.test(out.bluetooth.short) &&
       out.bluetooth.after === "on, with its password" && out.bluetooth.cleared && out.bluetooth.asked === 1 &&
       out.state.kind === "rig" && !out.state.running && out.state.screenPictures === undefined &&
       out.available.length >= 1 && out.available.every((c) => c.present && c.use && c.byName) &&
-      out.mode.ok && out.refused.ok === false && (out.refused.missing || []).length === 3 &&
+      out.mode.ok && out.defaultRequired === false && out.refused.ok === false && (out.refused.missing || []).length === 3 &&
       out.record.ok && out.recording.recording && out.recording.locked && out.recording.cameras === out.available.length &&
       out.preview.status === 200 && out.preview.full === 200 && out.preview.big > out.preview.small &&
       out.stop.ok && t.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d+s_/.test((t.files || [])[0] || "") && out.saved.length >= 1 && out.close.ok && out.closed && out.off,

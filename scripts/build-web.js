@@ -32,7 +32,7 @@ const APP_FILES = [
   "remote-recording.html", "remote-recording.js",
   // (camera-tile.html loads them; a Kinect only runs in the computer apps)
   "kinect-view.js", "body-tracker.js",
-  "camera-settings.js", "annotate-core.js", "annotate-ui.js",
+  "camera-settings.js", "annotate-core.js", "annotate-ui.js", "take-names.js",
 ];
 
 // Hand Mouse: the hand mouse alone (hand-mouse.html), this phone's control window (Android), and

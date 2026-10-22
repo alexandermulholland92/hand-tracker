@@ -92,7 +92,7 @@ public class RigServerPlugin extends Plugin {
     private static final int BODY_BYTES = 8192;
     private static final Set<String> ACTIONS = new HashSet<>(java.util.Arrays.asList(
             "cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry", "timing"));
-    private static final Set<String> ROLES = new HashSet<>(java.util.Arrays.asList("", "head", "chest", "wrist_left", "wrist_right"));
+    private static final Set<String> ROLES = new HashSet<>(java.util.Arrays.asList("", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"));
     private static final Set<String> MODES = new HashSet<>(java.util.Arrays.asList("ego", "stereo", "freeform"));
     private static final String CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
 

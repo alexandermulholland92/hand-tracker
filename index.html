@@ -264,6 +264,14 @@
   .link-pair code { word-break: break-all; font-size: 12px; user-select: all; }
   .link-pair .remote-row { margin-bottom: 6px; }
   .link-pair .remote-row button { font-size: 12px; padding: 2px 8px; }
+  #remoteTakes { margin-top: 6px; max-height: 380px; overflow-y: auto; }
+  #remoteTakes .take-row { border-top: 1px solid rgba(128, 128, 128, 0.3); padding: 6px 0; }
+  #remoteTakes .take-name { font-size: 13px; overflow-wrap: anywhere; }
+  #remoteTakes .note { margin-top: 2px; }
+  #remoteTakes .take-edit label { display: block; font-size: 12px; margin: 4px 0; }
+  #remoteTakes .take-edit input { display: block; width: 100%; margin-top: 2px; }
+  #remoteTakes button { font-size: 12px; padding: 2px 8px; margin-top: 4px; }
+  #remoteTakesNote.err { color: #ff6b6b; }
   #linkCodeInput { flex: 1; min-width: 0; }
   .format-option {
     display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 7px;
@@ -514,6 +522,9 @@
           <button id="remoteNewKey" hidden title="A new QR code: phones that read the old one can't connect any more (over Tailscale no code is needed)">New code</button>
           <span id="remoteStatus" class="note"></span>
         </div>
+        <!-- The takes saved here, each one's details changeable after recording (remote-record-ui.js initTakes). -->
+        <div class="toolbar" id="remoteTakesRow" hidden><button id="remoteTakesBtn" aria-expanded="false" aria-controls="remoteTakes" title="The takes saved in the remote recording folder: each one's details (contributor, location, task) can be changed after recording, and its files are renamed to match">Takes…</button><span id="remoteTakesNote" class="status"></span></div>
+        <div id="remoteTakes" hidden></div>
         <div id="remotePair" class="link-pair" hidden>
           <canvas id="remoteQr" width="200" height="200"></canvas>
           <div class="note">
@@ -877,6 +888,7 @@
 <script src="web-pc.js"></script>
 <script src="qr-code.js"></script>
 <script src="phone-link-ui.js"></script>
+<script src="take-names.js"></script>
 <script src="remote-record-ui.js"></script>
 <script src="oak-source.js"></script>
 <script src="annotate-core.js"></script>

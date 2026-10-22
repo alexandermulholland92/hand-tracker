@@ -107,4 +107,38 @@ async function addVideos(mcapPath, videos) {
   return { ok: frames > 0, frames, message: failed.length ? `Not added: ${failed.join("; ")}` : "" };
 }
 
-module.exports = { addVideos, jpegFrames, MAX_WIDTH };
+// A metadata record of an MCAP file (motion-export.js writes the take's details into
+// "hand_tracker"), as an object, or null without one.
+const asObject = (m) => (m instanceof Map ? Object.fromEntries(m) : { ...(m || {}) });
+function readMetadata(mcapPath, name) {
+  const file = Mcap.read(new Uint8Array(fs.readFileSync(mcapPath)));
+  const md = file.metadata.find((x) => x.name === name);
+  return md ? asObject(md.metadata) : null;
+}
+
+// The same file with that record's keys changed (added if it had none), everything else kept:
+// written beside it, then put in its place.
+function setMetadata(mcapPath, name, changes) {
+  const file = Mcap.read(new Uint8Array(fs.readFileSync(mcapPath)));
+  const w = Mcap.writer({ profile: file.profile || "ros2", library: file.library || "Hand Tracker" });
+  const schemas = new Map(), channels = new Map();
+  for (const s of file.schemas.values()) schemas.set(s.id, w.schema(s.name, s.encoding, s.data));
+  for (const c of file.channels.values()) channels.set(c.id, w.channel(c.topic, c.messageEncoding, schemas.get(c.schemaId), c.metadata));
+  for (const m of file.messages) w.message(channels.get(m.channel), BigInt(m.logTime), m.data);
+  for (const a of file.attachments) w.attachment(a.name, a.mediaType, a.data, BigInt(a.logTime || 0));
+  let found = false;
+  for (const md of file.metadata) {
+    const map = asObject(md.metadata);
+    if (md.name === name) {
+      Object.assign(map, changes);
+      found = true;
+    }
+    w.metadata(md.name, map);
+  }
+  if (!found) w.metadata(name, { ...changes });
+  const tmp = path.join(path.dirname(mcapPath), `.${path.basename(mcapPath)}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, w.finish());
+  fs.renameSync(tmp, mcapPath);
+}
+
+module.exports = { addVideos, jpegFrames, readMetadata, setMetadata, MAX_WIDTH };
