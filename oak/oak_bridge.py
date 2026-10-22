@@ -602,35 +602,15 @@ def crash_reports():
     return found
 
 
-class Usb2Cameras:
-    """The cameras that can't keep a USB 3 link (their cable or their port; Luxonis's advice is
-    USB 2). Such a camera boots and then never comes back ("Failed to find device after
-    booting", after 15 s), or comes back and drops off the USB again. Started again in USB 2
-    mode it works, so it's remembered (beside the models) and started that way straight away
-    next time. Seen with an OAK-1 Lite W on a Raspberry Pi 5, alone or on a hub: USB 3 failed
-    every time, USB 2 ran it at 30 fps (with the camera's own JPEG, USB 2 is plenty)."""
-
-    def __init__(self, models):
-        self.file = os.path.join(os.path.dirname(os.path.abspath(models)), "usb2-cameras.json")
-
-    def ids(self):
-        try:
-            with open(self.file, encoding="utf-8") as f:
-                return set(json.load(f))
-        except (OSError, ValueError, TypeError):
-            return set()
-
-    def add(self, mxid):
-        ids = self.ids()
-        if mxid in ids:
-            return
-        try:
-            tmp = f"{self.file}.{os.getpid()}"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(sorted(ids | {mxid}), f)
-            os.replace(tmp, self.file)  # several cameras' helpers may write at once
-        except OSError:
-            pass
+# A camera that can't keep a USB 3 link (its cable or its port; Luxonis's advice is USB 2) boots
+# and then never comes back ("Failed to find device after booting", after 15 s), or comes back and
+# drops off the USB again. Started again in USB 2 mode it works (seen with an OAK-1 Lite W on a
+# Raspberry Pi 5; with the camera's own JPEG, USB 2 is plenty), but only for that start: each
+# start tries USB 3 first, so a camera put right (a powered hub, another cable) is back on USB 3
+# by itself. (It used to be remembered as a USB 2 camera, and stayed so: a hub short of power for
+# a while kept a camera on USB 2 for good.) Dropping off while running, it's started again in
+# USB 3 mode; after USB3_DROPS of those, in USB 2 mode for the rest of the run.
+USB3_DROPS = 2
 
 
 def run(args):
@@ -870,8 +850,7 @@ def run(args):
                 return change
         return None
 
-    usb2 = Usb2Cameras(models)
-    wanted, retried = args.device, False
+    wanted, retried, drops = args.device, False, 0
     night = args.night == "on"
     view = args.picture
     imu_tried = False  # (once it's failed to start, it isn't tried again)
@@ -887,7 +866,7 @@ def run(args):
                        "No OAK camera found. Check it's plugged in (a USB 3 port is best) and not in use by another program.")
                 return 3
             wanted = info.getMxId()  # the same camera if it's started again
-            high = retried or wanted in usb2.ids()
+            high = retried
             device = dai.Device(info, dai.UsbSpeed.HIGH if high else dai.UsbSpeed.SUPER)
             usb = str(device.getUsbSpeed()).split(".")[-1]
             mjpeg = args.mjpeg == "on" or (args.mjpeg == "auto" and (usb in ("LOW", "FULL", "HIGH") or platform.machine().lower() in ("aarch64", "arm64")))
@@ -950,7 +929,7 @@ def run(args):
                 continue
             permission = sys.platform.startswith("linux") and any(k in text.lower() for k in ("permission", "udev"))
             if not high and not permission:
-                # Whatever went wrong in USB 3 mode, USB 2 mode is tried once (see Usb2Cameras).
+                # Whatever went wrong in USB 3 mode, USB 2 mode is tried, for this start (USB3_DROPS).
                 retried = True
                 status("starting", message=USB2_MESSAGE)
                 continue
@@ -980,8 +959,6 @@ def run(args):
                depth=bool(getattr(tracker, "xyz", False) or getattr(tracker, "has_depth", False)), depthCameras=stereo, id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
                detect="det_out" in streams, picture=view, motion="motion_out" in streams or getattr(tracker, "host_motion", False), imu="imu_out" in streams, hands=hands,
                night=night, infrared=infrared, warning=" ".join(dict.fromkeys(warnings)) or None)
-        if retried:
-            usb2.add(wanted)
         change = None
         try:
             change = stream(tracker, mjpeg, night_watch(tracker, night, args.night == "auto" and infrared and mono is None))
@@ -1004,11 +981,17 @@ def run(args):
                 # start it again.
                 status("error", message=CRASH_MESSAGE, crashed=True, report=new[0])
                 return CRASHED
-            # The camera dropped off in USB 3 mode (X_LINK_ERROR): it's started again in USB 2 mode.
+            # The camera dropped off in USB 3 mode (X_LINK_ERROR): started again in USB 3 mode, and
+            # after USB3_DROPS of those in USB 2 mode (for the rest of this run).
             if usb != "SUPER" or retried:
                 raise
-            retried = True
-            status("starting", message=USB2_MESSAGE)
+            drops += 1
+            if drops >= USB3_DROPS:
+                retried = True
+                status("starting", message=USB2_MESSAGE)
+            else:
+                status("starting", message="The OAK camera dropped off its USB 3 connection: starting it again…")
+                time.sleep(2)  # until the camera is let go
             continue
         finally:
             try:
