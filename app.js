@@ -939,8 +939,28 @@
     ctx.textAlign = "start";
   }
 
+  // The panel, and Motive's mentions elsewhere (the window picker's note), only once More
+  // settings → OptiTrack Motive is on (remembered); it stays on while Motive is connected.
+  const motiveToggle = $("motiveToggle");
+  function showMotive(on) {
+    const shown = !!natnetApi && (on || motiveState !== "stopped");
+    motiveCard.hidden = !shown;
+    $("captureMotiveNote").hidden = !shown;
+    setToggle(motiveToggle, shown, "OptiTrack Motive");
+    motiveToggle.disabled = motiveState !== "stopped";
+    motiveToggle.title = motiveToggle.disabled
+      ? "Disconnect from Motive first (in its panel, below the 3D view)."
+      : "OptiTrack Motive's live markers, rigid bodies and skeletons: the panel for connecting to Motive, shown below the 3D view. Your choice is remembered. It stays on while Motive is connected.";
+  }
   if (natnetApi) {
-    motiveCard.hidden = false;
+    motiveToggle.hidden = false;
+    showMotive(prefs.motiveShown === true);
+    motiveToggle.addEventListener("click", () => {
+      const on = motiveCard.hidden;
+      setPref("motiveShown", on);
+      showMotive(on);
+      if (on) motiveCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
     // On a phone Motive is always on another computer, on the same Wi-Fi.
     if (mobile) motiveServer.placeholder = "Motive PC's address, e.g. 192.168.1.20";
     motiveServer.value = prefs.motiveServer || (mobile ? "" : "127.0.0.1");
@@ -963,6 +983,7 @@
       motiveStatus.textContent = motiveStatusText(s) + (s.warning ? ` ${s.warning}` : "");
       motiveConnect.textContent = s.state === "stopped" ? "Connect" : "Disconnect";
       motiveServer.disabled = motiveMulticast.disabled = s.state !== "stopped";
+      showMotive(prefs.motiveShown === true);
       motiveView.hidden = s.state !== "connected";
       fitMotiveView();
       if (s.state !== "connected") {

@@ -5038,7 +5038,7 @@ async function checkMirrorDefaults(js) {
 // 7. Recording Viewer: open and convert hand recordings (JSON, CSV), C3D and OptiTrack .tak.
 // 9. OptiTrack: Motive's live NatNet data, and a screen/window as the tracking source.
 async function checkOptiTrack(js) {
-  const status = () => js("({ status: document.getElementById('motiveStatus').textContent, info: document.getElementById('motiveInfo').textContent, button: document.getElementById('motiveConnect').textContent })");
+  const status = () => js("({ status: document.getElementById('motiveStatus').textContent, info: document.getElementById('motiveInfo').textContent, button: document.getElementById('motiveConnect').textContent, locked: document.getElementById('motiveToggle').disabled })");
   const waitFor = async (test, tries = 60) => {
     let s;
     for (let i = 0; i < tries; i++) {
@@ -5058,7 +5058,14 @@ async function checkOptiTrack(js) {
     await js("document.getElementById('motiveConnect').click(); true");
     return waitFor((s) => s.button === "Connect");
   };
-  check("The Motive panel is shown in the Windows app", await js("!document.getElementById('motiveCard').hidden"));
+  // Hidden until More settings → OptiTrack Motive is on (remembered), with Motive's mention in
+  // the window picker's note; on while Motive is connected; off again from the same button.
+  const shown = () => js(`({ card: !document.getElementById("motiveCard").hidden, button: document.getElementById("motiveToggle").textContent,
+    offered: !document.getElementById("motiveToggle").hidden, note: !document.getElementById("captureMotiveNote").hidden,
+    saved: (JSON.parse(localStorage.getItem("hand-tracker:prefs")) || {}).motiveShown })`);
+  const motiveAtStart = await shown();
+  await js("document.getElementById('motiveToggle').click(); true");
+  const motiveOn = await shown();
   const motiveLayouts = () => js(`(() => {
     const sel = document.getElementById("layoutSelect");
     return { offered: [...sel.options].filter((o) => !o.hidden && !o.disabled).map((o) => o.value).join(","), value: sel.value,
@@ -5130,10 +5137,18 @@ async function checkOptiTrack(js) {
         }
       })()`).catch((err) => ({ error: String(err && err.message || err) }));
     }
-    await disconnect();
+    results[multicast ? "afterMulticast" : "afterUnicast"] = await disconnect();
     sim.stop();
     await sleep(300);
   }
+  await js("document.getElementById('motiveToggle').click(); true");
+  const motiveOff = await shown();
+  check("The Motive panel is hidden at first in the Windows app; More settings → OptiTrack Motive shows it (remembered) and Motive's mention in the window picker's note; it stays on while Motive is connected, and the button hides it again",
+    motiveAtStart.offered && !motiveAtStart.card && !motiveAtStart.note && motiveAtStart.button === "OptiTrack Motive: OFF" &&
+      motiveOn.card && motiveOn.note && motiveOn.button === "OptiTrack Motive: ON" && motiveOn.saved === true &&
+      results.multicast.locked === true && results.afterUnicast.locked === false &&
+      !motiveOff.card && !motiveOff.note && motiveOff.button === "OptiTrack Motive: OFF" && motiveOff.saved === false,
+    JSON.stringify({ motiveAtStart, motiveOn, connected: results.multicast.locked, after: results.afterUnicast.locked, motiveOff }));
   check("Connects to Motive's NatNet stream over multicast (Motive's default)", /3 labelled \+ 1 unlabelled markers · 1 rigid body · 1 skeleton \(2 bones\)/.test(results.multicast.info),
     `${results.multicast.status} ${results.multicast.info}`);
   check("…and over unicast", /Connected/.test(results.unicast.status) && /rigid body/.test(results.unicast.info), `${results.unicast.status} ${results.unicast.info}`);

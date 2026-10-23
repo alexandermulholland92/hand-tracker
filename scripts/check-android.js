@@ -445,7 +445,10 @@ async function run() {
   // 6. OptiTrack Motive's live data on the phone: the NatNet plugin's sockets (here Node's, in
   // fake-capacitor.js) and natnet-parse.js, from a stand-in Motive on this computer.
   const motive = {};
-  check("The Motive panel is shown on the phone, asking for Motive's PC", await js("!motiveCard.hidden && motiveServer.value === '' && /Motive PC/.test(motiveServer.placeholder)"));
+  const motiveHidden = await js("motiveCard.hidden && !motiveToggle.hidden");
+  await js("motiveToggle.click(); true");
+  check("The Motive panel is hidden on the phone until More settings → OptiTrack Motive shows it, asking for Motive's PC",
+    motiveHidden && (await js("!motiveCard.hidden && motiveServer.value === '' && /Motive PC/.test(motiveServer.placeholder)")));
   const motiveState = () => js("({ status: motiveStatus.textContent, info: motiveInfo.textContent, button: motiveConnect.textContent })");
   const motiveWait = async (test) => {
     let st;

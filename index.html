@@ -472,6 +472,7 @@
     <div class="toolbar">
       <button id="readableToggle" aria-pressed="false" title="Optional, off by default. In mirrored view, find text in the camera picture (signs, screens, printing) and show it the right way round. Times (a clock) are kept the right way round either way. Your choice is remembered.">Readable text: OFF</button>
       <button id="legendToggle">What is Yaw / Pitch / Roll?</button>
+      <button id="motiveToggle" hidden aria-pressed="false" title="OptiTrack Motive's live markers, rigid bodies and skeletons: the panel for connecting to Motive, shown below the 3D view. Your choice is remembered. It stays on while Motive is connected.">OptiTrack Motive: OFF</button>
     </div>
     <div class="toolbar options-bar">
       <button id="pauseToggle" title="Freeze the live picture and tracking (Space). For a video file, pauses it.">❚❚ Pause<kbd>Space</kbd></button>
@@ -757,7 +758,7 @@
   <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="captureTitle">
     <div class="modal-head"><b id="captureTitle">Track a screen or window</b><button id="captureClose" aria-label="Close">✕</button></div>
     <div id="captureSources">
-      <p class="note">Pick the window to track, for example OptiTrack Motive with a camera's view showing. Motive keeps the cameras to itself, so this is how Hand Tracker can use them while Motive runs.</p>
+      <p class="note">Pick the window to track<span id="captureMotiveNote" hidden>, for example OptiTrack Motive with a camera's view showing. Motive keeps the cameras to itself, so this is how Hand Tracker can use them while Motive runs</span>.</p>
       <div id="captureGrid" class="source-grid"></div>
     </div>
     <div id="captureCrop" hidden>
@@ -883,7 +884,8 @@
   </div>
 </div>
 
-<!-- OptiTrack Motive's live data (Windows, Mac and Linux app): as big as the 3D view. -->
+<!-- OptiTrack Motive's live data (Windows, Mac and Linux app, Android): as big as the 3D view.
+     Shown by More settings → OptiTrack Motive (app.js). -->
 <div id="motiveCard" class="card" hidden>
   <div class="section-label">OptiTrack Motive</div>
   <div class="motive-row">
