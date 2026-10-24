@@ -520,6 +520,8 @@
   for (let n = 1; n <= 16; n++) $("sentryCols").insertAdjacentHTML("beforeend", `<option value="${n}">${n}</option>`);
   $("sentryBtn").addEventListener("click", () => sentryCommand({ armed: !(sentry && sentry.armed) }, false));
   $("sentryPets").addEventListener("click", () => sentryCommand({ ignoreAnimals: !(sentry && sentry.ignoreAnimals) }));
+  $("sentryTrack").addEventListener("click", () => sentryCommand({ trackAnimals: !(sentry && sentry.trackAnimals) }));
+  $("sentryTrackMove").addEventListener("click", () => sentryCommand({ animalsMotion: !(sentry && sentry.animalsMotion) }));
   $("sentryHands").addEventListener("click", () => sentryCommand({ handTracking: !(sentry && sentry.handTracking) }, false));
   for (const [id, k] of [["sentryPhoto", "photo"], ["sentryVideo", "video"], ["sentrySound", "sound"]]) {
     $(id).addEventListener("click", () => sentryCommand({ [k]: !(sentry && sentry[k]) }));
@@ -607,8 +609,8 @@
     const b = e.target.closest("button[data-del]");
     if (b && !b.disabled) sentryDelete(b.dataset.del);
     const keep = e.target.closest("button[data-keep]"), give = e.target.closest("button[data-give]");
-    if (keep) alertAct(keep.dataset.keep, false);
-    if (give) alertAct(give.dataset.give, true);
+    if (keep) alertAct(keep.dataset.keep, keep.dataset.kind, false);
+    if (give) alertAct(give.dataset.give, give.dataset.kind, true);
   });
 
   const sentryPhotos = new Map(); // photo's file name -> its picture here (or "" while it comes)
@@ -681,6 +683,11 @@
     $("sentrySettings").hidden = !newer;
     if (newer) {
       setToggle("sentryPets", st.ignoreAnimals, sending);
+      // (A Hand Tracker from before tracking animals doesn't have it.)
+      $("sentryTrackBox").hidden = typeof st.trackAnimals !== "boolean";
+      setToggle("sentryTrack", st.trackAnimals, sending);
+      $("sentryTrackMoveBox").hidden = !st.trackAnimals;
+      setToggle("sentryTrackMove", st.animalsMotion, sending);
       // (A Hand Tracker from before this switch tracks hands all the time.)
       $("sentryHandsBox").hidden = typeof st.handTracking !== "boolean";
       setToggle("sentryHands", st.handTracking, sending);
@@ -726,10 +733,13 @@
             const del = st.canDelete
               ? `<button type="button" class="small del${armed ? " armed" : ""}" data-del="${esc(e.id)}"${sending ? " disabled" : ""} title="Delete this alert, with its photo and video">${armed ? "Tap again" : "Delete"}</button>`
               : "";
-            const files = [e.photo, e.video].filter(Boolean).map((name) => ({ name, blob: new Blob([], { type: /\.jpg$/i.test(name) ? "image/jpeg" : "video/mp4" }) }));
-            const keep = files.length ? `<button type="button" class="small" data-keep="${esc(e.id)}" title="Its photo and video, to this device">Download</button>` : "";
-            const give = files.length && canShare(files) ? `<button type="button" class="small" data-give="${esc(e.id)}" title="Its photo and video, to another app">Share</button>` : "";
-            return `<div class="alert">${img}<div><b>${esc(e.camera)}</b><div class="meta">${esc(when)}${video}${problem}</div></div><div class="acts">${keep}${give}${del}</div></div>`;
+            // Its photo and its video, each to download or share by itself.
+            const acts = ["photo", "video"].filter((k) => e[k]).flatMap((k) => [
+              `<button type="button" class="small" data-keep="${esc(e.id)}" data-kind="${k}" title="Its ${k}, to this device">Download ${k}</button>`,
+              canShare([{ name: e[k], blob: new Blob([], { type: typeOf(e[k]) }) }]) ? `<button type="button" class="small" data-give="${esc(e.id)}" data-kind="${k}" title="Its ${k}, to another app">Share ${k}</button>` : "",
+            ]).join("");
+            const animal = e.animal ? ` · ${esc(e.animal.replace(/^./, (c) => c.toUpperCase()))}` : "";
+            return `<div class="alert">${img}<div><b>${esc(e.camera)}</b>${animal}<div class="meta">${esc(when)}${video}${problem}</div></div><div class="acts">${acts}${del}</div></div>`;
           })
           .join("")
       : '<div class="muted">No alerts yet.</div>';
@@ -920,12 +930,13 @@
     }
   }
   const PIECE = 2 << 20; // (written a few MB at a time: the apps carry them as text)
-  // -> where they went (for the note), or "" if no place was picked.
-  async function keepFiles(list) {
+  // -> where they went (for the note), or "" if no place was picked. zipAs: in a browser, as one
+  // .zip of that name (several takes' files) instead of each file by itself.
+  async function keepFiles(list, zipAs = "") {
     const saver = await takeSaver();
     if (!saver) return "";
     for (const f of list) {
-      if (saver.zip) {
+      if (saver.zip && !zipAs) {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(f.blob);
         a.download = f.name;
@@ -941,6 +952,10 @@
       await out.close();
     }
     if (!saver.zip) await saver.finish();
+    else if (zipAs) {
+      await saver.finish(zipAs);
+      return saver.where;
+    }
     return saver.zip ? "this device's downloads" : saver.where;
   }
   async function shareFiles(list) {
@@ -987,27 +1002,28 @@
     }
     $("playerShare").disabled = false;
   });
-  // A Sentry alert's photo and video, from the computer, then kept or shared.
-  async function alertFiles(e) {
+  // A Sentry alert's photo or video (kind), from the computer, then kept or shared.
+  const typeOf = (name) => (/\.jpg$/i.test(name) ? "image/jpeg" : /\.webm$/i.test(name) ? "video/webm" : "video/mp4");
+  async function alertFiles(e, kind) {
     const list = [];
-    for (const name of [e.photo, e.video].filter(Boolean)) {
+    for (const name of [e[kind]].filter(Boolean)) {
       const f = await fileOf(name);
       if (!f) continue;
-      const blob = await fetchFile({ stop: false }, name, f.size, /\.jpg$/i.test(name) ? "image/jpeg" : /\.webm$/i.test(name) ? "video/webm" : "video/mp4");
+      const blob = await fetchFile({ stop: false }, name, f.size, typeOf(name));
       if (blob) list.push({ name, blob });
     }
     return list;
   }
   let alertBusy = false;
-  async function alertAct(id, share) {
+  async function alertAct(id, kind, share) {
     const e = ((sentry && sentry.events) || []).find((x) => x.id === id);
     if (!e || alertBusy) return;
     alertBusy = true;
     const say = (text) => ($("sentryAlertsNote").textContent = text);
-    say(`Getting its ${[e.photo && "photo", e.video && "video"].filter(Boolean).join(" and ")} from ${hostName()}…`);
+    say(`Getting its ${kind} from ${hostName()}…`);
     try {
-      const list = await alertFiles(e);
-      if (!list.length) say(`Its files aren't on ${hostName()} any more.`);
+      const list = await alertFiles(e, kind);
+      if (!list.length) say(`Its ${kind} isn't on ${hostName()} any more.`);
       else if (share) {
         say("");
         await shareFiles(list);
@@ -1268,8 +1284,13 @@
         const plays = videos.map((f) => `<button type="button" class="small" data-play="${esc(f.name)}"${takesBusy ? " disabled" : ""}>▶ ${esc(videoLabel(f.name))}</button>`).join("") +
           t.files.filter((f) => /\.jpg$/i.test(f.name)).map((f) => `<button type="button" class="small" data-photo="${esc(f.name)}"${takesBusy ? " disabled" : ""}>📷 ${esc(photoLabel(f.name))}</button>`).join("");
         const edit = `<button type="button" class="small" data-edit="${esc(t.id)}"${takesBusy || editing ? " disabled" : ""}>Edit details</button>`;
+        // Its photos, or its videos, by themselves: downloaded or shared.
+        const kindsOf = KINDS.filter((k) => kindFiles([t], k).length).flatMap((k) => [
+          `<button type="button" class="small" data-tkeep="${esc(t.id)}" data-kind="${k}"${takesBusy ? " disabled" : ""}>Download ${kindFiles([t], k).length === 1 ? k : `${k}s`}</button>`,
+          canShare(kindFiles([t], k).map((x) => ({ name: x.name, blob: new Blob([], { type: typeOf(x.name) }) }))) ? `<button type="button" class="small" data-tgive="${esc(t.id)}" data-kind="${k}"${takesBusy ? " disabled" : ""}>Share ${kindFiles([t], k).length === 1 ? k : `${k}s`}</button>` : "",
+        ]).join("");
         return `<div class="takerow"><label><input type="checkbox" data-id="${esc(t.id)}"${picked.has(t.id) ? " checked" : ""}${takesBusy ? " disabled" : ""} /> <span>${esc(t.id)}</span></label>` +
-          `<div class="meta">${esc(whenText(t.at))} · ${esc(sizeText(t.size))} · ${esc(kinds)}${status}</div><div class="plays">${plays}${edit}</div>` +
+          `<div class="meta">${esc(whenText(t.at))} · ${esc(sizeText(t.size))} · ${esc(kinds)}${status}</div><div class="plays">${plays}${edit}${kindsOf}</div>` +
           (editing && editing.id === t.id ? editorHtml() : "") + "</div>";
       }).join("")
       : '<div class="muted">None yet: each take is saved here when recording stops.</div>';
@@ -1281,12 +1302,65 @@
     const ready = takes.filter((t) => picked.has(t.id) && got.has(t.id)).length;
     $("takesGet").disabled = takesBusy || !n;
     $("takesGet").textContent = n ? `Download ${n} take${n === 1 ? "" : "s"}` : "Download";
+    // The ticked takes' photos, or their videos, by themselves.
+    const ticked = takes.filter((t) => picked.has(t.id));
+    let anyKind = false;
+    for (const k of KINDS) {
+      const list = kindFiles(ticked, k), K = k === "photo" ? "Photos" : "Videos";
+      anyKind = anyKind || !!list.length;
+      $(`takesGet${K}`).hidden = !list.length;
+      $(`takesShare${K}`).hidden = !list.length || !canShare(list.map((x) => ({ name: x.name, blob: new Blob([], { type: typeOf(x.name) }) })));
+      $(`takesGet${K}`).disabled = $(`takesShare${K}`).disabled = takesBusy;
+      $(`takesGet${K}`).textContent = `Download ${list.length} ${k}${list.length === 1 ? "" : "s"}`;
+      $(`takesShare${K}`).textContent = `Share ${list.length} ${k}${list.length === 1 ? "" : "s"}`;
+    }
+    $("takesKinds").hidden = !anyKind;
     $("takesRefresh").disabled = takesBusy;
     const del = $("takesDel");
     del.hidden = !ready;
     del.disabled = takesBusy;
     const armed = Date.now() - takesArmed < 4000;
     del.textContent = `${armed ? "Tap again to delete" : "Delete"} ${ready} from ${host}`;
+  }
+
+  // A take's photos (.jpg) or its videos (.mp4, .webm): just those of its files.
+  const KINDS = ["photo", "video"];
+  const kindFiles = (list, kind) => list.flatMap((t) => t.files.filter((x) => (kind === "photo" ? /\.jpg$/i : VIDEO_FILE).test(x.name)));
+  // Some takes' photos or videos: each from the computer (a slice at a time, its length checked),
+  // then kept on this device (several takes' in a browser as one .zip) or shared.
+  async function takeKind(list, kind, share) {
+    const files = kindFiles(list, kind);
+    if (!files.length || takesBusy) return;
+    takesBusy = true;
+    renderTakes();
+    const total = files.reduce((n, x) => n + x.size, 0) || 1;
+    let done = 0;
+    try {
+      const came = [];
+      for (const x of files) {
+        const blob = await fetchFile({ stop: false }, x.name, x.size, typeOf(x.name), (at) => takesNote(`Getting the ${kind}s… ${Math.min(99, Math.round(((done + at) / total) * 100))}%`));
+        if (!blob || blob.size !== x.size) throw new Error(`${x.name} came the wrong size`);
+        done += x.size;
+        came.push({ name: x.name, blob });
+      }
+      if (share) {
+        takesNote("");
+        await shareFiles(came);
+      } else {
+        const zipAs = list.length > 1 ? `${hostName().replace(/[^\w.-]+/g, "_")} ${kind}s ${localStamp()}.zip` : "";
+        const where = await keepFiles(came, zipAs);
+        takesNote(where ? `${came.length} ${kind}${came.length === 1 ? "" : "s"} on this device (${where}).` : "");
+      }
+    } catch (err) {
+      takesNote(cancelled(err) ? "" : `The ${kind}s ${share ? "couldn't be shared" : "didn't come"}: ${err.message || err}`, !cancelled(err));
+    }
+    takesBusy = false;
+    renderTakes();
+  }
+  for (const k of KINDS) {
+    const K = k === "photo" ? "Photos" : "Videos";
+    $(`takesGet${K}`).addEventListener("click", () => takeKind(takes.filter((t) => picked.has(t.id)), k, false));
+    $(`takesShare${K}`).addEventListener("click", () => takeKind(takes.filter((t) => picked.has(t.id)), k, true));
   }
 
   $("takeRows").addEventListener("change", (e) => {
@@ -1368,6 +1442,11 @@
     if (tapped && !tapped.disabled && tapped.hasAttribute("data-ecancel")) {
       editing = null;
       return renderTakes();
+    }
+    const kb = e.target.closest && e.target.closest("button[data-tkeep], button[data-tgive]");
+    if (kb && !kb.disabled) {
+      const t = takes.find((x) => x.id === (kb.dataset.tkeep || kb.dataset.tgive));
+      return t && takeKind([t], kb.dataset.kind, !!kb.dataset.tgive);
     }
     const shot = e.target.closest && e.target.closest("button[data-photo]");
     if (shot && !shot.disabled) {

@@ -114,6 +114,7 @@
   .takerow .takeedit .enote { font-size: 13px; color: var(--muted); margin-top: 5px; }
   .takebtns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
   .takebtns button { flex: 1 1 150px; padding: 11px 14px; font-weight: 600; }
+  .takebtns.small button { padding: 8px 12px; font-weight: 500; }
   #takesNote { font-size: 13px; color: var(--muted); min-height: 1.3em; margin-top: 6px; }
   #takesNote.err { color: var(--err); }
   #wifiNow, #wifiNote { font-size: 14px; }
@@ -224,6 +225,14 @@
     <div id="sentrySettings" hidden>
       <div class="row"><span class="grow">Ignore pets and animals</span><button type="button" id="sentryPets" class="small" aria-pressed="false">Off</button></div>
       <div class="sub">Movement where a cat, dog, bird or other animal is (and no person) doesn't count.</div>
+      <div id="sentryTrackBox" hidden>
+        <div class="row"><span class="grow">Track animals</span><button type="button" id="sentryTrack" class="small" aria-pressed="false">Off</button></div>
+        <div class="sub">Only an animal (a cat, dog, bird…) is an alert, and its video goes on for as long as one is seen, however long that is. Ignore pets and animals goes off.</div>
+        <div id="sentryTrackMoveBox" hidden>
+          <div class="row"><span class="grow">Movement too</span><button type="button" id="sentryTrackMove" class="small" aria-pressed="false">Off</button></div>
+          <div class="sub">Movement is an alert as well, as without Track animals.</div>
+        </div>
+      </div>
       <div id="sentryHandsBox">
         <div class="row"><span class="grow">Track hands while it's on</span><button type="button" id="sentryHands" class="small" aria-pressed="false">Off</button></div>
         <div class="sub">Off, the cameras still watch for movement but don't find hands (an OAK camera runs without its hand models, starting again for a few seconds when this changes): more of the camera and computer is left for watching, and the photos and videos have no skeletons. Takes can't be started meanwhile, so the take details are hidden.</div>
@@ -273,6 +282,13 @@
     <div class="takebtns">
       <button type="button" id="takesGet" disabled>Download</button>
       <button type="button" id="takesDel" class="record" hidden>Delete</button>
+    </div>
+    <!-- The ticked takes' photos or videos alone (shown once some are ticked that have them). -->
+    <div class="takebtns small" id="takesKinds" hidden>
+      <button type="button" id="takesGetPhotos" hidden>Download photos</button>
+      <button type="button" id="takesGetVideos" hidden>Download videos</button>
+      <button type="button" id="takesSharePhotos" hidden>Share photos</button>
+      <button type="button" id="takesShareVideos" hidden>Share videos</button>
     </div>
     <div id="takesNote"></div>
   </section>

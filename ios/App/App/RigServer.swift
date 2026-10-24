@@ -877,7 +877,7 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
     static func cleanSentry(_ s: [String: Any]?) -> [String: Any]? {
         guard let s = s else { return nil }
         var out: [String: Any] = [:]
-        for k in ["shown", "armed", "ignoreAnimals", "handTracking", "photo", "video", "sound"] { if let b = bool(s[k]) { out[k] = b } }
+        for k in ["shown", "armed", "ignoreAnimals", "trackAnimals", "animalsMotion", "handTracking", "photo", "video", "sound"] { if let b = bool(s[k]) { out[k] = b } }
         if let r = int(s["rows"]), r >= 1, r <= 9 { out["rows"] = r }
         if let c = int(s["cols"]), c >= 1, c <= 16 { out["cols"] = c }
         if let sens = s["sensitivity"] as? String, ["low", "medium", "high"].contains(sens) { out["sensitivity"] = sens }

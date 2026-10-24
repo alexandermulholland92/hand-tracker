@@ -149,6 +149,7 @@ const STEPS = [
   ["remote-takes", [], () => checkRemoteTakes()],
   ["remote-take-details", [], ({ js }) => checkRemoteTakeDetails(js)],
   ["sentry-math", [], () => checkSentryMath()],
+  ["sentry-animals", ["sentry-math"], () => checkSentryAnimals()],
   ["ntfy", [], () => checkNtfy()],
   ["sentry", [], ({ js }) => checkSentry(js)],
   ["web-link", [], () => checkWebLink()],
@@ -782,6 +783,66 @@ function checkSentryMath() {
     JSON.stringify(out));
 }
 
+// Sentry mode tracking animals (sentry.js, as loaded by checkSentryMath), with a stand-in OAK
+// camera whose picture never moves and whose objects are set here: a cat found for a moment isn't
+// an alert, one found for a second is (its kind on the alert and in ntfy's message), and one in a
+// box left out isn't. Ignoring animals and tracking them go one or the other.
+async function checkSentryAnimals() {
+  const S = globalThis.Sentry;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const grey = { w: 64, h: 36, data: new Uint8Array(64 * 36).fill(100) };
+  let objects = null;
+  const view = { key: "check-cam", index: 0, name: "Check cam", grey: () => grey, objects: () => objects, rotation: () => 0, mirrored: () => false, canvas: () => null, frame: () => null };
+  const saved = {};
+  S.init({ prefs: saved, setPref: (k, v) => (saved[k] = v), views: () => [view], host: null, hostName: () => "pi", link: () => "", looking: () => true });
+  const out = {};
+  try {
+    await S.command({ shown: true, photo: false, video: false, sound: false, ignoreAnimals: true });
+    await S.command({ trackAnimals: true });
+    const c = S._test.config();
+    out.tracking = { track: c.trackAnimals, ignore: c.ignoreAnimals, objects: S.wantsObjects() };
+    await S.command({ armed: true });
+    out.wants = S.wantsObjects();
+    // A cat found for a moment (one stray find), then nothing.
+    objects = [{ label: "cat", score: 0.7, box: [0.1, 0.1, 0.3, 0.4] }];
+    await sleep(200);
+    objects = [];
+    await sleep(3500); // (until it's forgotten)
+    out.stray = S._test.events.length;
+    // A cat for a second: an alert, with its kind.
+    objects = [{ label: "cat", score: 0.8, box: [0.1, 0.1, 0.3, 0.4] }];
+    await sleep(1000);
+    out.alert = S._test.events.length ? { animal: S._test.events[0].animal, camera: S._test.events[0].camera } : null;
+    out.state = (S.remoteState().events[0] || {}).animal;
+    out.note = S.remoteState().note;
+    // ...still there: its video goes on (one alert).
+    await sleep(600);
+    out.alerts = S._test.events.length;
+    out.recording = !!(S._test.per.get("check-cam") || {}).session;
+    objects = [];
+    await S.command({ armed: false });
+    // A dog in a box left out isn't one.
+    await S.command({ armed: true, rows: 1, cols: 2, box: { camera: 0, cell: 0, off: true } });
+    objects = [{ label: "dog", score: 0.8, box: [0.1, 0.2, 0.3, 0.6] }];
+    await sleep(1000);
+    out.leftOut = S._test.events.length;
+    await S.command({ ignoreAnimals: true });
+    out.ignoring = { track: S._test.config().trackAnimals, ignore: S._test.config().ignoreAnimals };
+    out.ntfy = [S._test.ntfyMessage({ at: Date.UTC(2026, 9, 24, 12, 0, 0), camera: "Head", animal: "cat" }).message, S._test.ntfyMessage({ at: 0, camera: "Head", animal: "elephant" }).message, S._test.ntfyMessage({ at: 0, camera: "Head" }).message];
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    objects = null;
+    await S.command({ armed: false, shown: false }).catch(() => {});
+  }
+  check("Sentry mode tracking animals: only an animal is an alert, one found for a second (not one stray find), with its kind on the alert and in ntfy's message (\"A cat at…\"); its video goes on while it's there (one alert); not in a box left out; ignoring animals and tracking them, one or the other",
+    !out.error && out.tracking.track === true && out.tracking.ignore === false && out.tracking.objects === false && out.wants === true &&
+      out.stray === 0 && out.alert && out.alert.animal === "cat" && out.state === "cat" && /for animals/.test(out.note) && out.alerts === 1 && out.recording &&
+      out.leftOut === 1 && out.ignoring.track === false && out.ignoring.ignore === true &&
+      /^A cat at /.test(out.ntfy[0]) && /^An elephant at /.test(out.ntfy[1]) && /^Movement at /.test(out.ntfy[2]),
+    JSON.stringify(out));
+}
+
 // Sentry mode's alerts through ntfy (electron/ntfy.js), to a stand-in server: what the page asks
 // is checked (topic, server, link), the text goes in the address (any language's letters), and
 // a photo is sent as the body.
@@ -1146,10 +1207,32 @@ async function checkSentry(js) {
           $("playerClose").click();
           await until(() => $("player").hidden && !(history.state && history.state.player)); // (its place in the history gone too)
         }
-        const keep = await until(() => document.querySelector("#sentryAlerts button[data-keep]"));
-        if (keep) {
+        // An alert's photo, then its video, each by its own Download.
+        for (const kind of ["photo", "video"]) {
+          const keep = await until(() => document.querySelector('#sentryAlerts button[data-keep][data-kind="' + kind + '"]'));
+          if (!keep) continue;
+          $("sentryAlertsNote").textContent = "";
           keep.click();
-          out.alertNote = await until(() => /^Saved /.test($("sentryAlertsNote").textContent) && $("sentryAlertsNote").textContent, 20000);
+          out["alert_" + kind] = await until(() => /^Saved /.test($("sentryAlertsNote").textContent) && $("sentryAlertsNote").textContent, 20000);
+        }
+        // A take's photos by themselves (its row's Download photo), and the ticked takes' videos.
+        const row = await until(() => [...document.querySelectorAll("#takeRows .takerow")].find((r) => r.querySelector('button[data-tkeep][data-kind="photo"]') && /^Sentry_/.test(r.querySelector("label span").textContent)));
+        if (row) {
+          out.takeButtons = [...row.querySelectorAll("button[data-tkeep]")].map((b) => b.textContent);
+          $("takesNote").textContent = "";
+          row.querySelector('button[data-tkeep][data-kind="photo"]').click();
+          out.takePhotos = await until(() => /on this device/.test($("takesNote").textContent) && $("takesNote").textContent, 20000);
+          // (The list is drawn again after each download: its tick box looked up each time.)
+          const id = row.querySelector("input[data-id]").dataset.id;
+          const box = () => [...document.querySelectorAll("#takeRows input[data-id]")].find((x) => x.dataset.id === id);
+          await until(() => box() && !box().disabled);
+          box().click();
+          out.tickedButton = await until(() => !$("takesGetVideos").hidden && $("takesGetVideos").textContent);
+          $("takesNote").textContent = "";
+          $("takesGetVideos").click();
+          out.tickedVideos = await until(() => /on this device/.test($("takesNote").textContent) && $("takesNote").textContent, 20000);
+          await until(() => box() && !box().disabled);
+          box().click();
         }
         return out;
       `, "the remote page, downloads");
@@ -1224,10 +1307,12 @@ async function checkSentry(js) {
   const r = out;
   const launch = r.launch || {};
   const sv = r.saves || {}, dl = r.downloads || [];
-  check("Downloads from remote recording's page in a browser, each as the file itself (not a .zip): the player's Download (the video it plays; a take's photo from its 📷 in the takes list) and a Sentry alert's Download (its photo and video)",
+  check("Downloads from remote recording's page in a browser, each as the file itself (not a .zip): the player's Download (the video it plays; a take's photo from its 📷 in the takes list); a Sentry alert's photo and its video, each by its own Download; a take's photos by themselves, and the ticked takes' videos",
     sv.saveShown && /^Saved Sentry_.+-video\.(mp4|webm) /.test(sv.saveNote || "") && sv.photoButton === "📷 Photo" && sv.photoShown && /^Saved Sentry_.+\.jpg /.test(sv.photoNote || "") &&
-      /^Saved Sentry_.+\.jpg and Sentry_.+-video\.(mp4|webm) /.test(sv.alertNote || "") &&
-      dl.length === 4 && dl.filter((n) => /^Sentry_.+-video\.(mp4|webm)$/.test(n)).length === 2 && dl.filter((n) => /^Sentry_.+\.jpg$/.test(n)).length === 2,
+      /^Saved Sentry_.+\.jpg /.test(sv.alert_photo || "") && /^Saved Sentry_.+-video\.(mp4|webm) /.test(sv.alert_video || "") &&
+      (sv.takeButtons || []).join() === "Download photo,Download video" && /^1 photo on this device/.test(sv.takePhotos || "") &&
+      sv.tickedButton === "Download 1 video" && /^1 video on this device/.test(sv.tickedVideos || "") &&
+      dl.length === 6 && dl.filter((n) => /^Sentry_.+-video\.(mp4|webm)$/.test(n)).length === 3 && dl.filter((n) => /^Sentry_.+\.jpg$/.test(n)).length === 3,
     JSON.stringify({ saves: sv, downloads: dl }));
   check("Sentry mode: the app opened with it left on (as after a restart) starts its cameras by itself, trying again when the first start fails",
     launch.closed && launch.tries === 2 && launch.running && launch.armed, JSON.stringify(launch));

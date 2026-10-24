@@ -20,6 +20,11 @@
  * person) doesn't count. An OAK camera finds them itself (its object finder is turned on for
  * this); other cameras with an object finder in the app (object-finder.js), run only when
  * something moves.
+ * Track animals (instead): only an animal found in a watched box is an alert (found in looks over
+ * at least ANIMAL_CONFIRM_MS, so one stray find isn't), and its video goes on for as long as one
+ * is found there (then STILL_S more), with no length limit. Movement too: movement is an alert
+ * as well, as without it. The app's object finder looks every ANIMAL_LOOK_MS meanwhile (an
+ * animal lying still is still found).
  *
  * Hand tracking is off while it's on (the cameras' pictures carry on, with no hands): nobody's
  * there to track, the processor is left for watching, and no skeletons are drawn on its photos
@@ -51,7 +56,7 @@
  *   Sentry.wantsTracking() // the cameras should track hands (not while it's on, unless it's asked to)
  *   Sentry.remoteState()   // for the page: its settings, each camera's boxes, the alerts
  *   await Sentry.command(c) // from the page: { shown, armed, rows, cols, sensitivity,
- *                          //   ignoreAnimals, handTracking, photo, video, sound, ntfy: { on, server, photo,
+ *                          //   ignoreAnimals, trackAnimals, animalsMotion, handTracking, photo, video, sound, ntfy: { on, server, photo,
  *                          //   newTopic, test }, box: { camera, cell, off }, watchAll,
  *                          //   deleteAlerts: [alert ids] (their photos and videos too),
  *                          //   deleteAll (every Sentry photo and video in the folder) }
@@ -76,11 +81,13 @@
   const ANIMAL_MARGIN = 0.25; // an animal's box grown by this much each way (its movement blurs past it)
   const ANIMAL_HOLD_MS = 3000; // an animal found this recently still counts where it was (a finder misses it now and then)
   const LOOSE_STREAK = 2; // ignoring animals: looks in a row with movement no animal explains before it counts
+  const ANIMAL_CONFIRM_MS = 500; // tracking animals: found over at least this long before it's an alert
+  const ANIMAL_LOOK_MS = 1000; // tracking animals: the app's object finder looks this often (an OAK camera, 3 times a second)
   // ...where an OAK camera finds the objects: it looks 3 times a second (oak_bridge.py's
   // DETECT_GAP_S), so an animal walking in may not be found until up to ~0.45 s later.
   const OAK_LOOSE_STREAK = 4;
   const HEAT_FADE = 0.6; // a box shown moving on the page fades over a few looks
-  const FLAGS = ["shown", "armed", "ignoreAnimals", "handTracking", "photo", "video", "sound"];
+  const FLAGS = ["shown", "armed", "ignoreAnimals", "trackAnimals", "animalsMotion", "handTracking", "photo", "video", "sound"];
 
   let prefs = {}, setPref = () => {}, viewsOf = () => [], host = null, onWantsChange = () => {}, onTrackingChange = () => {}, hostName = () => "", linkOf = () => "", lookingOf = () => true;
   let cfg = null;
@@ -95,6 +102,7 @@
   function defaults() {
     return {
       shown: false, armed: false, rows: 3, cols: 4, sensitivity: "medium", ignoreAnimals: false,
+      trackAnimals: false, animalsMotion: false, // only animals are alerts (and movement too, if asked)
       handTracking: false, // the hands tracked while it's on
       photo: true, video: true, sound: true,
       ntfy: { on: false, server: "https://ntfy.sh", topic: "", photo: false },
@@ -272,6 +280,21 @@
     return !levels(left.mask, rows, cols).some((l, i) => !off.has(i) && l >= need);
   }
 
+  // Tracking animals: the animals found in a watched box (by its middle), now or in the last few
+  // seconds (a finder misses one now and then) -> { label (the latest's kind), span (ms from the
+  // first of them to the latest) }, or null. Animals found are remembered in st.animals.
+  function animalSeen(st, off, rows, cols, now = Date.now()) {
+    const watched = (b) => {
+      const x = Math.min(cols - 1, Math.max(0, Math.floor(((b[0] + b[2]) / 2) * cols)));
+      const y = Math.min(rows - 1, Math.max(0, Math.floor(((b[1] + b[3]) / 2) * rows)));
+      return !off.has(y * cols + x);
+    };
+    const held = (st.animals || []).filter((a) => now - a.at < ANIMAL_HOLD_MS && watched(a.box));
+    if (!held.length) return null;
+    const last = held[held.length - 1];
+    return { label: last.label, span: last.at - held[0].at };
+  }
+
   // ---------- each camera, eight times a second ----------
   function stateOf(key) {
     if (!per.has(key)) per.set(key, { prev: null, streak: 0, levels: [], heat: [], session: null, lastAlertAt: 0, finding: false });
@@ -329,15 +352,43 @@
         const objects = v.objects();
         if (objects) remember(st, objects, v.rotation ? v.rotation() : 0);
       }
-      if (cfg.armed && st.streak >= STREAK) consider(v, st, off, need);
+      if (cfg.armed && cfg.trackAnimals) watchAnimals(v, st, off);
+      if (cfg.armed && st.streak >= STREAK && (!cfg.trackAnimals || cfg.animalsMotion)) consider(v, st, off, need);
       endIfStill(v, st);
     }
   }
 
-  // An alert's video ends once its camera's been still a while, or it's long enough.
+  // An alert's video ends once its camera's been still a while (no animal found, tracking
+  // animals), or it's long enough (not one with an animal: that goes on while it's there).
   function endIfStill(v, st) {
     if (st.session && performance.now() - st.session.lastMovedAt > STILL_S * 1000) endSession(v.key, st);
-    else if (st.session && st.session.rec && st.session.rec.elapsed() > MAX_VIDEO_S) endSession(v.key, st);
+    else if (st.session && st.session.rec && !st.session.animal && st.session.rec.elapsed() > MAX_VIDEO_S) endSession(v.key, st);
+  }
+
+  // Tracking animals: an OAK camera's objects come with every picture; other cameras' are looked
+  // for every ANIMAL_LOOK_MS. An animal found long enough is an alert, and keeps its video going.
+  function watchAnimals(v, st, off) {
+    const now = Date.now();
+    if (v.objects) {
+      const objects = v.objects();
+      if (objects) remember(st, objects, v.rotation ? v.rotation() : 0, now);
+    } else if (!st.finding && now - (st.lookedAt || 0) >= ANIMAL_LOOK_MS) {
+      st.finding = true;
+      st.lookedAt = now;
+      let image = null;
+      try {
+        image = v.frame();
+      } catch {
+        image = null;
+      }
+      if (image) {
+        findObjects(image)
+          .then((objects) => objects && remember(st, objects, 0))
+          .finally(() => (st.finding = false));
+      } else st.finding = false;
+    }
+    const seen = animalSeen(st, off, cfg.rows, cfg.cols, now);
+    if (seen && (st.session || seen.span >= ANIMAL_CONFIRM_MS)) moving(v, st, seen.label);
   }
 
   // Movement in a watched box: an alert (or more of one going on), unless it's an animal's.
@@ -378,7 +429,7 @@
   async function findObjects(image) {
     const finder = global.ObjectFinder;
     if (!finder) {
-      finderNote = "Ignoring animals needs the object finder, which isn't here.";
+      finderNote = "Finding animals needs the object finder, which isn't here.";
       return null;
     }
     try {
@@ -395,15 +446,17 @@
     }
   }
 
-  function moving(v, st) {
+  // animal: the kind of animal found (tracking animals), else "".
+  function moving(v, st, animal = "") {
     const now = performance.now();
     if (st.session) {
       st.session.lastMovedAt = now;
+      if (animal && !st.session.animal) st.session.animal = animal;
       return;
     }
     const at = new Date();
     const name = baseName(v, at);
-    st.session = { lastMovedAt: now, name, at, rec: null };
+    st.session = { lastMovedAt: now, name, at, rec: null, animal };
     if (cfg.video) {
       try {
         const canvas = v.canvas();
@@ -427,7 +480,7 @@
 
   // ---------- an alert: the photo, the page, the phone ----------
   async function raiseAlert(v, session) {
-    const ev = { id: `${session.at.getTime()}-${Math.random().toString(36).slice(2, 7)}`, at: session.at.getTime(), camera: v.name, key: v.key, take: session.name, photo: null, video: null, sent: [] };
+    const ev = { id: `${session.at.getTime()}-${Math.random().toString(36).slice(2, 7)}`, at: session.at.getTime(), camera: v.name, key: v.key, take: session.name, animal: session.animal || "", photo: null, video: null, sent: [] };
     events.unshift(ev);
     events.length = Math.min(events.length, MAX_EVENTS);
     session.event = ev;
@@ -537,7 +590,8 @@
   function ntfyMessage(ev) {
     const t = new Date(ev.at);
     const p = (n) => String(n).padStart(2, "0");
-    return { title: `Sentry: ${ev.camera}`, message: `Movement at ${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}${hostName() ? ` on ${hostName()}` : ""}.` };
+    const what = ev.animal ? `A${/^[aeiou]/i.test(ev.animal) ? "n" : ""} ${ev.animal}` : "Movement";
+    return { title: `Sentry: ${ev.camera}`, message: `${what} at ${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}${hostName() ? ` on ${hostName()}` : ""}.` };
   }
   async function sendNtfy(ev, jpeg) {
     const { server, topic, photo } = cfg.ntfy;
@@ -594,11 +648,11 @@
   function setArmed(on) {
     cfg.armed = !!on;
     if (!cfg.armed) for (const [key, st] of per) if (st.session) endSession(key, st);
-    if (cfg.armed && cfg.ignoreAnimals && global.ObjectFinder && global.ObjectFinder.load) global.ObjectFinder.load().catch(() => {});
+    if (cfg.armed && (cfg.ignoreAnimals || cfg.trackAnimals) && global.ObjectFinder && global.ObjectFinder.load) global.ObjectFinder.load().catch(() => {});
   }
 
   const wantsMotion = () => !!cfg && (cfg.armed || cfg.shown);
-  const wantsObjects = () => !!cfg && cfg.armed && cfg.ignoreAnimals;
+  const wantsObjects = () => !!cfg && cfg.armed && (cfg.ignoreAnimals || cfg.trackAnimals);
   const wantsTracking = () => !cfg || !cfg.armed || cfg.handTracking;
   function notifyWants() {
     const key = `${wantsMotion()}${wantsObjects()}`;
@@ -617,7 +671,7 @@
     const recording = [...per.values()].filter((s) => s.session && s.session.rec).length;
     if (!cfg.armed) return n ? "Off. Tap a box to leave it out: the rest are watched once Sentry is on." : "Off. Start the cameras to see their boxes.";
     if (!n) return "On, but no camera is running.";
-    return `Watching ${n} camera${n === 1 ? "" : "s"}${recording ? ` · recording ${recording}` : ""}.${finderNote ? ` ${finderNote}` : ""}`;
+    return `Watching ${n} camera${n === 1 ? "" : "s"}${cfg.trackAnimals ? ` for animals${cfg.animalsMotion ? " and movement" : ""}` : ""}${recording ? ` · recording ${recording}` : ""}.${finderNote ? ` ${finderNote}` : ""}`;
   }
 
   // For remote recording's page (and the Hand Tracker app watching for alerts). While Sentry is
@@ -630,7 +684,7 @@
     const boxes = cfg.rows * cfg.cols;
     return {
       shown: cfg.shown, armed: cfg.armed, rows: cfg.rows, cols: cfg.cols, sensitivity: cfg.sensitivity,
-      ignoreAnimals: cfg.ignoreAnimals, handTracking: cfg.handTracking, photo: cfg.photo, video: cfg.video, sound: cfg.sound,
+      ignoreAnimals: cfg.ignoreAnimals, trackAnimals: cfg.trackAnimals, animalsMotion: cfg.animalsMotion, handTracking: cfg.handTracking, photo: cfg.photo, video: cfg.video, sound: cfg.sound,
       ntfy: { on: cfg.ntfy.on, server: cfg.ntfy.server, topic: cfg.ntfy.topic, photo: cfg.ntfy.photo },
       note: statusText(views),
       canDelete: !!(host && host.remote && host.remote.deleteSentry), // its photos and videos, from the page
@@ -646,7 +700,7 @@
         return { index: v.index, name: v.name, off: shownOff, hot, recording: !!(st && st.session && st.session.rec) };
       }),
       events: events.slice(0, 20).map((e) => ({
-        id: e.id, at: e.at, camera: e.camera,
+        id: e.id, at: e.at, camera: e.camera, animal: e.animal || "",
         photo: e.photo && !e.photo.download ? e.photo.name : null, video: e.video && !e.video.download ? e.video.name : null, seconds: e.seconds || 0,
         problem: [e.photoError && `no photo (${e.photoError})`, e.videoError && `no video (${e.videoError})`, e.ntfyError && `ntfy: ${e.ntfyError}`].filter(Boolean).join(" · "),
       })),
@@ -660,7 +714,11 @@
     if (c.rows !== undefined) cfg.rows = clamp(c.rows, 1, MAX_ROWS, cfg.rows);
     if (c.cols !== undefined) cfg.cols = clamp(c.cols, 1, MAX_COLS, cfg.cols);
     if (SENSITIVITY[c.sensitivity]) cfg.sensitivity = c.sensitivity;
-    for (const k of ["ignoreAnimals", "handTracking", "photo", "video", "sound"]) if (typeof c[k] === "boolean") cfg[k] = c[k];
+    for (const k of ["ignoreAnimals", "trackAnimals", "animalsMotion", "handTracking", "photo", "video", "sound"]) if (typeof c[k] === "boolean") cfg[k] = c[k];
+    // Ignoring animals and tracking them: one or the other.
+    if (c.trackAnimals === true) cfg.ignoreAnimals = false;
+    else if (c.ignoreAnimals === true) cfg.trackAnimals = false;
+    if (typeof c.trackAnimals === "boolean") message = cfg.trackAnimals ? "Only animals are alerts now." : "Movement is an alert again.";
     if (typeof c.handTracking === "boolean") message = cfg.handTracking ? "Hands are tracked while Sentry is on." : "Hands aren't tracked while Sentry is on.";
     if (c.ntfy && typeof c.ntfy === "object") {
       const n = { ...cfg.ntfy };
@@ -693,7 +751,7 @@
     if (typeof c.armed === "boolean" && c.armed !== cfg.armed) {
       setArmed(c.armed);
       message = cfg.armed ? "Sentry is on." : "Sentry is off.";
-    } else if (c.ignoreAnimals === true && cfg.armed) {
+    } else if ((c.ignoreAnimals === true || c.trackAnimals === true) && cfg.armed) {
       setArmed(true); // the object finder, made ready
     }
     save();
@@ -730,6 +788,6 @@
   global.Sentry = {
     init, wantsMotion, wantsObjects, wantsTracking, remoteState, command,
     isArmed: () => !!cfg && cfg.armed,
-    _test: { shrink, blur, moved, levels, turn, turnBox, withoutAnimals, animalsOnly, serverOnly, sample, events, per, toCamera, config: () => cfg },
+    _test: { shrink, blur, moved, levels, turn, turnBox, withoutAnimals, animalsOnly, animalSeen, remember, ntfyMessage, serverOnly, sample, events, per, toCamera, config: () => cfg },
   };
 })(typeof window !== "undefined" ? window : globalThis);
