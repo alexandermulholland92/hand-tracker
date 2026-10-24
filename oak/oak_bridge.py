@@ -72,6 +72,8 @@ import os
 import platform
 import struct
 import sys
+import tempfile
+import threading
 import time
 
 # The stream gets the real stdout to itself. Everything else that writes to stdout (the
@@ -612,6 +614,71 @@ def crash_reports():
 # USB 3 mode; after USB3_DROPS of those, in USB 2 mode for the rest of the run.
 USB3_DROPS = 2
 
+# OAK cameras on the same computer start one at a time. A camera starting (booting, then its
+# infrared light on) draws the most, and several at once can be more than a hub's power or a
+# Raspberry Pi's USB ports give: four OAK-D-PRO-W on a 5 V 3 A hub all dropped off when the hub's
+# power dipped, started again together, and dropped off again, the Pi cutting its USB ports. Each
+# start waits for its turn (a lock on a file every camera's helper shares; up to START_WAIT_S, then
+# it goes anyway) and keeps it START_SETTLE_S after it's started, while its draw settles.
+START_LOCK = os.path.join(tempfile.gettempdir(), "hand-tracker-oak-start.lock")
+START_WAIT_S = 60
+START_SETTLE_S = 1.5
+
+
+class StartTurn:
+    def __init__(self):
+        self.f = None
+
+    def _lock(self):
+        if os.name == "nt":
+            import msvcrt
+            self.f.seek(0)
+            msvcrt.locking(self.f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(self.f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def __enter__(self):
+        try:
+            self.f = open(START_LOCK, "a+")
+        except OSError:
+            return self  # (no file to share: it starts without waiting)
+        until, said = time.time() + START_WAIT_S, False
+        while True:
+            try:
+                self._lock()
+                return self
+            except OSError:
+                if time.time() > until:
+                    self.release()
+                    return self
+                if not said:
+                    status("starting", message="Waiting for the other OAK cameras to start: they start one at a time…")
+                    said = True
+                time.sleep(0.2)
+
+    def release(self):
+        f, self.f = self.f, None
+        if f is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        f.close()  # (flock's lock goes with it, as it does if the helper stops)
+
+    def __exit__(self, kind, *_):
+        if kind is None:
+            later = threading.Timer(START_SETTLE_S, self.release)
+            later.daemon = True
+            later.start()
+        else:
+            self.release()
+        return False
+
 
 def run(args):
     models = args.models
@@ -867,37 +934,38 @@ def run(args):
                 return 3
             wanted = info.getMxId()  # the same camera if it's started again
             high = retried
-            device = dai.Device(info, dai.UsbSpeed.HIGH if high else dai.UsbSpeed.SUPER)
-            usb = str(device.getUsbSpeed()).split(".")[-1]
-            mjpeg = args.mjpeg == "on" or (args.mjpeg == "auto" and (usb in ("LOW", "FULL", "HIGH") or platform.machine().lower() in ("aarch64", "arm64")))
-            cameras = device.getConnectedCameras()
-            infrared = has_infrared(device) and dai.CameraBoardSocket.LEFT in cameras
-            if args.imu and not imu_tried:
-                try:
-                    extras["imu"] = str(device.getConnectedIMU()).upper() not in ("", "NONE")
-                except Exception:
-                    extras["imu"] = False
-            if night and not infrared:
-                night = False
-                if args.night == "on":
-                    warnings.append("This camera has no infrared light, so it can't use night vision.")
-            # A black-and-white camera's view: that camera, for everything (night vision's light
-            # only if it's on; Automatic doesn't switch here).
-            mono = None
-            if view in MONO_VIEWS:
-                socket = dai.CameraBoardSocket.LEFT if view == "left" else dai.CameraBoardSocket.RIGHT
-                if socket in cameras:
-                    mono = socket
-                    night = night and args.night == "on"
+            with StartTurn():  # (one camera at a time, on this computer)
+                device = dai.Device(info, dai.UsbSpeed.HIGH if high else dai.UsbSpeed.SUPER)
+                usb = str(device.getUsbSpeed()).split(".")[-1]
+                mjpeg = args.mjpeg == "on" or (args.mjpeg == "auto" and (usb in ("LOW", "FULL", "HIGH") or platform.machine().lower() in ("aarch64", "arm64")))
+                cameras = device.getConnectedCameras()
+                infrared = has_infrared(device) and dai.CameraBoardSocket.LEFT in cameras
+                if args.imu and not imu_tried:
+                    try:
+                        extras["imu"] = str(device.getConnectedIMU()).upper() not in ("", "NONE")
+                    except Exception:
+                        extras["imu"] = False
+                if night and not infrared:
+                    night = False
+                    if args.night == "on":
+                        warnings.append("This camera has no infrared light, so it can't use night vision.")
+                # A black-and-white camera's view: that camera, for everything (night vision's light
+                # only if it's on; Automatic doesn't switch here).
+                mono = None
+                if view in MONO_VIEWS:
+                    socket = dai.CameraBoardSocket.LEFT if view == "left" else dai.CameraBoardSocket.RIGHT
+                    if socket in cameras:
+                        mono = socket
+                        night = night and args.night == "on"
+                    else:
+                        warnings.append("This camera has no black-and-white cameras, so its colour picture is shown.")
+                        view = extras["picture"] = "color"
+                if hands:
+                    tracker = Tracker(**common, **extra, device=device, mjpeg=mjpeg, night=night, mono=mono)
                 else:
-                    warnings.append("This camera has no black-and-white cameras, so its colour picture is shown.")
-                    view = extras["picture"] = "color"
-            if hands:
-                tracker = Tracker(**common, **extra, device=device, mjpeg=mjpeg, night=night, mono=mono)
-            else:
-                tracker = PictureOnly(dai, device, extras, fps=args.fps, depth=args.xyz, mjpeg=mjpeg, night=night, meter=night and args.night == "auto", mono=mono)
-            if infrared:
-                set_infrared(device, night, args.ir_dots)
+                    tracker = PictureOnly(dai, device, extras, fps=args.fps, depth=args.xyz, mjpeg=mjpeg, night=night, meter=night and args.night == "auto", mono=mono)
+                if infrared:
+                    set_infrared(device, night, args.ir_dots)
         except SystemExit:
             if device is not None:
                 device.close()

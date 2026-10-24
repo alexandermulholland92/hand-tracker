@@ -18,6 +18,44 @@ function check(name, ok, detail = "") {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 }
 
+// Two helpers' starts at once, each in StartTurn, on a lock file of their own (not the real
+// one): the first holds its turn 1 s (its start) and the settling (0.5 s here) after; the second
+// starts 0.3 s after the first. -> { first: { got, done }, second: { got, done }, saidWaiting }
+function startTurns(python, dir) {
+  const { spawn } = require("child_process");
+  const lock = path.join(dir, "start-turn-check.lock");
+  const code = `
+import json, os, sys, time
+sys.path.insert(0, os.path.dirname(sys.argv[1]))
+import oak_bridge as ob
+ob.START_LOCK, ob.START_SETTLE_S = sys.argv[2], 0.5
+with ob.StartTurn():
+    got = time.time()
+    time.sleep(float(sys.argv[4]))
+done = time.time()
+with open(sys.argv[3], "w") as f:
+    json.dump({"got": got, "done": done}, f)
+time.sleep(1.5)  # (alive while its turn settles, as a running helper is)
+`;
+  const one = (name, hold) => new Promise((resolve) => {
+    const out = path.join(dir, `start-turn-${name}.json`);
+    const proc = spawn(python, ["-c", code, path.join(__dirname, "..", "oak", "oak_bridge.py"), lock, out, String(hold)], { windowsHide: true });
+    const said = [];
+    proc.stdout.on("data", (d) => said.push(d));
+    proc.on("close", () => {
+      let times = null;
+      try {
+        times = JSON.parse(fs.readFileSync(out, "utf8"));
+      } catch {}
+      resolve({ times, said: Buffer.concat(said).toString("latin1") });
+    });
+  });
+  const first = one("first", 1);
+  return new Promise((r) => setTimeout(r, 300))
+    .then(() => Promise.all([first, one("second", 0)]))
+    .then(([a, b]) => ({ first: a.times, second: b.times, saidWaiting: /one at a time/.test(b.said) && !/one at a time/.test(a.said) }));
+}
+
 (async () => {
   const dir = process.argv[2] || fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-oak-"));
   const oak = new OakCamera(dir);
@@ -214,6 +252,13 @@ ob.OUT.write(json.dumps(out).encode())`, path.join(__dirname, "..", "oak", "oak_
       night.streams.join() === "cam_out,det_out,meter,motion_out" && (night.monos || []).length === 2 && night.monos.every((m) => m[0] === night.monos[0][0]) &&
       night.monos.some((m) => m[1] >= 10) && (night.colourFps || [])[0] <= 10,
     JSON.stringify(night));
+
+  // Cameras on one computer start one at a time (oak_bridge.py's StartTurn): a second helper
+  // starting meanwhile waits (and says so) until the first has started and its draw has settled.
+  const turns = await startTurns(oak.paths.python, dir);
+  check("OAK cameras on one computer start one at a time: a second camera's helper waits until the first has started, and a little after (its draw settling), and says it's waiting",
+    turns.first && turns.second && turns.second.got >= turns.first.done + 0.4 && turns.second.got - turns.first.done < 3 && turns.saidWaiting,
+    JSON.stringify(turns));
 
   if (!process.argv[2]) fs.rmSync(dir, { recursive: true, force: true });
   const failed = results.filter((r) => !r.ok).length;
