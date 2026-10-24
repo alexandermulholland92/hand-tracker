@@ -224,7 +224,8 @@ for name, depth, extras in [("motion", True, {"motion": True}), ("objects", True
     out[name] = {"size": [t.img_w, t.img_h], "stereo": t.stereo, "nodes": sorted(n["name"] for n in nodes),
                  "streams": sorted(n["properties"].get("streamName", "") for n in nodes if n["name"] == "XLinkOut")}
 # Night vision (an OAK-D Pro): the left camera at 720P with room for all its pictures, the right one
-# at its size for depth, the colour camera only to watch the light (Automatic).
+# at its size for depth, the colour camera only to watch the light (Automatic), and Sentry's small
+# grey picture made on the computer then (host_grey: made on the camera too, it stalled it).
 d = Device(True)
 t = ob.PictureOnly(dai, d, {"motion": True, "detect": sys.argv[2]}, depth=True, night=True, meter=True)
 nodes = [n[1] for n in d.pipeline.serializeToJson()["pipeline"]["nodes"]]
@@ -232,7 +233,8 @@ monos = [n["properties"] for n in nodes if n["name"] == "MonoCamera"]
 out["night"] = {"size": [t.img_w, t.img_h], "stereo": t.stereo, "nodes": sorted(n["name"] for n in nodes),
                 "streams": sorted(n["properties"].get("streamName", "") for n in nodes if n["name"] == "XLinkOut"),
                 "monos": sorted([m.get("resolution"), m.get("numFramesPool")] for m in monos),
-                "colourFps": [n["properties"].get("fps") for n in nodes if n["name"] == "ColorCamera"]}
+                "colourFps": [n["properties"].get("fps") for n in nodes if n["name"] == "ColorCamera"],
+                "hostMotion": bool(getattr(t, "host_motion", False))}
 ob.OUT.write(json.dumps(out).encode())`, path.join(__dirname, "..", "oak", "oak_bridge.py"), path.join(oak.paths.models, "palm_detection_sh4.blob")], { encoding: "utf8" });
   let pipes = {};
   try {
@@ -247,9 +249,9 @@ ob.OUT.write(json.dumps(out).encode())`, path.join(__dirname, "..", "oak", "oak_
     JSON.stringify(Object.keys(pipes).length ? pipes : { status: built.status, error: built.error && built.error.message, out: String(built.stdout).slice(-300), err: String(built.stderr).slice(-600) }));
 
   const night = p("night");
-  check("Night vision's pipeline (no hand tracking, objects and depth): the left camera's picture (1280 x 720, room for all its pictures), the right camera at its size for depth, the colour camera only to watch the light, and the same streams plus the light's",
+  check("Night vision's pipeline (no hand tracking, objects and depth): the left camera's picture (1280 x 720, room for all its pictures), the right camera at its size for depth, the colour camera only to watch the light, the picture and objects plus the light's stream, and Sentry's small grey picture made on the computer",
     night.size && night.size.join("x") === "1280x720" && night.stereo && night.nodes.filter((n) => n === "MonoCamera").length === 2 && night.nodes.filter((n) => n === "ColorCamera").length === 1 &&
-      night.streams.join() === "cam_out,det_out,meter,motion_out" && (night.monos || []).length === 2 && night.monos.every((m) => m[0] === night.monos[0][0]) &&
+      night.streams.join() === "cam_out,det_out,meter" && night.hostMotion === true && (night.monos || []).length === 2 && night.monos.every((m) => m[0] === night.monos[0][0]) &&
       night.monos.some((m) => m[1] >= 10) && (night.colourFps || [])[0] <= 10,
     JSON.stringify(night));
 
