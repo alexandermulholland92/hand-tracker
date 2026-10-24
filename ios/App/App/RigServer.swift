@@ -814,11 +814,11 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
             for k in ["contributor", "location", "task"] { details[k] = Self.clean(d[k], 200) }
             cmd["details"] = details
         }
-        // Settings: whether the take details are needed, and each camera's video (and its sound)
-        // with the take, as booleans; the video's quality, one of camera-video.js's.
+        // Settings: whether the take details are needed, each camera's video (and its sound) and
+        // photo with the take, as booleans; the video's quality, one of camera-video.js's.
         if let st = msg["settings"] as? [String: Any] {
             var settings: [String: Any] = [:]
-            for k in ["detailsRequired", "video", "sound"] { if let b = Self.bool(st[k]) { settings[k] = b } }
+            for k in ["detailsRequired", "video", "sound", "photo"] { if let b = Self.bool(st[k]) { settings[k] = b } }
             if let q = st["videoQuality"] as? String, Self.matches(q, "^(low|standard|high|best)$") { settings["videoQuality"] = q }
             if !settings.isEmpty { cmd["settings"] = settings }
         }

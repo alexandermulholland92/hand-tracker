@@ -66,8 +66,10 @@
   let on = false, pending = "", lastTake = null, settings = {}, lastStatus = null;
   let saving = false; // a take being saved (its details can't be changed meanwhile: electron/remote-record.js)
   let videos = []; // each camera's video while a take records: { role, rec, view }
+  let photos = []; // each camera's photo from the take's start, until it's saved: { role, blob }
   let host = null; // desktop or mobile: saving the videos
   const remoteVideo = () => prefs.remoteVideo !== false;
+  const remotePhoto = () => prefs.remotePhoto !== false;
   const remoteSound = () => prefs.remoteSound !== false;
   const QUALITIES = ["low", "standard", "high", "best"]; // (CameraVideo's)
   const QUALITY_NAMES = { low: "small files", standard: "standard", high: "high", best: "best" };
@@ -118,6 +120,7 @@
       $("remoteQuality").value = remoteQuality();
       $("remoteQuality").disabled = !remoteVideo();
     }
+    if ($("remotePhoto")) $("remotePhoto").checked = remotePhoto();
   }
 
   // ---------- the take details ----------
@@ -154,7 +157,7 @@
     const locked = detailsLocked();
     const common = { ...st, pending, saving, lastTake, notice, details: takeDetails || details(), detailsLocked: locked, detailsRequired: detailsRequired() };
     return {
-      ...common, kind: "rig", video: remoteVideo(), sound: remoteSound(), videoQuality: remoteQuality(),
+      ...common, kind: "rig", video: remoteVideo(), sound: remoteSound(), videoQuality: remoteQuality(), photo: remotePhoto(),
       sentry: global.Sentry ? global.Sentry.remoteState() : null,
       timing: cams().timingState ? cams().timingState() : undefined,
       // (Pictures on its own screen: OAK cameras only, which a phone doesn't have.)
@@ -488,8 +491,59 @@
       if (saved && !saved.ok) return { ok: false, message: `The last take couldn't be saved, so a new one wasn't started: ${saved.message}` };
     }
     const r = await cams().startRecording();
-    if (r.ok) startVideos();
+    if (r.ok) {
+      startVideos();
+      takePhotos().catch(() => {});
+    }
     return r;
+  }
+
+  // A photo from each camera as the take starts: what it sees (the picture its hands are found
+  // in, without them drawn, as Sentry's photos are), saved beside the take with its videos.
+  async function takePhotos() {
+    photos = [];
+    if (!remotePhoto()) return;
+    const state = cams().remoteState().cameras;
+    const views = cams().sentryViews ? cams().sentryViews() : [];
+    for (const src of cams().previewSources()) {
+      const cam = state.find((c) => c.index === src.i);
+      if (!cam || cam.error) continue;
+      let image = null;
+      try {
+        image = views[src.i] ? views[src.i].frame() : null;
+      } catch {
+        image = null;
+      }
+      image = image && (image.videoWidth || image.width) ? image : src.canvas; // (else as it's drawn)
+      const blob = image ? await photoJpeg(image).catch(() => null) : null;
+      if (blob && blob.size) photos.push({ role: cam.role || cam.name, blob });
+    }
+  }
+  function photoJpeg(image) {
+    const w = image.videoWidth || image.width, h = image.videoHeight || image.height;
+    if (!w || !h) return Promise.reject(new Error("no picture"));
+    const c = document.createElement("canvas");
+    Object.assign(c, { width: w, height: h });
+    c.getContext("2d").drawImage(image, 0, 0, w, h);
+    return new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error("no picture"))), "image/jpeg", 0.9));
+  }
+  // Saved beside the take: <take>-photo-<role>.jpg. -> the files' names.
+  async function savePhotos(baseName) {
+    const list = photos;
+    photos = [];
+    const saved = [];
+    for (const { role, blob } of list) {
+      if (!host) break;
+      const slug = String(role).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "camera";
+      try {
+        const res = await host.remote.saveTake({ baseName, files: [{ format: "jpg", suffix: `-photo-${slug}`.slice(0, 24), ext: "jpg", data: new Uint8Array(await blob.arrayBuffer()) }] });
+        const r = (res.results || [])[0];
+        if (r && r.ok) saved.push(r.path.split(/[\\/]/).pop());
+      } catch {
+        // (the take's result says what was saved)
+      }
+    }
+    return saved;
   }
 
   // Each camera's video, while a take records (its picture as drawn, with the hands), at up to
@@ -574,7 +628,7 @@
     const at = new Date().toISOString();
     const name = takeName(d, (take && take.recorded_at) || startedAt, seconds);
     const withTake = [];
-    const videoFiles = await saveVideos(name, clips, withTake);
+    const videoFiles = [...(await saveVideos(name, clips, withTake)), ...(await savePhotos(name))];
     // Each Kinect's depth, infrared, colour and sound, saved beside it as they were kept.
     const kinect = cams().saveKinect ? await cams().saveKinect(name).catch(() => []) : [];
     for (const f of kinect) {
@@ -587,13 +641,13 @@
       lastTake = videoFiles.length
         ? { ok: true, at, files: videoFiles, duration: seconds, hands: 0, details: d }
         : { ok: false, at, message: "No hands were recorded, so nothing was saved." };
-      return { ok: lastTake.ok, message: videoFiles.length ? `No hands were recorded; saved the video: ${videoFiles.join(", ")}` : lastTake.message };
+      return { ok: lastTake.ok, message: videoFiles.length ? `No hands were recorded; saved ${videoFiles.join(", ")}` : lastTake.message };
     }
     const saved = await app.saveMotionNow(name, withTake);
     takeDetails = null; // saved: the next take can have others
     lastTake = saved && saved.ok
       ? { ok: true, at, files: [...saved.files, ...videoFiles], dir: saved.dir, duration: seconds, hands: take.hands.length, details: d }
-      : { ok: false, at, message: `Recorded, but not saved: ${(saved && saved.message) || "export it on the computer"}${videoFiles.length ? ` (the video was: ${videoFiles.join(", ")})` : ""}` };
+      : { ok: false, at, message: `Recorded, but not saved: ${(saved && saved.message) || "export it on the computer"}${videoFiles.length ? ` (these were: ${videoFiles.join(", ")})` : ""}` };
     return { ok: lastTake.ok, message: lastTake.ok ? `Saved ${lastTake.files.join(", ")}` : lastTake.message };
   }
 
@@ -678,6 +732,13 @@
         if (QUALITIES.includes(st.videoQuality)) setPref("remoteVideoQuality", st.videoQuality);
         showSettings();
         return { ok: true, message: !remoteVideo() ? "Takes are motion capture only." : `Each camera's video is recorded with the take, ${remoteSound() ? "with" : "without"} sound, at ${QUALITY_NAMES[remoteQuality()]} quality.` };
+      }
+      // A photo from each camera as each take starts (from the next take).
+      if (typeof st.photo === "boolean") {
+        if (recording) return { ok: false, message: "Stop recording first." };
+        setPref("remotePhoto", st.photo);
+        showSettings();
+        return { ok: true, message: st.photo ? "Each camera takes a photo as each take starts." : "No photos with the takes." };
       }
       // The OAK cameras' pictures on this computer's screen (any time: recording doesn't mind).
       if (typeof st.screenPictures === "boolean" && !onPhone) {
@@ -984,7 +1045,8 @@
       }
       showSettings(); // (from the next take: not halfway through one)
     });
-    for (const [id, key] of [["remoteVideo", "remoteVideo"], ["remoteSound", "remoteSound"]]) {
+    for (const [id, key] of [["remoteVideo", "remoteVideo"], ["remoteSound", "remoteSound"], ["remotePhoto", "remotePhoto"]]) {
+      if (!$(id)) continue;
       $(id).addEventListener("change", (e) => {
         if (cams().isRecording()) {
           showSettings(); // (from the next take: not halfway through one)

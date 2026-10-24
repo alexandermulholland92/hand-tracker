@@ -300,7 +300,8 @@
   const stageOverlay = StageOverlay.create(stage, { phone: onPhone });
   function drawStageLabels(hands) {
     if (!overlayOn) return;
-    stageOverlay.draw(hands, { display, far: farPrefs.enabled, gestureOf, objects: OakSource.objects() });
+    // (Objects only while Find objects is on: Sentry mode's pet filter finds them without drawing them.)
+    stageOverlay.draw(hands, { display, far: farPrefs.enabled, gestureOf, objects: oakPrefs.detect ? OakSource.objects() : null });
   }
 
   // Keep the stage box the same shape as the camera image.

@@ -141,6 +141,8 @@
   .alert .meta { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
   .alert > div { flex: 1 1 auto; min-width: 0; }
   .alert .del, #sentryDelAll { flex: none; }
+  .alert .acts { flex: none; display: flex; flex-direction: column; gap: 6px; }
+  #sentryAlertsNote:empty { display: none; }
   .alert .del.armed, #sentryDelAll.armed { background: var(--red, #e03131); }
   #sentryDelAll { margin-top: 8px; }
   #sentryBtn.on { background: var(--red, #e03131); }
@@ -157,6 +159,7 @@
   #playerNote { color: #fff; font-size: 14px; padding: 12px 16px; text-align: center; }
   #playerNote:empty { display: none; }
   #playerName { flex: 1 1 auto; font-weight: 600; overflow-wrap: anywhere; }
+  #playerSave, #playerShare { font-size: 14px; }
   .takerow .plays { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 28px; }
   [hidden] { display: none !important; }
 </style>
@@ -245,6 +248,7 @@
       <hr />
     </div>
     <div id="sentryAlerts"></div>
+    <div id="sentryAlertsNote" class="muted"></div>
     <button type="button" id="sentryDelAll" class="small" hidden>Delete every Sentry photo and video</button>
   </section>
 
@@ -278,6 +282,7 @@
     <h2><span id="videoTitle" class="grow">Video with each take</span><button type="button" id="videoBtn" class="small on" aria-pressed="true">On</button></h2>
     <div class="row"><span class="grow">Sound</span><button type="button" id="soundBtn" class="small on" aria-pressed="true">On</button></div>
     <div class="row" id="qualityRow" hidden><span class="grow">Quality</span><select id="qualitySel"><option value="low">Small files</option><option value="standard">Standard</option><option value="high">High</option><option value="best">Best</option></select></div>
+    <div class="row" id="photoRow" hidden><span class="grow">A photo from each camera as the take starts</span><button type="button" id="photoBtn" class="small on" aria-pressed="true">On</button></div>
     <div id="videoNote" class="muted"></div>
   </section>
 
@@ -318,7 +323,7 @@
   <video id="playerVideo" controls playsinline hidden></video>
   <img id="playerPhoto" alt="" hidden />
   <div id="playerNote"></div>
-  <div class="fullbar"><span id="playerName"></span><button type="button" id="playerClose" aria-label="Close the video">✕</button></div>
+  <div class="fullbar"><span id="playerName"></span><button type="button" id="playerSave" hidden>Download</button><button type="button" id="playerShare" hidden>Share</button><button type="button" id="playerClose" aria-label="Close the video">✕</button></div>
 </div>
 <script src="bt-link-client.js"></script>
 <script src="remote-client.js"></script>

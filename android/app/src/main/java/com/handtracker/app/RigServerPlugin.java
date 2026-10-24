@@ -727,12 +727,12 @@ public class RigServerPlugin extends Plugin {
                 for (String k : new String[] { "contributor", "location", "task" }) details.put(k, clean(d.opt(k), 200));
                 cmd.put("details", details);
             }
-            // Settings: whether the take details are needed, and each camera's video (and its
-            // sound) with the take, as booleans; the video's quality, one of camera-video.js's.
+            // Settings: whether the take details are needed, each camera's video (and its sound)
+            // and photo with the take, as booleans; the video's quality, one of camera-video.js's.
             JSONObject st = msg.optJSONObject("settings");
             if (st != null) {
                 JSObject settings = new JSObject();
-                for (String k : new String[] { "detailsRequired", "video", "sound" }) {
+                for (String k : new String[] { "detailsRequired", "video", "sound", "photo" }) {
                     if (st.opt(k) instanceof Boolean) settings.put(k, st.optBoolean(k));
                 }
                 String q = st.opt("videoQuality") instanceof String ? st.optString("videoQuality") : "";

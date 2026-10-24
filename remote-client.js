@@ -462,6 +462,9 @@
   $("soundBtn").addEventListener("click", () => command("settings", { settings: { sound: !soundOn } }));
   // ...and its quality: how much of the picture's detail is kept, and so how big the files are.
   $("qualitySel").addEventListener("change", () => command("settings", { settings: { videoQuality: $("qualitySel").value } }));
+  // A photo from each camera as the take starts, saved with it too.
+  let photoOn = true;
+  $("photoBtn").addEventListener("click", () => command("settings", { settings: { photo: !photoOn } }));
   const QUALITY_NOTES = {
     low: " Small files: under half the size of Standard, with a softer picture.",
     standard: "",
@@ -603,6 +606,9 @@
   $("sentryAlerts").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-del]");
     if (b && !b.disabled) sentryDelete(b.dataset.del);
+    const keep = e.target.closest("button[data-keep]"), give = e.target.closest("button[data-give]");
+    if (keep) alertAct(keep.dataset.keep, false);
+    if (give) alertAct(give.dataset.give, true);
   });
 
   const sentryPhotos = new Map(); // photo's file name -> its picture here (or "" while it comes)
@@ -720,7 +726,10 @@
             const del = st.canDelete
               ? `<button type="button" class="small del${armed ? " armed" : ""}" data-del="${esc(e.id)}"${sending ? " disabled" : ""} title="Delete this alert, with its photo and video">${armed ? "Tap again" : "Delete"}</button>`
               : "";
-            return `<div class="alert">${img}<div><b>${esc(e.camera)}</b><div class="meta">${esc(when)}${video}${problem}</div></div>${del}</div>`;
+            const files = [e.photo, e.video].filter(Boolean).map((name) => ({ name, blob: new Blob([], { type: /\.jpg$/i.test(name) ? "image/jpeg" : "video/mp4" }) }));
+            const keep = files.length ? `<button type="button" class="small" data-keep="${esc(e.id)}" title="Its photo and video, to this device">Download</button>` : "";
+            const give = files.length && canShare(files) ? `<button type="button" class="small" data-give="${esc(e.id)}" title="Its photo and video, to another app">Share</button>` : "";
+            return `<div class="alert">${img}<div><b>${esc(e.camera)}</b><div class="meta">${esc(when)}${video}${problem}</div></div><div class="acts">${keep}${give}${del}</div></div>`;
           })
           .join("")
       : '<div class="muted">No alerts yet.</div>';
@@ -745,9 +754,23 @@
     const known = ROLES.find(([id]) => id.replace(/_/g, "-") === role.toLowerCase());
     return known ? known[1] : role.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase());
   }
+  // "<take>-photo-north.jpg" -> "North"; Sentry's "<take>.jpg" -> "Photo".
+  function photoLabel(name) {
+    const role = (/-photo-([a-z0-9-]+)(?: \(\d+\))?\.jpg$/i.exec(name) || [])[1];
+    if (!role) return "Photo";
+    const known = ROLES.find(([id]) => id.replace(/_/g, "-") === role.toLowerCase());
+    return known ? known[1] : role.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase());
+  }
   let player = null; // { stop } while it's open
-  let played = null; // { name, url }: the last video, ready to play again
+  let played = null; // { name, url, blob }: the last video, ready to play again
   let photoUrl = null;
+  let showing = null; // the file the player shows, to download or share: { name, blob }
+  function showingFile(f) {
+    showing = f;
+    $("playerSave").hidden = !f;
+    $("playerShare").hidden = !f || !canShare([f]);
+    $("playerSave").disabled = $("playerShare").disabled = false;
+  }
   function showPlayer(title) {
     const wasOpen = !!player;
     if (player) player.stop = true;
@@ -761,6 +784,7 @@
     $("playerPhoto").hidden = true;
     $("playerName").textContent = title;
     $("playerNote").textContent = "";
+    showingFile(null);
     $("player").hidden = false;
     if (!wasOpen) {
       try {
@@ -781,6 +805,7 @@
     $("playerPhoto").removeAttribute("src");
     if (photoUrl) URL.revokeObjectURL(photoUrl);
     photoUrl = null;
+    showingFile(null);
     if (!fromHistory && history.state && history.state.player) history.back();
   }
   // (Back closes it; a Back that lands on a player's place in the history, a late one, doesn't.)
@@ -827,6 +852,7 @@
       note.textContent = "";
       v.src = url;
       v.hidden = false;
+      showingFile({ name, blob: played.blob });
       v.play().catch(() => {}); // (if it may not start by itself: its ▶)
     };
     if (played && played.name === name) return show(played.url);
@@ -849,7 +875,7 @@
       });
       if (!blob || p.stop) return;
       if (played) URL.revokeObjectURL(played.url);
-      played = { name, url: URL.createObjectURL(blob) };
+      played = { name, url: URL.createObjectURL(blob), blob };
       show(played.url);
     } catch (err) {
       if (!p.stop) note.textContent = err.auth ? needsKey() : `The video didn't come: ${err.message || err}. Try again.`;
@@ -864,9 +890,135 @@
       photoUrl = URL.createObjectURL(blob);
       $("playerPhoto").src = photoUrl;
       $("playerPhoto").hidden = !$("playerVideo").hidden;
+      if ($("playerVideo").hidden) showingFile({ name, blob });
     } catch {
       // (the note says why there's no video)
     }
+  }
+  // A take's photo (its 📷 in the takes list), over everything as a video is.
+  async function openPhoto(name, title) {
+    const p = showPlayer(title);
+    $("playerNote").textContent = "Loading the photo…";
+    await showPhoto(p, name);
+    if (!p.stop) $("playerNote").textContent = showing ? "" : `That photo isn't on ${hostName()} any more.`;
+  }
+
+  // ---------- a photo or video kept, or handed to another app ----------
+  // Download: as takes are (in the Android app into Documents/Hand Tracker/Takes from <computer>;
+  // in the Windows, Mac and Linux app into a folder picked for it), in a browser as the file
+  // itself (not a .zip). Share: the phone's share menu (Save to Photos, a message…), in the phone
+  // apps and in browsers that can hand files over.
+  const shareApp = onPhoneApp ? native("Share") : null;
+  const filesApp = onPhoneApp ? native("Filesystem") : null;
+  function canShare(list) {
+    if (desktopRig) return false;
+    if (shareApp && filesApp) return true;
+    try {
+      return !!(navigator.canShare && navigator.canShare({ files: list.map((f) => new File([], f.name, { type: f.blob.type || "application/octet-stream" })) }));
+    } catch {
+      return false;
+    }
+  }
+  const PIECE = 2 << 20; // (written a few MB at a time: the apps carry them as text)
+  // -> where they went (for the note), or "" if no place was picked.
+  async function keepFiles(list) {
+    const saver = await takeSaver();
+    if (!saver) return "";
+    for (const f of list) {
+      if (saver.zip) {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(f.blob);
+        a.download = f.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+        continue;
+      }
+      const bytes = new Uint8Array(await f.blob.arrayBuffer());
+      const out = saver.file(f.name);
+      for (let at = 0; at < bytes.length; at += PIECE) await out.write(bytes.subarray(at, at + PIECE));
+      await out.close();
+    }
+    if (!saver.zip) await saver.finish();
+    return saver.zip ? "this device's downloads" : saver.where;
+  }
+  async function shareFiles(list) {
+    if (shareApp && filesApp) {
+      const uris = [];
+      for (const f of list) {
+        const path = `Shared/${f.name}`;
+        const bytes = new Uint8Array(await f.blob.arrayBuffer());
+        if (!bytes.length) continue;
+        for (let at = 0; at < bytes.length; at += PIECE) {
+          const data = toBase64(bytes.subarray(at, at + PIECE));
+          if (!at) await filesApp.writeFile({ path, directory: "CACHE", data, recursive: true });
+          else await filesApp.appendFile({ path, directory: "CACHE", data });
+        }
+        uris.push((await filesApp.getUri({ path, directory: "CACHE" })).uri);
+      }
+      if (uris.length) await shareApp.share({ files: uris });
+      return;
+    }
+    await navigator.share({ files: list.map((f) => new File([f.blob], f.name, { type: f.blob.type || "application/octet-stream" })) });
+  }
+  // (A share closed without picking anything isn't a problem.)
+  const cancelled = (err) => err && (err.name === "AbortError" || /cancel/i.test(String(err.message || err)));
+  $("playerSave").addEventListener("click", async () => {
+    const f = showing;
+    if (!f) return;
+    $("playerSave").disabled = true;
+    try {
+      const where = await keepFiles([f]);
+      if (where && showing === f) $("playerNote").textContent = `Saved ${f.name} (${where}).`;
+    } catch (err) {
+      if (showing === f) $("playerNote").textContent = `It wasn't saved: ${err.message || err}`;
+    }
+    $("playerSave").disabled = false;
+  });
+  $("playerShare").addEventListener("click", async () => {
+    const f = showing;
+    if (!f) return;
+    $("playerShare").disabled = true;
+    try {
+      await shareFiles([f]);
+    } catch (err) {
+      if (!cancelled(err) && showing === f) $("playerNote").textContent = `It couldn't be shared: ${err.message || err}`;
+    }
+    $("playerShare").disabled = false;
+  });
+  // A Sentry alert's photo and video, from the computer, then kept or shared.
+  async function alertFiles(e) {
+    const list = [];
+    for (const name of [e.photo, e.video].filter(Boolean)) {
+      const f = await fileOf(name);
+      if (!f) continue;
+      const blob = await fetchFile({ stop: false }, name, f.size, /\.jpg$/i.test(name) ? "image/jpeg" : /\.webm$/i.test(name) ? "video/webm" : "video/mp4");
+      if (blob) list.push({ name, blob });
+    }
+    return list;
+  }
+  let alertBusy = false;
+  async function alertAct(id, share) {
+    const e = ((sentry && sentry.events) || []).find((x) => x.id === id);
+    if (!e || alertBusy) return;
+    alertBusy = true;
+    const say = (text) => ($("sentryAlertsNote").textContent = text);
+    say(`Getting its ${[e.photo && "photo", e.video && "video"].filter(Boolean).join(" and ")} from ${hostName()}…`);
+    try {
+      const list = await alertFiles(e);
+      if (!list.length) say(`Its files aren't on ${hostName()} any more.`);
+      else if (share) {
+        say("");
+        await shareFiles(list);
+      } else {
+        const where = await keepFiles(list);
+        say(where ? `Saved ${list.map((f) => f.name).join(" and ")} (${where}).` : "");
+      }
+    } catch (err) {
+      say(cancelled(err) ? "" : `${share ? "It couldn't be shared" : "It wasn't saved"}: ${err.message || err}`);
+    }
+    alertBusy = false;
   }
 
   // A Sentry alert's video, from a notification: once it's saved (Sentry records while there's
@@ -1113,7 +1265,8 @@
         const status = got.has(t.id) ? ' · <span class="ok">✓ on this device</span>' : failed.has(t.id) ? ` · <span class="err">${esc(failed.get(t.id))}</span>` : "";
         // Each of its videos, to play here.
         const videos = t.files.filter((f) => VIDEO_FILE.test(f.name));
-        const plays = videos.map((f) => `<button type="button" class="small" data-play="${esc(f.name)}"${takesBusy ? " disabled" : ""}>▶ ${esc(videoLabel(f.name))}</button>`).join("");
+        const plays = videos.map((f) => `<button type="button" class="small" data-play="${esc(f.name)}"${takesBusy ? " disabled" : ""}>▶ ${esc(videoLabel(f.name))}</button>`).join("") +
+          t.files.filter((f) => /\.jpg$/i.test(f.name)).map((f) => `<button type="button" class="small" data-photo="${esc(f.name)}"${takesBusy ? " disabled" : ""}>📷 ${esc(photoLabel(f.name))}</button>`).join("");
         const edit = `<button type="button" class="small" data-edit="${esc(t.id)}"${takesBusy || editing ? " disabled" : ""}>Edit details</button>`;
         return `<div class="takerow"><label><input type="checkbox" data-id="${esc(t.id)}"${picked.has(t.id) ? " checked" : ""}${takesBusy ? " disabled" : ""} /> <span>${esc(t.id)}</span></label>` +
           `<div class="meta">${esc(whenText(t.at))} · ${esc(sizeText(t.size))} · ${esc(kinds)}${status}</div><div class="plays">${plays}${edit}</div>` +
@@ -1215,6 +1368,11 @@
     if (tapped && !tapped.disabled && tapped.hasAttribute("data-ecancel")) {
       editing = null;
       return renderTakes();
+    }
+    const shot = e.target.closest && e.target.closest("button[data-photo]");
+    if (shot && !shot.disabled) {
+      const t = takes.find((x) => x.files.some((f) => f.name === shot.dataset.photo));
+      return openPhoto(shot.dataset.photo, `${t ? t.id : ""} · ${photoLabel(shot.dataset.photo)}`);
     }
     const b = e.target.closest && e.target.closest("button[data-play]");
     if (!b || b.disabled) return;
@@ -1816,9 +1974,20 @@
       $("qualityRow").hidden = !q;
       if (q && document.activeElement !== $("qualitySel")) $("qualitySel").value = q;
       $("qualitySel").disabled = sending || !!s.recording || !videoOn;
+      // (A rig from before the photo setting doesn't say it.)
+      const photos = typeof s.photo === "boolean";
+      $("photoRow").hidden = !photos;
+      if (photos) {
+        photoOn = s.photo;
+        $("photoBtn").textContent = photoOn ? "On" : "Off";
+        $("photoBtn").classList.toggle("on", photoOn);
+        $("photoBtn").setAttribute("aria-pressed", String(photoOn));
+        $("photoBtn").disabled = sending || !!s.recording;
+      }
+      const withPhoto = photos && photoOn;
       $("videoNote").textContent = !videoOn
-        ? "Takes are motion capture only."
-        : `Each camera's video is saved with the take, in the Takes list below${soundOn ? ", with sound from the computer's microphone" : ""}.${(q && QUALITY_NOTES[q]) || ""}`;
+        ? withPhoto ? "No video with the takes: their motion capture, and a photo from each camera as each starts, in the Takes list below." : "Takes are motion capture only."
+        : `Each camera's video is saved with the take, in the Takes list below${soundOn ? ", with sound from the computer's microphone" : ""}${withPhoto ? ", and its photo as the take starts" : ""}.${(q && QUALITY_NOTES[q]) || ""}`;
     }
     $("screenPanel").hidden = typeof s.screenPictures !== "boolean";
     if (typeof s.screenPictures === "boolean") {

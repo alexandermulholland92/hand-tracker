@@ -1119,6 +1119,43 @@ async function checkSentry(js) {
       await played.loadURL("about:blank"); // (the page loaded afresh, not just its #)
       await played.loadURL(`${base}/#alert=1-zzzzz&take=${encodeURIComponent(evNow.take)}`);
       out.fromTake = await run("return playing();", "the remote page, an older alert's video");
+      // Downloaded from the page, each as the file itself: the video the player plays (its
+      // Download), a take's photo opened from its 📷 in the takes list, and an alert's photo and
+      // video (its Download in the Sentry panel).
+      const downloads = [];
+      const caught = (_e, item) => {
+        downloads.push(item.getFilename());
+        item.cancel();
+      };
+      played.webContents.session.on("will-download", caught);
+      out.saves = await run(`
+        const out = {};
+        out.saveShown = !!(await until(() => !$("playerSave").hidden && $("playerSave")));
+        $("playerSave").click();
+        out.saveNote = await until(() => /^Saved /.test($("playerNote").textContent) && $("playerNote").textContent, 10000);
+        $("playerClose").click();
+        await until(() => $("player").hidden && !(history.state && history.state.player)); // (its place in the history gone too)
+        $("settingsOpen").click();
+        const ph = await until(() => document.querySelector('#takeRows button[data-photo^="Sentry_"]'));
+        out.photoButton = ph ? ph.textContent : "";
+        if (ph) {
+          ph.click();
+          out.photoShown = !!(await until(() => !$("playerPhoto").hidden && !$("playerSave").hidden));
+          $("playerSave").click();
+          out.photoNote = await until(() => /^Saved /.test($("playerNote").textContent) && $("playerNote").textContent, 10000);
+          $("playerClose").click();
+          await until(() => $("player").hidden && !(history.state && history.state.player)); // (its place in the history gone too)
+        }
+        const keep = await until(() => document.querySelector("#sentryAlerts button[data-keep]"));
+        if (keep) {
+          keep.click();
+          out.alertNote = await until(() => /^Saved /.test($("sentryAlertsNote").textContent) && $("sentryAlertsNote").textContent, 20000);
+        }
+        return out;
+      `, "the remote page, downloads");
+      await sleep(500);
+      played.webContents.session.removeListener("will-download", caught);
+      out.downloads = downloads;
     } finally {
       played.destroy();
     }
@@ -1186,6 +1223,12 @@ async function checkSentry(js) {
   out.ntfyLinks = ntfyGot.filter((g) => g.click && g.title !== "Sentry: Test").map((g) => g.click);
   const r = out;
   const launch = r.launch || {};
+  const sv = r.saves || {}, dl = r.downloads || [];
+  check("Downloads from remote recording's page in a browser, each as the file itself (not a .zip): the player's Download (the video it plays; a take's photo from its 📷 in the takes list) and a Sentry alert's Download (its photo and video)",
+    sv.saveShown && /^Saved Sentry_.+-video\.(mp4|webm) /.test(sv.saveNote || "") && sv.photoButton === "📷 Photo" && sv.photoShown && /^Saved Sentry_.+\.jpg /.test(sv.photoNote || "") &&
+      /^Saved Sentry_.+\.jpg and Sentry_.+-video\.(mp4|webm) /.test(sv.alertNote || "") &&
+      dl.length === 4 && dl.filter((n) => /^Sentry_.+-video\.(mp4|webm)$/.test(n)).length === 2 && dl.filter((n) => /^Sentry_.+\.jpg$/.test(n)).length === 2,
+    JSON.stringify({ saves: sv, downloads: dl }));
   check("Sentry mode: the app opened with it left on (as after a restart) starts its cameras by itself, trying again when the first start fails",
     launch.closed && launch.tries === 2 && launch.running && launch.armed, JSON.stringify(launch));
   check("Sentry mode on remote recording's page: hidden until the title is tapped five times (and hidden again so), not on the main page; boxes over each preview, rows by columns, each filling its part; a tapped box is left out (shown top-left is the camera's top-right, mirrored), red where it moves; pets and animals a switch; with every box left out nothing happens; while it's on the hands aren't tracked but movement is, and a take records videos only (its details stay), unless its switch tracks them; turned on, movement is an alert with a photo on the page, then a video when it's turned off, both in the remote recording folder; that video played on the page (as a notification's link opens it, from the takes list's ▶, and by its take's name once the alert's no longer listed); deleted from the page (an alert with its files, then every Sentry file, nothing else); ntfy's test and alert; previews about as often as full screen; a camera's video stopped at once is still a video; the object finder runs",
@@ -2611,6 +2654,18 @@ async function checkOakOptions(js) {
     await sleep(400);
     const tile = document.querySelector("#multiCamGrid iframe").contentWindow.Tile;
     out.tile = { started: seen, objects: (tile.objects() || []).map((o) => o.label), label: document.querySelector("#multiCamGrid .lbl").textContent };
+    // Its own Find objects off while Sentry mode's pet filter needs objects: found (for Sentry),
+    // not drawn on its picture.
+    const main = MultiCamera.options().oak || {};
+    MultiCamera.setOakSettings("oak:SIMULATED-OAK-A", { detect: false });
+    MultiCamera.setOptions({ oak: { ...main, needObjects: true } });
+    await sleep(3000); // (started again with the new settings)
+    const forSentry = () => (MultiCamera.sentryViews()[0].objects() || []).map((o) => o.label);
+    for (let i = 0; i < 60 && !forSentry().length; i++) await sleep(200);
+    await sleep(400);
+    out.sentryOnly = { found: forSentry(), drawn: (tile.objects() || []).map((o) => o.label) };
+    MultiCamera.setOakSettings("oak:SIMULATED-OAK-A", null);
+    MultiCamera.setOptions({ oak: main });
     off();
     MultiCamera.close();
     await sleep(2800);
@@ -2633,6 +2688,9 @@ async function checkOakOptions(js) {
   check("OAK camera options reach OAK cameras in tiles (started with them, night vision too, which the tile says; their objects found)",
     r.tile && r.tile.started.includes("SIMULATED-OAK-A:true:depth:on:true") && r.tile.objects.includes("person") && /night vision/.test(r.tile.label),
     JSON.stringify(r.tile || r));
+  check("A camera's objects are drawn only while its own Find objects is on: with it off and Sentry mode's pet filter needing them, they're found for Sentry but not drawn",
+    r.sentryOnly && r.sentryOnly.found.includes("person") && r.sentryOnly.drawn.length === 0,
+    JSON.stringify(r.sentryOnly || r));
 }
 
 // Several cameras with Luxonis OAK cameras among them, against two stand-in OAK cameras
@@ -3102,6 +3160,11 @@ async function checkRemoteRecording(js) {
     out.qualityState = [(await state()).videoQuality, await js(`JSON.parse(localStorage.getItem("hand-tracker:prefs") || "{}").remoteVideoQuality`)];
     out.qualityBad = (await post("settings", { settings: { videoQuality: "ultra" } })).status;
     await post("settings", { settings: { videoQuality: "standard" } });
+    // A photo from each camera as a take starts: on by default, switched off and on from the page.
+    out.photoDefault = (await state()).photo;
+    out.photoOff = await (await post("settings", { settings: { photo: false } })).json();
+    out.photoOffState = [(await state()).photo, await js(`JSON.parse(localStorage.getItem("hand-tracker:prefs") || "{}").remotePhoto`)];
+    await post("settings", { settings: { photo: true } });
     out.egoRecordOptional = await (await post("record")).json();
     await post("settings", { settings: { detailsRequired: true } });
     await post("mode", { mode: "stereo" });
@@ -3205,6 +3268,15 @@ async function checkRemoteRecording(js) {
       const { plain, video, sound } = clipInfo(full);
       return { f: f.replace(/^.*(-video-[a-z-]+\.\w+)$/, "$1"), kb: Math.round(b.length / 1024), plain, video, sound, fps: seconds ? Math.round((frames / seconds) * 10) / 10 : 0 };
     });
+    // Each camera's photo from the take's start, saved beside it (named after its role), and
+    // listed with the take.
+    out.photos = ((after.lastTake && after.lastTake.files) || []).filter((f) => /-photo-[a-z-]+.jpg$/.test(f)).map((f) => {
+      const b = fs.readFileSync(path.join(process.env.HAND_TRACKER_REMOTE_DIR, f));
+      return { f: f.replace(/^.*(-photo-[a-z-]+.jpg)$/, "$1"), jpeg: b[0] === 0xff && b[1] === 0xd8, kb: Math.round(b.length / 1024) };
+    });
+    const takeId = after.lastTake && after.lastTake.ok ? after.lastTake.files[0].replace(/.json$/, "") : "";
+    const listed = ((await (await get("/api/takes")).json()).takes || []).find((x) => x.id === takeId);
+    out.photosListed = listed ? listed.files.filter((x) => /.jpg$/.test(x.name)).length : 0;
     // Its name is final at the computer too (other formats exported there keep it).
     out.nameLocked = await js(`document.getElementById("motionName").readOnly && document.getElementById("motionName").value`);
     // Saved: the next take's details can be filled in.
@@ -3238,7 +3310,7 @@ async function checkRemoteRecording(js) {
   out.tailnet = [tailnetPeer("100.104.1.2", "::ffff:100.90.3.4"), tailnetPeer("192.168.1.5", "100.90.3.4"), tailnetPeer("100.104.1.2", "192.168.1.9")];
   const probe = new RemoteRecordServer({ keyStore: null, page: () => "", ask: async () => ({}) });
   out.ownHost = [probe.ownHost({ headers: { host: "localhost:47821" } }), probe.ownHost({ headers: { host: "evil.example:47821" } })];
-  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so, and unticked is off the list) and picked, with roles; Ego needs all four roles, Stereo a head camera; the take details are optional (with the hidden switch on, Start recording needs all three; either way they're locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras mirrored like webcams; every camera found is ticked unless unticked before), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself (with each camera's video, named after its role), Stop cameras stops them",
+  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so, and unticked is off the list) and picked, with roles; Ego needs all four roles, Stereo a head camera; the take details are optional (with the hidden switch on, Start recording needs all three; either way they're locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras mirrored like webcams; every camera found is ticked unless unticked before), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself (with each camera's video, named after its role, and its photo from the start, listed with the take; the photo a switch on the page, on by default), Stop cameras stops them",
     out.setup.on && out.setup.card && !out.setup.runningBefore && key.length > 10 && out.page && out.noKey === 401 && out.wrongKey === 401 &&
       ["oak:SIMULATED-OAK-A", "oak:SIMULATED-OAK-B"].every((id) => (out.setup.ticked || []).includes(id)) &&
       out.before.running === false && out.script && out.scan &&
@@ -3267,6 +3339,8 @@ async function checkRemoteRecording(js) {
       out.numbered.got >= 12 && out.numbered.distinct === out.numbered.got &&
       out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_\d+s\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
       out.videos.map((v) => v.f).sort().join() === "-video-chest.mp4,-video-head.mp4" && out.videos.every((v) => v.plain && v.video === "h264" && ["aac", "none"].includes(v.sound) && v.kb > 5 && v.fps > 16) &&
+      out.photoDefault === true && out.photoOff.ok && out.photoOffState.join() === "false,false" &&
+      out.photos.map((p) => p.f).sort().join() === "-photo-chest.jpg,-photo-head.jpg" && out.photos.every((p) => p.jpeg && p.kb > 1) && out.photosListed === 2 &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
       /^0:\d\d$/.test(out.metadata.length) && out.metadata.length_s > 1 &&
       out.savedHands && out.savedHands.length === 2 && out.savedHands.some((h) => /^Head /.test(h)) && out.savedHands.some((h) => /^Chest /.test(h)) &&

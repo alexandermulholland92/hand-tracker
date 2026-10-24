@@ -730,7 +730,11 @@
     if (!api || !api.oakHands) return desktop.oak.streamShown(id);
     let hands = null;
     try {
-      hands = api.oakHands(header.w, header.h, OakSource.toResults(header), tileTime(t, header));
+      // Its objects are drawn only while its own Find objects is on (Sentry mode's pet filter has
+      // them found too, without drawing them).
+      const results = OakSource.toResults(header);
+      if (!oakSettingsOf(t.deviceId).detect) results.objects = null;
+      hands = api.oakHands(header.w, header.h, results, tileTime(t, header));
     } catch {
       // its page going away meanwhile
     }

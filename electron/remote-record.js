@@ -37,8 +37,9 @@
  * bring along, and which go into the takes), "camera" (one running camera's { index, role,
  * rotation, mirror }), "scan" (look for the cameras it can start), "pick" (one of those:
  * { id, use, role }), "mode" ("ego", "stereo" or "freeform") or "settings" ({ detailsRequired, screenPictures,
- * video, sound, videoQuality }: whether the take details are needed, whether the OAK cameras' pictures
- * are drawn on its screen, and each camera's video with a take, its sound and its quality),
+ * video, sound, videoQuality, photo }: whether the take details are needed, whether the OAK cameras' pictures
+ * are drawn on its screen, each camera's video with a take, its sound and its quality, and each
+ * camera's photo as a take starts),
  * "sentry" (Sentry mode's settings, boxes and on/off: cleanSentry), "oak" (one OAK camera's own
  * settings: cleanOak) or "kinect" (one Kinect's own settings: cleanKinect).
  * onWantPreviews({ on, focus }): a page is (or stopped) looking at the previews; focus: the
@@ -158,7 +159,7 @@ function cleanWifi(w) {
 function cleanSettings(s) {
   if (!s || typeof s !== "object") return null;
   const out = {};
-  for (const k of ["detailsRequired", "screenPictures", "video", "sound"]) if (typeof s[k] === "boolean") out[k] = s[k];
+  for (const k of ["detailsRequired", "screenPictures", "video", "sound", "photo"]) if (typeof s[k] === "boolean") out[k] = s[k];
   if (VIDEO_QUALITIES.includes(s.videoQuality)) out.videoQuality = s.videoQuality;
   return Object.keys(out).length ? out : null;
 }
@@ -196,7 +197,8 @@ function cleanSentry(s) {
 // Tailscale's addresses: 100.64.0.0/10.
 // ---------- the takes in the remote recording folder ----------
 // A take is the files saved for it: its name, then "-left"/"-right" (BVH), "-motive" (Motive's
-// markers), "-video-<role>" (a camera's video), and " (2)" if the name was taken; the formats
+// markers), "-video-<role>" (a camera's video), "-photo-<role>" (its photo as the take started),
+// and " (2)" if the name was taken; the formats
 // Hand Tracker saves, and a Kinect's "-depth-<role>", "-infrared-<role>", "-colour-<role>" (.mkv),
 // "-sound-<role>", "-sound-beam-<role>" (.wav) with their "-times" (.csv), "-kinect-<role>" (.mcap). Sentry mode's photo and
 // video of a moment are a take too.
@@ -207,7 +209,7 @@ const EDIT_QUIET_MS = 8000; // a take whose files were written this recently may
 const EDIT_MCAP_MAX = 400e6; // an MCAP file read for a take's details (one with its videos can be big)
 const takeOf = (file) =>
   file.replace(/\.[a-z0-9]+$/i, "").replace(/ \(\d+\)$/, "").replace(/-(depth|infrared|colour|kinect|sound(-beam|-direction)?)-[a-z0-9-]+?(-times)?( \(\d+\))?$/i, "")
-    .replace(/-video(-[a-z0-9-]+)?$/i, "").replace(/(-motive)?(-left|-right)?$/, "");
+    .replace(/-(video|photo)(-[a-z0-9-]+)?$/i, "").replace(/(-motive)?(-left|-right)?$/, "");
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
