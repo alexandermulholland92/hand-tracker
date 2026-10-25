@@ -194,10 +194,11 @@
   let takeRate = 0; // the take being recorded: its bytes a second, as guessed when it started
   const roomRatio = () => (Number(prefs.remoteRoomRatio) > 0 ? Number(prefs.remoteRoomRatio) : 1);
 
-  // The cameras a take would record (running, else those picked and plugged in): each one's
-  // picture size, frame rate and whether its hands are tracked.
+  // The cameras a take would record (running, else those picked and plugged in; before they've
+  // first been looked for, all those picked: a phone's own, say): each one's picture size, frame
+  // rate and whether its hands are tracked.
   function takeCameras() {
-    if (!cams().isActive()) return available().filter((c) => c.use && c.present).map((c) => ({ width: GUESS_SIZE[0], height: GUESS_SIZE[1], fps: 0, tracking: c.tracking !== false }));
+    if (!cams().isActive()) return available().filter((c) => c.use && (c.present || !scanned.at)).map((c) => ({ width: GUESS_SIZE[0], height: GUESS_SIZE[1], fps: 0, tracking: c.tracking !== false }));
     const canvases = new Map(cams().previewSources().map((s) => [s.i, s.canvas]));
     return cams().remoteState().cameras.filter((c) => !c.error).map((c) => {
       const cv = canvases.get(c.index);

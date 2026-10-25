@@ -1131,6 +1131,8 @@ async function checkPhoneAsRig(win, js) {
     }
     // (Listed by name: Android gives cameras new ids every start, so picks and roles kept by id would be lost.)
     out.available = (a.cameras || []).map((c) => ({ present: c.present, use: c.use, byName: c.id.startsWith("cam:") }));
+    // (About how many hours of takes the phone's cameras leave room for.)
+    out.roomTakes = ((await state()).storage || {}).text;
     out.mode = await post({ action: "mode", mode: "freeform" });
     // (The take details are optional; with the page's hidden switch on, needed first.)
     out.defaultRequired = (await state()).detailsRequired;
@@ -1177,7 +1179,7 @@ async function checkPhoneAsRig(win, js) {
   }
   out.off = await js(`(async () => { document.getElementById("remoteToggle").click(); await new Promise((r) => setTimeout(r, 300)); return !(await mobile.remote.status()).on; })()`);
   const t = out.take || {};
-  check("Remote recording on the phone: over Bluetooth too once its password is set (too short refused); the space left and its battery shown, there and in the app; another device lists the phone's cameras (new ones ticked), picks the mode, starts them and recording (the take details optional; with the hidden switch on, needed; locked while recording), sees each camera (bigger full screen), and the take is saved on the phone, named after its details",
+  check("Remote recording on the phone: over Bluetooth too once its password is set (too short refused); the space left (and about how many hours of takes its cameras have room for) and its battery shown, there and in the app; another device lists the phone's cameras (new ones ticked), picks the mode, starts them and recording (the take details optional; with the hidden switch on, needed; locked while recording), sees each camera (bigger full screen), and the take is saved on the phone, named after its details",
     !out.error && out.on.card && out.on.on && out.on.pair && out.on.pasteable && !out.on.folderBtn && out.page && out.noKey === 401 &&
       out.bluetooth.before.row && /set a password/.test(out.bluetooth.before.status) && /8 to 63/.test(out.bluetooth.short) &&
       out.bluetooth.after === "on, with its password" && out.bluetooth.cleared && out.bluetooth.asked === 1 &&
@@ -1185,6 +1187,7 @@ async function checkPhoneAsRig(win, js) {
       /^52\.0 GB free of 128 GB/.test(out.room.storage || "") && out.room.battery === "Battery 62%: about 6 h left" &&
       out.room.card.startsWith("Space: 52.0 GB free of 128 GB") && out.room.card.endsWith(" · Battery 62%: about 6 h left") &&
       out.available.length >= 1 && out.available.every((c) => c.present && c.use && c.byName) &&
+      /^52\.0 GB free of 128 GB · about .+ of takes \(\d+ cameras?, /.test(out.roomTakes || "") && (out.roomTakes || "").includes(` of takes (${out.available.length} camera`) &&
       out.mode.ok && out.defaultRequired === false && out.refused.ok === false && (out.refused.missing || []).length === 3 &&
       out.record.ok && out.recording.recording && out.recording.locked && out.recording.cameras === out.available.length &&
       out.preview.status === 200 && out.preview.full === 200 && out.preview.big > out.preview.small &&
