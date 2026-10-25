@@ -293,6 +293,7 @@
   #remoteTakes .take-edit input { display: block; width: 100%; margin-top: 2px; }
   #remoteTakes button { font-size: 12px; padding: 2px 8px; margin-top: 4px; }
   #remoteTakesNote.err { color: #ff6b6b; }
+  #remoteRoom .err { color: #ff6b6b; }
   #linkCodeInput { flex: 1; min-width: 0; }
   .format-option {
     display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 7px;
@@ -549,6 +550,8 @@
           <button id="remoteNewKey" hidden title="A new QR code: phones that read the old one can't connect any more (over Tailscale no code is needed)">New code</button>
           <span id="remoteStatus" class="note"></span>
         </div>
+        <!-- The space left where takes are saved, the hours of takes it holds, the battery (remote-record-ui.js). -->
+        <div class="toolbar" id="remoteRoomRow" hidden><span id="remoteRoom" class="status"></span></div>
         <!-- The takes saved here, each one's details changeable after recording (remote-record-ui.js initTakes). -->
         <div class="toolbar" id="remoteTakesRow" hidden><button id="remoteTakesBtn" aria-expanded="false" aria-controls="remoteTakes" title="The takes saved in the remote recording folder: each one's details (contributor, location, task) can be changed after recording, and its files are renamed to match">Takes…</button><span id="remoteTakesNote" class="status"></span></div>
         <div id="remoteTakes" hidden></div>

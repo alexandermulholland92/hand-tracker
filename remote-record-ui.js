@@ -34,6 +34,8 @@
  * microphone), saved beside the take's motion capture as <take>-video-<role>.mp4 (.webm where
  * the browser can't make MP4): the phone's Takes list has them too.
  * Only cameras that are plugged in get a tile. Nothing starts by itself: the cameras only run once the phone (or someone here) asks.
+ * Here and on the page: the space left where takes are saved, about how many hours of takes (and
+ * of Sentry's videos) it holds at these settings, and the battery's charge and time left.
  * While the phone's page is open, each camera's picture with its hands drawn goes to it, up to
  * about 15 times a second, or 30 for the one looked at full screen (fewer if making them would
  * take much of this computer's time).
@@ -164,6 +166,7 @@
       mode: modeNow(), requirement: requirement(), screenPictures: onPhone ? undefined : cams().screenPictures(),
       available: { at: scanned.at, scanning: scanned.scanning, note: scanned.note, cameras: available() },
       system,
+      ...roomState(),
     };
   }
 
@@ -173,7 +176,167 @@
   function lookAtSystem() {
     if (remote && remote.system) remote.system().then((c) => (system = c || null), () => (system = null));
   }
-  const push = () => on && remote.setState(state());
+  // ---------- room left: the space where takes are saved, the hours of takes it holds, the battery ----------
+  // A take's bytes a second, each camera: its video (CameraVideo's rate at the quality picked,
+  // with its sound), its hands in each motion format picked (two hands at 30 a second, measured:
+  // JSON keeps every number in full), and on a computer its video again in the MCAP file, as
+  // JPEG pictures (electron/mcap-video.js). Takes with fewer hands, or a stiller picture, come
+  // out smaller: the takes saved here teach it by how much (remoteRoomRatio).
+  const MOTION_BYTES = { json: 517000, csv: 38000, bvh: 12700, glb: 34000, c3d: 10100, trc: 15600, npz: 16300, mcap: 320000 }; // a hand's, a second
+  const HANDS = 2;
+  const MCAP_WIDTH = 960, MCAP_PIXEL_BYTES = 0.2;
+  const GUESS_SIZE = [1280, 720]; // a camera that isn't running yet
+  const ROOM_MS = 15000;
+  const LEARN_S = 20; // a take shorter than this is mostly its start (photos, the files' headers): not learnt from
+  const LOW_HOURS = 1, LOW_BATTERY = 0.15; // less than this: said in red
+  let space = null; // { free, total } where takes are saved
+  let battery = null; // { level, charging, hoursLeft, hoursToFull }: null without one (or a power bank's)
+  let takeRate = 0; // the take being recorded: its bytes a second, as guessed when it started
+  const roomRatio = () => (Number(prefs.remoteRoomRatio) > 0 ? Number(prefs.remoteRoomRatio) : 1);
+
+  // The cameras a take would record (running, else those picked and plugged in): each one's
+  // picture size and whether its hands are tracked.
+  function takeCameras() {
+    if (!cams().isActive()) return available().filter((c) => c.use && c.present).map((c) => ({ width: GUESS_SIZE[0], height: GUESS_SIZE[1], tracking: c.tracking !== false }));
+    const canvases = new Map(cams().previewSources().map((s) => [s.i, s.canvas]));
+    return cams().remoteState().cameras.filter((c) => !c.error).map((c) => {
+      const cv = canvases.get(c.index);
+      return { width: (cv && cv.width) || GUESS_SIZE[0], height: (cv && cv.height) || GUESS_SIZE[1], tracking: c.tracking !== false };
+    });
+  }
+  function rateOf(list) {
+    const formats = (Array.isArray(prefs.motionFormats) ? prefs.motionFormats : ["json"]).filter((f) => MOTION_BYTES[f]);
+    const hands = HANDS * formats.reduce((n, f) => n + MOTION_BYTES[f], 0);
+    const video = remoteVideo() && global.CameraVideo && global.CameraVideo.bitsPerSecond;
+    const mcap = video && !onPhone && formats.includes("mcap");
+    return list.reduce((n, c) => {
+      let b = c.tracking ? hands : 0;
+      if (video) b += global.CameraVideo.bitsPerSecond({ width: c.width, height: c.height, fps: VIDEO_FPS, quality: remoteQuality(), sound: remoteSound() }) / 8;
+      if (mcap) {
+        const w = Math.min(MCAP_WIDTH, c.width);
+        b += w * ((c.height * w) / c.width) * MCAP_PIXEL_BYTES * VIDEO_FPS;
+      }
+      return n + b;
+    }, 0);
+  }
+  // Sentry's videos while it's on: each camera's at standard quality, with its sound or not.
+  function sentryRate(list) {
+    const s = prefs.sentry || {};
+    if (!global.Sentry || !global.Sentry.isArmed || !global.Sentry.isArmed() || s.video === false || !global.CameraVideo || !global.CameraVideo.bitsPerSecond) return 0;
+    return list.reduce((n, c) => n + global.CameraVideo.bitsPerSecond({ width: c.width, height: c.height, fps: VIDEO_FPS, sound: s.sound !== false }) / 8, 0);
+  }
+
+  // The battery's time left: what the device says, else worked out from how far its level has
+  // fallen since it was unplugged (DRAIN_LEVEL at least, over DRAIN_MS at least, the last
+  // DRAIN_SPAN_MS of it), else (Android) what's left over how fast it's draining now, averaged,
+  // if that's believable (some phones give milliamps for microamps).
+  const DRAIN_LEVEL = 0.02, DRAIN_MS = 3 * 60000, DRAIN_SPAN_MS = 60 * 60000;
+  let drain = [], current = 0;
+  function batteryNow(b, now = Date.now()) {
+    if (!b || !(b.level >= 0 && b.level <= 1)) {
+      drain = [];
+      return null;
+    }
+    const charging = !!b.charging;
+    let hoursLeft = null;
+    if (charging) {
+      drain = [];
+      current = 0;
+    } else {
+      drain.push({ at: now, level: b.level });
+      while (drain.length > 2 && now - drain[1].at >= DRAIN_SPAN_MS) drain.shift();
+      if (b.currentUa && b.chargeUah) current = current ? current * 0.7 + Math.abs(b.currentUa) * 0.3 : Math.abs(b.currentUa);
+      const fell = drain[0].level - b.level, ms = now - drain[0].at;
+      if (b.hoursLeft > 0) hoursLeft = b.hoursLeft;
+      else if (fell >= DRAIN_LEVEL && ms >= DRAIN_MS) hoursLeft = (b.level / fell) * (ms / 3600000);
+      else if (current && b.chargeUah / current >= 0.2 && b.chargeUah / current <= 100) hoursLeft = b.chargeUah / current;
+    }
+    return { level: b.level, charging, hoursLeft, hoursToFull: charging && b.hoursToFull > 0 ? b.hoursToFull : null };
+  }
+  // A computer's battery, from the browser (which says one without a battery is full and
+  // plugged in: electron/storage.js says whether there is one).
+  async function browserBattery() {
+    try {
+      const b = await navigator.getBattery();
+      const hours = (s) => (Number.isFinite(s) && s > 0 ? s / 3600 : null);
+      return { level: b.level, charging: b.charging, hoursLeft: hours(b.dischargingTime), hoursToFull: hours(b.chargingTime) };
+    } catch {
+      return null;
+    }
+  }
+  async function lookAtRoom() {
+    if (!remote || !remote.storage) return;
+    const r = await remote.storage().catch(() => null);
+    space = r && r.free >= 0 && r.total > 0 ? { free: r.free, total: r.total } : null;
+    battery = batteryNow(r && r.battery === true ? await browserBattery() : r && typeof r.battery === "object" ? r.battery : null);
+    showRoom();
+  }
+
+  const GB = 1e9;
+  const bytesText = (n) => (n >= 100 * GB ? `${Math.round(n / GB)} GB` : n >= GB ? `${(n / GB).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`);
+  // "about 5 h 20 min", "about 41 h", "about 6 days"
+  function about(h) {
+    const min = h * 60;
+    if (min < 5) return "under 5 min";
+    if (min < 60) return `about ${Math.round(min / 5) * 5} min`;
+    if (h >= 48) return `about ${Math.round(h / 24)} days`;
+    if (h >= 10) return `about ${Math.round(h)} h`;
+    const m = Math.round(min / 10) * 10;
+    return `about ${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
+  }
+  function spaceText(s) {
+    const q = remoteQuality();
+    const what = `${s.cameras} camera${s.cameras === 1 ? "" : "s"}, ${remoteVideo() ? `${q === "low" ? "small" : QUALITY_NAMES[q]} video` : "no video"}`;
+    return [`${bytesText(s.free)} free of ${bytesText(s.total)}`, s.hours !== null && `${about(s.hours)} of takes (${what})`, s.sentryHours !== null && `${about(s.sentryHours)} of Sentry videos`].filter(Boolean).join(" · ");
+  }
+  function batteryText(b) {
+    if (b.charging) return b.level >= 0.995 ? "Battery full, plugged in" : `Battery ${Math.round(b.level * 100)}%, charging${b.hoursToFull ? `: full in ${about(b.hoursToFull)}` : ""}`;
+    return `Battery ${Math.round(b.level * 100)}%${b.hoursLeft ? `: ${about(b.hoursLeft)} left` : ", working out its time left…"}`;
+  }
+  // { storage: { free, total, hours, sentryHours, cameras, text, low }, battery: { level,
+  // charging, hoursLeft, hoursToFull, text, low } }, each only if it's known. While a take
+  // records, its share is taken off (it's kept in memory until it's saved).
+  function roomState(list = space ? takeCameras() : []) {
+    const out = {};
+    if (space) {
+      const rate = rateOf(list) * roomRatio(), sentry = sentryRate(list);
+      const free = Math.max(0, space.free - (cams().isRecording() ? takeRate * roomRatio() * cams().remoteState().elapsed_s : 0));
+      const s = { free, total: space.total, hours: list.length && rate > 0 ? free / rate / 3600 : null, sentryHours: sentry > 0 ? free / sentry / 3600 : null, cameras: list.length };
+      out.storage = { ...s, text: spaceText(s), low: s.hours !== null && s.hours < LOW_HOURS };
+    }
+    if (battery) out.battery = { ...battery, text: batteryText(battery), low: !battery.charging && battery.level < LOW_BATTERY };
+    return out;
+  }
+  let shownRoom = "";
+  function showRoom(r = roomState()) {
+    const parts = [r.storage && ["Space: " + r.storage.text, r.storage.low], r.battery && [r.battery.text, r.battery.low]].filter(Boolean);
+    if (!$("remoteRoom") || JSON.stringify(parts) === shownRoom) return;
+    shownRoom = JSON.stringify(parts);
+    $("remoteRoomRow").hidden = !parts.length;
+    $("remoteRoom").replaceChildren(...parts.flatMap(([text, low], i) => {
+      const span = Object.assign(document.createElement("span"), { textContent: text, className: low ? "err" : "" });
+      return i ? [" · ", span] : [span];
+    }));
+  }
+  // A take saved here: how big it came out against the guess (the computer lists its takes'
+  // sizes; a phone doesn't), to guess better next time.
+  async function learnRoom(name, seconds, rate) {
+    if (remote.takes && seconds >= LEARN_S && rate > 0) {
+      const t = (((await remote.takes().catch(() => null)) || {}).takes || []).find((x) => x.id === name);
+      if (t && t.size > 0) {
+        const ratio = Math.min(4, Math.max(0.05, t.size / (rate * seconds)));
+        setPref("remoteRoomRatio", Math.round((Number(prefs.remoteRoomRatio) > 0 ? (Number(prefs.remoteRoomRatio) + ratio) / 2 : ratio) * 1000) / 1000);
+      }
+    }
+    await lookAtRoom();
+  }
+
+  function push() {
+    if (!on) return;
+    const st = state();
+    showRoom(st);
+    remote.setState(st);
+  }
   function startState() {
     if (stateTimer) return;
     push();
@@ -492,6 +655,7 @@
     }
     const r = await cams().startRecording();
     if (r.ok) {
+      takeRate = rateOf(takeCameras());
       startVideos();
       takePhotos().catch(() => {});
     }
@@ -648,6 +812,7 @@
     lastTake = saved && saved.ok
       ? { ok: true, at, files: [...saved.files, ...videoFiles], dir: saved.dir, duration: seconds, hands: take.hands.length, details: d }
       : { ok: false, at, message: `Recorded, but not saved: ${(saved && saved.message) || "export it on the computer"}${videoFiles.length ? ` (these were: ${videoFiles.join(", ")})` : ""}` };
+    learnRoom(name, lastTake.ok ? seconds : 0, takeRate).catch(() => {});
     return { ok: lastTake.ok, message: lastTake.ok ? `Saved ${lastTake.files.join(", ")}` : lastTake.message };
   }
 
@@ -1001,6 +1166,8 @@
     onPhone = !opts.desktop;
     lookAtSystem();
     setInterval(lookAtSystem, 60000);
+    lookAtRoom();
+    setInterval(lookAtRoom, ROOM_MS);
     // On a phone takes always go to Documents/Hand Tracker, and it doesn't open by itself.
     if (onPhone) {
       $("remoteFolderBtn").hidden = true;
@@ -1020,8 +1187,8 @@
       } catch (err) {
         result = { ok: false, message: errText(err) };
       }
+      push(); // (first: the page sees what was done as soon as it's answered)
       remote.result(id, result);
-      push();
     });
     $("remoteToggle").addEventListener("click", async () => {
       try {
@@ -1044,6 +1211,7 @@
         push();
       }
       showSettings(); // (from the next take: not halfway through one)
+      showRoom();
     });
     for (const [id, key] of [["remoteVideo", "remoteVideo"], ["remoteSound", "remoteSound"], ["remotePhoto", "remotePhoto"]]) {
       if (!$(id)) continue;
@@ -1054,6 +1222,7 @@
         }
         setPref(key, e.target.checked);
         showSettings();
+        showRoom();
         push();
       });
     }
@@ -1111,5 +1280,6 @@
   // (The main page's Cameras card, camera-settings.js: the same list, changed by the same commands.)
   const cameraState = () => ({ running: cams().isActive(), recording: cams().isRecording(), pending, scanning: !!scanned.scanning });
   global.RemoteRecordUI = { init, tailnetLink, looking, cameras: () => available(), cameraState, changeCamera: (action, data) => carryOut(action, data), scanCameras: () => scan(),
-    _carryOut: carryOut, _takeName: takeName, _sentryOnLaunch: sentryOnLaunch, _sentryAgain: SENTRY_AGAIN };
+    _carryOut: carryOut, _takeName: takeName, _sentryOnLaunch: sentryOnLaunch, _sentryAgain: SENTRY_AGAIN,
+    _room: { rateOf, batteryNow, about, roomState, look: lookAtRoom, set: (s, b) => ((space = s), (battery = b), (drain = []), (current = 0)) } };
 })(window);

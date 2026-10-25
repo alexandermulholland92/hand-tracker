@@ -333,6 +333,9 @@ contextBridge.exposeInMainWorld("desktop", {
     reboot: () => ipcRenderer.invoke("remote:reboot"),
     powerOff: () => ipcRenderer.invoke("remote:power-off"),
     resetCameras: () => ipcRenderer.invoke("remote:reset-cameras"),
+    // The room left where takes are saved, and whether it has a battery (electron/storage.js):
+    // -> { free, total, battery }
+    storage: () => ipcRenderer.invoke("remote:storage"),
     // A take saved without asking where: { baseName, files } -> { dir, results }
     saveTake: ({ baseName, files }) => ipcRenderer.invoke("files:save-remote", { baseName, files }),
     // Sentry mode's photos and videos deleted from it: { names } or { all: true } -> { deleted, failed }

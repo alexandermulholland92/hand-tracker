@@ -10,6 +10,8 @@
  *   rec.elapsed()                          // seconds so far
  *   const clip = await rec.stop();         // { blob, mimeType, ext: "webm" | "mp4", duration, width, height, sound, bitsPerSecond,
  *                                          //   startedAt (ms since 1970) }
+ *   CameraVideo.bitsPerSecond({ width, height, fps, quality, sound })  // what a clip asks its recorder for (the file is
+ *                                          //   about that size, often less for a still picture)
  *   CameraVideo.setMicrophone(deviceId)    // which microphone the sound comes from ("" the usual one)
  *   await CameraVideo.microphones()        // [{ deviceId, label }]
  *
@@ -39,8 +41,11 @@
   // rates; High and Best keep fine detail and quick movement sharper (about twice and four
   // times the size), Small files is under half the size with a softer picture.
   const QUALITY = { low: 0.05, standard: 0.12, high: 0.25, best: 0.5 };
+  const SOUND_BITS = 96000;
   // The browser's recorder gives nothing at all for a clip stopped much sooner than this.
   const MIN_CLIP_MS = 1200;
+  const videoBits = (width, height, fps, quality) => Math.max(400000, Math.round(width * height * fps * (QUALITY[quality] || QUALITY.standard)));
+  const bitsPerSecond = ({ width, height, fps = 30, quality = "standard", sound = false }) => videoBits(width, height, fps, quality) + (sound ? SOUND_BITS : 0);
 
   let micId = "";
   let mic = null; // { stream, users }
@@ -125,12 +130,11 @@
       }
       if (stopped) return;
       mimeType = pickMime(sound, preferMp4);
-      const pixels = canvas.width * canvas.height;
-      bitsPerSecond = Math.max(400000, Math.round(pixels * fps * (QUALITY[quality] || QUALITY.standard)));
+      bitsPerSecond = videoBits(canvas.width, canvas.height, fps, quality);
       recorder = new MediaRecorder(stream, {
         ...(mimeType ? { mimeType } : {}),
         videoBitsPerSecond: bitsPerSecond,
-        ...(sound ? { audioBitsPerSecond: 96000 } : {}),
+        ...(sound ? { audioBitsPerSecond: SOUND_BITS } : {}),
       });
       recorder.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
       recorder.start(1000); // a chunk a second: a crash loses at most that
@@ -170,5 +174,5 @@
     };
   }
 
-  global.CameraVideo = { supported, start, microphones, setMicrophone, QUALITIES: Object.keys(QUALITY) };
+  global.CameraVideo = { supported, start, microphones, setMicrophone, bitsPerSecond, QUALITIES: Object.keys(QUALITY) };
 })(typeof window !== "undefined" ? window : globalThis);

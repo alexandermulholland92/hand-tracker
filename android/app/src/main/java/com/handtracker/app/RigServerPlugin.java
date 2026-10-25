@@ -2,8 +2,13 @@ package com.handtracker.app;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.os.BatteryManager;
 import android.os.Build;
+import android.os.Environment;
+import android.os.StatFs;
 import android.util.Base64;
 
 import com.getcapacitor.JSArray;
@@ -20,6 +25,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -68,6 +74,9 @@ import javax.crypto.spec.GCMParameterSpec;
  *   start({ key }) / stop() / status() / setKey({ key }) -> { on, port, addresses, urls, viewer }
  *   setState({ state: json }); setPreview({ i, jpeg: base64 }); result({ id, result: json })
  *   events: "command" { id, action, details?, settings? }, "wantPreviews" { on, focus }, "status"
+ *   storage() -> { free, total, battery: { level, charging, hoursToFull?, currentUa?, chargeUah? } }:
+ *       the room left in Documents (where takes are saved) and the battery (its time left is
+ *       worked out by the page, remote-record-ui.js, from how fast it falls)
  *   bluetooth() -> { available, on, error, password: null | "set" }; setBluetoothPassword({ password })
  *       over Bluetooth Low Energy too (BtRigLink.java), while it's on and a Bluetooth password is
  *       set (8 to 63 characters; kept as its key only, encrypted with the app's Keystore key);
@@ -188,6 +197,44 @@ public class RigServerPlugin extends Plugin {
     @PluginMethod
     public void status(PluginCall call) {
         call.resolve(status());
+    }
+
+    @PluginMethod
+    public void storage(PluginCall call) {
+        JSObject o = new JSObject();
+        try {
+            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
+            while (dir != null && !dir.exists()) dir = dir.getParentFile();
+            StatFs fs = new StatFs((dir != null ? dir : getContext().getFilesDir()).getPath());
+            o.put("free", fs.getAvailableBytes());
+            o.put("total", fs.getTotalBytes());
+        } catch (Exception ignored) {
+        }
+        Intent b = getContext().registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        int level = b == null ? -1 : b.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+        int scale = b == null ? 0 : b.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+        if (b != null && b.getBooleanExtra(BatteryManager.EXTRA_PRESENT, true) && level >= 0 && scale > 0) {
+            JSObject bat = new JSObject();
+            bat.put("level", level / (double) scale);
+            int status = b.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+            // (Plugged in, charging or full.)
+            bat.put("charging", b.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0 || status == BatteryManager.BATTERY_STATUS_CHARGING);
+            BatteryManager bm = (BatteryManager) getContext().getSystemService(Context.BATTERY_SERVICE);
+            if (bm != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    long ms = bm.computeChargeTimeRemaining();
+                    if (ms > 0) bat.put("hoursToFull", ms / 3600000.0);
+                }
+                // How fast it's draining now and what's left (microamps, microamp-hours; some
+                // phones say neither, some milliamps): the page's first guess at the time left.
+                long now = bm.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
+                long left = bm.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER);
+                if (now != Long.MIN_VALUE && now != 0) bat.put("currentUa", now);
+                if (left != Long.MIN_VALUE && left > 0) bat.put("chargeUah", left);
+            }
+            o.put("battery", bat);
+        }
+        call.resolve(o);
     }
 
     // ---------- over Bluetooth Low Energy (BtRigLink.java) ----------

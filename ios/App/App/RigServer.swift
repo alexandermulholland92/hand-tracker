@@ -13,6 +13,9 @@
 //   start({ key }) / stop() / status() / setKey({ key }) -> { on, port, addresses, urls, viewer }
 //   setState({ state: json }); setPreview({ i, jpeg: base64 }); result({ id, result: json })
 //   events: "command" { id, action, details?, settings? }, "wantPreviews" { on, focus }, "status"
+//   storage() -> { free, total, battery: { level, charging } }: the room left where takes are
+//       saved (Documents) and the battery (its time left is worked out by the page,
+//       remote-record-ui.js, from how fast it falls)
 //   bluetooth() -> { available, on, error, password: null | "set" }; setBluetoothPassword({ password })
 //       over Bluetooth Low Energy too (RigBluetooth.swift), while it's on and a Bluetooth password
 //       is set (8 to 63 characters; kept as its key only, in the Keychain); "bluetooth" events
@@ -35,6 +38,7 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "start", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "status", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "storage", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setKey", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPreview", returnType: CAPPluginReturnPromise),
@@ -152,6 +156,25 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func status(_ call: CAPPluginCall) {
         call.resolve(status())
+    }
+
+    @objc func storage(_ call: CAPPluginCall) {
+        var disk: [String: Any] = [:]
+        if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+           let v = try? docs.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey]) {
+            if let free = v.volumeAvailableCapacityForImportantUsage { disk["free"] = Double(free) }
+            if let total = v.volumeTotalCapacity { disk["total"] = Double(total) }
+        }
+        let room = disk
+        DispatchQueue.main.async {
+            var out = room
+            let device = UIDevice.current
+            device.isBatteryMonitoringEnabled = true
+            if device.batteryLevel >= 0 {
+                out["battery"] = ["level": Double(device.batteryLevel), "charging": device.batteryState == .charging || device.batteryState == .full]
+            }
+            call.resolve(out)
+        }
     }
 
     @objc func setKey(_ call: CAPPluginCall) {

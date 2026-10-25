@@ -28,6 +28,7 @@ const { PhoneLinkServer } = require("./phone-link");
 const { RemoteRecordServer, RIG_HOST, RIG_PATH, cleanDetails } = require("./remote-record");
 const { RigBluetooth } = require("./bluetooth");
 const systemControl = require("./system-control");
+const storage = require("./storage");
 const { checkPassword: checkBluetoothPassword } = require("./bluetooth-link");
 const { createWifi } = require("./wifi");
 
@@ -1129,6 +1130,8 @@ function registerRemoteIpc() {
   const simulateSystem = !!process.env.HAND_TRACKER_SYSTEM_SIMULATE;
   global.__systemAsked = [];
   handle("remote:system", () => (simulateSystem ? { reboot: "yes", powerOff: "yes", cameraReset: "power" } : systemControl.capabilities()));
+  // The room left where takes are saved, and whether this computer has a battery (storage.js).
+  handle("remote:storage", async () => ({ ...((await storage.space(remoteFolder())) || {}), battery: await storage.hasBattery() }));
   handle("remote:power-off", () => {
     if (!simulateSystem) return systemControl.powerOff();
     global.__systemAsked.push("powerOff");

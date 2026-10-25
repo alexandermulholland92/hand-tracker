@@ -24,6 +24,8 @@
   h1 { font-size: 18px; margin: 2px 0 4px; }
   #status { color: var(--muted); min-height: 1.45em; }
   #status.rec { color: var(--text); font-weight: 600; }
+  #room { font-size: 14px; }
+  #room .err { color: var(--err); }
   .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--red); margin-right: 7px; vertical-align: 1px; animation: blink 1.2s infinite; }
   @keyframes blink { 50% { opacity: 0.25; } }
   .controls { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
@@ -170,6 +172,7 @@
   <p id="back" hidden><a href="remote.html">← Computers</a></p>
   <h1 id="title">Hand Tracker</h1>
   <div id="status">Connecting…</div>
+  <div id="room" class="muted" hidden></div>
 
   <section class="panel" id="btPanel" aria-labelledby="btTitle" hidden>
     <h2 id="btTitle">Over Bluetooth</h2>

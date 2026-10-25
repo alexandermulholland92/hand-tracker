@@ -2006,6 +2006,11 @@
     else if (!s.running) status.textContent = "Cameras off.";
     else if (running < cams.length) status.textContent = `Starting cameras… ${running} of ${cams.length} running`;
     else status.textContent = `${cams.length} camera${cams.length === 1 ? "" : "s"} running`;
+    // The space left where its takes are saved, the hours of takes it holds, its battery (a rig
+    // from before says neither).
+    const room = [s.storage && s.storage.text && [`Space: ${s.storage.text}`, s.storage.low], s.battery && s.battery.text && [s.battery.text, s.battery.low]].filter(Boolean);
+    $("room").hidden = !room.length;
+    $("room").innerHTML = room.map(([text, low]) => `<span${low ? ' class="err"' : ""}>${esc(text)}</span>`).join(" · ");
 
     // The mode, and whether the cameras (picked, or running) are what it needs.
     const mode = s.mode || "freeform";

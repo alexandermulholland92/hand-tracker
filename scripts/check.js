@@ -148,6 +148,7 @@ const STEPS = [
   ["wifi-join", [], () => checkWifiJoin()],
   ["remote-takes", [], () => checkRemoteTakes()],
   ["remote-take-details", [], ({ js }) => checkRemoteTakeDetails(js)],
+  ["remote-room", [], ({ js }) => checkRemoteRoom(js)],
   ["sentry-math", [], () => checkSentryMath()],
   ["sentry-animals", ["sentry-math"], () => checkSentryAnimals()],
   ["ntfy", [], () => checkNtfy()],
@@ -3605,6 +3606,100 @@ async function checkRemoteLauncher(js) {
       p.ownOff && p.ownOff.hidden && p.ownOff.pressed === "false" && p.ownOff.kept.off.length === 1 && p.ownOn &&
       p.allOff && p.allOff.hidden && p.allOff.ownHidden && p.allOff.pressed === "false" && p.allOff.kept.all === false && p.allOn,
     JSON.stringify(out));
+}
+
+// The room left where remote recording saves its takes, and the battery: this computer's card
+// and the remote page say how much space is free, about how many hours of takes it holds at these
+// settings, and the battery's charge and time left. The hours worked out from each camera's video
+// and its hands in the motion formats picked; the battery's time from what the device says, else
+// how far its level fell since it was unplugged, else a phone's current (a believable one); little
+// room and a low battery said in red.
+async function checkRemoteRoom(js) {
+  const out = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const R = RemoteRecordUI._room;
+    const out = { storage: await desktop.remote.storage() };
+    for (let i = 0; i < 50 && document.getElementById("remoteRoomRow").hidden; i++) await sleep(100);
+    out.card = document.getElementById("remoteRoom").textContent;
+    // One 1280x720 camera: its video (30 a second, its quality's bits a pixel, with sound) and two
+    // hands in each motion format picked; none of the hands without its tracking.
+    const p = JSON.parse(localStorage.getItem("hand-tracker:prefs") || "{}");
+    const formats = Array.isArray(p.motionFormats) ? p.motionFormats : ["json"];
+    const perHand = { json: 517000, csv: 38000, bvh: 12700, glb: 34000, c3d: 10100, trc: 15600, npz: 16300, mcap: 320000 };
+    const video = p.remoteVideo !== false;
+    const bits = { low: 0.05, standard: 0.12, high: 0.25, best: 0.5 }[p.remoteVideoQuality || "standard"];
+    const videoBytes = video ? (Math.round(1280 * 720 * 30 * bits) + (p.remoteSound !== false ? 96000 : 0)) / 8 + (formats.includes("mcap") ? 960 * 540 * 0.2 * 30 : 0) : 0;
+    out.rate = { got: R.rateOf([{ width: 1280, height: 720, tracking: true }]), want: videoBytes + 2 * formats.reduce((n, f) => n + (perHand[f] || 0), 0),
+      untracked: R.rateOf([{ width: 1280, height: 720, tracking: false }]), untrackedWant: videoBytes };
+    out.about = [0.05, 0.5, 16 / 3, 41.2, 150].map(R.about);
+    // A battery at 80% unplugged, 76% ten minutes later: 76 / 4 x 10 minutes = 3 h 10 min left.
+    const t0 = 1e12;
+    R.set(null, null);
+    out.first = R.batteryNow({ level: 0.8, charging: false }, t0);
+    out.later = R.batteryNow({ level: 0.76, charging: false }, t0 + 10 * 60000);
+    out.said = R.batteryNow({ level: 0.75, charging: false, hoursLeft: 2.5 }, t0 + 11 * 60000);
+    out.charging = R.batteryNow({ level: 0.75, charging: true, hoursToFull: 1.2 }, t0 + 12 * 60000);
+    out.unplugged = R.batteryNow({ level: 0.9, charging: false }, t0 + 13 * 60000);
+    // A phone draining 500 mA with 2000 mAh left: 4 hours; one that says milliamps for microamps isn't believed.
+    R.set(null, null);
+    out.phone = R.batteryNow({ level: 0.6, charging: false, currentUa: -500000, chargeUah: 2000000 }, t0);
+    R.set(null, null);
+    out.milliamps = R.batteryNow({ level: 0.6, charging: false, currentUa: -500, chargeUah: 2000000 }, t0);
+    // 1 GB left with one camera is minutes of takes: said in red, as a battery at 10% is.
+    R.set({ free: 1e9, total: 512e9 }, R.batteryNow({ level: 0.1, charging: false, hoursLeft: 0.4 }, t0));
+    out.low = R.roomState([{ width: 1280, height: 720, tracking: true }]);
+    R.set(null, null);
+    await R.look();
+    out.cardAgain = document.getElementById("remoteRoom").textContent;
+    // On the remote page too, with remote recording on.
+    out.wasOn = (await desktop.remote.status()).on;
+    let s = out.wasOn ? await desktop.remote.status() : await desktop.remote.start();
+    for (let i = 0; i < 50 && !(s && s.on); i++) { await sleep(100); s = await desktop.remote.status(); }
+    out.status = s;
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.stack) || err) }));
+  const keyed = out.status && (out.status.urls || []).find((u) => u.keyed);
+  const key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
+  const base = out.status && out.status.port ? `http://127.0.0.1:${out.status.port}` : "";
+  if (base) {
+    try {
+      let st = null;
+      for (let i = 0; i < 20 && !(st && st.storage); i++) {
+        await new Promise((r) => setTimeout(r, 300));
+        st = await (await fetch(base + "/api/state", { headers: { "X-Key": key } })).json();
+      }
+      out.state = { storage: st.storage, battery: st.battery };
+      const page = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-remote-room", backgroundThrottling: false } });
+      try {
+        await page.loadURL(`${base}/#k=${key}`);
+        out.page = await withLimit(page.webContents.executeJavaScript(`(async () => {
+          const room = document.getElementById("room");
+          for (let i = 0; i < 100 && room.hidden; i++) await new Promise((r) => setTimeout(r, 100));
+          return { shown: !room.hidden, text: room.textContent, red: room.querySelectorAll(".err").length };
+        })()`), "the remote page, the room left");
+      } finally {
+        page.destroy();
+      }
+    } catch (err) {
+      out.error = String((err && err.stack) || err);
+    }
+  }
+  if (out.status && !out.wasOn) await js("desktop.remote.stop()").catch(() => {});
+  const st = out.state || {}, storage = out.storage || {}, low = out.low || {};
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  check("Remote recording says how much room is left: the space free where takes are saved, about how many hours of takes it holds (each camera's video and its hands in the motion formats picked) and the battery's charge and time left (the device's own, else from how far it fell since unplugged, else a phone's believable current), in this app and on the remote page; little room and a low battery in red",
+    !out.error && storage.free > 0 && storage.total >= storage.free && typeof storage.battery === "boolean" &&
+      /^Space: [\d.]+ [GM]B free of [\d.]+ [GM]B/.test(out.card) && /^Space: [\d.]+ [GM]B free of /.test(out.cardAgain) &&
+      near(out.rate.got, out.rate.want) && near(out.rate.untracked, out.rate.untrackedWant) &&
+      out.about.join("|") === "under 5 min|about 30 min|about 5 h 20 min|about 41 h|about 6 days" &&
+      out.first.hoursLeft === null && near(out.later.hoursLeft, 19 / 6) && out.said.hoursLeft === 2.5 &&
+      out.charging.hoursToFull === 1.2 && out.charging.hoursLeft === null && out.unplugged.hoursLeft === null &&
+      out.phone.hoursLeft === 4 && out.milliamps.hoursLeft === null &&
+      low.storage.low && /^1\.0 GB free of 512 GB · (under 5 min|about \d+ min) of takes \(1 camera, /.test(low.storage.text) &&
+      low.battery.low && low.battery.text === "Battery 10%: about 25 min left" &&
+      st.storage && st.storage.free > 0 && st.storage.text && (storage.battery ? !!(st.battery && st.battery.text) : !st.battery) &&
+      out.page && out.page.shown && out.page.text.startsWith(`Space: ${st.storage.text.split(" · ")[0]}`) && (!st.battery || out.page.text.includes(st.battery.text)),
+    JSON.stringify({ ...out, status: undefined }));
 }
 
 // A take's details changed after recording. On the computer that keeps it: its details read back

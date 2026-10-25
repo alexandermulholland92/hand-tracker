@@ -434,6 +434,11 @@
       async status() {
         return server ? server.status() : off;
       },
+      // The room left in Documents and the battery: a phone with 52 GB of 128 free, its battery at
+      // 62%, draining 400 mA with 2400 mAh left (6 hours).
+      async storage() {
+        return { free: 52e9, total: 128e9, battery: { level: 0.62, charging: false, currentUa: -400000, chargeUah: 2400000 } };
+      },
       // Over Bluetooth (BtRigLink.java): its password kept, nothing advertised here.
       async bluetooth() {
         return { available: true, on: !!server && !!btPassword, error: "", password: btPassword ? "set" : null };
