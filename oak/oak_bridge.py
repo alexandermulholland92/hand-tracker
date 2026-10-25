@@ -17,9 +17,9 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
      --mjpeg: the camera sends its pictures as JPEG from its own encoder, about a tenth of the
      data; auto: over USB 2, where the raw pictures of one camera nearly fill the link, and on
      ARM boards such as a Raspberry Pi, where it also saves the processor encoding them.
-     --detect: also find objects on the camera (MobileNet-SSD's 20 kinds: person, cat, dog...),
-     each with its distance on a depth camera; needs mobilenet-ssd_openvino_2021.4_5shave.blob
-     in the models folder. If the camera can't run it alongside the hands, it starts without.
+     --detect: also find objects on the camera (YOLOv8 nano, COCO's 80 kinds: person, cat,
+     dog...), each with its distance and size on a depth camera; needs DETECT_MODEL in the models
+     folder. If the camera can't run it alongside the hands, it starts without.
      --picture depth: send the depth picture (coloured: near is red, far is blue) instead of the
      colour one, lined up with it; depth cameras only. blend: the colour picture with the depth
      picture laid over it, half see-through; side: the two side by side (twice as wide; the
@@ -95,10 +95,18 @@ def status(state, **extra):
     send({"status": state, **extra})
 
 
-DETECT_MODEL = "mobilenet-ssd_openvino_2021.4_5shave.blob"
-# MobileNet-SSD's kinds of object (PASCAL VOC), by its label number.
-VOC = ["background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
-       "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
+# The object finder: YOLOv8 nano, trained on COCO, for OpenVINO 2021.4 like the hands' models (one
+# pipeline's models share a version), from scripts/yolo-blob.py; its picture is 640 x 352.
+DETECT_MODEL = "yolov8n_coco_640x352_2021.4_6shave.blob"
+DETECT_SIZE = (640, 352)
+# COCO's kinds of object, by the model's label number.
+COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light", "fire hydrant",
+        "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe",
+        "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat",
+        "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl",
+        "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+        "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave",
+        "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"]
 MOTION_SIZE = (64, 36)  # the small grey picture Sentry mode measures movement on (made on the camera)
 
 
@@ -129,20 +137,34 @@ def host_grey(jpeg, frame):
     return None if g is None else cv2.resize(g, MOTION_SIZE, interpolation=cv2.INTER_AREA)
 
 
-def object_of(det):
+def object_of(det, focal=None):
     """A detection as sent: its kind, how sure, its box (0-1 of the picture) and, from a depth
-    camera, where it is (mm: x right, y down, z forward)."""
-    label = VOC[det.label] if 0 <= det.label < len(VOC) else str(det.label)
+    camera, where it is (mm: x right, y down, z forward) and its size (mm: width, height), by the
+    picture's focal length (focal: its share of the picture's width and height)."""
+    label = COCO[det.label] if 0 <= det.label < len(COCO) else str(det.label)
     box = [min(1.0, max(0.0, float(v))) for v in (det.xmin, det.ymin, det.xmax, det.ymax)]
     o = {"label": label, "score": round(float(det.confidence), 3), "box": [round(v, 4) for v in box]}
     sc = getattr(det, "spatialCoordinates", None)
     if sc is not None and sc.z > 0:
         o["xyz"] = [round(float(sc.x)), round(-float(sc.y)), round(float(sc.z))]  # depthai's y points up
+        if focal:
+            o["size"] = [round((box[2] - box[0]) * float(sc.z) / focal[0]), round((box[3] - box[1]) * float(sc.z) / focal[1])]
     return o
 
 
 DEPTH_VIEWS = ("depth", "blend", "side")  # the pictures made with the depth picture
 MONO_VIEWS = ("left", "right")  # a black-and-white camera's picture, for everything
+
+
+def focal_of(dai, tracker):
+    """The camera's focal length as a share of its picture's width and of its height, from its
+    calibration (for objects' sizes), or None."""
+    try:
+        socket = tracker.mono if getattr(tracker, "mono", None) is not None else dai.CameraBoardSocket.RGB
+        m = tracker.device.readCalibration().getCameraIntrinsics(socket, tracker.img_w, tracker.img_h)
+        return (m[0][0] / tracker.img_w, m[1][1] / tracker.img_h)
+    except Exception:
+        return None
 
 
 def view_picture(view, colour, depth):
@@ -296,23 +318,31 @@ def add_extras(dai, pipeline, cam, stereo, extras, tracker):
         every.inputs["frame"].setQueueSize(1)
         cam.preview.link(every.inputs["frame"])
         manip = pipeline.create(dai.node.ImageManip)
-        manip.initialConfig.setResize(300, 300)  # stretched: its boxes are then fractions of the picture as they are
+        manip.initialConfig.setResize(*DETECT_SIZE)  # (near enough the picture's shape: its boxes are fractions of the picture as it is)
         manip.initialConfig.setFrameType(dai.ImgFrame.Type.BGR888p)
-        manip.setMaxOutputFrameSize(300 * 300 * 3)
+        manip.setMaxOutputFrameSize(DETECT_SIZE[0] * DETECT_SIZE[1] * 3)
         manip.inputImage.setQueueSize(1)
         manip.inputImage.setBlocking(False)
         every.outputs["out"].link(manip.inputImage)
         if stereo is not None:
-            nn = pipeline.create(dai.node.MobileNetSpatialDetectionNetwork)
+            nn = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
             nn.setBoundingBoxScaleFactor(0.4)  # the middle of each box: its distance, not the background's
             nn.setDepthLowerThreshold(100)
             nn.setDepthUpperThreshold(15000)
+            # Each look waits for the depth picture of the same frame (by its number): with only the
+            # latest kept, that one was gone by the time the look was done, and none came out
+            # (hands off, on an OAK-D-PRO-W). 4 kept, from a pool of 8 so depth keeps its 30 a second.
             nn.inputDepth.setBlocking(False)
-            nn.inputDepth.setQueueSize(1)
+            nn.inputDepth.setQueueSize(4)
+            stereo.setNumFramesPool(8)
             stereo.depth.link(nn.inputDepth)
         else:
-            nn = pipeline.create(dai.node.MobileNetDetectionNetwork)
+            nn = pipeline.create(dai.node.YoloDetectionNetwork)
         nn.setBlobPath(extras["detect"])
+        # YOLOv8: no anchors; each box's kind among COCO's.
+        nn.setNumClasses(len(COCO))
+        nn.setCoordinateSize(4)
+        nn.setIouThreshold(0.5)
         nn.setConfidenceThreshold(0.4)  # (a cat seen from above, in poor light, is often less sure than 0.5)
         nn.setNumInferenceThreads(1)  # the hands' models need the camera's processor too
         nn.input.setBlocking(False)
@@ -529,10 +559,10 @@ def simulate(args):
         img = frame.copy()
         # With --detect: a cat walking along the bottom, and a person standing at the left.
         cat_x = (t * 0.3) % 1.2 - 0.1
-        objects = [{"label": "person", "score": 0.85, "box": [0.05, 0.1, 0.3, 0.98], "xyz": [-1400, 0, 3500]}]
+        objects = [{"label": "person", "score": 0.85, "box": [0.05, 0.1, 0.3, 0.98], "xyz": [-1400, 0, 3500], "size": [600, 1750]}]
         if -0.06 < cat_x < 1.06:  # (in the picture)
             objects.insert(0, {"label": "cat", "score": 0.9, "box": [round(max(0.0, cat_x - 0.08), 4), 0.72, round(min(1.0, cat_x + 0.08), 4), 0.95],
-                               "xyz": [round((cat_x - 0.5) * 3000), 600, 3000]})
+                               "xyz": [round((cat_x - 0.5) * 3000), 600, 3000], "size": [450, 250]})
         header = {"t": round(t * 1000, 1), "w": w, "h": h, "fps": 30, "hands": []}
         try:
             import cv2
@@ -819,6 +849,7 @@ def run(args):
         fps = 0.0
         queues = {name: tracker.device.getOutputQueue(name=name, maxSize=50 if name == "imu_out" else 1, blocking=False) for name in getattr(tracker, "extra_streams", [])}
         objects, objects_at = [], 0.0
+        focal = focal_of(dai, tracker) if "det_out" in queues else None
         picture = None
         view = extras.get("picture")
         depth_now = None  # (blend, side: the last depth picture)
@@ -830,7 +861,7 @@ def run(args):
             if "det_out" in queues:
                 found = queues["det_out"].tryGet()
                 if found is not None:
-                    objects, objects_at = [object_of(d) for d in found.detections], time.time()
+                    objects, objects_at = [object_of(d, focal) for d in found.detections], time.time()
                 elif time.time() - objects_at > 1:
                     objects = []  # (none for a second: they're gone)
             grey = None

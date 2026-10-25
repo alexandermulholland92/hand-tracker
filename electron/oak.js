@@ -54,13 +54,15 @@ const FAST_MODELS = [
   ["hand_landmark_full_sh6.blob", "43e40e21f729ba371c2c08be07533be0412921009bc61cc3e3e2986fe01d4463"],
   ["hand_landmark_lite_sh6.blob", "219cca957379ad0338f1278d6593be9e6c4780dfd2e77984d4783e9783071c50"],
 ];
-// The object finder (MobileNet-SSD, Apache 2.0, from Luxonis's model zoo as depthai's examples
-// list it): downloaded the first time Find objects is turned on, not with the setup.
+// The object finder (YOLOv8 nano trained on COCO: Ultralytics, AGPL-3.0; made for OpenVINO 2021.4
+// by scripts/yolo-blob.py, on the oak-models-2 release): downloaded the first time Find objects
+// is turned on, not with the setup. OLD_DETECT_MODELS: the ones before it, deleted then.
 const DETECT_MODEL = {
-  name: "mobilenet-ssd_openvino_2021.4_5shave.blob",
-  url: "https://artifacts.luxonis.com/artifactory/luxonis-depthai-data-local/network/mobilenet-ssd_openvino_2021.4_5shave.blob",
-  sha256: "782d80902c5ce7da01f8fc83894b68da33216edc93d94afb16dd7576a25e50e2",
+  name: "yolov8n_coco_640x352_2021.4_6shave.blob",
+  url: "https://github.com/alexandermulholland92/hand-tracker/releases/download/oak-models-2/yolov8n_coco_640x352_2021.4_6shave.blob",
+  sha256: "e883843bb0df59e0ba5bfcd1f3dad6582f83e7495dad11209f88502c3d012f07",
 };
+const OLD_DETECT_MODELS = ["mobilenet-ssd_openvino_2021.4_5shave.blob"];
 // Python reads the bridge from disk, so in the packaged app it's outside app.asar.
 const BRIDGE = path.join(__dirname, "..", "oak", "oak_bridge.py").replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
 
@@ -206,9 +208,10 @@ class OakCamera {
   async detectModel(onMessage) {
     const file = path.join(this.paths.models, DETECT_MODEL.name);
     if (fs.existsSync(file)) return true;
-    onMessage({ status: "starting", message: "Downloading the object finder for the OAK camera (15 MB, only the first time)…" });
+    onMessage({ status: "starting", message: "Downloading the object finder for the OAK camera (6 MB, only the first time)…" });
     try {
       await this.download(DETECT_MODEL.url, file, () => {}, { sha256: DETECT_MODEL.sha256 });
+      for (const old of OLD_DETECT_MODELS) fs.rmSync(path.join(this.paths.models, old), { force: true });
       return true;
     } catch (err) {
       onMessage({ status: "starting", message: `The object finder couldn't be downloaded (${err.message.replace(/\.$/, "")}), so the camera starts without it.` });

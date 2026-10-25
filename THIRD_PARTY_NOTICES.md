@@ -41,14 +41,15 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## MobileNet-SSD (OAK cameras' Find objects)
+## YOLOv8 (OAK cameras' Find objects)
 
-The object finder an OAK camera runs with *Find objects* on: MobileNet-SSD, trained on PASCAL
-VOC, from the OpenVINO Open Model Zoo (`mobilenet-ssd`), compiled for OAK cameras by Luxonis
-(`mobilenet-ssd_openvino_2021.4_5shave.blob`, as listed in depthai-python's examples). It isn't
-part of Hand Tracker: the desktop app downloads it from Luxonis, checked against its published
-checksum, the first time *Find objects* is turned on. Apache License 2.0
-(<https://raw.githubusercontent.com/openvinotoolkit/open_model_zoo/master/LICENSE>).
+The object finder an OAK camera runs with *Find objects* on: YOLOv8 nano by Ultralytics, trained
+on COCO (`yolov8n.pt`), under the GNU Affero General Public License v3.0
+(<https://github.com/ultralytics/ultralytics/blob/main/LICENSE>). Hand Tracker's
+`scripts/yolo-blob.py` makes it into the camera's model (its last layer as Luxonis's
+luxonis/tools make it for depthai, Apache License 2.0), compiled with Luxonis's blobconverter.
+It isn't part of the app: the desktop app downloads it from this project's oak-models-2
+release, checked against its checksum, the first time *Find objects* is turned on.
 
 ## MediaPipe
 

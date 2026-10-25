@@ -20,11 +20,13 @@
  * person) doesn't count. An OAK camera finds them itself (its object finder is turned on for
  * this); other cameras with an object finder in the app (object-finder.js), run only when
  * something moves.
- * Track animals (instead): only an animal found in a watched box is an alert (found in looks over
- * at least ANIMAL_CONFIRM_MS, so one stray find isn't), and its video goes on for as long as one
- * is found there (then STILL_S more), with no length limit. Movement too: movement is an alert
- * as well, as without it. The app's object finder looks every ANIMAL_LOOK_MS meanwhile (an
- * animal lying still is still found).
+ * Track animals (instead): only an animal found in a watched box is an alert, and its video goes
+ * on for as long as one is found there (then STILL_S more), with no length limit. It's made sure
+ * of first: found steadily for ANIMAL_CONFIRM_MS (so a stray find or two isn't), not where a
+ * person is found too, not one measured as tall as a person (a depth camera's), and an OAK
+ * camera's found again by the app's own object finder (another model). Movement too: movement
+ * is an alert as well, as without it. The app's object finder looks every ANIMAL_LOOK_MS
+ * meanwhile (an animal lying still is still found).
  *
  * Hand tracking is off while it's on (the cameras' pictures carry on, with no hands): nobody's
  * there to track, the processor is left for watching, and no skeletons are drawn on its photos
@@ -81,8 +83,14 @@
   const ANIMAL_MARGIN = 0.25; // an animal's box grown by this much each way (its movement blurs past it)
   const ANIMAL_HOLD_MS = 3000; // an animal found this recently still counts where it was (a finder misses it now and then)
   const LOOSE_STREAK = 2; // ignoring animals: looks in a row with movement no animal explains before it counts
-  const ANIMAL_CONFIRM_MS = 500; // tracking animals: found over at least this long before it's an alert
-  const ANIMAL_LOOK_MS = 1000; // tracking animals: the app's object finder looks this often (an OAK camera, 3 times a second)
+  const ANIMAL_CONFIRM_MS = 1000; // tracking animals: found steadily this long before it's an alert...
+  const ANIMAL_GAP_MS = 600; // ...missed for no longer than this (an OAK camera looks 3 times a second)
+  const ANIMAL_LOOK_MS = 1000; // tracking animals: the app's object finder looks this often (an OAK camera, 3 times a second)...
+  const ANIMAL_CHECK_MS = 350; // ...and this often while it's making sure of one it found
+  const PERSON_COVER = 0.5; // an animal's box covered this much by a person's (found within ANIMAL_HOLD_MS) is the person
+  const SMALL_ANIMALS = new Set(["bird", "cat", "dog", "sheep"]);
+  const SMALL_MAX_MM = 1300; // one of those a depth camera measures taller than this is a person
+  const SECOND_GAP_MS = 1000; // an OAK camera's animal looked for again by the app's object finder at most this often
   // ...where an OAK camera finds the objects: it looks 3 times a second (oak_bridge.py's
   // DETECT_GAP_S), so an animal walking in may not be found until up to ~0.45 s later.
   const OAK_LOOSE_STREAK = 4;
@@ -260,13 +268,34 @@
     return [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)];
   }
 
-  // The animals among objects found, remembered (for ANIMAL_HOLD_MS) -> the objects with boxes.
+  // A depth camera's object measured as tall as a person (size: [w, h] mm, in the camera's own
+  // picture, before it's turned) can't be a cat, dog, bird or sheep.
+  function tooTall(o, rotation) {
+    if (!SMALL_ANIMALS.has(String(o.label).toLowerCase()) || !Array.isArray(o.size)) return false;
+    return Number(o.size[(((rotation % 180) + 180) % 180) === 90 ? 0 : 1]) > SMALL_MAX_MM;
+  }
+
+  // The animals among objects found, remembered (for ANIMAL_HOLD_MS), and the people (for twice
+  // that: an animal is the person's if a person's found there before or after) -> the objects
+  // with boxes.
   function remember(st, objects, rotation, now = Date.now()) {
     const found = (objects || []).filter((o) => o && Array.isArray(o.box) && o.box.length === 4);
     st.animals = (st.animals || []).filter((a) => now - a.at < ANIMAL_HOLD_MS);
-    for (const o of found) if (ANIMALS.has(String(o.label).toLowerCase())) st.animals.push({ label: String(o.label).toLowerCase(), box: turnBox(o.box, rotation), at: now });
-    if (st.animals.length > 40) st.animals.splice(0, st.animals.length - 40);
+    st.people = (st.people || []).filter((p) => now - p.at < 2 * ANIMAL_HOLD_MS);
+    for (const o of found) {
+      const label = String(o.label).toLowerCase();
+      if (ANIMALS.has(label) && !tooTall(o, rotation)) st.animals.push({ label, box: turnBox(o.box, rotation), at: now });
+      else if (label === "person") st.people.push({ box: turnBox(o.box, rotation), at: now });
+    }
+    for (const list of [st.animals, st.people]) if (list.length > 200) list.splice(0, list.length - 200);
     return found;
+  }
+
+  // How much of box a [x0, y0, x1, y1] box b covers (0-1).
+  function covered(a, b) {
+    const w = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), h = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+    const area = (a[2] - a[0]) * (a[3] - a[1]);
+    return area > 0 ? (w * h) / area : 0;
   }
 
   // Ignoring animals: is the movement in st.mask all where an animal is, or was in the last few
@@ -281,18 +310,33 @@
   }
 
   // Tracking animals: the animals found in a watched box (by its middle), now or in the last few
-  // seconds (a finder misses one now and then) -> { label (the latest's kind), span (ms from the
-  // first of them to the latest) }, or null. Animals found are remembered in st.animals.
+  // seconds (a finder misses one now and then), and not where a person's found too -> { label and
+  // box (the latest's), span (ms it's been found steadily up to now: none missed for longer than
+  // ANIMAL_GAP_MS; 0 if the latest isn't that recent) }, or null. Animals and people found are
+  // remembered in st.animals and st.people.
   function animalSeen(st, off, rows, cols, now = Date.now()) {
     const watched = (b) => {
       const x = Math.min(cols - 1, Math.max(0, Math.floor(((b[0] + b[2]) / 2) * cols)));
       const y = Math.min(rows - 1, Math.max(0, Math.floor(((b[1] + b[3]) / 2) * rows)));
       return !off.has(y * cols + x);
     };
-    const held = (st.animals || []).filter((a) => now - a.at < ANIMAL_HOLD_MS && watched(a.box));
+    const people = st.people || [];
+    const persons = (a) => people.some((p) => Math.abs(p.at - a.at) < ANIMAL_HOLD_MS && covered(a.box, p.box) >= PERSON_COVER);
+    const held = (st.animals || []).filter((a) => now - a.at < ANIMAL_HOLD_MS && watched(a.box) && !persons(a));
     if (!held.length) return null;
     const last = held[held.length - 1];
-    return { label: last.label, span: last.at - held[0].at };
+    let first = last;
+    for (let i = held.length - 2; i >= 0 && first.at - held[i].at <= ANIMAL_GAP_MS; i--) first = held[i];
+    return { label: last.label, box: last.box, span: now - last.at <= ANIMAL_GAP_MS ? last.at - first.at : 0 };
+  }
+
+  // The app's object finder's look at the picture an OAK camera found an animal in (box, as
+  // shown) -> "person" (a person's there), "animal" (an animal of any kind is there), or "".
+  function opinion(objects, box) {
+    const there = (o) => Array.isArray(o.box) && o.box.length === 4 && Math.max(covered(box, o.box), covered(o.box, box)) >= 0.5;
+    const kinds = objects.filter(there).map((o) => String(o.label).toLowerCase());
+    if (objects.some((o) => String(o.label).toLowerCase() === "person" && Array.isArray(o.box) && covered(box, o.box) >= PERSON_COVER)) return "person";
+    return kinds.some((k) => ANIMALS.has(k)) ? "animal" : "";
   }
 
   // ---------- each camera, eight times a second ----------
@@ -369,10 +413,11 @@
   // for every ANIMAL_LOOK_MS. An animal found long enough is an alert, and keeps its video going.
   function watchAnimals(v, st, off) {
     const now = Date.now();
+    const sure = !st.session && (st.animals || []).some((a) => now - a.at <= ANIMAL_GAP_MS); // (making sure of one)
     if (v.objects) {
       const objects = v.objects();
       if (objects) remember(st, objects, v.rotation ? v.rotation() : 0, now);
-    } else if (!st.finding && now - (st.lookedAt || 0) >= ANIMAL_LOOK_MS) {
+    } else if (!st.finding && now - (st.lookedAt || 0) >= (sure ? ANIMAL_CHECK_MS : ANIMAL_LOOK_MS)) {
       st.finding = true;
       st.lookedAt = now;
       let image = null;
@@ -388,7 +433,36 @@
       } else st.finding = false;
     }
     const seen = animalSeen(st, off, cfg.rows, cfg.cols, now);
-    if (seen && (st.session || seen.span >= ANIMAL_CONFIRM_MS)) moving(v, st, seen.label);
+    if (!seen || (!st.session && seen.span < ANIMAL_CONFIRM_MS)) return;
+    if (!st.session && v.objects && !(now - (st.agreedAt || 0) < ANIMAL_HOLD_MS)) return secondLook(v, st, seen, now);
+    moving(v, st, seen.label);
+  }
+
+  // An OAK camera's animal (not yet an alert), looked for again by the app's own object finder
+  // in the picture as shown: it agrees (st.agreedAt: then it's an alert), finds a person there
+  // (the animal's theirs), or neither (looked at again in a moment). Without that finder (or a
+  // picture), the camera's find goes.
+  function secondLook(v, st, seen, now) {
+    if (st.finding || now - (st.secondAt || 0) < SECOND_GAP_MS) return;
+    st.secondAt = now;
+    let image = null;
+    try {
+      image = v.frame();
+    } catch {
+      image = null;
+    }
+    if (!image) {
+      st.agreedAt = now;
+      return;
+    }
+    st.finding = true;
+    findObjects(image)
+      .then((objects) => {
+        const verdict = objects ? opinion(objects, seen.box) : objects === null ? "animal" : "";
+        if (verdict === "animal") st.agreedAt = Date.now();
+        else if (verdict === "person") (st.people = st.people || []).push({ box: seen.box, at: Date.now() });
+      })
+      .finally(() => (st.finding = false));
   }
 
   // Movement in a watched box: an alert (or more of one going on), unless it's an animal's.
@@ -788,6 +862,6 @@
   global.Sentry = {
     init, wantsMotion, wantsObjects, wantsTracking, remoteState, command,
     isArmed: () => !!cfg && cfg.armed,
-    _test: { shrink, blur, moved, levels, turn, turnBox, withoutAnimals, animalsOnly, animalSeen, remember, ntfyMessage, serverOnly, sample, events, per, toCamera, config: () => cfg },
+    _test: { shrink, blur, moved, levels, turn, turnBox, withoutAnimals, animalsOnly, animalSeen, remember, opinion, ntfyMessage, serverOnly, sample, events, per, toCamera, config: () => cfg },
   };
 })(typeof window !== "undefined" ? window : globalThis);

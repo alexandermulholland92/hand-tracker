@@ -784,17 +784,39 @@ function checkSentryMath() {
 }
 
 // Sentry mode tracking animals (sentry.js, as loaded by checkSentryMath), with a stand-in OAK
-// camera whose picture never moves and whose objects are set here: a cat found for a moment isn't
-// an alert, one found for a second is (its kind on the alert and in ntfy's message), and one in a
-// box left out isn't. Ignoring animals and tracking them go one or the other.
+// camera whose picture never moves and whose objects are set here, and a stand-in for the app's
+// own object finder (its second look). Made sure of first: a cat found for a moment isn't an
+// alert, nor one found twice with a gap; one found steadily for a second is (its kind on the alert
+// and in ntfy's message), and its video goes on while it's there. Not a dog where a person's found
+// too, nor one as tall as a person (a depth camera's size), nor one the app's finder sees as a
+// person or doesn't see (until it does), nor one in a box left out. Ignoring animals and tracking
+// them go one or the other.
 async function checkSentryAnimals() {
   const S = globalThis.Sentry;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const grey = { w: 64, h: 36, data: new Uint8Array(64 * 36).fill(100) };
-  let objects = null;
-  const view = { key: "check-cam", index: 0, name: "Check cam", grey: () => grey, objects: () => objects, rotation: () => 0, mirrored: () => false, canvas: () => null, frame: () => null };
+  let objects = null, picture = null, finderSays = [];
+  const asked = [];
+  const view = { key: "check-cam", index: 0, name: "Check cam", grey: () => grey, objects: () => objects, rotation: () => 0, mirrored: () => false, canvas: () => null, frame: () => picture };
+  const realFinder = globalThis.ObjectFinder;
+  globalThis.ObjectFinder = { load: async () => {}, loading: () => false, find: async (image) => (asked.push(image), finderSays) };
   const saved = {};
   S.init({ prefs: saved, setPref: (k, v) => (saved[k] = v), views: () => [view], host: null, hostName: () => "pi", link: () => "", looking: () => true });
+  const n = () => S._test.events.length;
+  // Each case afresh: what the camera remembered forgotten (Sentry off and hidden), then on again.
+  const afresh = async () => {
+    objects = null;
+    await S.command({ armed: false, shown: false });
+    await S.command({ shown: true, armed: true });
+  };
+  // -> the alerts made meanwhile
+  const during = async (ms, what) => {
+    const before = n();
+    objects = what;
+    await sleep(ms);
+    return n() - before;
+  };
+  const cat = { label: "cat", score: 0.8, box: [0.1, 0.1, 0.3, 0.4] };
   const out = {};
   try {
     await S.command({ shown: true, photo: false, video: false, sound: false, ignoreAnimals: true });
@@ -803,42 +825,66 @@ async function checkSentryAnimals() {
     out.tracking = { track: c.trackAnimals, ignore: c.ignoreAnimals, objects: S.wantsObjects() };
     await S.command({ armed: true });
     out.wants = S.wantsObjects();
-    // A cat found for a moment (one stray find), then nothing.
-    objects = [{ label: "cat", score: 0.7, box: [0.1, 0.1, 0.3, 0.4] }];
-    await sleep(200);
-    objects = [];
-    await sleep(3500); // (until it's forgotten)
-    out.stray = S._test.events.length;
-    // A cat for a second: an alert, with its kind.
-    objects = [{ label: "cat", score: 0.8, box: [0.1, 0.1, 0.3, 0.4] }];
-    await sleep(1000);
-    out.alert = S._test.events.length ? { animal: S._test.events[0].animal, camera: S._test.events[0].camera } : null;
+    // A cat found for a moment (one stray find), then nothing; then found twice with a gap.
+    out.stray = await during(200, [cat]);
+    await afresh();
+    out.gapped = (await during(300, [cat])) + (await during(800, [])) + (await during(300, [cat]));
+    await afresh();
+    // A cat found steadily (no picture for the app's finder: the camera's find goes): an alert, with its kind.
+    const before = n();
+    out.steady = await during(1600, [cat]);
+    out.alert = n() > before ? { animal: S._test.events[0].animal, camera: S._test.events[0].camera } : null;
     out.state = (S.remoteState().events[0] || {}).animal;
     out.note = S.remoteState().note;
     // ...still there: its video goes on (one alert).
-    await sleep(600);
-    out.alerts = S._test.events.length;
+    out.more = await during(600, [cat]);
     out.recording = !!(S._test.per.get("check-cam") || {}).session;
-    objects = [];
-    await S.command({ armed: false });
+    await afresh();
+    // A dog where a person's found too (the person's box covers it).
+    out.person = await during(1800, [{ label: "dog", score: 0.6, box: [0.42, 0.3, 0.58, 0.7] }, { label: "person", score: 0.7, box: [0.4, 0.05, 0.62, 0.98] }]);
+    await afresh();
+    // A dog a depth camera measures 1.7 m tall (a person); then one 0.6 m tall is one.
+    out.tall = await during(1800, [{ label: "dog", score: 0.7, box: [0.4, 0.05, 0.6, 0.95], xyz: [0, 0, 2500], size: [500, 1700] }]);
+    out.tallRemembered = ((S._test.per.get("check-cam") || {}).animals || []).length;
+    await afresh();
+    out.small = await during(1800, [{ label: "dog", score: 0.7, box: [0.4, 0.5, 0.6, 0.95], xyz: [0, 0, 2500], size: [500, 600] }]);
+    await afresh();
+    // The app's finder looks again (the camera's picture now there): it sees a person, then nothing,
+    // then the cat (an alert).
+    picture = { stand_in: true };
+    finderSays = [{ label: "person", score: 0.9, box: [0.05, 0.05, 0.35, 0.6] }];
+    out.secondPerson = await during(2200, [cat]);
+    out.secondAsked = asked.length;
+    out.secondPeople = ((S._test.per.get("check-cam") || {}).people || []).length;
+    await afresh();
+    finderSays = [];
+    out.secondNothing = await during(1800, [cat]);
+    finderSays = [{ label: "cat", score: 0.6, box: [0.12, 0.12, 0.31, 0.42] }];
+    out.secondAgrees = await during(1500, [cat]);
+    out.secondPicture = asked.every((a) => a === picture);
+    out.opinion = [S._test.opinion([{ label: "dog", box: [0.1, 0.1, 0.3, 0.4] }], cat.box), S._test.opinion([{ label: "person", box: [0, 0, 0.5, 0.9] }, { label: "cat", box: cat.box }], cat.box), S._test.opinion([{ label: "cat", box: [0.7, 0.7, 0.9, 0.9] }], cat.box)];
+    picture = null;
+    await afresh();
     // A dog in a box left out isn't one.
-    await S.command({ armed: true, rows: 1, cols: 2, box: { camera: 0, cell: 0, off: true } });
-    objects = [{ label: "dog", score: 0.8, box: [0.1, 0.2, 0.3, 0.6] }];
-    await sleep(1000);
-    out.leftOut = S._test.events.length;
+    await S.command({ rows: 1, cols: 2, box: { camera: 0, cell: 0, off: true } });
+    out.leftOut = await during(1800, [{ label: "dog", score: 0.8, box: [0.1, 0.2, 0.3, 0.6] }]);
     await S.command({ ignoreAnimals: true });
     out.ignoring = { track: S._test.config().trackAnimals, ignore: S._test.config().ignoreAnimals };
     out.ntfy = [S._test.ntfyMessage({ at: Date.UTC(2026, 9, 24, 12, 0, 0), camera: "Head", animal: "cat" }).message, S._test.ntfyMessage({ at: 0, camera: "Head", animal: "elephant" }).message, S._test.ntfyMessage({ at: 0, camera: "Head" }).message];
   } catch (err) {
     out.error = String((err && err.stack) || err);
   } finally {
-    objects = null;
+    objects = picture = null;
     await S.command({ armed: false, shown: false }).catch(() => {});
+    globalThis.ObjectFinder = realFinder;
   }
-  check("Sentry mode tracking animals: only an animal is an alert, one found for a second (not one stray find), with its kind on the alert and in ntfy's message (\"A cat at…\"); its video goes on while it's there (one alert); not in a box left out; ignoring animals and tracking them, one or the other",
+  check("Sentry mode tracking animals: only an animal is an alert, made sure of first: not one stray find, nor two with a gap; one found steadily for a second is, with its kind on the alert and in ntfy's message (\"A cat at…\"), its video going on while it's there (one alert). Not a dog where a person's found too, nor one a depth camera measures as tall as a person; the app's own finder looks again first (not while it sees a person, or nothing there, until it sees an animal); not in a box left out; ignoring animals and tracking them, one or the other",
     !out.error && out.tracking.track === true && out.tracking.ignore === false && out.tracking.objects === false && out.wants === true &&
-      out.stray === 0 && out.alert && out.alert.animal === "cat" && out.state === "cat" && /for animals/.test(out.note) && out.alerts === 1 && out.recording &&
-      out.leftOut === 1 && out.ignoring.track === false && out.ignoring.ignore === true &&
+      out.stray === 0 && out.gapped === 0 && out.steady === 1 && out.alert && out.alert.animal === "cat" && out.state === "cat" && /for animals/.test(out.note) && out.more === 0 && out.recording &&
+      out.person === 0 && out.tall === 0 && out.tallRemembered === 0 && out.small === 1 &&
+      out.secondPerson === 0 && out.secondAsked >= 1 && out.secondPeople > 0 && out.secondNothing === 0 && out.secondAgrees === 1 && out.secondPicture &&
+      out.opinion.join() === "animal,person," &&
+      out.leftOut === 0 && out.ignoring.track === false && out.ignoring.ignore === true &&
       /^A cat at /.test(out.ntfy[0]) && /^An elephant at /.test(out.ntfy[1]) && /^Movement at /.test(out.ntfy[2]),
     JSON.stringify(out));
 }
