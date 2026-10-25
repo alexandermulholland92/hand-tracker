@@ -195,13 +195,13 @@
   const roomRatio = () => (Number(prefs.remoteRoomRatio) > 0 ? Number(prefs.remoteRoomRatio) : 1);
 
   // The cameras a take would record (running, else those picked and plugged in): each one's
-  // picture size and whether its hands are tracked.
+  // picture size, frame rate and whether its hands are tracked.
   function takeCameras() {
-    if (!cams().isActive()) return available().filter((c) => c.use && c.present).map((c) => ({ width: GUESS_SIZE[0], height: GUESS_SIZE[1], tracking: c.tracking !== false }));
+    if (!cams().isActive()) return available().filter((c) => c.use && c.present).map((c) => ({ width: GUESS_SIZE[0], height: GUESS_SIZE[1], fps: 0, tracking: c.tracking !== false }));
     const canvases = new Map(cams().previewSources().map((s) => [s.i, s.canvas]));
     return cams().remoteState().cameras.filter((c) => !c.error).map((c) => {
       const cv = canvases.get(c.index);
-      return { width: (cv && cv.width) || GUESS_SIZE[0], height: (cv && cv.height) || GUESS_SIZE[1], tracking: c.tracking !== false };
+      return { width: (cv && cv.width) || GUESS_SIZE[0], height: (cv && cv.height) || GUESS_SIZE[1], fps: c.fps, tracking: c.tracking !== false };
     });
   }
   function rateOf(list) {
@@ -219,11 +219,13 @@
       return n + b;
     }, 0);
   }
-  // Sentry's videos while it's on: each camera's at standard quality, with its sound or not.
+  // Sentry's videos while it's on: each camera's at standard quality, at its frame rate (30 or
+  // 60: sentry.js), with its sound or not.
   function sentryRate(list) {
     const s = prefs.sentry || {};
     if (!global.Sentry || !global.Sentry.isArmed || !global.Sentry.isArmed() || s.video === false || !global.CameraVideo || !global.CameraVideo.bitsPerSecond) return 0;
-    return list.reduce((n, c) => n + global.CameraVideo.bitsPerSecond({ width: c.width, height: c.height, fps: VIDEO_FPS, sound: s.sound !== false }) / 8, 0);
+    const fps = (c) => (global.Sentry.videoFps ? global.Sentry.videoFps(c.fps) : VIDEO_FPS);
+    return list.reduce((n, c) => n + global.CameraVideo.bitsPerSecond({ width: c.width, height: c.height, fps: fps(c), sound: s.sound !== false }) / 8, 0);
   }
 
   // The battery's time left: what the device says, else worked out from how far its level has

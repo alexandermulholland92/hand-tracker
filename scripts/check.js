@@ -775,12 +775,14 @@ function checkSentryMath() {
   const oak = { mask };
   out.oakTurned = [S.turnBox([0, 0.75, 1, 1], 90).join(), S.animalsOnly(oak, [{ label: "cat", box: [0, 0.75, 1, 1] }], 90, new Set(), 0.08, 1, 4, 0)];
   out.server = [S.serverOnly("https://ntfy.sh/handtracker-abc/", "handtracker-abc"), S.serverOnly("https://ntfy.example.org/ntfy", "handtracker-abc"), S.serverOnly("nonsense", "x")];
-  check("Sentry mode measures movement box by box (only the corner that changed), not the light changing everywhere at once; an OAK camera's turned grey picture turns with it, and its objects' boxes too; movement where an animal is (and no person) is left out, and where one was for a few seconds; ntfy's link as its server is just the server",
+  // Its videos at the camera's rate: 60 from a camera running at 60 (its Frame rate 60), else 30.
+  out.videoFps = [58, 50, 31, 0].map(globalThis.Sentry.videoFps);
+  check("Sentry mode measures movement box by box (only the corner that changed), not the light changing everywhere at once; an OAK camera's turned grey picture turns with it, and its objects' boxes too; movement where an animal is (and no person) is left out, and where one was for a few seconds; ntfy's link as its server is just the server; its videos at the camera's frame rate (60 or 30)",
     out.corner.slice(0, 11).every((v) => v === 0) && out.corner[11] > 0.5 && out.light === null &&
       out.turned === "2x4:4,0,5,1,6,2,7,3" && out.animals.none === 1 && out.animals.cat === 0 && out.animals.catAndPerson === 1 &&
       out.mirrored.join() === "15,30,5" && out.held.join() === "true,true,false,false" &&
       out.oakTurned[0] === "0,0,0.25,1" && out.oakTurned[1] === true &&
-      out.server.join() === "https://ntfy.sh,https://ntfy.example.org/ntfy,https://ntfy.sh",
+      out.server.join() === "https://ntfy.sh,https://ntfy.example.org/ntfy,https://ntfy.sh" && out.videoFps.join() === "60,60,30,30",
     JSON.stringify(out));
 }
 
@@ -5846,7 +5848,7 @@ async function checkViewer(jsonPath, files) {
     for (let i = 0; i < d.length; i += 4) if (d[i] > 60 || d[i + 1] > 60 || d[i + 2] > 60) lit++;
     return { lit, time: document.getElementById("playTime").textContent };
   })()`);
-  check("Playback draws the skeletons and follows the frame table", played.lit > 500 && !played.time.startsWith("0.00 "), `${played.lit} lit pixels at ${played.time}`);
+  check("Playback draws the skeletons and follows the frame table (its time as 0:01.23 / 0:05.40)", played.lit > 500 && /^\d+:\d\d\.\d\d \/ \d+:\d\d\.\d\d$/.test(played.time) && !played.time.startsWith("0:00.00 "), `${played.lit} lit pixels at ${played.time}`);
   const table = await js(`({ selected: document.getElementById("columnSelect").selectedOptions[0].textContent,
     wrist: document.getElementById("columnSelect").options[0].textContent, note: !!document.querySelector(".table-note"),
     head: [...document.querySelectorAll("#tableHead th")].map((th) => th.textContent).slice(-1)[0] })`);

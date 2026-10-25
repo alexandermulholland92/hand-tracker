@@ -63,6 +63,7 @@
  *                          //   deleteAlerts: [alert ids] (their photos and videos too),
  *                          //   deleteAll (every Sentry photo and video in the folder) }
  *   Sentry.isArmed()
+ *   Sentry.videoFps(cameraFps) // its videos' frame rate for a camera running at that: 30, or 60 (Frame rate 60)
  *   Sentry._test            // for the checks
  */
 
@@ -77,6 +78,7 @@
   const STILL_S = 10; // a video stops once it's been still this long
   const MAX_VIDEO_S = 300;
   const VIDEO_FPS = 30;
+  const FAST_FPS = 45; // a camera running faster than this (its Frame rate 60): its videos at 60
   const MAX_EVENTS = 50;
   const MAX_ROWS = 9, MAX_COLS = 16;
   const ANIMALS = new Set(["bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe"]);
@@ -535,7 +537,7 @@
       try {
         const canvas = v.canvas();
         if (v.want) v.want(true);
-        st.session.rec = global.CameraVideo.start({ canvas, fps: VIDEO_FPS, audio: !!cfg.sound, preferMp4: true });
+        st.session.rec = global.CameraVideo.start({ canvas, fps: videoFps(v.fps ? v.fps() : 0), audio: !!cfg.sound, preferMp4: true });
       } catch (err) {
         st.session.videoError = errText(err);
       }
@@ -544,6 +546,9 @@
     st.lastAlertAt = Date.now();
     raiseAlert(v, st.session).catch((err) => console.warn("Sentry alert:", err));
   }
+
+  // A video's frame rate, from its camera's: 30 or 60.
+  const videoFps = (cameraFps) => (cameraFps > FAST_FPS ? 60 : VIDEO_FPS);
 
   function baseName(v, at) {
     const p = (n) => String(n).padStart(2, "0");
@@ -862,6 +867,7 @@
   global.Sentry = {
     init, wantsMotion, wantsObjects, wantsTracking, remoteState, command,
     isArmed: () => !!cfg && cfg.armed,
+    videoFps,
     _test: { shrink, blur, moved, levels, turn, turnBox, withoutAnimals, animalsOnly, animalSeen, remember, opinion, ntfyMessage, serverOnly, sample, events, per, toCamera, config: () => cfg },
   };
 })(typeof window !== "undefined" ? window : globalThis);

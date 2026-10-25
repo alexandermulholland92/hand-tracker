@@ -1128,6 +1128,12 @@
       objects: t.oak ? () => t.objects || null : null,
       oak: !!t.oak,
       want: (on) => (t.wants = Math.max(0, (t.wants || 0) + (on ? 1 : -1))),
+      // Its frame rate now (Sentry's videos follow it).
+      fps: () => {
+        const api = tileApi(t);
+        const st = api ? api.status() : null;
+        return st ? st.fps : 0;
+      },
     }));
   }
 

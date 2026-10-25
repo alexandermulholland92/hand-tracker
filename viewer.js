@@ -65,6 +65,12 @@
   }
   const num = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
   const fmt = (v, digits = 3) => (Number.isFinite(v) ? v.toFixed(digits) : "—");
+  // A length or a moment in seconds as "0:12.34", "1:05.20" or "1:02:03.50" (digits: the decimals kept).
+  function clock(seconds, digits = 2) {
+    const s = Math.max(0, Math.round((seconds || 0) * 10 ** digits) / 10 ** digits);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = (s % 60).toFixed(digits).padStart(digits ? digits + 3 : 2, "0");
+    return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+  }
 
   let current = null; // { data, name, takPath?, takInfo? }
   let player = null;
@@ -272,7 +278,7 @@
     slider.max = String(Math.max(duration, 0.001));
     const render = () => {
       slider.value = String(t);
-      label.textContent = `${t.toFixed(2)} / ${duration.toFixed(2)} s`;
+      label.textContent = `${clock(t)} / ${clock(duration)}`;
       draw(t);
     };
     const tick = (now) => {
@@ -499,7 +505,7 @@
         <div class="summary-grid">
           <div class="summary-item"><div class="value">${esc(handNames)}</div><div class="label">Hands</div></div>
           <div class="summary-item"><div class="value">${totalFrames}</div><div class="label">Frames</div></div>
-          <div class="summary-item"><div class="value">${duration.toFixed(2)}s</div><div class="label">Duration</div></div>
+          <div class="summary-item"><div class="value">${clock(duration)}</div><div class="label">Duration</div></div>
           <div class="summary-item"><div class="value">${data.frame_rate != null ? esc(num(data.frame_rate)) : "—"}</div><div class="label">Frame Rate</div></div>
           ${recorded && !isNaN(recorded) ? `<div class="summary-item"><div class="value">${esc(recorded.toLocaleString())}</div><div class="label">Recorded</div></div>` : ""}
         </div>
@@ -511,7 +517,7 @@
       <div class="card">
         <div class="section-label">Task Phases Over Time</div>
         ${hands.map((h) => renderHandTimeline(h, duration)).join("")}
-        <div class="time-axis"><span>0s</span><span>${(duration / 2).toFixed(1)}s</span><span>${duration.toFixed(1)}s</span></div>
+        <div class="time-axis"><span>${clock(0, 1)}</span><span>${clock(duration / 2, 1)}</span><span>${clock(duration, 1)}</span></div>
       </div>
 
       <div class="card">
@@ -793,7 +799,7 @@
         <div class="summary-grid">
           <div class="summary-item"><div class="value">${md.labels.length}</div><div class="label">Markers</div></div>
           <div class="summary-item"><div class="value">${md.frame_count}</div><div class="label">Frames</div></div>
-          <div class="summary-item"><div class="value">${md.duration.toFixed(2)}s</div><div class="label">Duration</div></div>
+          <div class="summary-item"><div class="value">${clock(md.duration)}</div><div class="label">Duration</div></div>
           <div class="summary-item"><div class="value">${esc(Math.round(md.frame_rate * 100) / 100)}</div><div class="label">Frame Rate</div></div>
           <div class="summary-item"><div class="value">${Math.round(coverage * 100)}%</div><div class="label">Tracked</div></div>
           ${tak ? `<div class="summary-item"><div class="value">${tak.rigidBodies}</div><div class="label">Rigid Bodies</div></div><div class="summary-item"><div class="value">${tak.skeletons}</div><div class="label">Skeletons</div></div>` : ""}
@@ -1047,7 +1053,7 @@
     const describe = (info) => {
       if (video !== mine) return;
       const parts = [`<b>${esc(file.name)}</b>`, size];
-      if (info.duration) parts.push(`${info.duration.toFixed(1)} s`);
+      if (info.duration) parts.push(clock(info.duration, 1));
       if (info.width) parts.push(`${info.width} × ${info.height}`);
       if (info.fps) parts.push(`${Math.round(info.fps * 100) / 100} fps`);
       if (info.videoCodec) parts.push(esc(info.videoCodec));

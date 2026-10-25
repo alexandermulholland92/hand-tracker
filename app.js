@@ -152,9 +152,11 @@
   function pad2(n) {
     return String(n).padStart(2, "0");
   }
+  // "01:05", or past an hour "1:02:03"
   function formatClock(seconds) {
     const s = Math.max(0, Math.floor(seconds));
-    return `${pad2(Math.floor(s / 60))}:${pad2(s % 60)}`;
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return h ? `${h}:${pad2(m)}:${pad2(s % 60)}` : `${pad2(m)}:${pad2(s % 60)}`;
   }
   const { formatBytes, downloadBlob, checkedIds, renderResults } = ExportUI; // export-ui.js
   function timestampName() {

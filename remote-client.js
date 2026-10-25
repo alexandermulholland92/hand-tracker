@@ -727,7 +727,7 @@
             const t = new Date(e.at);
             const when = `${t.toLocaleDateString()} ${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}`;
             const img = e.photo && sentryPhotos.get(e.photo) ? `<img src="${esc(sentryPhotos.get(e.photo))}" alt="" />` : "";
-            const video = e.video ? `<br />Video: ${esc(e.video)}${e.seconds ? ` (${e.seconds} s)` : ""}` : "";
+            const video = e.video ? `<br />Video: ${esc(e.video)}${e.seconds ? ` (${clock(e.seconds)})` : ""}` : "";
             const problem = e.problem ? `<br /><span class="err">${esc(e.problem)}</span>` : "";
             const armed = isArmed(e.id);
             const del = st.canDelete

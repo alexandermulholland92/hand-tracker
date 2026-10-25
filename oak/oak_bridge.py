@@ -331,10 +331,12 @@ def add_extras(dai, pipeline, cam, stereo, extras, tracker):
             nn.setDepthUpperThreshold(15000)
             # Each look waits for the depth picture of the same frame (by its number): with only the
             # latest kept, that one was gone by the time the look was done, and none came out
-            # (hands off, on an OAK-D-PRO-W). 4 kept, from a pool of 8 so depth keeps its 30 a second.
+            # (hands off, on an OAK-D-PRO-W). 4 kept at 30 a second (as long a time's worth at more:
+            # 8 at 60), from a pool of twice as many so depth keeps its rate.
+            keep = max(4, math.ceil(4 * (getattr(tracker, "internal_fps", None) or 30) / 30))
             nn.inputDepth.setBlocking(False)
-            nn.inputDepth.setQueueSize(4)
-            stereo.setNumFramesPool(8)
+            nn.inputDepth.setQueueSize(keep)
+            stereo.setNumFramesPool(2 * keep)
             stereo.depth.link(nn.inputDepth)
         else:
             nn = pipeline.create(dai.node.YoloDetectionNetwork)
@@ -388,8 +390,9 @@ class PictureOnly:
     asked for alongside (add_extras); none of the hands' models run, leaving the camera's
     processor to the rest. It's what stream() and run() use of a tracker; its frames have no
     hands. The depth cameras run only for something that uses them (an object's distance, the
-    depth picture), and the frame rate is the one asked for, else 30 (at most 30 alongside the
-    depth cameras or the object finder, as Sentry mode's videos are)."""
+    depth picture), and the frame rate is the one asked for (60 too, with the depth cameras and
+    the object finder: it looks only a few times a second, on cores of its own; Sentry mode's
+    videos follow the camera's rate), else 30."""
 
     RESOLUTION = (1920, 1080)
 
@@ -413,7 +416,7 @@ class PictureOnly:
         cameras = device.getConnectedCameras()
         self.has_depth = bool(depth and dai.CameraBoardSocket.LEFT in cameras and dai.CameraBoardSocket.RIGHT in cameras)
         self.stereo = self.has_depth and bool(extras.get("detect") or extras.get("picture") in DEPTH_VIEWS)
-        self.internal_fps = min(fps or 30, 30) if self.stereo or extras.get("detect") else fps or 30
+        self.internal_fps = fps or 30
         device.startPipeline(self.create_pipeline(dai, extras))
         self.q_video = device.getOutputQueue(name="cam_out", maxSize=1, blocking=False)
 
