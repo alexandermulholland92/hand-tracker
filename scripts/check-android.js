@@ -1131,8 +1131,11 @@ async function checkPhoneAsRig(win, js) {
     }
     // (Listed by name: Android gives cameras new ids every start, so picks and roles kept by id would be lost.)
     out.available = (a.cameras || []).map((c) => ({ present: c.present, use: c.use, byName: c.id.startsWith("cam:") }));
-    // (About how many hours of takes the phone's cameras leave room for.)
+    // (About how many hours of takes the phone's cameras leave room for; once picked, still so after
+    // a look that couldn't list them, as one before the camera's first opened can't.)
     out.roomTakes = ((await state()).storage || {}).text;
+    await js(`RemoteRecordUI.changeCamera("pick", { pick: { id: ${JSON.stringify(a.cameras[0].id)}, use: true } })`);
+    out.roomUnlisted = await js(`RemoteRecordUI._room.unlisted().storage.text`);
     out.mode = await post({ action: "mode", mode: "freeform" });
     // (The take details are optional; with the page's hidden switch on, needed first.)
     out.defaultRequired = (await state()).detailsRequired;
@@ -1187,7 +1190,7 @@ async function checkPhoneAsRig(win, js) {
       /^52\.0 GB free of 128 GB/.test(out.room.storage || "") && out.room.battery === "Battery 62%: about 6 h left" &&
       out.room.card.startsWith("Space: 52.0 GB free of 128 GB") && out.room.card.endsWith(" · Battery 62%: about 6 h left") &&
       out.available.length >= 1 && out.available.every((c) => c.present && c.use && c.byName) &&
-      /^52\.0 GB free of 128 GB · about .+ of takes \(\d+ cameras?, /.test(out.roomTakes || "") && (out.roomTakes || "").includes(` of takes (${out.available.length} camera`) &&
+      /^52\.0 GB free of 128 GB · about .+ of takes \(\d+ cameras?, /.test(out.roomTakes || "") && (out.roomTakes || "").includes(` of takes (${out.available.length} camera`) && out.roomUnlisted === out.roomTakes &&
       out.mode.ok && out.defaultRequired === false && out.refused.ok === false && (out.refused.missing || []).length === 3 &&
       out.record.ok && out.recording.recording && out.recording.locked && out.recording.cameras === out.available.length &&
       out.preview.status === 200 && out.preview.full === 200 && out.preview.big > out.preview.small &&

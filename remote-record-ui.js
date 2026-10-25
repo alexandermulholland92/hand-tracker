@@ -194,11 +194,13 @@
   let takeRate = 0; // the take being recorded: its bytes a second, as guessed when it started
   const roomRatio = () => (Number(prefs.remoteRoomRatio) > 0 ? Number(prefs.remoteRoomRatio) : 1);
 
-  // The cameras a take would record (running, else those picked and plugged in; before they've
-  // first been looked for, all those picked: a phone's own, say): each one's picture size, frame
-  // rate and whether its hands are tracked.
+  // The cameras a take would record (running, else those picked and plugged in; all those picked
+  // before they've first been looked for, and on a phone when a look found none: its own can't be
+  // listed until its camera's been opened): each one's picture size, frame rate and whether its
+  // hands are tracked.
   function takeCameras() {
-    if (!cams().isActive()) return available().filter((c) => c.use && (c.present || !scanned.at)).map((c) => ({ width: GUESS_SIZE[0], height: GUESS_SIZE[1], fps: 0, tracking: c.tracking !== false }));
+    const unlisted = !scanned.at || (onPhone && !scanned.found.length);
+    if (!cams().isActive()) return available().filter((c) => c.use && (c.present || unlisted)).map((c) => ({ width: GUESS_SIZE[0], height: GUESS_SIZE[1], fps: 0, tracking: c.tracking !== false }));
     const canvases = new Map(cams().previewSources().map((s) => [s.i, s.canvas]));
     return cams().remoteState().cameras.filter((c) => !c.error).map((c) => {
       const cv = canvases.get(c.index);
@@ -1284,5 +1286,15 @@
   const cameraState = () => ({ running: cams().isActive(), recording: cams().isRecording(), pending, scanning: !!scanned.scanning });
   global.RemoteRecordUI = { init, tailnetLink, looking, cameras: () => available(), cameraState, changeCamera: (action, data) => carryOut(action, data), scanCameras: () => scan(),
     _carryOut: carryOut, _takeName: takeName, _sentryOnLaunch: sentryOnLaunch, _sentryAgain: SENTRY_AGAIN,
-    _room: { rateOf, batteryNow, about, roomState, look: lookAtRoom, set: (s, b) => ((space = s), (battery = b), (drain = []), (current = 0)) } };
+    _room: { rateOf, batteryNow, about, roomState, look: lookAtRoom, set: (s, b) => ((space = s), (battery = b), (drain = []), (current = 0)),
+      // (the room left as if the last look had found no camera)
+      unlisted: () => {
+        const was = scanned;
+        scanned = { ...scanned, at: Date.now(), found: [] };
+        try {
+          return roomState();
+        } finally {
+          scanned = was;
+        }
+      } } };
 })(window);
