@@ -130,6 +130,8 @@
     return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
   };
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  // A camera's settings block's element id (a phone's camera id has spaces and commas: "cam:camera 0, facing back").
+  const setId = (id) => `oakset-${String(id).replace(/[^A-Za-z0-9_-]/g, "_")}`;
   const listOf = (words) => (words.length > 1 ? `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}` : words[0] || "");
 
   // What a button did; it goes after a few seconds (the status line says how things are).
@@ -215,7 +217,7 @@
     const track = `<div class="row"><span class="grow">Hand tracking</span><button type="button" class="small${on ? " on" : ""}" data-track="${id}" aria-pressed="${on}"${disabled ? " disabled" : ""}>${on ? "On" : "Off"}</button></div>`;
     if (c.oak) return oakSettingsHtml(c, disabled, track);
     if (c.kinect) return kinectSettingsHtml(c, disabled, track);
-    return `<div class="oakset" id="oakset-${id}">${track}<div class="sub">Off: a take records this camera's video, without its hands.</div></div>`;
+    return `<div class="oakset" id="${setId(c.id)}">${track}<div class="sub">Off: a take records this camera's video, without its hands.</div></div>`;
   }
   // A Kinect's own settings (multi-camera.js's KINECT_OWN): what its picture shows and what's
   // found in it, its colour camera, and what each take keeps.
@@ -241,7 +243,7 @@
     const sw = (k) => `<div class="row"><span class="grow">${KINECT_SWITCHES[k]}</span><button type="button" class="small${o[k] ? " on" : ""}" data-kinid="${id}" data-kinset="${k}" aria-pressed="${!!o[k]}"${dis}>${o[k] ? "On" : "Off"}</button></div>`;
     // (Depth worked out by and Depth smoothing: only where libfreenect2 works the depth out, Linux.)
     const linux = o.linux !== false;
-    return `<div class="oakset" id="oakset-${id}">` + first + choice("picture") + choice("night") + sw("bodies") + choice("people") + sw("faces") + sw("depth") + choice("model") + choice("hands") + choice("size") +
+    return `<div class="oakset" id="${setId(c.id)}">` + first + choice("picture") + choice("night") + sw("bodies") + choice("people") + sw("faces") + sw("depth") + choice("model") + choice("hands") + choice("size") +
       choice("exposure") + choice("led") + choice("range") + (linux ? choice("processing") + sw("filters") : "") + sw("mics") + sw("saveDepth") + sw("saveColor") + sw("saveSound") +
       `<div class="sub">Night vision: Automatic switches to its infrared camera when it's dark, which sees in the dark. Bodies: each person's 25 joints, where they are, each hand open, closed or "lasso". ` +
       (linux ? "Depth smoothing evens out the depth, but on a Raspberry Pi it takes most of the graphics chip, which the hand model needs. " : "") +
@@ -254,7 +256,7 @@
       OAK_CHOICES[k][1].map(([v, t]) => `<option value="${v}"${String(o[k]) === String(v) ? " selected" : ""}>${t}</option>`).join("") + "</select></div>";
     const sw = (k) => `<div class="row"><span class="grow">${OAK_SWITCHES[k]}</span><button type="button" class="small${o[k] ? " on" : ""}" data-oakid="${id}" data-oakset="${k}" aria-pressed="${!!o[k]}"${dis}>${o[k] ? "On" : "Off"}</button></div>`;
     const depth = o.hasDepth !== false, infrared = o.infrared !== false;
-    return `<div class="oakset" id="oakset-${id}">` + first + choice("model") + choice("hands") + (depth ? sw("depth") : "") + choice("fps") + sw("detect") + (depth ? choice("picture") : "") +
+    return `<div class="oakset" id="${setId(c.id)}">` + first + choice("model") + choice("hands") + (depth ? sw("depth") : "") + choice("fps") + sw("detect") + (depth ? choice("picture") : "") +
       (infrared ? choice("night") + sw("dots") : "") +
       `<div class="sub">${infrared ? (o.infrared === null ? "Night vision needs an infrared light (OAK-D Pro); Automatic turns it on when it's dark. " : "Night vision: Automatic turns it on when it's dark. ") : "This camera has no infrared light, so no night vision. "}` +
       (depth ? "Picture: Colour + depth lays the depth over the colour picture; Colour | depth puts them side by side; Left or Right mono is that black-and-white camera, the hands found on it (Night vision On lights it). " : "") +
@@ -317,7 +319,7 @@
         `<div class="camrow"><label><input type="checkbox" data-id="${esc(c.id)}"${c.use ? " checked" : ""}${(c.present ? !busy : c.use && !fixed) ? "" : " disabled"} /> ` +
         `<span>${esc(c.label)}${c.present ? "" : ' <span class="gone">not plugged in</span>'}</span></label>` +
         `<select data-id="${esc(c.id)}" aria-label="Role of ${esc(c.label)}"${busy ? " disabled" : ""}>${roleOptions(c.role)}</select>` +
-        `<button type="button" class="small" data-oakopen="${esc(c.id)}" aria-expanded="${openOak.has(c.id)}" aria-controls="oakset-${esc(c.id)}" aria-label="Settings of ${esc(c.label)}">⚙</button>` +
+        `<button type="button" class="small" data-oakopen="${esc(c.id)}" aria-expanded="${openOak.has(c.id)}" aria-controls="${setId(c.id)}" aria-label="Settings of ${esc(c.label)}">⚙</button>` +
         "</div>" + (openOak.has(c.id) ? camSettingsHtml(c, fixed) : "")).join("");
     }
     const note = $("camNote");

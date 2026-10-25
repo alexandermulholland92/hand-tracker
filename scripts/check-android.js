@@ -205,6 +205,24 @@ function checkRigRulesMatch() {
   out.swiftSame = swiftPattern("RIG") === out.host && swiftPattern("RIG_PATH") === out.path;
   check("The Android and iPhone apps' rules for reaching a computer (RemotePlugin.java, RemoteLink.swift) match the desktop app's (remote-record.js): the same paths, and the same answer for every address and path tried",
     out.samePathText && !out.differ.length && out.swiftSame, JSON.stringify({ differ: out.differ, samePathText: out.samePathText, swiftSame: out.swiftSame }));
+  // A camera picked from another device: on a phone its id is "cam:" and its name, with spaces and
+  // commas. The apps' servers (RigServerPlugin.java, RigServer.swift) take the same ids as the
+  // desktop app's (PICK_ID).
+  const { PICK_ID } = require("../electron/remote-record.js");
+  const unquote = (s) => s && s.replace(/\\(.)/g, "$1"); // (a Java or Swift string's text)
+  const javaPick = unquote((/String PICK_ID = "((?:[^"\\]|\\.)*)"/.exec(fs.readFileSync(path.join(ROOT, "android/app/src/main/java/com/handtracker/app/RigServerPlugin.java"), "utf8")) || [])[1]);
+  const swiftPick = unquote((/static let pickId = "((?:[^"\\]|\\.)*)"/.exec(fs.readFileSync(path.join(ROOT, "ios/App/App/RigServer.swift"), "utf8")) || [])[1]);
+  const names = ["cam:camera 0, facing back", "cam:camera 1, facing front", "cam:Back Camera", "cam:Caméra arrière", "cam:USB Camera (046d:0825)", "cam:Camera 1", "cam:C:\\cams\\fake.mjpeg", "oak:1944301011673B2E00", "kinect:000123", "a".repeat(64)];
+  const bad = ["", "a\nb", "a\tb", "<b>", 'a"b', "a'b", "a`b", "x".repeat(201)];
+  const pick = { java: !!javaPick, swift: !!swiftPick };
+  if (javaPick && swiftPick) {
+    const javaRe = new RegExp(`^(?:${javaPick})$`), swiftRe = new RegExp(swiftPick); // (Java's matches() is the whole string)
+    pick.differ = [...names, ...bad].filter((id) => javaRe.test(id) !== PICK_ID.test(id) || swiftRe.test(id) !== PICK_ID.test(id));
+    pick.taken = names.filter((id) => PICK_ID.test(id)).length;
+    pick.refused = bad.filter((id) => !PICK_ID.test(id)).length;
+  }
+  check("A camera picked from another device by its name (a phone's: \"cam:camera 0, facing back\") is taken by the Android and iPhone apps as by the desktop app (PICK_ID); quotes, angle brackets, control characters, nothing and over 200 characters are refused by all three",
+    pick.java && pick.swift && !pick.differ.length && pick.taken === names.length && pick.refused === bad.length, JSON.stringify(pick));
   // Every request the remote page and the list of computers make (each ${…} as 0): ones the apps
   // let through, or the page asks and the apps refuse it (as full screen's &after= once was).
   const asked = [];
@@ -1131,10 +1149,12 @@ async function checkPhoneAsRig(win, js) {
     }
     // (Listed by name: Android gives cameras new ids every start, so picks and roles kept by id would be lost.)
     out.available = (a.cameras || []).map((c) => ({ present: c.present, use: c.use, byName: c.id.startsWith("cam:") }));
-    // (About how many hours of takes the phone's cameras leave room for; once picked, still so after
-    // a look that couldn't list them, as one before the camera's first opened can't.)
+    // (About how many hours of takes the phone's cameras leave room for; once picked (from here: its
+    // id is its name), still so after a look that couldn't list them, as one before the camera's
+    // first opened can't.)
     out.roomTakes = ((await state()).storage || {}).text;
-    await js(`RemoteRecordUI.changeCamera("pick", { pick: { id: ${JSON.stringify(a.cameras[0].id)}, use: true } })`);
+    out.pickId = a.cameras[0].id;
+    out.picked = await post({ action: "pick", pick: { id: a.cameras[0].id, use: true } });
     out.roomUnlisted = await js(`RemoteRecordUI._room.unlisted().storage.text`);
     out.mode = await post({ action: "mode", mode: "freeform" });
     // (The take details are optional; with the page's hidden switch on, needed first.)
@@ -1190,7 +1210,7 @@ async function checkPhoneAsRig(win, js) {
       /^52\.0 GB free of 128 GB/.test(out.room.storage || "") && out.room.battery === "Battery 62%: about 6 h left" &&
       out.room.card.startsWith("Space: 52.0 GB free of 128 GB") && out.room.card.endsWith(" · Battery 62%: about 6 h left") &&
       out.available.length >= 1 && out.available.every((c) => c.present && c.use && c.byName) &&
-      /^52\.0 GB free of 128 GB · about .+ of takes \(\d+ cameras?, /.test(out.roomTakes || "") && (out.roomTakes || "").includes(` of takes (${out.available.length} camera`) && out.roomUnlisted === out.roomTakes &&
+      /^52\.0 GB free of 128 GB · about .+ of takes \(\d+ cameras?, /.test(out.roomTakes || "") && (out.roomTakes || "").includes(` of takes (${out.available.length} camera`) && out.picked.ok && out.roomUnlisted === out.roomTakes &&
       out.mode.ok && out.defaultRequired === false && out.refused.ok === false && (out.refused.missing || []).length === 3 &&
       out.record.ok && out.recording.recording && out.recording.locked && out.recording.cameras === out.available.length &&
       out.preview.status === 200 && out.preview.full === 200 && out.preview.big > out.preview.small &&

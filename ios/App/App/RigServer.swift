@@ -59,6 +59,9 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
     static let actions: Set<String> = ["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry", "timing"]
     static let roles: Set<String> = ["", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"]
     static let modes: Set<String> = ["ego", "stereo", "freeform"]
+    // A picked camera's id: "cam:" and its name here ("cam:Back Camera"), any printable characters
+    // but quotes and angle brackets (electron/remote-record.js's PICK_ID).
+    static let pickId = "^[^\\x00-\\x1f\\x7f<>\"'`]{1,200}$"
     static let csp = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'"
     static let jsonType = "application/json; charset=utf-8"
 
@@ -849,7 +852,7 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
         if let sentry = Self.cleanSentry(msg["sentry"] as? [String: Any]) { cmd["sentry"] = sentry }
         // The cameras to start (picked, with a role), the mode, and a running camera's role, turn
         // and flip: checked as the computer checks them (electron/remote-record.js).
-        if let pk = msg["pick"] as? [String: Any], let pid = pk["id"] as? String, Self.matches(pid, "^[A-Za-z0-9:._+/=-]{1,200}$") {
+        if let pk = msg["pick"] as? [String: Any], let pid = pk["id"] as? String, Self.matches(pid, Self.pickId) {
             var pick: [String: Any] = ["id": pid]
             if let u = Self.bool(pk["use"]) { pick["use"] = u }
             if let t = Self.bool(pk["tracking"]) { pick["tracking"] = t }

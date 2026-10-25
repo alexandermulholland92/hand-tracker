@@ -103,6 +103,9 @@ public class RigServerPlugin extends Plugin {
             "cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry", "timing"));
     private static final Set<String> ROLES = new HashSet<>(java.util.Arrays.asList("", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"));
     private static final Set<String> MODES = new HashSet<>(java.util.Arrays.asList("ego", "stereo", "freeform"));
+    // A picked camera's id: "cam:" and its name here ("cam:camera 0, facing back"), any printable
+    // characters but quotes and angle brackets (electron/remote-record.js's PICK_ID).
+    private static final String PICK_ID = "[^\\x00-\\x1f\\x7f<>\"'`]{1,200}";
     private static final String CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
     private final ExecutorService pool = Executors.newCachedThreadPool();
@@ -793,7 +796,7 @@ public class RigServerPlugin extends Plugin {
             // The cameras to start (picked, with a role), the mode, and a running camera's role,
             // turn and flip: checked as the computer checks them (electron/remote-record.js).
             JSONObject pk = msg.optJSONObject("pick");
-            if (pk != null && pk.opt("id") instanceof String && pk.optString("id").matches("[A-Za-z0-9:._+/=-]{1,200}")) {
+            if (pk != null && pk.opt("id") instanceof String && pk.optString("id").matches(PICK_ID)) {
                 JSObject pick = new JSObject();
                 pick.put("id", pk.optString("id"));
                 if (pk.opt("use") instanceof Boolean) pick.put("use", pk.optBoolean("use"));

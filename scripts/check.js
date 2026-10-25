@@ -3037,7 +3037,7 @@ async function checkRemoteOakSettings(js) {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const $ = (id) => document.getElementById(id);
       const until = async (fn, ms = 15000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
-      const block = (id) => document.getElementById("oakset-" + id);
+      const block = (id) => document.getElementById("oakset-" + id.replace(/[^A-Za-z0-9_-]/g, "_")); // (remote-client.js's setId)
       const pick = (id, k) => block(id) && block(id).querySelector('[data-oakset="' + k + '"]');
       const choose = async (id, k, v) => { const el = await until(() => pick(id, k) && !pick(id, k).disabled && pick(id, k)); el.value = String(v); el.dispatchEvent(new Event("change", { bubbles: true })); await sleep(400); };
       const flip = async (id, k) => { const el = await until(() => pick(id, k) && !pick(id, k).disabled && pick(id, k)); el.click(); await sleep(400); };

@@ -111,10 +111,13 @@ function cleanCamera(c) {
   return out;
 }
 
-// A camera to start, from a request: its id ("oak:<id>" or a webcam's), and whether to use it
-// and its role.
+// A camera to start, from a request: its id ("oak:<id>", a webcam's, or on a phone "cam:" and its
+// name: "cam:camera 0, facing back"), and whether to use it and its role. An id is any printable
+// characters but quotes and angle brackets (RigServerPlugin.java's and RigServer.swift's PICK_ID
+// are the same).
+const PICK_ID = /^[^\x00-\x1f\x7f<>"'`]{1,200}$/;
 function cleanPick(p) {
-  if (!p || typeof p !== "object" || typeof p.id !== "string" || !/^[A-Za-z0-9:._+/=-]{1,200}$/.test(p.id)) return null;
+  if (!p || typeof p !== "object" || typeof p.id !== "string" || !PICK_ID.test(p.id)) return null;
   const out = { id: p.id };
   if (typeof p.use === "boolean") out.use = p.use;
   if (typeof p.tracking === "boolean") out.tracking = p.tracking;
@@ -922,4 +925,4 @@ class RemoteRecordServer extends EventEmitter {
   }
 }
 
-module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_ADDR, BLUETOOTH_ADDR, cleanDetails, cleanCamera, cleanPick, cleanWifi, cleanSentry, cleanOak, crc32, RIG_HOST, RIG_PATH };
+module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_ADDR, BLUETOOTH_ADDR, cleanDetails, cleanCamera, cleanPick, cleanWifi, cleanSentry, cleanOak, crc32, RIG_HOST, RIG_PATH, PICK_ID };
