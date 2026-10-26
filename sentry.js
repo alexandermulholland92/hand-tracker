@@ -442,8 +442,8 @@
 
   // An OAK camera's animal (not yet an alert), looked for again by the app's own object finder
   // in the picture as shown: it agrees (st.agreedAt: then it's an alert), finds a person there
-  // (the animal's theirs), or neither (looked at again in a moment). Without that finder (or a
-  // picture), the camera's find goes.
+  // (the animal's theirs), or neither (looked at again in a moment). Without that finder, or a
+  // picture, it isn't one: the camera's alone can take a person for an animal.
   function secondLook(v, st, seen, now) {
     if (st.finding || now - (st.secondAt || 0) < SECOND_GAP_MS) return;
     st.secondAt = now;
@@ -453,14 +453,11 @@
     } catch {
       image = null;
     }
-    if (!image) {
-      st.agreedAt = now;
-      return;
-    }
+    if (!image) return;
     st.finding = true;
     findObjects(image)
       .then((objects) => {
-        const verdict = objects ? opinion(objects, seen.box) : objects === null ? "animal" : "";
+        const verdict = objects ? opinion(objects, seen.box) : "";
         if (verdict === "animal") st.agreedAt = Date.now();
         else if (verdict === "person") (st.people = st.people || []).push({ box: seen.box, at: Date.now() });
       })
@@ -517,7 +514,7 @@
         finderNote = "Loading the object finder…";
         return undefined;
       }
-      finderNote = `The object finder didn't work (${errText(err)}): animals aren't left out.`;
+      finderNote = `The object finder didn't work (${errText(err)}): ${cfg.trackAnimals ? "no animal is told of until it does" : "animals aren't left out"}.`;
       return null;
     }
   }
