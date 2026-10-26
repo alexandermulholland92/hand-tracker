@@ -70,6 +70,7 @@
       "oak/**",
       "kinect/bin/linux-${arch}/**",
       "kinect/KinectHelper.cs",
+      "ps4cam/ps4cam_helper.py",
       "!oak/__pycache__/**",
       "models/**",
       "index.html",
@@ -112,7 +113,8 @@
       "electron/input-helper-linux.py",
       "electron/bluetooth-helper-linux.py",
       "oak/**",
-      "kinect/**"
+      "kinect/**",
+      "ps4cam/**"
     ],
     "win": {
       "target": "portable",

@@ -37,7 +37,7 @@ const APPS = {
     name: "Remote Recording", id: "com.handtracker.remote", slug: "remote-recording", file: "RemoteRecording",
     synopsis: "Start and stop recording on camera rigs, or be one",
     camera: "Remote Recording records hand motion with the cameras when a phone or browser starts it.",
-    rules: ["kinect", "oak"], // (OAK cameras and Kinects; no hand mouse)
+    rules: ["kinect", "oak", "ps4cam"], // (OAK cameras, Kinects and PS4 cameras; no hand mouse)
   },
 };
 const appAt = process.argv.indexOf("--app");
@@ -91,7 +91,7 @@ function linuxScripts() {
   const out = [];
   for (const [name, option] of [["after-install", "afterInstall"], ["after-remove", "afterRemove"]]) {
     const own = fs.readFileSync(path.join(templates, `${name}.tpl`), "utf8");
-    // build/linux/<name>-*.sh: the OAK cameras' rule, the Kinect's, and the virtual mouse and keyboard's.
+    // build/linux/<name>-*.sh: the OAK cameras' rule, the Kinect's, the PS4 camera's, and the virtual mouse and keyboard's.
     const linux = path.join(__dirname, "..", "build", "linux");
     // (An app of its own: only the rules it needs, under its own name, so removing it leaves
     // Hand Tracker's.)
@@ -101,7 +101,7 @@ function linuxScripts() {
       .filter((f) => !variant || variant.rules.includes(f.slice(name.length + 1, -3)))
       .sort()
       .map((f) => fs.readFileSync(path.join(linux, f), "utf8"))
-      .map((text) => (variant ? text.replace(/hand-tracker-(oak|uinput|kinect)\.rules/g, `${variant.slug}-$1.rules`).replace(/Hand Tracker/g, variant.name) : text));
+      .map((text) => (variant ? text.replace(/hand-tracker-(oak|uinput|kinect|ps4cam)\.rules/g, `${variant.slug}-$1.rules`).replace(/Hand Tracker/g, variant.name) : text));
     const file = path.join(dir, `${name}.tpl`);
     fs.writeFileSync(file, [own.trimEnd(), ...ours].join("\n\n").replace(/\r\n/g, "\n"));
     out.push(`-c.deb.${option}="${file}"`);

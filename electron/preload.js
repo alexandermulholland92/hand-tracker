@@ -221,6 +221,38 @@ contextBridge.exposeInMainWorld("desktop", {
     recordEnd: (id) => ipcRenderer.invoke("kinect:record-end", id),
     recordStop: (id, opts) => ipcRenderer.invoke("kinect:record-stop", { ...opts, id }),
   },
+  // The PlayStation 4 camera (Windows and Linux app, electron/ps4cam.js): { ok, reason } here, its
+  // one-time setup and its firmware file, the ones plugged in [{ id, name, ready }], then a stream
+  // each by id, as the Kinect's.
+  ps4cam: {
+    arch: process.arch, // (its picture size by default: smaller on an ARM board; the page's own navigator says x86 on every Linux)
+    available: () => ipcRenderer.invoke("ps4cam:available"),
+    status: () => ipcRenderer.invoke("ps4cam:status"), // { ready, firmware, reason }
+    setup: (onLine) => {
+      const listener = (_event, line) => onLine(line);
+      ipcRenderer.on("ps4cam:setup-progress", listener);
+      return ipcRenderer.invoke("ps4cam:setup").finally(() => ipcRenderer.removeListener("ps4cam:setup-progress", listener));
+    },
+    chooseFirmware: () => ipcRenderer.invoke("ps4cam:choose-firmware"), // { ok, size } | { ok: false, reason | canceled }
+    list: () => ipcRenderer.invoke("ps4cam:list"),
+    // options: { size: "1280x800" | "640x400", fps, view, depth, night }
+    streamStart: (id, options) => ipcRenderer.invoke("ps4cam:stream-start", { ...options, id }),
+    streamStop: (id) => ipcRenderer.invoke("ps4cam:stream-stop", id || null),
+    // A setting changed as it runs: "view side", "depth on", "night auto"…
+    command: (id, line) => ipcRenderer.invoke("ps4cam:command", { id, line }),
+    // cb({ id, header, jpeg, shown, depth }); call shown(id) once it's been dealt with.
+    onFrame: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("ps4cam:frame", listener);
+      return () => ipcRenderer.removeListener("ps4cam:frame", listener);
+    },
+    shown: (id) => ipcRenderer.send("ps4cam:shown", id),
+    onStatus: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("ps4cam:status", listener);
+      return () => ipcRenderer.removeListener("ps4cam:status", listener);
+    },
+  },
 
   // Controlling this computer: the hand mouse, the floating keyboard and gesture actions.
   pc: {

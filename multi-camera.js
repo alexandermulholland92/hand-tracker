@@ -56,6 +56,13 @@
  *                                            //   detect, picture, night, dots }, and what it has (infrared, depth: null till known)
  *   MultiCamera.setOakSettings(id, changes)  // any of those, remembered for that camera; one running starts again with them
  *                                            //   (null: its own settings forgotten, the main window's again)
+ * So can a PlayStation 4 camera (Linux and Windows app): the picker lists each one plugged in
+ * ("ps4:<its USB port>"; one needing the one-time setup or its firmware file says so), a helper each
+ * sends it its firmware and streams its pictures (electron/ps4cam.js), and its tile finds the hands
+ * on its left lens's picture, each with where it is while depth is on, and shows its view.
+ *
+ *   MultiCamera.ps4Settings(id) / MultiCamera.setPs4Settings(id, changes)   a PS4 camera's own
+ *                                            // settings ("ps4:<port>", PS4_OWN), remembered for it
  */
 
 (function (global) {
@@ -75,6 +82,7 @@
   let kinectOff = []; // the Kinect stream listeners, while Kinect tiles run
   let kinectHere = null; // whether this app has Kinects: { ok, reason } (desktop.kinect.available)
   let kinectTakes = []; // the last take's Kinect tiles: [{ id, name }] (saveKinect)
+  let ps4Off = []; // the PS4 camera stream listeners, while PS4 camera tiles run
   let home = null; // where the card goes back to when the cameras close: { parent, next }
   let previewWant = { on: false, focus: null, ms: 250, focusMs: 66 }; // remote recording's previews
 
@@ -91,6 +99,9 @@
     if (!kinectHere || !kinectHere.ok) kinectHere = await desktop.kinect.available().catch(() => ({ ok: false }));
     return !!kinectHere.ok;
   }
+  const isPs4 = (id) => String(id).startsWith("ps4:");
+  const ps4Label = (id) => `PlayStation 4 camera${id ? ` (USB ${id})` : ""}`;
+  const ps4Available = async () => !!(global.desktop && desktop.ps4cam && (await desktop.ps4cam.available().catch(() => ({ ok: false }))).ok);
   // A webcam's id for remembering it (picks, roles, turn and flip): its device id, but on Android
   // each start of the app gives the cameras new ids, so there it's the camera's name
   // ("cam:camera 0, facing back"), which stays the same. OAK cameras are "oak:<id>".
@@ -111,6 +122,7 @@
       const kinects = await desktop.kinect.list().catch(() => []);
       if (kinects.length) els.pickList.insertAdjacentHTML("afterbegin", kinects.map((k) => box(`kinect:${k.id}`, kinectLabel(k.id))).join(""));
     }
+    if (await ps4Available()) await listPs4(box);
     if (oakAvailable()) await listOak(box);
     tickNew();
     updatePickButton();
@@ -122,7 +134,7 @@
     const off = Array.isArray(prefs.multiCamerasOff) ? prefs.multiCamerasOff : [];
     const boxes = [...els.pickList.querySelectorAll("input")];
     let n = boxes.filter((b) => b.checked).length;
-    const special = (x) => isOak(x.value) || isKinect(x.value);
+    const special = (x) => isOak(x.value) || isKinect(x.value) || isPs4(x.value);
     for (const b of [...boxes.filter(special), ...boxes.filter((x) => !special(x))]) {
       if (n >= MAX_CAMERAS) break;
       if (b.checked || b.dataset.touched || off.includes(b.value)) continue;
@@ -165,6 +177,36 @@
     updatePickButton();
   }
 
+  // The PS4 cameras plugged in, once its support is set up (one plugged in before then asks for the
+  // one-time setup), and its firmware file asked for while it hasn't been chosen and one needs it.
+  async function listPs4(box) {
+    const got = await desktop.ps4cam.list().catch(() => ({ devices: [] }));
+    const devices = got.devices || [];
+    const ask = got.setup ? 'A PlayStation 4 camera is plugged in: it needs a one-time setup first. <button id="multiCamPs4Setup">Set up PS4 camera support…</button>'
+      : devices.some((d) => !d.ready) && !got.firmware ? 'The PlayStation 4 camera needs its firmware file (firmware.bin, Sony\'s), chosen once. <button id="multiCamPs4Firmware">Choose it…</button>' : "";
+    if (!devices.length && !ask) return;
+    els.pickList.insertAdjacentHTML("afterbegin", devices.map((d) => box(`ps4:${d.id}`, ps4Label(d.id))).join("") + (ask ? `<div id="multiCamPs4" class="note">${ask}</div>` : ""));
+    const area = $("multiCamPs4"), setup = $("multiCamPs4Setup"), firmware = $("multiCamPs4Firmware");
+    if (setup) {
+      setup.onclick = async () => {
+        setup.disabled = true;
+        try {
+          await desktop.ps4cam.setup((line) => (area.textContent = line));
+          openPicker();
+        } catch (err) {
+          area.textContent = `The setup didn't finish: ${errText(err)}`;
+        }
+      };
+    }
+    if (firmware) {
+      firmware.onclick = async () => {
+        const r = await desktop.ps4cam.chooseFirmware().catch((err) => ({ ok: false, reason: errText(err) }));
+        if (r.ok) area.textContent = "Its firmware is kept: the camera starts with it.";
+        else if (!r.canceled) area.textContent = r.reason;
+      };
+    }
+  }
+
   function picked() {
     return [...els.pickList.querySelectorAll("input:checked")].map((i) => i.value);
   }
@@ -172,9 +214,9 @@
     const n = picked().length;
     const available = els.pickList.querySelectorAll("input").length;
     els.pickNote.textContent = !available ? "No cameras found." : available < 2 ? "Only one camera is connected: plug in another to track several at once." : `Pick up to ${MAX_CAMERAS}.`;
-    const kinectAlone = n === 1 && picked().some(isKinect);
-    els.start.disabled = (n < 2 && !kinectAlone) || n > MAX_CAMERAS;
-    els.start.textContent = n > MAX_CAMERAS ? `At most ${MAX_CAMERAS} cameras` : kinectAlone ? "Start the Kinect" : `Start ${n >= 2 ? n : ""} cameras`.replace("  ", " ");
+    const kinectAlone = n === 1 && picked().some(isKinect), ps4Alone = n === 1 && picked().some(isPs4);
+    els.start.disabled = (n < 2 && !kinectAlone && !ps4Alone) || n > MAX_CAMERAS;
+    els.start.textContent = n > MAX_CAMERAS ? `At most ${MAX_CAMERAS} cameras` : kinectAlone ? "Start the Kinect" : ps4Alone ? "Start the PS4 camera" : `Start ${n >= 2 ? n : ""} cameras`.replace("  ", " ");
   }
 
   // ---------- the tiles ----------
@@ -201,7 +243,7 @@
     inPlace(true);
     const cams = await HandTracker.listCameras();
     const find = (id) => cams.find((c) => c.deviceId === id || keyOf(c) === id);
-    const labelOf = (id) => (isOak(id) ? oakLabel(id.slice(4)) : isKinect(id) ? kinectLabel(id.slice(7)) : (find(id) || {}).label || (id.startsWith("cam:") ? id.slice(4) : "Camera"));
+    const labelOf = (id) => (isOak(id) ? oakLabel(id.slice(4)) : isKinect(id) ? kinectLabel(id.slice(7)) : isPs4(id) ? ps4Label(id.slice(4)) : (find(id) || {}).label || (id.startsWith("cam:") ? id.slice(4) : "Camera"));
     // (A camera by name that isn't found by its id is looked for by its name in its tile.)
     const deviceOf = (id) => (find(id) || {}).deviceId || id;
     // An OAK camera the main window is using can't be a tile too.
@@ -239,9 +281,11 @@
         ? `camera-tile.html?oak=${encodeURIComponent(id.slice(4))}&${look}&name=${encodeURIComponent(name)}`
         : k
           ? `camera-tile.html?kinect=${encodeURIComponent(id.slice(7))}&${look}&model=${k.model === "lite" ? 0 : 1}&name=${encodeURIComponent(name)}&bodies=${k.bodies ? 1 : 0}&people=${k.people}&faces=${k.faces ? 1 : 0}&view=${k.picture}`
-          : `camera-tile.html?device=${encodeURIComponent(deviceOf(id))}&label=${encodeURIComponent(labelOf(id))}&${look}&model=${model}&name=${encodeURIComponent(name)}`;
+          : isPs4(id)
+            ? `camera-tile.html?ps4=${encodeURIComponent(id.slice(4))}&${look}&model=${ps4SettingsOf(id).model === "lite" ? 0 : 1}&name=${encodeURIComponent(name)}`
+            : `camera-tile.html?device=${encodeURIComponent(deviceOf(id))}&label=${encodeURIComponent(labelOf(id))}&${look}&model=${model}&name=${encodeURIComponent(name)}`;
       els.grid.appendChild(el);
-      return { name, deviceId: id, role: roles[i], view, label: labelOf(id), frame, el, oak: isOak(id) ? id.slice(4) : null, oakState: "", kinect: isKinect(id) ? id.slice(7) : null };
+      return { name, deviceId: id, role: roles[i], view, label: labelOf(id), frame, el, oak: isOak(id) ? id.slice(4) : null, oakState: "", kinect: isKinect(id) ? id.slice(7) : null, ps4: isPs4(id) ? id.slice(4) : null };
     });
     tiles.forEach(showView);
     tiles.forEach(applyOptions);
@@ -249,6 +293,7 @@
     showPictures();
     if (tiles.some((t) => t.oak)) startOakTiles(tiles.filter((t) => t.oak));
     if (tiles.some((t) => t.kinect)) startKinectTiles(tiles.filter((t) => t.kinect));
+    if (tiles.some((t) => t.ps4)) startPs4Tiles(tiles.filter((t) => t.ps4));
     els.record.disabled = false;
     els.note.textContent = "Each camera has its own hand tracker. With several cameras each one runs slower than a single camera would.";
     clearInterval(statusTimer);
@@ -439,7 +484,7 @@
       // (With hand tracking off, nothing about the hands.)
       const hands = st && st.tracking === false ? "" : st && st.hands.length ? st.hands.join(" + ") : "no hands";
       t.el.querySelector(".st").textContent = !st ? "starting…" : st.error ? st.error : `${st.fps} fps${hands ? ` · ${hands}` : ""}${st.recording ? " · recording" : ""}${t.oak && !screenPictures() ? " · picture off" : ""}`;
-      t.el.querySelector(".retry").hidden = !((t.oak || t.kinect) && st && st.error && t.oakState !== "starting");
+      t.el.querySelector(".retry").hidden = !((t.oak || t.kinect || t.ps4) && st && st.error && t.oakState !== "starting");
       if (st && !st.error) shape(t, st);
     }
   }
@@ -639,10 +684,125 @@
     if (api && api.kinectStatus) api.kinectStatus(s);
   }
 
+  // ---------- PS4 cameras in tiles ----------
+  // Each PS4 camera's own settings, set under its ⚙ (here or on remote recording's page) and
+  // remembered by its USB port ("ps4:<port>"): the rest are the main window's (its hand model).
+  //   picture: what its tile shows (ps4cam_helper.py's views: one lens, the two side by side, red/cyan
+  //     3D, laid over each other, merged into one, the depth alone, laid over the picture or beside it);
+  //   size: each lens's picture (smaller is faster; it's what the hands are found on); fps;
+  //   depth: worked out for each hand's place (the merged and depth pictures work it out anyway);
+  //   night: black and white and brightened in the dark ("auto": after 8 s of dark).
+  const PS4_VIEWS = ["left", "right", "side", "anaglyph", "blend", "merged", "depth", "depth-blend", "depth-side"];
+  const PS4_OWN = {
+    model: (v) => ["lite", "full"].includes(v), hands: (v) => [1, 2].includes(v), picture: (v) => PS4_VIEWS.includes(v), size: (v) => ["1280x800", "640x400"].includes(v),
+    fps: (v) => [15, 30, 60, 120].includes(v), depth: (v) => typeof v === "boolean", night: (v) => ["auto", "on", "off"].includes(v),
+  };
+  const ps4Own = (id) => ((prefs && prefs.ps4CameraOptions) || {})[id] || {};
+  function ps4SettingsOf(id) {
+    // (A Raspberry Pi works the smaller pictures out faster: its default.)
+    const arm = !!(global.desktop && desktop.ps4cam && desktop.ps4cam.arch === "arm64");
+    const o = { model: modelOf() === 1 ? "full" : "lite", hands: 2, picture: "side", size: arm ? "640x400" : "1280x800", fps: 30, depth: false, night: "auto" };
+    const own = ps4Own(id);
+    for (const k of Object.keys(PS4_OWN)) if (PS4_OWN[k](own[k])) o[k] = own[k];
+    if (o.fps === 120 && o.size !== "640x400") o.fps = 60; // (120 a second only with the smaller pictures)
+    return o;
+  }
+  function ps4Settings(id) {
+    const t = tiles.find((x) => x.deviceId === id);
+    return { ...ps4SettingsOf(id), running: !!t };
+  }
+  // What its helper is started with; a change to its size or frame rate starts it again, the rest
+  // change as it runs (applyPs4).
+  const ps4Start = (t) => {
+    const o = ps4SettingsOf(t.deviceId);
+    return { size: o.size, fps: o.fps, view: o.picture, depth: o.depth, night: o.night };
+  };
+  const ps4Fixed = (t) => JSON.stringify({ size: ps4Start(t).size, fps: ps4Start(t).fps });
+  function applyPs4(t) {
+    const o = ps4SettingsOf(t.deviceId), api = tileApi(t);
+    if (api && api.ps4Options) api.ps4Options({ model: o.model === "lite" ? 0 : 1, hands: o.hands });
+    const send = (line) => desktop.ps4cam.command(t.ps4, line).catch(() => {});
+    send(`view ${o.picture}`);
+    send(`depth ${o.depth ? "on" : "off"}`);
+    send(`night ${o.night}`);
+  }
+  function setPs4Settings(id, changes = {}) {
+    const all = { ...((prefs && prefs.ps4CameraOptions) || {}) };
+    if (changes === null) delete all[id];
+    else {
+      const own = { ...ps4Own(id) };
+      for (const k of Object.keys(PS4_OWN)) if (k in changes && PS4_OWN[k](changes[k])) own[k] = changes[k];
+      all[id] = own;
+    }
+    setPref("ps4CameraOptions", all);
+    const t = tiles.find((x) => x.deviceId === id);
+    if (t && t.ps4) {
+      if (t.ps4With !== ps4Fixed(t)) restartPs4(t);
+      else applyPs4(t);
+    }
+    return ps4Settings(id);
+  }
+  async function restartPs4(t, message = "Starting the PS4 camera again with the new settings…") {
+    t.oakState = "starting";
+    const api = tileApi(t);
+    if (api && api.ps4Status) api.ps4Status({ status: "starting", message });
+    await desktop.ps4cam.streamStop(t.ps4).catch(() => {});
+    await sleep(1000);
+    if (tiles.includes(t)) startPs4Tiles([t]);
+  }
+  async function startPs4Tiles(list) {
+    if (!ps4Off.length) ps4Off = [desktop.ps4cam.onFrame(onPs4Frame), desktop.ps4cam.onStatus(onPs4Status)];
+    for (const t of list) {
+      let api = null;
+      for (let i = 0; i < 100 && tiles.includes(t) && !(api = tileApi(t)); i++) await sleep(100);
+      if (!api || !tiles.includes(t)) continue;
+      await api.ready.catch(() => {});
+      if (!tiles.includes(t)) return;
+      t.oakState = "starting";
+      t.ps4With = ps4Fixed(t);
+      try {
+        await desktop.ps4cam.streamStart(t.ps4, ps4Start(t));
+      } catch (err) {
+        t.oakState = "error";
+        api.ps4Status({ status: "error", message: errText(err) });
+        continue;
+      }
+      // (One after another: sending its firmware and starting can take a few seconds.)
+      for (let i = 0; i < 300 && tiles.includes(t) && t.oakState === "starting"; i++) await sleep(100);
+    }
+  }
+  function onPs4Frame({ id, header, jpeg, shown, depth }) {
+    const t = tiles.find((x) => x.ps4 === id);
+    const api = t && tileApi(t);
+    if (!api || !api.ps4Frame) return desktop.ps4cam.shown(id);
+    t.frameAt = performance.now();
+    t.night = !!header.night;
+    // The next frame once this one's dealt with (its hands found): the helper's frames meanwhile are dropped.
+    api
+      .ps4Frame({ header, jpeg, shown, depth, t: tileTime(t, header) })
+      .catch(() => {})
+      .finally(() => desktop.ps4cam.shown(id));
+  }
+  function onPs4Status(s) {
+    const t = tiles.find((x) => x.ps4 === s.id);
+    if (!t || s.status === "note") return;
+    const api = tileApi(t);
+    if (s.status === "running") {
+      t.oakState = "running";
+      t.label = `PlayStation 4 camera · ${s.size || ""}${s.simulated ? " (simulated)" : ""}`;
+      t.el.querySelector(".lbl").textContent = t.label;
+      applyPs4(t);
+    } else if (s.status === "error" || s.status === "stopped") {
+      if (s.status === "stopped" && t.oakState === "error") return; // (its helper's end after the error: the error stays)
+      t.oakState = s.status;
+    }
+    if (api && api.ps4Status) api.ps4Status(s);
+  }
+
   // ---------- a tile's own settings (its ⚙) ----------
   // The ones remote recording's page has under the camera's ⚙ (camera-settings.js): its hand
   // tracking, and an OAK camera's or a Kinect's own; not while recording.
-  const cameraOf = (t) => ({ id: t.deviceId, tracking: ownTracking(t.deviceId), ...(t.oak ? { oak: oakSettings(t.deviceId) } : t.kinect ? { kinect: kinectSettings(t.deviceId) } : {}) });
+  const cameraOf = (t) => ({ id: t.deviceId, tracking: ownTracking(t.deviceId), ...(t.oak ? { oak: oakSettings(t.deviceId) } : t.kinect ? { kinect: kinectSettings(t.deviceId) } : t.ps4 ? { ps4: ps4Settings(t.deviceId) } : {}) });
   function drawSettings(t, force) {
     const panel = t.el.querySelector(".multi-cam-set"), gear = t.el.querySelector("button.gear");
     if (!panel || !global.CameraSettings) return;
@@ -656,6 +816,8 @@
         if (kind === "pick" && typeof data.tracking === "boolean") setTracking(data.id, data.tracking);
         else if (kind === "oak") setOakSettings(data.id, data.options);
         else if (kind === "kinect") setKinectSettings(data.id, data.options);
+        else if (kind === "ps4") setPs4Settings(data.id, data.options);
+        else if (kind === "ps4firmware") return choosePs4Firmware(t);
         drawSettings(t, true);
       });
     }
@@ -665,6 +827,17 @@
       t.settingsShown = html;
       panel.innerHTML = html;
     }
+  }
+  // A PS4 camera's firmware file, chosen (again): it starts again with it.
+  async function choosePs4Firmware(t) {
+    const r = await desktop.ps4cam.chooseFirmware().catch((err) => ({ ok: false, reason: errText(err) }));
+    if (r.canceled) return;
+    if (!r.ok) {
+      const api = tileApi(t);
+      if (api && api.ps4Status) api.ps4Status({ status: "error", message: r.reason });
+      return;
+    }
+    if (tiles.includes(t)) restartPs4(t, "Starting the PS4 camera with its firmware…");
   }
 
   // A Kinect that stopped as it ran starts again by itself: after 3 s, then 6, 12, 24 and 48, five
@@ -958,6 +1131,9 @@
     if (kinectOff.length) desktop.kinect.streamStop().catch(() => {});
     for (const off of kinectOff) off();
     kinectOff = [];
+    if (ps4Off.length) desktop.ps4cam.streamStop().catch(() => {});
+    for (const off of ps4Off) off();
+    ps4Off = [];
     if (els.card) els.card.hidden = true;
     if (els.grid) els.grid.innerHTML = "";
     inPlace(false);
@@ -1107,6 +1283,7 @@
           fps: st ? st.fps : 0, hands: st ? st.hands : [], tracking: st ? st.tracking !== false : tracking(t), error: st ? st.error || "" : "",
           ...(t.oak ? { oak: true, night: !!t.night } : {}),
           ...(t.kinect ? { kinect: true, night: !!t.night, bodies: st && st.bodies ? st.bodies : 0, sound: t.audio ? { angle: t.audio.angle, level: Math.max(...(t.audio.level || [0])), active: t.audio.active } : null } : {}),
+          ...(t.ps4 ? { ps4: true, night: !!t.night } : {}),
         };
       }),
       note: els.note ? els.note.textContent : "",
@@ -1236,7 +1413,7 @@
       const b = e.target.closest && e.target.closest("button");
       if (!b) return;
       const i = Number(b.dataset.i);
-      if (b.matches("button.retry")) (tiles[i] && tiles[i].kinect ? retryKinect(tiles[i]) : retryOak(tiles[i]));
+      if (b.matches("button.retry")) (tiles[i] && tiles[i].kinect ? retryKinect(tiles[i]) : tiles[i] && tiles[i].ps4 ? restartPs4(tiles[i], "Starting the PS4 camera again…") : retryOak(tiles[i]));
       else if (b.matches("button.rot") && tiles[i]) setView(i, { rotation: tiles[i].view.rotation + 90 });
       else if (b.matches("button.flip") && tiles[i]) setView(i, { mirror: !tiles[i].view.mirror });
       else if (b.matches("button.gear") && tiles[i]) {
@@ -1250,7 +1427,7 @@
 
   global.MultiCamera = {
     init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, tracking: ownTracking, setTracking, timingCheck, timingState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
-    oakSettings, setOakSettings, kinectSettings, setKinectSettings, saveKinect, kinectAvailable,
+    oakSettings, setOakSettings, kinectSettings, setKinectSettings, saveKinect, kinectAvailable, ps4Settings, setPs4Settings,
     isActive: () => tiles.length > 0, runningIds: () => tiles.map((t) => t.deviceId), isRecording: () => recording, isTracking: () => tiles.some((t) => tracking(t)),
     _again: AGAIN, // (the checks shorten its times)
     _kinectAgain: KINECT_AGAIN_S, // (and these)

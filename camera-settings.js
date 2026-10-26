@@ -7,10 +7,11 @@
  *     ticked or not, its role and its ⚙, as remote recording's Cameras box has them.
  *
  *   CameraSettings.html(camera, disabled)   // a camera as remote recording lists it
- *                                           //   ({ id, tracking, oak? , kinect? }): its settings
+ *                                           //   ({ id, tracking, oak? , kinect?, ps4? }): its settings
  *   CameraSettings.wire(el, change)         // its switches and menus -> change(action, data), as
  *                                           //   remote recording's commands: "pick" { id, tracking },
- *                                           //   "oak" { id, options }, "kinect" { id, options }
+ *                                           //   "oak" { id, options }, "kinect" { id, options }, "ps4" { id, options };
+ *                                           //   and "ps4firmware" { id }: its firmware file to choose here
  *   CameraSettings.initCard({ remote, card, rows, note, refresh })   // the main page's Cameras card
  *                                           //   (remote: RemoteRecordUI's cameras/changeCamera/scanCameras)
  */
@@ -44,6 +45,17 @@
   const KINECT_NUMBERS = new Set(["hands", "people", "exposure", "range"]);
   // (Only where libfreenect2 works the depth out: Linux.)
   const KINECT_LINUX = new Set(["processing", "filters"]);
+  const PS4_CHOICES = {
+    picture: ["Picture", [["side", "Both lenses side by side"], ["merged", "Merged into one"], ["anaglyph", "Red/cyan 3D"], ["blend", "Laid over each other"], ["left", "Left lens"], ["right", "Right lens"],
+      ["depth", "Depth"], ["depth-blend", "Picture + depth"], ["depth-side", "Picture | depth"]]],
+    night: ["Night vision (black and white, brightened)", [["auto", "Automatic"], ["on", "On"], ["off", "Off"]]],
+    model: ["Hand model", [["lite", "Lite"], ["full", "Full"]]],
+    hands: ["Hands", [[1, "One"], [2, "Two"]]],
+    size: ["Picture size (each lens)", [["1280x800", "1280 × 800"], ["640x400", "640 × 400 (faster)"]]],
+    fps: ["Frame rate", [[15, "15"], [30, "30"], [60, "60"], [120, "120 (640 × 400)"]]],
+  };
+  const PS4_SWITCHES = { depth: "Depth (each hand's distance)" };
+  const PS4_NUMBERS = new Set(["hands", "fps"]);
 
   // ---------- one camera's settings ----------
   function html(c, disabled = false) {
@@ -72,6 +84,14 @@
       out += `<div class="cs-sub">Bodies: each person's 25 joints, where they are, each hand open, closed or "lasso". ` +
         (linux ? `Depth smoothing evens out the depth, but on a Raspberry Pi it takes most of the graphics chip, which the hand model needs. ${where ? `Its depth is worked out ${where} now. ` : ""}` : "") +
         "Picture size, Its microphones and Depth worked out by start it again (a few seconds); the rest change as it runs.</div>";
+    } else if (c.ps4) {
+      const o = c.ps4;
+      for (const k of ["picture", "night"]) out += choice("ps4", k, PS4_CHOICES[k], o[k]);
+      out += sw("ps4", "depth", PS4_SWITCHES.depth, o.depth);
+      for (const k of ["model", "hands", "size", "fps"]) out += choice("ps4", k, PS4_CHOICES[k], o[k]);
+      out += `<div class="cs-row"><span class="cs-grow">Its firmware (Sony's firmware.bin, sent each time it's plugged in)</span><button type="button" class="small" data-csfirmware="${id}"${dis}>Choose…</button></div>`;
+      out += '<div class="cs-sub">The hands are found on its left lens\'s picture; Merged and the depth pictures work the depth out too. ' +
+        "Night vision: it has no light of its own, so in the dark its pictures are made black and white and brightened. Picture size and Frame rate start it again (a few seconds); the rest change as it runs.</div>";
     } else out += '<div class="cs-sub">Off: a take records this camera\'s video, without its hands.</div>';
     return out;
   }
@@ -79,6 +99,8 @@
   // Its switches and menus, as remote recording's commands.
   function wire(el, change) {
     el.addEventListener("click", (e) => {
+      const f = e.target.closest && e.target.closest("button[data-csfirmware]");
+      if (f && !f.disabled) return change("ps4firmware", { id: f.dataset.csfirmware });
       const b = e.target.closest && e.target.closest("button[data-csset]");
       if (!b || b.disabled) return;
       const id = b.dataset.csid, kind = b.dataset.cskind, k = b.dataset.csset, v = b.getAttribute("aria-pressed") !== "true";
@@ -88,7 +110,7 @@
       const s = e.target;
       if (!s.dataset || !s.dataset.csset || s.tagName !== "SELECT") return;
       const kind = s.dataset.cskind, k = s.dataset.csset;
-      const number = (kind === "kinect" ? KINECT_NUMBERS : OAK_NUMBERS).has(k);
+      const number = (kind === "kinect" ? KINECT_NUMBERS : kind === "ps4" ? PS4_NUMBERS : OAK_NUMBERS).has(k);
       change(kind, { id: s.dataset.csid, options: { [k]: number ? Number(s.value) : s.value } });
     });
   }
@@ -107,6 +129,11 @@
     };
     async function act(action, data) {
       try {
+        // (A PS4 camera's firmware file is chosen on this computer, not sent as a setting.)
+        if (action === "ps4firmware") {
+          const r = await desktop.ps4cam.chooseFirmware();
+          return r.canceled ? undefined : say(r.ok ? "The PS4 camera's firmware is kept: it starts with it." : r.reason);
+        }
         const res = await remote.changeCamera(action, action === "pick" ? { pick: data } : { [action]: data });
         say(res && res.message ? res.message : "");
       } catch (err) {
@@ -176,5 +203,5 @@
     draw(true);
   }
 
-  global.CameraSettings = { html, wire, initCard, OAK_CHOICES, OAK_SWITCHES, KINECT_CHOICES, KINECT_SWITCHES, KINECT_NUMBERS, KINECT_LINUX };
+  global.CameraSettings = { html, wire, initCard, OAK_CHOICES, OAK_SWITCHES, KINECT_CHOICES, KINECT_SWITCHES, KINECT_NUMBERS, KINECT_LINUX, PS4_CHOICES, PS4_SWITCHES, PS4_NUMBERS };
 })(window);

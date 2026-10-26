@@ -9,7 +9,10 @@
  * or ?kinect=<Kinect id>&bodies=1|0&people=<1-6>&view=<color|depth|blend|side> for a Kinect: the page
  * showing the tile passes each of its pictures in (kinectFrame), with the depth for each part of
  * it; the hands are found here, each with where it is (from the depth), and the bodies too
- * (body-tracker.js; on Windows the Kinect's own, from its frames).
+ * (body-tracker.js; on Windows the Kinect's own, from its frames),
+ * or ?ps4=<its USB port>&model=0|1 for a PlayStation 4 camera: the page showing the tile passes
+ * each frame in (ps4Frame): its left lens's picture, on which the hands are found here, the
+ * picture its view makes from both lenses, and the depth for each part of it (each hand's place).
  * The tile page's API, for the page that shows it:
  *   await Tile.ready                          the camera is running
  *   Tile.hands()                              the hands on the last frame
@@ -29,6 +32,13 @@
  *   Tile.kinectOptions({ view, bodies, people, faces })   what it shows, and whether (and how many) bodies are tracked,
  *                                             and their faces
  *   Tile.bodies()                             the bodies on the last frame (body-tracker.js's)
+ *   await Tile.ps4Frame({ header, jpeg, shown, depth, t })   a PS4 camera's frame: its left lens's picture
+ *                                             (jpeg; none when shown has it: side by side, or merged),
+ *                                             the one its view makes (shown, or none: that one) and its
+ *                                             depth map (kinect-view.js's), taken at t: its hands found, the
+ *                                             picture drawn with them (on its left half, side by side) -> { hands }
+ *   Tile.ps4Status(status)                    its helper's status
+ *   Tile.ps4Options({ model, hands })         its hand model and how many hands
  *   Tile.setView({ rotation, mirror })        turn the picture (and its tracking) clockwise by 0, 90, 180
  *                                             or 270 degrees, and show it mirrored or not (just the look:
  *                                             Left stays the person's left)
@@ -51,6 +61,7 @@
   let objects = null; // an OAK camera's last objects found
   const oak = params.get("oak");
   const kinect = params.get("kinect");
+  const ps4Id = params.get("ps4");
   let lastBitmap = null;
   let pictures = 0; // pictures drawn (an OAK camera's hands can come without theirs; a webcam's, each frame)
 
@@ -62,7 +73,7 @@
   let timing = null; // { samples, handle } while the timing check measures this webcam
   function startTiming() {
     stopTiming();
-    if (oak || kinect || !video || typeof video.requestVideoFrameCallback !== "function" || !global.TimingCheck) return false;
+    if (oak || kinect || ps4Id || !video || typeof video.requestVideoFrameCallback !== "function" || !global.TimingCheck) return false;
     const [gw, gh] = TimingCheck.GRID;
     const small = Object.assign(document.createElement("canvas"), { width: gw * 4, height: gh * 4 });
     const sctx = small.getContext("2d", { willReadFrequently: true });
@@ -133,14 +144,8 @@
     const [x, y] = KinectView.unturn(u, v, HandTracker.getRotation ? HandTracker.getRotation() : 0);
     return kin.view.at3d(x, y);
   };
-  // A hand's place: its palm's middle (the wrist and the knuckles), from the depth there.
-  const handXyz = (raw) => {
-    if (!raw || raw.length < 21) return null;
-    const ids = [0, 5, 9, 13, 17];
-    const u = ids.reduce((a, i) => a + raw[i].x, 0) / ids.length, v = ids.reduce((a, i) => a + raw[i].y, 0) / ids.length;
-    const [x, y] = KinectView.unturn(u, v, HandTracker.getRotation ? HandTracker.getRotation() : 0);
-    return kin.view.at3d(x, y);
-  };
+  // A hand's place: its palm's middle, from the depth there.
+  const handXyz = (raw) => palmXyz(kin.view, raw);
   function startBodies() {
     if (!kin || (!kin.bodies && !kin.faces) || kin.tracker || !global.BodyTracker || typeof Worker === "undefined") return;
     kin.tracker = BodyTracker.create({ people: kin.people });
@@ -204,6 +209,43 @@
     lastBitmap = bitmap;
     return { hands: latest, bodies: kin.found };
   }
+  // ---------- a PS4 camera ----------
+  // Its frames come from the page showing this tile: the hands are found here on its left lens's
+  // picture (or the merged one), each with where it is (from the depth, while it's worked out), and
+  // the picture its view makes is drawn with them (on its left half when it's two side by side).
+  const ps4 = ps4Id ? { depth: KinectView.create(), hasDepth: false, picture: null } : null;
+  async function ps4Frame({ header, jpeg, shown, depth, t }) {
+    if (!ps4 || !(jpeg || shown)) return { hands: latest };
+    const picture = shown ? await createImageBitmap(new Blob([shown], { type: "image/jpeg" })) : null;
+    // The hands' picture: the left lens's own, or (when that isn't sent) the left half of the two
+    // side by side, or the picture itself (merged: the left lens's made better).
+    const bitmap = jpeg ? await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" })) : picture.width >= 2 * header.w ? await createImageBitmap(picture, 0, 0, header.w, header.h) : picture;
+    ps4.hasDepth = !!(header.map && depth && depth.byteLength);
+    if (ps4.hasDepth) ps4.depth.frame(header, depth);
+    const when = Number.isFinite(t) ? t : performance.now();
+    await HandTracker.trackExternalImage(bitmap, when, (rawList) => rawList.map((raw) => ({ xyz: ps4.hasDepth ? palmXyz(ps4.depth, raw) : null })));
+    if (!error) message.hidden = true;
+    const side = !!picture && picture.width / picture.height > 1.8 * (bitmap.width / bitmap.height);
+    const drawn = side ? latest.map((h) => ({ ...h, imageLandmarks: h.imageLandmarks.map(onColourHalf) })) : latest;
+    HandTracker.drawExternalPicture(picture || bitmap, drawn.map((h) => h.imageLandmarks), side);
+    drawTags(drawn);
+    pictures++;
+    if (lastBitmap) lastBitmap.close();
+    if (ps4.picture) ps4.picture.close();
+    lastBitmap = bitmap;
+    ps4.picture = picture;
+    return { hands: latest };
+  }
+  // A hand's place from a depth map (a Kinect's or a PS4 camera's): its palm's middle (the wrist
+  // and the knuckles).
+  function palmXyz(view, raw) {
+    if (!raw || raw.length < 21) return null;
+    const ids = [0, 5, 9, 13, 17];
+    const u = ids.reduce((a, i) => a + raw[i].x, 0) / ids.length, v = ids.reduce((a, i) => a + raw[i].y, 0) / ids.length;
+    const [x, y] = KinectView.unturn(u, v, HandTracker.getRotation ? HandTracker.getRotation() : 0);
+    return view.at3d(x, y);
+  }
+
   // A body as a take keeps it: each joint [x, y, z, u, v, state] (state 2 tracked, 1 inferred, 0 none).
   const STATE = { tracked: 2, inferred: 1, none: 0 };
   const compactBody = (b) => ({
@@ -227,6 +269,18 @@
         if (RobotMotion.isRecording()) RobotMotion.feed(hands, timestamp);
       });
       startBodies();
+      return;
+    }
+    if (ps4Id) {
+      await HandTracker.init({ videoEl: video, canvasEl: stage, overlay: true, mirror: params.get("mirror") !== "0", maxNumHands: 2,
+        modelComplexity: params.get("model") === "0" ? 0 : 1, external: "PS4 camera", trackExternal: true });
+      HandTracker.setRotation(Number(params.get("rot")) || 0);
+      message.textContent = "Starting the PS4 camera…";
+      HandTracker.onHandLandmarks(({ hands, timestamp }) => {
+        latest = hands;
+        gestures.update(hands);
+        if (RobotMotion.isRecording()) RobotMotion.feed(hands, timestamp);
+      });
       return;
     }
     if (oak) {
@@ -336,6 +390,25 @@
         error = "";
       }
     },
+    ps4Frame: (f) => ps4Frame(f),
+    ps4Status: (s) => {
+      if (s.status === "error" || (s.status === "stopped" && s.code)) {
+        error = s.message || `The PS4 camera stopped${s.detail ? `: ${s.detail}` : "."}`;
+        message.hidden = false;
+        message.textContent = error;
+      } else if (s.status === "starting") {
+        error = "";
+        message.hidden = false;
+        message.textContent = s.message || "Starting the PS4 camera…";
+      } else if (s.status === "running") {
+        error = "";
+      }
+    },
+    ps4Options: (o = {}) => {
+      if (!ps4) return;
+      if (o.model === 0 || o.model === 1) HandTracker.setModelComplexity(o.model);
+      if (o.hands === 1 || o.hands === 2) HandTracker.setMaxHands(o.hands);
+    },
     oakStatus: (s) => {
       if (s.status === "error" || (s.status === "stopped" && s.code)) {
         error = s.message || `The OAK camera stopped${s.detail ? `: ${s.detail}` : "."}`;
@@ -353,7 +426,7 @@
     setOptions: (o = {}) => {
       if (o.display) options.display = { ...o.display };
       if (o.overlay !== undefined) options.overlay = !!o.overlay;
-      if (o.readable !== undefined) options.readable = !!o.readable && !oak && !kinect;
+      if (o.readable !== undefined) options.readable = !!o.readable && !oak && !kinect && !ps4Id;
       HandTracker.setOverlay(options.overlay && options.display.skeleton !== false);
       if (!oak) {
         if (o.square !== undefined) HandTracker.setSquareCrop(!!o.square);

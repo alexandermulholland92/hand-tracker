@@ -69,6 +69,8 @@ process.env.HAND_TRACKER_OAK_SIMULATE = "1";
 // SimulatedKinect, electron/kinect.js, so the other checks don't find an extra camera; nor a
 // real Kinect plugged into this computer.)
 process.env.HAND_TRACKER_KINECT_NONE = "1";
+// (A PS4 camera likewise: checkPs4Camera turns on SimulatedPs4Camera, electron/ps4cam.js.)
+process.env.HAND_TRACKER_PS4CAM_NONE = "1";
 process.env.HAND_TRACKER_SYSTEM_SIMULATE = "1"; // (never restarting this computer)
 // Remote recording's takes go here, not into Documents.
 process.env.HAND_TRACKER_REMOTE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-remote-"));
@@ -136,6 +138,8 @@ const STEPS = [
   ["kinect", [], ({ js }) => checkKinect(js)],
   ["kinect-helper", [], () => checkKinectHelper()],
   ["kinect-sound", [], () => checkKinectSound()],
+  ["ps4-camera", [], ({ js }) => checkPs4Camera(js)],
+  ["ps4-helper", [], () => checkPs4Helper()],
   ["camera-settings-tables", [], () => checkCameraSettingsTables()],
   ["annotate-core", [], () => checkAnnotateCore()],
   ["annotate", [], () => checkAnnotate()],
@@ -4346,6 +4350,147 @@ async function checkKinectHelper() {
   check("Kinect helper: its own check passes", /"ok":true/.test(run.stdout || ""), String(run.stdout || run.error || "").replace(/[^\x20-\x7e]/g, "").slice(0, 400));
 }
 
+// A PlayStation 4 camera as a tile of "Several cameras" (a stand-in: SimulatedPs4Camera, its left
+// lens's picture grey, a wall 2 m away and a box 850 mm away in the middle; MediaPipe's hand model
+// in its tile stood in for by a hand in the middle): the picker lists it and it starts alone; its
+// hand gets its place from the depth; its views (side by side twice as wide, merged as wide as one
+// lens) and its picture size (it starts again) change as it runs; its settings under its tile's ⚙
+// and in the main page's Cameras card; a take keeps the hands with their places.
+async function checkPs4Camera(js) {
+  process.env.HAND_TRACKER_PS4CAM_SIMULATE = "1";
+  try {
+    await checkPs4CameraSimulated(js);
+  } finally {
+    delete process.env.HAND_TRACKER_PS4CAM_SIMULATE;
+  }
+}
+async function checkPs4CameraSimulated(js) {
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const until = async (fn, ms = 20000) => { for (let i = 0; i < ms / 100; i++) { const v = await fn(); if (v) return v; await sleep(100); } return null; };
+    const out = {}, ID = "ps4:0-1";
+    await MultiCamera.openPicker();
+    await until(() => document.querySelector('#multiCamPicks input[value^="ps4:"]'), 5000);
+    out.box = (document.querySelector('#multiCamPicks input[value^="ps4:"]') || {}).value || null;
+    for (const b of document.querySelectorAll("#multiCamPicks input")) if (b.checked !== (b.value === out.box)) b.click();
+    out.startAlone = !document.getElementById("multiCamStart").disabled && document.getElementById("multiCamStart").textContent;
+    document.getElementById("multiCamCancel").click();
+    MultiCamera.setPs4Settings(ID, { picture: "left", depth: true, size: "1280x800" });
+    await MultiCamera.start([ID]);
+    const frame = () => document.querySelector("#multiCamGrid iframe");
+    const w = () => frame() && frame().contentWindow;
+    await until(() => w() && w().Tile && w().HandTracker && w().Hands && MultiCamera._tiles()[0].status && MultiCamera._tiles()[0].status.fps > 0, 30000);
+    out.label = document.querySelector("#multiCamGrid .lbl").textContent;
+    // The hand model stood in for: a right hand in the middle of the picture (MediaPipe's own label, mirrored).
+    const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.1],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.2],[-.045,-.23],[0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.1],[.065,-.135],[.07,-.16],[.075,-.18]];
+    const tw = w();
+    tw.Hands.prototype.send = async function () {
+      tw.HandTracker._processResults({ multiHandLandmarks: [T.map(([x, y]) => ({ x: 0.5 + x * 0.6, y: 0.56 + y * 0.6, z: 0 }))], multiHandedness: [{ label: "Left", score: 0.95 }] });
+    };
+    const hand = await until(() => { const h = tw.Tile.hands()[0]; return h && h.distance ? h : null; });
+    out.hand = hand && { side: hand.handedness, distance: hand.distance };
+    // Its views: both lenses side by side, twice as wide; merged, one lens's size.
+    const stage = () => frame().contentDocument.getElementById("stage");
+    MultiCamera.setPs4Settings(ID, { picture: "side" });
+    out.side = await until(() => (stage().width === 2560 && stage().height === 800 ? "2560x800" : null), 5000);
+    MultiCamera.setPs4Settings(ID, { picture: "merged" });
+    out.merged = await until(() => (stage().width === 1280 && stage().height === 800 ? "1280x800" : null), 5000);
+    // Its picture size: smaller, started again with it.
+    MultiCamera.setPs4Settings(ID, { size: "640x400", picture: "left" });
+    out.small = await until(() => (tw.HandTracker.getCamera().width === 640 && MultiCamera._tiles()[0].oakState === "running" ? "640x400" : null), 10000);
+    out.state = MultiCamera.remoteState().cameras[0];
+    // Its own settings: its tile's ⚙ (Depth off, then on again, there; its firmware's Choose…) ...
+    const tileEl = document.querySelector("#multiCamGrid .multi-cam-tile"), panel = () => tileEl.querySelector(".multi-cam-set");
+    tileEl.querySelector("button.gear").click();
+    const depthBtn = () => panel().querySelector('button[data-csset="depth"]');
+    out.gear = { open: !panel().hidden, picture: !!panel().querySelector('select[data-csset="picture"]'), firmware: !!panel().querySelector("button[data-csfirmware]") };
+    depthBtn().click();
+    out.gear.off = MultiCamera.ps4Settings(ID).depth === false && depthBtn().textContent === "Off";
+    depthBtn().click();
+    out.gear.on = MultiCamera.ps4Settings(ID).depth === true && depthBtn().textContent === "On";
+    tileEl.querySelector("button.gear").click();
+    // ... and the main page's Cameras card: it lists the camera, and its ⚙ changes its picture.
+    const cardGear = await until(() => document.querySelector('#camerasRows button[data-open="' + ID + '"]'), 5000);
+    out.card = { listed: !!cardGear };
+    if (cardGear) {
+      cardGear.click();
+      const sel = await until(() => document.querySelector('#camerasRows select[data-csid="' + ID + '"][data-csset="picture"]'), 3000);
+      if (sel) {
+        sel.value = "anaglyph";
+        sel.dispatchEvent(new Event("change", { bubbles: true }));
+        out.card.anaglyph = !!(await until(() => (MultiCamera.ps4Settings(ID).picture === "anaglyph" ? true : null), 3000));
+      }
+      document.querySelector('#camerasRows button[data-open="' + ID + '"]').click();
+    }
+    // A take: the hands with their places.
+    await until(() => tw.Tile.hands()[0] && tw.Tile.hands()[0].distance, 5000);
+    const started = await MultiCamera.startRecording();
+    await sleep(1500);
+    const take = MultiCamera.stopRecording(true);
+    out.take = take && { started: started.ok, hands: take.hands.length, distance: (take.hands[0] && (take.hands[0].frames.find((f) => f.distance_mm) || {}).distance_mm) || null };
+    MultiCamera.close();
+    document.getElementById("motionDiscardBtn").click();
+    MultiCamera.setPs4Settings(ID, null);
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  const near = (v, want, tol) => Math.abs(v - want) <= tol;
+  check("PS4 camera (Several cameras): the picker lists it and it starts alone; its hand's place comes from its depth (850 mm ahead)",
+    r.box === "ps4:0-1" && /PS4 camera/.test(r.startAlone || "") && /PlayStation 4 camera/.test(r.label || "") && r.hand && r.hand.side === "Right" && r.hand.distance && near(r.hand.distance[2], 850, 1) && Math.abs(r.hand.distance[0]) < 150,
+    JSON.stringify({ box: r.box, startAlone: r.startAlone, label: r.label, hand: r.hand, error: r.error }));
+  const g = r.gear || {}, cd = r.card || {};
+  check("PS4 camera: its views (both lenses side by side twice as wide, merged as one) and its picture size (it starts again) change as it runs; its settings under its tile's ⚙ and in the main page's Cameras card",
+    r.side === "2560x800" && r.merged === "1280x800" && r.small === "640x400" && r.state && r.state.ps4 === true && g.open && g.picture && g.firmware && g.off && g.on && cd.listed && cd.anaglyph,
+    JSON.stringify({ side: r.side, merged: r.merged, small: r.small, state: r.state, gear: r.gear, card: r.card, error: r.error }));
+  check("PS4 camera: a take keeps the hands with their places", r.take && r.take.started && r.take.hands >= 1 && r.take.distance && near(r.take.distance[2], 850, 1), JSON.stringify(r.take || r.error));
+}
+
+// The PS4 camera's helper itself (ps4cam/ps4cam_helper.py), where this computer has the Python the
+// app keeps for OAK cameras: on made-up stereo pictures (a square 1019 mm away), each view's
+// picture its size, the left lens's picture with it only where the view's doesn't have it (side
+// by side, merged), and the square's depth right.
+async function checkPs4Helper() {
+  const python = path.join(app.getPath("appData"), "Hand Tracker", "oak", "python-env", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+  if (!fs.existsSync(python)) return; // (OAK support isn't set up here)
+  const { readMessages } = require("../electron/oak.js");
+  const { nativeImage } = require("electron");
+  const helper = path.join(__dirname, "..", "ps4cam", "ps4cam_helper.py");
+  const sizes = {};
+  for (const view of ["side", "merged", "depth-side", "anaglyph"]) {
+    const proc = require("child_process").spawn(python, ["-u", helper, "--simulate", "--view", view, "--depth"], { windowsHide: true });
+    const got = await new Promise((resolve) => {
+      let buf = Buffer.alloc(0), frames = 0;
+      const timer = setTimeout(() => resolve(null), 20000);
+      proc.stdout.on("data", (d) => {
+        buf = Buffer.concat([buf, d]);
+        const { messages, rest } = readMessages(buf);
+        buf = Buffer.from(rest);
+        for (const m of messages) {
+          if (m.header.kind === "frame" && ++frames === 5) {
+            clearTimeout(timer);
+            resolve(m);
+          }
+        }
+      });
+    });
+    proc.kill();
+    if (!got) {
+      sizes[view] = null;
+      continue;
+    }
+    const h = got.header, part = (name) => got.jpeg.subarray(h.parts[name][0], h.parts[name][0] + h.parts[name][1]);
+    const shown = nativeImage.createFromBuffer(part("shown")).getSize(), left = h.parts.jpeg ? nativeImage.createFromBuffer(part("jpeg")).getSize() : null;
+    const depth = part("depth"), mm = [];
+    for (let i = 0; i < h.map.w * h.map.h; i++) mm.push(depth.readUInt16LE(i * 2));
+    const known = mm.filter((v) => v > 0).sort((a, b) => a - b);
+    sizes[view] = { shown: `${shown.width}x${shown.height}`, left: left && `${left.width}x${left.height}`, depth: known.length ? known[known.length >> 1] : 0 };
+  }
+  check("PS4 camera helper: on made-up stereo pictures each view's picture is its size (side by side twice as wide), with the left lens's picture only when the view's doesn't have it (red/cyan, not side by side or merged), and the depth is right (1019 mm)",
+    sizes.side && sizes.side.shown === "2560x800" && sizes.side.left === null && sizes.merged && sizes.merged.shown === "1280x800" && sizes.merged.left === null &&
+      sizes["depth-side"] && sizes["depth-side"].shown === "2560x800" && sizes["depth-side"].left === null && sizes.anaglyph && sizes.anaglyph.shown === "1280x800" && sizes.anaglyph.left === "1280x800" &&
+      Object.values(sizes).every((v) => v && Math.abs(v.depth - 1019) <= 5),
+    JSON.stringify(sizes));
+}
+
 // Where the Kinect's sound comes from (electron/kinect.js's Beam, on made-up sound): a steady hum
 // heard by all four microphones (the Kinect's own, louder at the first) isn't placed; a sound
 // above it reaching each microphone a sample after the one before is, and on the other side the
@@ -4391,10 +4536,14 @@ function checkCameraSettingsTables() {
   const out = {
     kinectChoices: same(take(page, "KINECT_CHOICES"), here.KINECT_CHOICES), kinectSwitches: same(take(page, "KINECT_SWITCHES"), here.KINECT_SWITCHES),
     oakChoices: same(take(page, "OAK_CHOICES"), here.OAK_CHOICES), oakSwitches: same(take(page, "OAK_SWITCHES"), here.OAK_SWITCHES),
+    ps4Choices: same(take(page, "PS4_CHOICES"), here.PS4_CHOICES), ps4Switches: same(take(page, "PS4_SWITCHES"), here.PS4_SWITCHES),
   };
   const rigChoices = take(rig, "KINECT_CHOICES") || {}, rigSwitches = take(rig, "KINECT_SWITCHES") || [];
   out.rigChoices = Object.entries(here.KINECT_CHOICES).every(([k, [, options]]) => same(rigChoices[k], options.map(([v]) => v)));
   out.rigSwitches = same([...rigSwitches].sort(), Object.keys(here.KINECT_SWITCHES).sort());
+  const rigPs4 = take(rig, "PS4_CHOICES") || {}, rigPs4Switches = take(rig, "PS4_SWITCHES") || [];
+  out.rigPs4Choices = same(Object.keys(rigPs4), Object.keys(here.PS4_CHOICES)) && Object.entries(here.PS4_CHOICES).every(([k, [, options]]) => same(rigPs4[k], options.map(([v]) => v)));
+  out.rigPs4Switches = same([...rigPs4Switches].sort(), Object.keys(here.PS4_SWITCHES).sort());
   check("A camera's own settings: remote recording's page, this computer's pages and what the rig takes have the same choices and switches", Object.values(out).every(Boolean), JSON.stringify(out));
 }
 

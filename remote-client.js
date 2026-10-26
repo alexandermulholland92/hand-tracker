@@ -217,6 +217,7 @@
     const track = `<div class="row"><span class="grow">Hand tracking</span><button type="button" class="small${on ? " on" : ""}" data-track="${id}" aria-pressed="${on}"${disabled ? " disabled" : ""}>${on ? "On" : "Off"}</button></div>`;
     if (c.oak) return oakSettingsHtml(c, disabled, track);
     if (c.kinect) return kinectSettingsHtml(c, disabled, track);
+    if (c.ps4) return ps4SettingsHtml(c, disabled, track);
     return `<div class="oakset" id="${setId(c.id)}">${track}<div class="sub">Off: a take records this camera's video, without its hands.</div></div>`;
   }
   // A Kinect's own settings (multi-camera.js's KINECT_OWN): what its picture shows and what's
@@ -250,6 +251,28 @@
       `${o.pipeline ? `Its depth is worked out ${o.pipeline === "opengl" ? "with the graphics chip" : o.pipeline === "cpu" ? "by the processor" : `by ${esc(o.pipeline)}`} now. ` : ""}` +
       "Picture size, Its microphones and Depth worked out by start it again (a few seconds); the rest change as it runs.</div></div>";
   }
+  // A PS4 camera's own settings (multi-camera.js's PS4_OWN): what its picture shows (from its two
+  // lenses), its depth, night vision and its pictures' size and rate.
+  const PS4_CHOICES = {
+    picture: ["Picture", [["side", "Both lenses side by side"], ["merged", "Merged into one"], ["anaglyph", "Red/cyan 3D"], ["blend", "Laid over each other"], ["left", "Left lens"], ["right", "Right lens"],
+      ["depth", "Depth"], ["depth-blend", "Picture + depth"], ["depth-side", "Picture | depth"]]],
+    night: ["Night vision (black and white, brightened)", [["auto", "Automatic"], ["on", "On"], ["off", "Off"]]],
+    model: ["Hand model", [["lite", "Lite"], ["full", "Full"]]],
+    hands: ["Hands", [[1, "One"], [2, "Two"]]],
+    size: ["Picture size (each lens)", [["1280x800", "1280 × 800"], ["640x400", "640 × 400 (faster)"]]],
+    fps: ["Frame rate", [[15, "15"], [30, "30"], [60, "60"], [120, "120 (640 × 400)"]]],
+  };
+  const PS4_SWITCHES = { depth: "Depth (each hand's distance)" };
+  const PS4_NUMBERS = new Set(["hands", "fps"]);
+  function ps4SettingsHtml(c, disabled, first = "") {
+    const o = c.ps4, id = esc(c.id), dis = disabled ? " disabled" : "";
+    const choice = (k) => `<div class="row"><span class="grow">${PS4_CHOICES[k][0]}</span><select data-ps4id="${id}" data-ps4set="${k}"${dis}>` +
+      PS4_CHOICES[k][1].map(([v, t]) => `<option value="${v}"${String(o[k]) === String(v) ? " selected" : ""}>${t}</option>`).join("") + "</select></div>";
+    const sw = (k) => `<div class="row"><span class="grow">${PS4_SWITCHES[k]}</span><button type="button" class="small${o[k] ? " on" : ""}" data-ps4id="${id}" data-ps4set="${k}" aria-pressed="${!!o[k]}"${dis}>${o[k] ? "On" : "Off"}</button></div>`;
+    return `<div class="oakset" id="${setId(c.id)}">` + first + choice("picture") + choice("night") + sw("depth") + choice("model") + choice("hands") + choice("size") + choice("fps") +
+      '<div class="sub">The hands are found on its left lens\'s picture; Merged and the depth pictures work the depth out too. Night vision: it has no light of its own, so in the dark its pictures are made black and white and brightened. ' +
+      "Its firmware file is chosen on the computer it's plugged into (its ⚙ there). Picture size and Frame rate start it again (a few seconds); the rest change as it runs.</div></div>";
+  }
   function oakSettingsHtml(c, disabled, first = "") {
     const o = c.oak, id = esc(c.id), dis = disabled ? " disabled" : "";
     const choice = (k) => `<div class="row"><span class="grow">${OAK_CHOICES[k][0]}</span><select data-oakid="${id}" data-oakset="${k}"${dis}>` +
@@ -279,9 +302,16 @@
       command("oak", { oak: { id: b.dataset.oakid, options: { [b.dataset.oakset]: b.getAttribute("aria-pressed") !== "true" } } });
     } else if (b.dataset.kinset) {
       command("kinect", { kinect: { id: b.dataset.kinid, options: { [b.dataset.kinset]: b.getAttribute("aria-pressed") !== "true" } } });
+    } else if (b.dataset.ps4set) {
+      command("ps4", { ps4: { id: b.dataset.ps4id, options: { [b.dataset.ps4set]: b.getAttribute("aria-pressed") !== "true" } } });
     }
   });
   $("camRows").addEventListener("change", (e) => {
+    if (e.target.dataset.ps4set) {
+      const k = e.target.dataset.ps4set, v = e.target.value;
+      command("ps4", { ps4: { id: e.target.dataset.ps4id, options: { [k]: PS4_NUMBERS.has(k) ? Number(v) : v } } });
+      return;
+    }
     if (e.target.dataset.kinset) {
       const k = e.target.dataset.kinset, v = e.target.value;
       command("kinect", { kinect: { id: e.target.dataset.kinid, options: { [k]: KINECT_NUMBERS.has(k) ? Number(v) : v } } });

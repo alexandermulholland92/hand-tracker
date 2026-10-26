@@ -1668,8 +1668,10 @@
   async function listCameras() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return [];
     const devices = await navigator.mediaDevices.enumerateDevices();
+    // (Not a PlayStation 4 camera once it has its firmware: its pictures are both lenses' and
+    // more side by side, which its own helper reads: Several cameras lists it as itself.)
     return devices
-      .filter((d) => d.kind === "videoinput")
+      .filter((d) => d.kind === "videoinput" && !/\bOV580\b|\(05a9:058[ab]\)/i.test(d.label))
       .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
   }
 

@@ -41,7 +41,8 @@
  * are drawn on its screen, each camera's video with a take, its sound and its quality, and each
  * camera's photo as a take starts),
  * "sentry" (Sentry mode's settings, boxes and on/off: cleanSentry), "oak" (one OAK camera's own
- * settings: cleanOak) or "kinect" (one Kinect's own settings: cleanKinect).
+ * settings: cleanOak), "kinect" (one Kinect's own settings: cleanKinect) or "ps4" (one PS4 camera's
+ * own settings: cleanPs4).
  * onWantPreviews({ on, focus }): a page is (or stopped) looking at the previews; focus: the
  * camera one is looking at full screen (null for none), which then comes bigger
  * (/api/preview?i=N&full=1). Each preview request waits for that camera's next picture; each
@@ -78,7 +79,7 @@ const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it t
 const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
-const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "takeDetails", "editTake", "sentry", "oak", "kinect", "resetCameras", "reboot", "powerOff", "timing"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "takeDetails", "editTake", "sentry", "oak", "kinect", "ps4", "resetCameras", "reboot", "powerOff", "timing"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
 const ROLES = ["", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"]; // (camera-roles.js's)
@@ -143,6 +144,17 @@ function cleanKinect(o) {
   const options = {};
   for (const [k, allowed] of Object.entries(KINECT_CHOICES)) if (allowed.includes(o.options[k])) options[k] = o.options[k];
   for (const k of KINECT_SWITCHES) if (typeof o.options[k] === "boolean") options[k] = o.options[k];
+  return Object.keys(options).length ? { id: o.id, options } : null;
+}
+// A PS4 camera's own settings (multi-camera.js's PS4_OWN).
+const PS4_CHOICES = { picture: ["side", "merged", "anaglyph", "blend", "left", "right", "depth", "depth-blend", "depth-side"], night: ["auto", "on", "off"], model: ["lite", "full"], hands: [1, 2],
+  size: ["1280x800", "640x400"], fps: [15, 30, 60, 120] };
+const PS4_SWITCHES = ["depth"];
+function cleanPs4(o) {
+  if (!o || typeof o !== "object" || typeof o.id !== "string" || !/^ps4:[0-9]{1,3}-[0-9.]{1,24}$/.test(o.id) || !o.options || typeof o.options !== "object") return null;
+  const options = {};
+  for (const [k, allowed] of Object.entries(PS4_CHOICES)) if (allowed.includes(o.options[k])) options[k] = o.options[k];
+  for (const k of PS4_SWITCHES) if (typeof o.options[k] === "boolean") options[k] = o.options[k];
   return Object.keys(options).length ? { id: o.id, options } : null;
 }
 const cleanMode = (m) => (MODES.includes(m) ? m : null);
@@ -859,7 +871,7 @@ class RemoteRecordServer extends EventEmitter {
         body += chunk;
         if (body.length > 8192) return this.send(res, 413, { error: "Too long" });
       }
-      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null, take = null, sentry = null, oak = null, kinect = null;
+      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null, take = null, sentry = null, oak = null, kinect = null, ps4 = null;
       try {
         const msg = JSON.parse(body);
         action = String(msg.action || "");
@@ -874,6 +886,7 @@ class RemoteRecordServer extends EventEmitter {
         sentry = cleanSentry(msg.sentry);
         oak = cleanOak(msg.oak);
         kinect = cleanKinect(msg.kinect);
+        ps4 = cleanPs4(msg.ps4);
       } catch {
         return this.send(res, 400, { error: "Not JSON" });
       }
@@ -885,6 +898,7 @@ class RemoteRecordServer extends EventEmitter {
       if (action === "sentry" && !sentry) return this.send(res, 400, { error: "Which Sentry setting?" });
       if (action === "oak" && !oak) return this.send(res, 400, { error: "Which OAK camera setting?" });
       if (action === "kinect" && !kinect) return this.send(res, 400, { error: "Which Kinect setting?" });
+      if (action === "ps4" && !ps4) return this.send(res, 400, { error: "Which PS4 camera setting?" });
       // Takes this page has safely: deleted here (checked file by file).
       if (action === "deleteTakes") {
         if (!this.takes) return this.send(res, 404, { error: "No takes here." });
@@ -918,6 +932,7 @@ class RemoteRecordServer extends EventEmitter {
       if (sentry) extra.sentry = sentry;
       if (oak) extra.oak = oak;
       if (kinect) extra.kinect = kinect;
+      if (ps4) extra.ps4 = ps4;
       const result = await this.ask(action, extra);
       return this.send(res, 200, result || { ok: true });
     }

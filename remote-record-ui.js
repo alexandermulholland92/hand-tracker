@@ -480,7 +480,7 @@
   const labels = {}; // camera id -> its label when last found (for one picked that's gone)
 
   const oakLabel = (id, port) => `Luxonis ${(prefs.oakNames || {})[id] || "OAK camera"}${port ? ` (USB ${port})` : ""} …${id.slice(-6)}`;
-  const labelOf = (id) => labels[id] || (id.startsWith("oak:") ? oakLabel(id.slice(4)) : id.startsWith("kinect:") ? `Kinect for Xbox One (${id.slice(-4)})` : id.startsWith("cam:") ? id.slice(4) : "Webcam");
+  const labelOf = (id) => labels[id] || (id.startsWith("oak:") ? oakLabel(id.slice(4)) : id.startsWith("kinect:") ? `Kinect for Xbox One (${id.slice(-4)})` : id.startsWith("ps4:") ? `PlayStation 4 camera (USB ${id.slice(4)})` : id.startsWith("cam:") ? id.slice(4) : "Webcam");
   // Picked: every camera found, up to four (those picked before first, then OAK cameras), except
   // one unticked here or in Several cameras; one picked that isn't plugged in is still listed
   // (if there's room). Only the picked ones start.
@@ -537,6 +537,14 @@
     if (cams().kinectAvailable && (await cams().kinectAvailable().catch(() => false))) {
       for (const k of await desktop.kinect.list().catch(() => [])) found.push({ id: `kinect:${k.id}`, label: `Kinect for Xbox One (${k.id.slice(-4)})` });
     }
+    // PS4 cameras (the Linux and Windows app: electron/ps4cam.js); one needing the one-time setup or
+    // its firmware file is said.
+    if (global.desktop && desktop.ps4cam && (await desktop.ps4cam.available().catch(() => ({ ok: false }))).ok) {
+      const ps4 = await desktop.ps4cam.list().catch(() => ({ devices: [] }));
+      for (const d of ps4.devices || []) found.push({ id: `ps4:${d.id}`, label: `PlayStation 4 camera (USB ${d.id})` });
+      if (ps4.setup) note = [note, "A PlayStation 4 camera needs a one-time setup on the computer first (Several cameras… → Set up PS4 camera support)."].filter(Boolean).join(" ");
+      else if ((ps4.devices || []).some((d) => !d.ready) && !ps4.firmware) note = [note, "The PlayStation 4 camera needs its firmware file, chosen once on the computer (its ⚙ → Choose…)."].filter(Boolean).join(" ");
+    }
     for (const c of await HandTracker.listCameras().catch(() => [])) if (c.deviceId) found.push({ id: cams().keyOf(c), label: c.label });
     for (const c of found) labels[c.id] = c.label;
     return { found, note };
@@ -575,7 +583,8 @@
       const i = starting.indexOf(c.id);
       const role = i >= 0 ? roles[i] : saved[c.id] && !used.has(saved[c.id]) ? saved[c.id] : "";
       // An OAK camera's own settings (and what it has, once it's run), for the page to show and change.
-      const oak = c.id.startsWith("oak:") && cams().oakSettings ? { oak: cams().oakSettings(c.id) } : c.id.startsWith("kinect:") && cams().kinectSettings ? { kinect: cams().kinectSettings(c.id) } : {};
+      const oak = c.id.startsWith("oak:") && cams().oakSettings ? { oak: cams().oakSettings(c.id) } : c.id.startsWith("kinect:") && cams().kinectSettings ? { kinect: cams().kinectSettings(c.id) }
+        : c.id.startsWith("ps4:") && cams().ps4Settings ? { ps4: cams().ps4Settings(c.id) } : {};
       const tracking = cams().tracking ? cams().tracking(c.id) : true; // (its own Hand tracking switch)
       return { id: c.id, label: c.label, present: c.present, use: picked.includes(c.id), role, tracking, ...oak };
     });
@@ -952,6 +961,17 @@
       const restarts = Object.keys(o.options || {}).some((k) => k === "size" || k === "mics" || k === "processing");
       return { ok: true, message: running ? (restarts ? `${labelOf(o.id)} starts again with its new settings (a few seconds).` : `${labelOf(o.id)}: done.`) : `Saved: ${labelOf(o.id)} starts with these.` };
     }
+    if (action === "ps4") {
+      // One PS4 camera's own settings: remembered for it; running, it takes them as it runs (its
+      // picture size or frame rate: it starts again).
+      const o = data.ps4 || {};
+      if (!cams().setPs4Settings) return { ok: false, message: "This Hand Tracker has no PS4 cameras." };
+      if (recording) return { ok: false, message: "Stop recording first." };
+      cams().setPs4Settings(o.id, o.options || {});
+      const running = cams().isActive() && pickedIds().includes(o.id);
+      const restarts = Object.keys(o.options || {}).some((k) => k === "size" || k === "fps");
+      return { ok: true, message: running ? (restarts ? `${labelOf(o.id)} starts again with its new settings (a few seconds).` : `${labelOf(o.id)}: done.`) : `Saved: ${labelOf(o.id)} starts with these.` };
+    }
     if (action === "reboot") {
       if (!remote.reboot || !system || !system.reboot) return { ok: false, message: "This device can't be restarted from here." };
       if (recording) return { ok: false, message: "Stop recording first." };
@@ -1185,10 +1205,10 @@
     initTakes();
     remote.onStatus(show);
     remote.onWantPreviews(setPreviews);
-    remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st, sentry, oak, kinect }) => {
+    remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st, sentry, oak, kinect, ps4 }) => {
       let result;
       try {
-        result = await carryOut(action, { details: d, camera, pick: p, mode, settings: st, sentry, oak, kinect });
+        result = await carryOut(action, { details: d, camera, pick: p, mode, settings: st, sentry, oak, kinect, ps4 });
       } catch (err) {
         result = { ok: false, message: errText(err) };
       }

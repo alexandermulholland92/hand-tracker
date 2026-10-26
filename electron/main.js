@@ -20,6 +20,7 @@ const { InputDriver } = require("./input");
 const { OakCamera } = require("./oak");
 const { KinectCamera, KinectTake, SimulatedKinect } = require("./kinect");
 const { writeKinectMcap } = require("./kinect-mcap");
+const { Ps4Camera, SimulatedPs4Camera } = require("./ps4cam");
 const { OpsClient } = require("./ops");
 const { FleetClient } = require("./fleet");
 const { Annotator, MODEL: annotateModel, DOLLARS_PER_MINUTE: annotateDollarsPerMinute } = require("./annotate");
@@ -114,6 +115,7 @@ let oak = null; // Luxonis OAK cameras (see oak.js), created once the app is rea
 let oakViewer = null; // the window receiving the OAK camera's frames
 const oakStreams = new Map(); // several OAK cameras at once (multi-camera.js): id -> { cam, busy }
 const kinectStreams = new Map(); // Kinects (kinect.js), as tiles of "Several cameras": id -> { cam, busy, viewer, take, audio }
+const ps4Streams = new Map(); // PS4 cameras (ps4cam.js), as tiles of "Several cameras": id -> { cam, busy, viewer }
 let ops = null; // capture-session dashboard (see ops.js), created once the app is ready
 let fleet = null; // capture-fleet dashboard's live rig pictures (see fleet.js)
 const outputFolders = new Map(); // token -> folder the user picked for batch saving
@@ -284,6 +286,7 @@ function createWindow(page = "index.html", size = { width: 1320, height: 940 }) 
     if (!isMainFrame || isSameDocument) return;
     for (const [id, stream] of [...oakStreams]) if (stream.viewer === win.webContents) stopOakStream(id);
     for (const [id, stream] of [...kinectStreams]) if (stream.viewer === win.webContents) stopKinectStream(id);
+    for (const [id, stream] of [...ps4Streams]) if (stream.viewer === win.webContents) stopPs4Stream(id);
     if (APP.kind === "remote" && win === mainWindow && remoteRecord && !/[?&]rig=1(&|$)/.test(String(url || ""))) {
       if (rigBluetooth) rigBluetooth.stop();
       Promise.resolve(remoteRecord.stop()).catch(() => {});
@@ -879,6 +882,99 @@ function stopKinectStream(id) {
   if (!stream) return;
   kinectStreams.delete(id);
   if (stream.take) stream.take.abort();
+  stream.cam.stop();
+}
+
+// ---------- the PlayStation 4 camera (ps4cam.js) ----------
+// Each one a tile of "Several cameras" (multi-camera.js): a helper each, its left lens's picture,
+// the picture its view makes and its depth to the page, which finds the hands. The helper makes the
+// next frame as each one goes to the page; it waits while the page is still on that one, and goes
+// as soon as it's done.
+const PS4_ID = /^[0-9]{1,3}-[0-9.]{1,24}$/;
+const PS4_COMMAND = /^(view (left|right|side|anaglyph|blend|merged|depth|depth-blend|depth-side)|depth (on|off)|night (auto|on|off))$/;
+function registerPs4Ipc() {
+  // (The checks' stand-in PS4 camera, while HAND_TRACKER_PS4CAM_SIMULATE is set: read each time, so only its checks see it.)
+  const simulated = () => !!process.env.HAND_TRACKER_PS4CAM_SIMULATE;
+  const u8 = (b) => (b ? new Uint8Array(b) : null);
+  handle("ps4cam:available", () => (simulated() ? { ok: true, simulated: true } : Ps4Camera.available()));
+  handle("ps4cam:status", () => (simulated() ? { ready: true, firmware: true, simulated: true } : Ps4Camera.status(app.getPath("userData"))));
+  handle("ps4cam:setup", (event) =>
+    Ps4Camera.setup(app.getPath("userData"), (line) => {
+      if (!event.sender.isDestroyed()) event.sender.send("ps4cam:setup-progress", line);
+    })
+  );
+  // Its firmware: the person's copy of Sony's firmware.bin, chosen here and kept.
+  handle("ps4cam:choose-firmware", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: "Choose the PS4 camera's firmware (firmware.bin)",
+      buttonLabel: "Use This",
+      properties: ["openFile"],
+      filters: [{ name: "Firmware", extensions: ["bin"] }, { name: "All files", extensions: ["*"] }],
+    });
+    if (canceled || !filePaths || !filePaths[0]) return { ok: false, canceled: true };
+    return Ps4Camera.setFirmware(app.getPath("userData"), filePaths[0]);
+  });
+  handle("ps4cam:list", async () => {
+    if (simulated()) return { devices: [{ id: "0-1", name: "PlayStation 4 camera", ready: true }], setup: false, firmware: true };
+    // (The other checks find no real PS4 camera, even one plugged into the computer they run on.)
+    if (process.env.HAND_TRACKER_PS4CAM_NONE) return { devices: [], setup: false, firmware: true };
+    const found = await Ps4Camera.list(app.getPath("userData")).catch(() => ({ devices: [], setup: false, firmware: true }));
+    // (One running is plugged in, even if listing it fails while it's in use.)
+    for (const id of ps4Streams.keys()) if (!found.devices.some((c) => c.id === id)) found.devices.push({ id, name: "PlayStation 4 camera", ready: true });
+    return found;
+  });
+  handle("ps4cam:stream-start", (event, { id, ...options } = {}) => {
+    if (!PS4_ID.test(String(id || ""))) throw new Error("Which PS4 camera?");
+    stopPs4Stream(id);
+    const viewer = event.sender;
+    const stream = { cam: simulated() ? new SimulatedPs4Camera() : new Ps4Camera(app.getPath("userData")), busy: false, next: null, viewer };
+    ps4Streams.set(id, stream);
+    const opts = { device: id, size: options.size, fps: options.fps, view: options.view, depth: !!options.depth, night: options.night };
+    stream.cam.start(opts, (msg) => {
+      if (ps4Streams.get(id) !== stream && msg.status !== "stopped") return;
+      if (viewer.isDestroyed()) return stopPs4Stream(id);
+      if (msg.frame) {
+        const frame = { id, header: msg.frame, jpeg: u8(msg.jpeg), shown: u8(msg.shown), depth: u8(msg.depth) };
+        if (stream.busy) {
+          stream.next = frame;
+          return;
+        }
+        stream.busy = true;
+        viewer.send("ps4cam:frame", frame);
+        stream.cam.next();
+      } else if (ps4Streams.get(id) === stream || !ps4Streams.has(id)) {
+        viewer.send("ps4cam:status", { id, ...msg });
+      }
+    });
+    return true;
+  });
+  ipcMain.on("ps4cam:shown", (event, id) => {
+    const stream = ps4Streams.get(id);
+    if (!stream) return;
+    const next = stream.next;
+    stream.next = null;
+    if (next && !stream.viewer.isDestroyed()) {
+      stream.viewer.send("ps4cam:frame", next);
+      stream.cam.next();
+    } else stream.busy = false;
+  });
+  handle("ps4cam:command", (event, { id, line } = {}) => {
+    const stream = ps4Streams.get(String(id));
+    if (!stream || !PS4_COMMAND.test(String(line || ""))) return false;
+    stream.cam.command(String(line));
+    return true;
+  });
+  handle("ps4cam:stream-stop", (event, id) => {
+    for (const key of id ? [id] : [...ps4Streams.keys()]) stopPs4Stream(key);
+    return true;
+  });
+}
+
+function stopPs4Stream(id) {
+  const stream = ps4Streams.get(id);
+  if (!stream) return;
+  ps4Streams.delete(id);
   stream.cam.stop();
 }
 
@@ -1631,6 +1727,7 @@ app.whenReady().then(() => {
   registerPcIpc();
   registerOakIpc();
   registerKinectIpc();
+  registerPs4Ipc();
   registerOpsIpc();
   registerFleetIpc();
   registerAnnotateIpc();
@@ -1658,6 +1755,7 @@ app.on("will-quit", () => {
   if (oak) oak.stop();
   for (const id of [...oakStreams.keys()]) stopOakStream(id);
   for (const id of [...kinectStreams.keys()]) stopKinectStream(id);
+  for (const id of [...ps4Streams.keys()]) stopPs4Stream(id);
   if (natnet.client) natnet.client.stop();
   if (phoneLink) phoneLink.stop();
   if (webLink) webLink.stop();

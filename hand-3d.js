@@ -165,6 +165,7 @@
     camera.updateProjectionMatrix();
   }
 
+  let idleFrames = 0;
   function animate() {
     requestAnimationFrame(animate);
     const now = performance.now();
@@ -180,6 +181,9 @@
       controls.autoRotateSpeed = options.spin === "swing" ? (Math.sin(now / 1600) >= 0 ? 3 : -3) : 2;
       controls.update();
     }
+    // With no hand in it, it's drawn a quarter as often (turning as fast): the graphics chip's time
+    // goes to the cameras (on a Raspberry Pi, a PS4 camera's hands are found a tenth faster).
+    if (!Object.values(rigs).some((rig) => rig.visible) && ++idleFrames % 4) return;
     if (renderer && scene && camera) renderer.render(scene, camera);
   }
 
