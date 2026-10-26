@@ -155,6 +155,8 @@ const STEPS = [
   ["remote-room", [], ({ js }) => checkRemoteRoom(js)],
   ["sentry-math", [], () => checkSentryMath()],
   ["sentry-animals", ["sentry-math"], () => checkSentryAnimals()],
+  ["sentry-second-look", ["sentry-math"], () => checkSentrySecondLook()],
+  ["second-look-model", [], ({ js }) => checkSecondLookModel(js)],
   ["ntfy", [], () => checkNtfy()],
   ["sentry", [], ({ js }) => checkSentry(js)],
   ["web-link", [], () => checkWebLink()],
@@ -911,6 +913,189 @@ async function checkSentryAnimals() {
       out.opinion.join() === "animal,person," &&
       out.leftOut === 0 && out.ignoring.track === false && out.ignoring.ignore === true &&
       /^A cat at /.test(out.ntfy[0]) && /^An elephant at /.test(out.ntfy[1]) && /^Movement at /.test(out.ntfy[2]),
+    JSON.stringify(out));
+}
+
+// Sentry mode tracking animals on a camera that doesn't find objects itself (a webcam: its grey
+// picture stands in for the one Sentry makes), with a stand-in for the app's object finder (it
+// finds what's set here) and for the second look its ⚙ turns on (second-look.js). Off: the app's
+// finder's cat found steadily is an alert, as before, with no second look. On: the second look is
+// made ready, and it's an alert only once that sees an animal there too, in the same picture; not
+// one it sees a person over, nor one it sees nothing at, nor while it isn't ready or doesn't work
+// (each said in Sentry's note); ready again, an alert.
+async function checkSentrySecondLook() {
+  const S = globalThis.Sentry;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const grey = { w: 64, h: 36, data: new Uint8Array(64 * 36).fill(100) };
+  const pic = { stand_in: true };
+  let objects = null, on = false, says = "same", state = "ready", error = "";
+  const asked = [];
+  let prepared = 0;
+  const view = { key: "check-webcam", index: 0, name: "Check webcam", grey: () => grey, rotation: () => 0, mirrored: () => false, canvas: () => null, frame: () => pic, secondLook: () => on };
+  const realFinder = globalThis.ObjectFinder, realSecond = globalThis.SecondLook;
+  globalThis.ObjectFinder = { load: async () => {}, loading: () => false, find: async () => objects };
+  globalThis.SecondLook = {
+    prepare: () => prepared++,
+    state: () => ({ state, error }),
+    find: async (image) => {
+      asked.push(image);
+      if (state !== "ready") throw new Error(error || "The second look isn't ready yet.");
+      return says === "same" ? objects || [] : says;
+    },
+  };
+  const saved = {};
+  S.init({ prefs: saved, setPref: (k, v) => (saved[k] = v), views: () => [view], host: null, hostName: () => "pi", link: () => "", looking: () => true });
+  const n = () => S._test.events.length;
+  const afresh = async () => {
+    objects = null;
+    await S.command({ armed: false, shown: false });
+    await S.command({ shown: true, armed: true });
+  };
+  const during = async (ms, what) => {
+    const before = n();
+    objects = what;
+    await sleep(ms);
+    return n() - before;
+  };
+  const cat = { label: "cat", score: 0.8, box: [0.1, 0.1, 0.3, 0.4] };
+  const out = {};
+  try {
+    await S.command({ shown: true, photo: false, video: false, sound: false, trackAnimals: true });
+    await S.command({ armed: true });
+    out.off = await during(3000, [cat]);
+    out.offAsked = asked.length;
+    out.offPrepared = prepared;
+    await afresh();
+    on = true;
+    out.on = await during(3000, [cat]);
+    out.onAsked = asked.length;
+    out.onPicture = asked.length > 0 && asked.every((a) => a === pic);
+    out.prepared = prepared > 0;
+    out.onNote = S.remoteState().note;
+    await afresh();
+    says = [{ label: "person", score: 0.9, box: [0.05, 0.05, 0.35, 0.6] }];
+    out.person = await during(3000, [cat]);
+    out.people = ((S._test.per.get("check-webcam") || {}).people || []).length;
+    await afresh();
+    says = [];
+    out.nothing = await during(3000, [cat]);
+    await afresh();
+    says = "same";
+    state = "loading";
+    out.loading = await during(3000, [cat]);
+    out.loadingNote = S.remoteState().note;
+    await afresh();
+    state = "failed";
+    error = "its model's download failed (404)";
+    out.failed = await during(3000, [cat]);
+    out.failedNote = S.remoteState().note;
+    state = "ready";
+    error = "";
+    await afresh();
+    out.again = await during(3000, [cat]);
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    objects = null;
+    await S.command({ armed: false, shown: false }).catch(() => {});
+    globalThis.ObjectFinder = realFinder;
+    globalThis.SecondLook = realSecond;
+  }
+  check("Sentry mode tracking animals on a webcam (no finder of its own): with its second look off, the app's finder's cat found steadily is an alert, as before; on, the second look is made ready and looks at the same picture first: an alert once it sees an animal there too, none when it sees a person over it or nothing there, none while it isn't ready or doesn't work (each said in Sentry's note), and one again once it's ready",
+    !out.error && out.off === 1 && out.offAsked === 0 && out.offPrepared === 0 &&
+      out.on === 1 && out.onAsked >= 1 && out.onPicture && out.prepared && !/second look/.test(out.onNote) &&
+      out.person === 0 && out.people > 0 && out.nothing === 0 &&
+      out.loading === 0 && /Getting the second look ready/.test(out.loadingNote) &&
+      out.failed === 0 && /The second look didn't work \(its model's download failed \(404\)\): no animal is told of/.test(out.failedNote) && out.again === 1,
+    JSON.stringify(out));
+}
+
+// Sentry's second look's model (electron/second-look.js), with a stand-in download: one that isn't
+// whole (short, or changed) is refused and not kept; a whole one is kept and used again without
+// downloading; a kept copy that's spoilt is downloaded again; a failed download says so. Then the
+// real one in the app (the release's own, downloaded once into the checks' cache, then served from
+// here as HAND_TRACKER_SECOND_LOOK_URL): made ready on the page, kept in the app's data folder, and
+// looking at a picture.
+async function checkSecondLookModel(js) {
+  const crypto = require("crypto");
+  const http = require("http");
+  const { secondLookModel } = require("../electron/second-look.js");
+  const { MODEL } = require("../second-look.js");
+  const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-second-"));
+  const good = Buffer.from("a stand-in model");
+  const expect = { name: "stand-in.onnx", url: "https://example.invalid/stand-in.onnx", size: good.length, sha256: sha(good) };
+  let body = good, fetched = 0;
+  const fake = async () => {
+    fetched++;
+    return { ok: true, status: 200, arrayBuffer: async () => Uint8Array.from(body).buffer };
+  };
+  const tryWith = async (fetchFn, want = expect) => {
+    try {
+      return (await secondLookModel(dir, fetchFn, want)).equals(good) ? "kept" : "other";
+    } catch (err) {
+      return err.message;
+    }
+  };
+  const out = {};
+  let server = null;
+  try {
+    body = good.subarray(1);
+    out.short = await tryWith(fake);
+    body = Buffer.from("a stand-in modeL");
+    out.changed = await tryWith(fake);
+    out.notKept = !fs.existsSync(path.join(dir, "models", expect.name));
+    body = good;
+    out.first = await tryWith(fake);
+    const n = fetched;
+    out.again = (await tryWith(fake)) === "kept" && fetched === n;
+    fs.writeFileSync(path.join(dir, "models", expect.name), "spoilt");
+    out.spoilt = (await tryWith(fake)) === "kept" && fetched === n + 1;
+    out.failed = await tryWith(async () => ({ ok: false, status: 404 }), { ...expect, name: "other.onnx" });
+    // The real one.
+    const cache = path.join(os.tmpdir(), "hand-tracker-check-cache", MODEL.name);
+    let model = fs.existsSync(cache) ? fs.readFileSync(cache) : null;
+    if (!model || sha(model) !== MODEL.sha256) {
+      const res = await require("electron").net.fetch(MODEL.url);
+      model = res.ok ? Buffer.from(await res.arrayBuffer()) : null;
+      if (model && sha(model) === MODEL.sha256) {
+        fs.mkdirSync(path.dirname(cache), { recursive: true });
+        fs.writeFileSync(cache, model);
+      } else out.download = res.ok ? "not whole" : `${res.status}`;
+    }
+    if (!out.download) {
+      server = http.createServer((req, res) => res.writeHead(200, { "Content-Type": "application/octet-stream" }).end(model));
+      await new Promise((r) => server.listen(0, "127.0.0.1", r));
+      process.env.HAND_TRACKER_SECOND_LOOK_URL = `http://127.0.0.1:${server.address().port}/${MODEL.name}`;
+      out.page = await js(`(async () => {
+        const t0 = performance.now();
+        await SecondLook.prepare(true);
+        const s = SecondLook.state();
+        if (s.state !== "ready") return s;
+        const readyMs = Math.round(performance.now() - t0);
+        const pic = Object.assign(document.createElement("canvas"), { width: 640, height: 360 });
+        const g = pic.getContext("2d");
+        g.fillStyle = "#6a7a5a";
+        g.fillRect(0, 0, 640, 360);
+        g.fillStyle = "#c8b090";
+        g.fillRect(260, 120, 120, 200);
+        const t1 = performance.now();
+        const found = await SecondLook.find(pic);
+        return { state: s.state, readyMs, ok: Array.isArray(found), ms: Math.round(performance.now() - t1) };
+      })()`);
+      out.keptByApp = fs.existsSync(path.join(app.getPath("userData"), "models", MODEL.name));
+    }
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    if (server) server.close();
+    delete process.env.HAND_TRACKER_SECOND_LOOK_URL;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  const p = out.page || {};
+  check("Sentry's second look's model: a download that isn't whole (short, or changed) is refused and not kept; a whole one is kept and used again without downloading; a kept copy that's spoilt is downloaded again; a failed download says so; the real one (13 MB, checked) is made ready on the page, kept in the app's data folder, and looks at a picture",
+    !out.error && /didn't download whole/.test(out.short) && /didn't download whole/.test(out.changed) && out.notKept && out.first === "kept" && out.again && out.spoilt && /download failed \(404\)/.test(out.failed) &&
+      !out.download && p.state === "ready" && p.ok && out.keptByApp,
     JSON.stringify(out));
 }
 
@@ -1896,6 +2081,12 @@ async function checkWebLink() {
   const out = {};
   out.preflight = await ask("OPTIONS", "/input", { headers: { "Access-Control-Request-Method": "POST", "Access-Control-Request-Private-Network": "true" } });
   out.preflight = { status: out.preflight.status, allowOrigin: out.preflight.headers["access-control-allow-origin"], privateNetwork: out.preflight.headers["access-control-allow-private-network"] };
+  // (The website at its own domain too.)
+  out.domains = [];
+  for (const origin of ["https://hand-tracker.com", "https://www.hand-tracker.com"]) {
+    const r = await ask("OPTIONS", "/input", { origin, headers: { "Access-Control-Request-Method": "POST", "Access-Control-Request-Private-Network": "true" } });
+    out.domains.push(r.status === 204 && r.headers["access-control-allow-origin"] === origin);
+  }
   out.status = (await ask("GET", "/status")).status;
   out.move = (await ask("POST", "/input", { body: { type: "pointer", data: { nx: 0.25, ny: 0.75, screen: "primary" } } })).status;
   out.click = (await ask("POST", "/input", { body: { type: "button", data: { which: "left", action: "click" } } })).status;
@@ -1907,8 +2098,8 @@ async function checkWebLink() {
   link.stop();
   out.done = done.map((d) => `${d.type}:${JSON.stringify(d.data)}`);
   out.clean = [cleanInput({ type: "pointer", data: { nx: 2, ny: 0 } }), cleanInput({ type: "wheel", data: { notches: 99 } })];
-  check("The website's hand mouse reaches this computer's pointer only through the app's switch: from the website's own pages, addressed to this computer, only pointer, buttons, wheel, keys and text (a browser's preflight answered, with Chrome's private-network header)",
-    out.preflight.status === 204 && out.preflight.allowOrigin === "https://hand-tracker.pages.dev" && out.preflight.privateNetwork === "true" &&
+  check("The website's hand mouse reaches this computer's pointer only through the app's switch: from the website's own pages (hand-tracker.pages.dev, hand-tracker.com), addressed to this computer, only pointer, buttons, wheel, keys and text (a browser's preflight answered, with Chrome's private-network header)",
+    out.preflight.status === 204 && out.preflight.allowOrigin === "https://hand-tracker.pages.dev" && out.preflight.privateNetwork === "true" && out.domains.every(Boolean) &&
       out.status === 200 && out.move === 200 && out.click === 200 && out.otherSite === 403 && out.noOrigin === 403 && out.otherHost === 403 &&
       out.nonsense === 400 && out.badKey === 400 && out.clean.every((c) => c === null) &&
       out.done.join(" | ") === 'pointer:{"nx":0.25,"ny":0.75,"screen":"primary"} | button:{"which":"left","action":"click"}',
@@ -3133,7 +3324,13 @@ async function checkRemoteOakSettings(js) {
       const web = document.querySelector('#camRows [data-oakopen]:not([data-oakopen^="oak:"])');
       if (web) web.click();
       const webBlock = web && (await until(() => block(web.dataset.oakopen)));
-      return { was, off, webTrack: !!(webBlock && webBlock.querySelector("[data-track]")), webOak: webBlock ? webBlock.querySelectorAll("[data-oakset]").length : -1 };
+      // Sentry's second look: a webcam's switch (off to start), turned on; none for an OAK camera.
+      const second = () => block(web.dataset.oakopen) && block(web.dataset.oakopen).querySelector("[data-second]");
+      const secondWas = webBlock && second() ? second().textContent : "";
+      if (secondWas) second().click();
+      const secondOn = !!(secondWas && (await until(() => second() && second().getAttribute("aria-pressed") === "true")));
+      return { was, off, webTrack: !!(webBlock && webBlock.querySelector("[data-track]")), webOak: webBlock ? webBlock.querySelectorAll("[data-oakset]").length : -1,
+        webId: web && web.dataset.oakopen, secondWas, secondOn, oakSecond: !!block("${A}").querySelector("[data-second]") };
     })()`);
     for (let i = 0; i < 100; i++) {
       const w = await startedWith();
@@ -3145,6 +3342,12 @@ async function checkRemoteOakSettings(js) {
       started: (await startedWith()).map((x) => x && x.hands).sort().join(),
       state: (await state()).available.cameras.filter((c) => c.id === A || c.id === B).map((c) => `${c.id === A ? "a" : "b"}:${c.tracking}`).sort().join(),
     };
+    // The webcam's second look as the page set it (kept on this computer), the OAK cameras' none; off again.
+    const webId = (out.trackSwitch || {}).webId;
+    const listed = (await state()).available.cameras;
+    out.secondState = { web: (listed.find((c) => c.id === webId) || {}).secondLook, oak: listed.filter((c) => c.id === A || c.id === B).map((c) => c.secondLook), kept: await js(`MultiCamera.secondLook(${JSON.stringify(webId || "")})`) };
+    if (webId) await post("pick", { pick: { id: webId, secondLook: false } });
+    out.secondState.off = await js(`MultiCamera.secondLook(${JSON.stringify(webId || "")})`);
     // Its picture side by side (colour | depth): started so, the tile's picture twice as wide.
     await pjs(`(async () => {
       ${PAGE}
@@ -3189,9 +3392,11 @@ async function checkRemoteOakSettings(js) {
   const [sa, sb] = (out.started || []).slice().sort((x, y) => (x && x.night === "on" ? -1 : 1));
   const ch = out.changed || [];
   const ts = out.trackSwitch || {}, to = out.trackOff || {};
-  check("Remote recording's page: every camera has a Hand tracking switch under its ⚙ (a webcam only that); turned off for one OAK camera, it starts again without the hands while the other keeps them",
-    ts.was === "On" && ts.off && ts.webTrack && ts.webOak === 0 && to.started === "false,true" && to.state === "a:false,b:true",
-    JSON.stringify({ trackSwitch: ts, trackOff: to }));
+  const ss = out.secondState || {};
+  check("Remote recording's page: every camera has a Hand tracking switch under its ⚙ (a webcam that and Sentry's second look: off to start, turned on there it's kept on the computer; an OAK camera none, its animals always have one); turned off for one OAK camera, it starts again without the hands while the other keeps them",
+    ts.was === "On" && ts.off && ts.webTrack && ts.webOak === 0 && to.started === "false,true" && to.state === "a:false,b:true" &&
+      ts.secondWas === "Off" && ts.secondOn && ts.oakSecond === false && ss.web === true && ss.kept === true && Array.isArray(ss.oak) && ss.oak.length === 2 && ss.oak.every((v) => v === undefined) && ss.off === false,
+    JSON.stringify({ trackSwitch: ts, trackOff: to, secondState: ss }));
   const sd = out.side || {};
   check("Remote recording's page: an OAK camera's Picture can be Colour | depth (side by side): it starts so, and its tile's picture is twice as wide",
     sd.found && sd.w > 0 && sd.h > 0 && sd.w / sd.h > 3 && sd.fps > 0, JSON.stringify(sd));
@@ -4538,6 +4743,7 @@ function checkCameraSettingsTables() {
     oakChoices: same(take(page, "OAK_CHOICES"), here.OAK_CHOICES), oakSwitches: same(take(page, "OAK_SWITCHES"), here.OAK_SWITCHES),
     ps4Choices: same(take(page, "PS4_CHOICES"), here.PS4_CHOICES), ps4Switches: same(take(page, "PS4_SWITCHES"), here.PS4_SWITCHES),
   };
+  out.secondLook = !!take(page, "SECOND_LOOK") && same(take(page, "SECOND_LOOK"), take(read("camera-settings.js"), "SECOND_LOOK"));
   const rigChoices = take(rig, "KINECT_CHOICES") || {}, rigSwitches = take(rig, "KINECT_SWITCHES") || [];
   out.rigChoices = Object.entries(here.KINECT_CHOICES).every(([k, [, options]]) => same(rigChoices[k], options.map(([v]) => v)));
   out.rigSwitches = same([...rigSwitches].sort(), Object.keys(here.KINECT_SWITCHES).sort());

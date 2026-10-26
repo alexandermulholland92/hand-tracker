@@ -36,7 +36,7 @@
  * "details" (only the take details: { contributor, location, task }, which any request can
  * bring along, and which go into the takes), "camera" (one running camera's { index, role,
  * rotation, mirror }), "scan" (look for the cameras it can start), "pick" (one of those:
- * { id, use, role }), "mode" ("ego", "stereo" or "freeform") or "settings" ({ detailsRequired, screenPictures,
+ * { id, use, role, tracking, secondLook }), "mode" ("ego", "stereo" or "freeform") or "settings" ({ detailsRequired, screenPictures,
  * video, sound, videoQuality, photo }: whether the take details are needed, whether the OAK cameras' pictures
  * are drawn on its screen, each camera's video with a take, its sound and its quality, and each
  * camera's photo as a take starts),
@@ -122,6 +122,7 @@ function cleanPick(p) {
   const out = { id: p.id };
   if (typeof p.use === "boolean") out.use = p.use;
   if (typeof p.tracking === "boolean") out.tracking = p.tracking;
+  if (typeof p.secondLook === "boolean") out.secondLook = p.secondLook;
   if (ROLES.includes(p.role)) out.role = p.role;
   return out;
 }

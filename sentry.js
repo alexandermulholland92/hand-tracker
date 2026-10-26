@@ -23,10 +23,11 @@
  * Track animals (instead): only an animal found in a watched box is an alert, and its video goes
  * on for as long as one is found there (then STILL_S more), with no length limit. It's made sure
  * of first: found steadily for ANIMAL_CONFIRM_MS (so a stray find or two isn't), not where a
- * person is found too, not one measured as tall as a person (a depth camera's), and an OAK
- * camera's found again by the app's own object finder (another model). Movement too: movement
- * is an alert as well, as without it. The app's object finder looks every ANIMAL_LOOK_MS
- * meanwhile (an animal lying still is still found).
+ * person is found too, not one measured as tall as a person (a depth camera's), and found again by
+ * another model: an OAK camera's by the app's own object finder; another camera's, where its ⚙
+ * asks for it, by Sentry's second look (second-look.js; without it, the app's object finder's
+ * find alone is an alert). Movement too: movement is an alert as well, as without it. The app's
+ * object finder looks every ANIMAL_LOOK_MS meanwhile (an animal lying still is still found).
  *
  * Hand tracking is off while it's on (the cameras' pictures carry on, with no hands): nobody's
  * there to track, the processor is left for watching, and no skeletons are drawn on its photos
@@ -46,7 +47,8 @@
  *       canvas() (the canvas its picture is drawn on: what's recorded), frame() (the picture
  *       tracked), mirrored() (its preview is), rotation() (an OAK camera: the turn its own grey
  *       pictures need), grey() (OAK: its last { w, h, data } grey picture, or null), objects()
- *       (OAK: its last objects), oak, want(on) (draw its pictures often, for a video) }]
+ *       (OAK: its last objects), oak, want(on) (draw its pictures often, for a video), secondLook()
+ *       (not OAK: its second look is on) }]
  *     host: desktop or mobile (saving into the remote recording folder and deleting Sentry's
  *       files there: host.remote.deleteSentry({ names } or { all }), ntfy)
  *     onWantsChange(): the OAK cameras' options changed (wantsMotion / wantsObjects)
@@ -415,6 +417,7 @@
   // for every ANIMAL_LOOK_MS. An animal found long enough is an alert, and keeps its video going.
   function watchAnimals(v, st, off) {
     const now = Date.now();
+    if (wantsSecond(v) && global.SecondLook) global.SecondLook.prepare(); // (made ready once; tried again a while after it fails)
     const sure = !st.session && (st.animals || []).some((a) => now - a.at <= ANIMAL_GAP_MS); // (making sure of one)
     if (v.objects) {
       const objects = v.objects();
@@ -436,16 +439,19 @@
     }
     const seen = animalSeen(st, off, cfg.rows, cfg.cols, now);
     if (!seen || (!st.session && seen.span < ANIMAL_CONFIRM_MS)) return;
-    if (!st.session && v.objects && !(now - (st.agreedAt || 0) < ANIMAL_HOLD_MS)) return secondLook(v, st, seen, now);
+    if (!st.session && (v.objects || wantsSecond(v)) && !(now - (st.agreedAt || 0) < ANIMAL_HOLD_MS)) return secondLook(v, st, seen, now);
     moving(v, st, seen.label);
   }
 
-  // An OAK camera's animal (not yet an alert), looked for again by the app's own object finder
-  // in the picture as shown: it agrees (st.agreedAt: then it's an alert), finds a person there
-  // (the animal's theirs), or neither (looked at again in a moment). Without that finder, or a
-  // picture, it isn't one: the camera's alone can take a person for an animal.
+  const wantsSecond = (v) => !v.objects && !!(v.secondLook && v.secondLook());
+
+  // An animal found (not yet an alert), looked for again by another model in the picture as shown:
+  // an OAK camera's by the app's own object finder; another camera's (its second look on) by the
+  // second look's. It agrees (st.agreedAt: then it's an alert), finds a person there (the animal's
+  // theirs), or neither (looked at again in a moment). Without that model, or a picture, it isn't
+  // one: one model alone can take a person for an animal.
   function secondLook(v, st, seen, now) {
-    if (st.finding || now - (st.secondAt || 0) < SECOND_GAP_MS) return;
+    if (st.second || now - (st.secondAt || 0) < SECOND_GAP_MS) return;
     st.secondAt = now;
     let image = null;
     try {
@@ -454,14 +460,36 @@
       image = null;
     }
     if (!image) return;
-    st.finding = true;
-    findObjects(image)
+    st.second = true;
+    (v.objects ? findObjects(image) : secondObjects(image))
       .then((objects) => {
         const verdict = objects ? opinion(objects, seen.box) : "";
         if (verdict === "animal") st.agreedAt = Date.now();
         else if (verdict === "person") (st.people = st.people || []).push({ box: seen.box, at: Date.now() });
       })
-      .finally(() => (st.finding = false));
+      .finally(() => (st.second = false));
+  }
+
+  // The second look's objects in a picture (second-look.js), or null while it can't look (not ready
+  // yet, or not working: secondText says so).
+  async function secondObjects(image) {
+    try {
+      return global.SecondLook ? await global.SecondLook.find(image) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // While a camera has its second look on (tracking animals): what's keeping it from looking, if
+  // anything (no animal is told of on those cameras meanwhile).
+  function secondText(views) {
+    if (!cfg.trackAnimals || !views.some(wantsSecond)) return "";
+    const look = global.SecondLook;
+    if (!look) return "The second look isn't in this Hand Tracker: no animal is told of on the cameras that have it on.";
+    const s = look.state();
+    if (s.state === "ready") return "";
+    if (s.state === "failed") return `The second look didn't work (${errText(s.error)}): no animal is told of on the cameras that have it on until it does.`;
+    return "Getting the second look ready (its model is downloaded the first time, 13 MB): no animal is told of on the cameras that have it on until then.";
   }
 
   // Movement in a watched box: an alert (or more of one going on), unless it's an animal's.
@@ -747,7 +775,8 @@
     const recording = [...per.values()].filter((s) => s.session && s.session.rec).length;
     if (!cfg.armed) return n ? "Off. Tap a box to leave it out: the rest are watched once Sentry is on." : "Off. Start the cameras to see their boxes.";
     if (!n) return "On, but no camera is running.";
-    return `Watching ${n} camera${n === 1 ? "" : "s"}${cfg.trackAnimals ? ` for animals${cfg.animalsMotion ? " and movement" : ""}` : ""}${recording ? ` · recording ${recording}` : ""}.${finderNote ? ` ${finderNote}` : ""}`;
+    const second = secondText(views);
+    return `Watching ${n} camera${n === 1 ? "" : "s"}${cfg.trackAnimals ? ` for animals${cfg.animalsMotion ? " and movement" : ""}` : ""}${recording ? ` · recording ${recording}` : ""}.${finderNote ? ` ${finderNote}` : ""}${second ? ` ${second}` : ""}`;
   }
 
   // For remote recording's page (and the Hand Tracker app watching for alerts). While Sentry is
@@ -865,6 +894,6 @@
     init, wantsMotion, wantsObjects, wantsTracking, remoteState, command,
     isArmed: () => !!cfg && cfg.armed,
     videoFps,
-    _test: { shrink, blur, moved, levels, turn, turnBox, withoutAnimals, animalsOnly, animalSeen, remember, opinion, ntfyMessage, serverOnly, sample, events, per, toCamera, config: () => cfg },
+    _test: { shrink, blur, moved, levels, turn, turnBox, withoutAnimals, animalsOnly, animalSeen, remember, opinion, ntfyMessage, serverOnly, sample, events, per, toCamera, secondText, config: () => cfg },
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -586,17 +586,24 @@
       const oak = c.id.startsWith("oak:") && cams().oakSettings ? { oak: cams().oakSettings(c.id) } : c.id.startsWith("kinect:") && cams().kinectSettings ? { kinect: cams().kinectSettings(c.id) }
         : c.id.startsWith("ps4:") && cams().ps4Settings ? { ps4: cams().ps4Settings(c.id) } : {};
       const tracking = cams().tracking ? cams().tracking(c.id) : true; // (its own Hand tracking switch)
-      return { id: c.id, label: c.label, present: c.present, use: picked.includes(c.id), role, tracking, ...oak };
+      // Sentry's second look: its own switch, for a camera that doesn't find objects itself.
+      const second = !c.id.startsWith("oak:") && cams().secondLook ? { secondLook: cams().secondLook(c.id) } : {};
+      return { id: c.id, label: c.label, present: c.present, use: picked.includes(c.id), role, tracking, ...oak, ...second };
     });
   }
 
   // One camera picked or not, or given a role (a camera that had that role takes its old one).
   // tracking: its own Hand tracking switch (a running OAK camera starts again with or without
-  // its hand models).
-  function pick({ id, use, role, tracking }) {
+  // its hand models); secondLook: its Sentry's second look switch.
+  function pick({ id, use, role, tracking, secondLook }) {
     const list = available();
     const i = list.findIndex((c) => c.id === id);
     if (i < 0) return { ok: false, message: "That camera isn't plugged in any more." };
+    if (typeof secondLook === "boolean") {
+      if (!cams().setSecondLook || id.startsWith("oak:")) return { ok: false, message: "This camera has no second look to turn on or off." };
+      cams().setSecondLook(id, secondLook);
+      return { ok: true, message: `Sentry's second look is ${secondLook ? "on" : "off"} for ${labelOf(id)}.` };
+    }
     if (typeof tracking === "boolean") {
       if (!cams().setTracking) return { ok: false, message: "Hand tracking can't be turned off here." };
       cams().setTracking(id, tracking);

@@ -413,8 +413,10 @@ contextBridge.exposeInMainWorld("desktop", {
   },
 
   // Sentry mode's alerts through ntfy (electron/ntfy.js): { server, topic, title, message,
-  // tags, priority, click, photo?, filename? } -> { ok }.
+  // tags, priority, click, photo?, filename? } -> { ok }. Its second look's model (second-look.js):
+  // its bytes, downloaded the first time.
   sentry: {
     ntfy: (req) => ipcRenderer.invoke("sentry:ntfy", req),
+    secondLookModel: () => ipcRenderer.invoke("sentry:second-look-model"),
   },
 });

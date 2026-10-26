@@ -51,6 +51,11 @@ luxonis/tools make it for depthai, Apache License 2.0), compiled with Luxonis's 
 It isn't part of the app: the desktop app downloads it from this project's oak-models-2
 release, checked against its checksum, the first time *Find objects* is turned on.
 
+Sentry mode's second look (a camera's ⚙, for cameras that don't find objects themselves) runs the
+same model, as Ultralytics' own exporter makes it for ONNX (`yolov8n_coco.onnx`). It isn't part
+of the apps either: they download it from this project's sentry-models-1 release, checked against
+its checksum, the first time a camera's second look is turned on. ONNX Runtime Web runs it (below).
+
 ## MediaPipe
 
 MediaPipe Hands and MediaPipe Pose (`@mediapipe/hands`, `@mediapipe/pose`, installed from npm),
@@ -70,3 +75,32 @@ OAK cameras' 6-core hand models (`palm_detection_sh6.blob`, `hand_landmark_full_
 the first time an OAK camera starts) are MediaPipe's palm detection (v0.8.5) and hand landmark
 (v0.8.9) models by Google, under the Apache License 2.0, converted for the camera by
 `scripts/build-oak-models.py`.
+
+## ONNX Runtime Web
+
+`onnxruntime-web` (installed from npm; its WebAssembly build: `ort.wasm.min.js`,
+`ort-wasm-simd-threaded.mjs` and `.wasm`), by Microsoft, runs Sentry mode's second look. MIT licence.
+
+```
+MIT License
+
+Copyright (c) Microsoft Corporation.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

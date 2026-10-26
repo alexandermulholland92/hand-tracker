@@ -14,11 +14,15 @@
  *                                           //   and "ps4firmware" { id }: its firmware file to choose here
  *   CameraSettings.initCard({ remote, card, rows, note, refresh })   // the main page's Cameras card
  *                                           //   (remote: RemoteRecordUI's cameras/changeCamera/scanCameras)
+ * A camera that doesn't find objects itself (not an OAK camera) has Sentry's second look too
+ * ({ secondLook }: its switch, "pick" { id, secondLook }).
  */
 (function (global) {
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
   // ---------- the tables (remote-client.js has the same) ----------
+  // Sentry's second look (sentry.js, second-look.js): its switch and what it does.
+  const SECOND_LOOK = ["Second look at animals (Sentry)", "With Track animals, an animal found in this camera's picture is an alert only once a second model (YOLOv8 nano, as OAK cameras run) finds one there too, and not where it finds a person. Its model (13 MB) is downloaded the first time it's turned on."];
   const OAK_CHOICES = {
     model: ["Hand model", [["lite", "Lite"], ["full", "Full"]]],
     hands: ["Hands", [[1, "One"], [2, "Two"]]],
@@ -93,6 +97,8 @@
       out += '<div class="cs-sub">The hands are found on its left lens\'s picture; Merged and the depth pictures work the depth out too. ' +
         "Night vision: it has no light of its own, so in the dark its pictures are made black and white and brightened. Picture size and Frame rate start it again (a few seconds); the rest change as it runs.</div>";
     } else out += '<div class="cs-sub">Off: a take records this camera\'s video, without its hands.</div>';
+    // (An OAK camera's animals always have a second look: the app's own object finder.)
+    if (!c.oak && typeof c.secondLook === "boolean") out += sw("pick", "secondLook", SECOND_LOOK[0], c.secondLook) + `<div class="cs-sub">${SECOND_LOOK[1]}</div>`;
     return out;
   }
 
@@ -104,7 +110,7 @@
       const b = e.target.closest && e.target.closest("button[data-csset]");
       if (!b || b.disabled) return;
       const id = b.dataset.csid, kind = b.dataset.cskind, k = b.dataset.csset, v = b.getAttribute("aria-pressed") !== "true";
-      change(kind, kind === "pick" ? { id, tracking: v } : { id, options: { [k]: v } });
+      change(kind, kind === "pick" ? { id, [k]: v } : { id, options: { [k]: v } });
     });
     el.addEventListener("change", (e) => {
       const s = e.target;

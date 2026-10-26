@@ -41,6 +41,8 @@
  *   MultiCamera.remoteState(); MultiCamera.previewSources();           // for remote recording (remote-record-ui.js)
  *   MultiCamera.isTracking()                                           // any of the tiles tracks hands now
  *   MultiCamera.sentryViews()                                          // each camera, for Sentry mode (sentry.js)
+ *   MultiCamera.secondLook(id) / MultiCamera.setSecondLook(id, on)     // Sentry's second look for a camera that doesn't
+ *                                                                      //   find objects itself (its ⚙'s switch, remembered for it)
  *   MultiCamera.setRole(i, role); MultiCamera.setView(i, { rotation, mirror })
  *   MultiCamera.setScreenPictures(on); MultiCamera.screenPictures()   // OAK pictures on this screen (remembered)
  *   MultiCamera.setPreviewWant({ on, focus, ms, focusMs })             // remote recording's previews: how often each is made
@@ -468,6 +470,17 @@
     }
     syncOak(); // (an OAK camera finds hands on its own processor: started again without them, or with)
   }
+  // Sentry's second look at an animal found in a camera's picture (sentry.js): each camera's own
+  // switch (under its ⚙: off unless it's turned on there). Not an OAK camera's: its animals always
+  // have one. Its model is downloaded as it's first turned on (second-look.js).
+  const ownSecondLook = (id) => !isOak(id) && ((prefs && prefs.cameraSecondLook) || {})[id] === true;
+  function setSecondLook(id, on) {
+    const all = { ...((prefs && prefs.cameraSecondLook) || {}) };
+    if (on && !isOak(id)) all[id] = true;
+    else delete all[id];
+    setPref("cameraSecondLook", all);
+    if (on && global.SecondLook) SecondLook.prepare(true);
+  }
 
   const tileApi = (t) => {
     try {
@@ -814,6 +827,7 @@
       CameraSettings.wire(panel, (kind, data) => {
         if (recording) return;
         if (kind === "pick" && typeof data.tracking === "boolean") setTracking(data.id, data.tracking);
+        else if (kind === "pick" && typeof data.secondLook === "boolean") setSecondLook(data.id, data.secondLook);
         else if (kind === "oak") setOakSettings(data.id, data.options);
         else if (kind === "kinect") setKinectSettings(data.id, data.options);
         else if (kind === "ps4") setPs4Settings(data.id, data.options);
@@ -821,7 +835,7 @@
         drawSettings(t, true);
       });
     }
-    const html = CameraSettings.html(cameraOf(t), recording);
+    const html = CameraSettings.html({ ...cameraOf(t), ...(t.oak ? {} : { secondLook: ownSecondLook(t.deviceId) }) }, recording);
     const using = document.activeElement && document.activeElement.tagName === "SELECT" && panel.contains(document.activeElement);
     if ((force || html !== t.settingsShown) && !using) {
       t.settingsShown = html;
@@ -1303,6 +1317,7 @@
       rotation: () => t.view.rotation || 0,
       grey: t.oak ? () => t.grey || null : null,
       objects: t.oak ? () => t.objects || null : null,
+      secondLook: t.oak ? null : () => ownSecondLook(t.deviceId),
       oak: !!t.oak,
       want: (on) => (t.wants = Math.max(0, (t.wants || 0) + (on ? 1 : -1))),
       // Its frame rate now (Sentry's videos follow it).
@@ -1429,6 +1444,7 @@
     init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, tracking: ownTracking, setTracking, timingCheck, timingState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
     oakSettings, setOakSettings, kinectSettings, setKinectSettings, saveKinect, kinectAvailable, ps4Settings, setPs4Settings,
     isActive: () => tiles.length > 0, runningIds: () => tiles.map((t) => t.deviceId), isRecording: () => recording, isTracking: () => tiles.some((t) => tracking(t)),
+    secondLook: ownSecondLook, setSecondLook,
     _again: AGAIN, // (the checks shorten its times)
     _kinectAgain: KINECT_AGAIN_S, // (and these)
     _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null, cameraHands: t.oak ? t.cameraHands : undefined, oakWith: t.oak ? t.oakWith : undefined, oakState: t.oakState, again: (t.again || []).length })),

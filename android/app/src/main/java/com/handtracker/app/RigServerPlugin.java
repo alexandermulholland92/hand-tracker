@@ -801,6 +801,7 @@ public class RigServerPlugin extends Plugin {
                 pick.put("id", pk.optString("id"));
                 if (pk.opt("use") instanceof Boolean) pick.put("use", pk.optBoolean("use"));
                 if (pk.opt("tracking") instanceof Boolean) pick.put("tracking", pk.optBoolean("tracking"));
+                if (pk.opt("secondLook") instanceof Boolean) pick.put("secondLook", pk.optBoolean("secondLook"));
                 if (pk.opt("role") instanceof String && ROLES.contains(pk.optString("role"))) pick.put("role", pk.optString("role"));
                 cmd.put("pick", pick);
             }

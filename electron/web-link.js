@@ -1,6 +1,7 @@
 /**
- * web-link.js — lets the Hand Tracker website (hand-tracker.pages.dev) move this computer's
- * mouse and type on it with its hand mouse, through this app: a website can't do that itself.
+ * web-link.js — lets the Hand Tracker website (hand-tracker.pages.dev, or hand-tracker.com) move
+ * this computer's mouse and type on it with its hand mouse, through this app: a website can't do
+ * that itself.
  * Only while "Let the website control this computer" is on (it's off until turned on), only
  * from this computer itself (127.0.0.1: nothing on the network can reach it), and only from the
  * website's own pages (their Origin; a browser can't fake that), each request carried out like
@@ -21,7 +22,7 @@ const http = require("http");
 const { EventEmitter } = require("events");
 
 const PORT = 47823;
-const ORIGINS = new Set(["https://hand-tracker.pages.dev", "https://main.hand-tracker.pages.dev", "http://localhost:8080", "http://127.0.0.1:8080"]);
+const ORIGINS = new Set(["https://hand-tracker.pages.dev", "https://main.hand-tracker.pages.dev", "https://hand-tracker.com", "https://www.hand-tracker.com", "http://localhost:8080", "http://127.0.0.1:8080"]);
 
 // A request's input, checked: { type, data } or null.
 function cleanInput(msg) {

@@ -895,7 +895,18 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
     };
   }
 
-  const api = { platform: cap.getPlatform(), saveFiles, share, chunkBytes: CHUNK_BYTES };
+  // A file from the web as bytes, by the app's own request (Capacitor's, which both apps have): a
+  // page can't fetch some sites' files itself (GitHub's release files don't allow it). Sentry's
+  // second look's model, say (second-look.js).
+  async function fetchBytes(url) {
+    const http = plugin("CapacitorHttp");
+    if (!http) throw new Error("this app can't download it");
+    const res = await http.request({ url, method: "GET", responseType: "arraybuffer", connectTimeout: 30000, readTimeout: 120000 });
+    if (!(res.status >= 200 && res.status < 300)) throw new Error(`its download failed (${res.status})`);
+    return fromBase64(typeof res.data === "string" ? res.data : "");
+  }
+
+  const api = { platform: cap.getPlatform(), saveFiles, share, fetchBytes, chunkBytes: CHUNK_BYTES };
   api.remote = createRigServer();
   api.natnet = createNatNet();
   Object.assign(api, createRemote(), createLink());

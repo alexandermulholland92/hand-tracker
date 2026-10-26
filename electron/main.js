@@ -75,6 +75,7 @@ const readFile = promisify(fs.readFile); // callback fs is asar-aware in package
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8", // (ONNX Runtime's WebAssembly loader, a module)
   ".css": "text/css; charset=utf-8",
   ".json": "application/json",
   ".wasm": "application/wasm",
@@ -1536,6 +1537,11 @@ function registerIpc() {
   handle("sentry:ntfy", async (event, req) => {
     const { cleanNtfy, sendNtfy } = require("./ntfy");
     return sendNtfy(cleanNtfy(req));
+  });
+  // Sentry's second look's model (electron/second-look.js): its bytes, downloaded the first time.
+  handle("sentry:second-look-model", async () => {
+    const { secondLookModel } = require("./second-look");
+    return new Uint8Array(await secondLookModel(app.getPath("userData"), (url) => net.fetch(url)));
   });
   handle("remote:choose-folder", async (event) => {
     const dir = await chooseFolder(event, "Choose a folder for remote recordings");

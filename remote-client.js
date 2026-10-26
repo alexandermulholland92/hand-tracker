@@ -203,6 +203,8 @@
   // Each OAK camera's own settings, opened under its row (Settings): it starts again with them if
   // it's running (not while recording).
   const openOak = new Set();
+  // Sentry's second look (camera-settings.js has the same): its switch and what it does.
+  const SECOND_LOOK = ["Second look at animals (Sentry)", "With Track animals, an animal found in this camera's picture is an alert only once a second model (YOLOv8 nano, as OAK cameras run) finds one there too, and not where it finds a person. Its model (13 MB) is downloaded the first time it's turned on."];
   const OAK_CHOICES = {
     model: ["Hand model", [["lite", "Lite"], ["full", "Full"]]],
     hands: ["Hands", [[1, "One"], [2, "Two"]]],
@@ -211,8 +213,17 @@
     night: ["Night vision", [["auto", "Automatic"], ["on", "On"], ["off", "Off"]]],
   };
   const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", dots: "Infrared dots (better depth, day or night; dots on the black-and-white pictures)" };
-  // A camera's own settings, under its ⚙: Hand tracking (every camera), then an OAK camera's.
+  // A camera's ⚙: its own settings (settingsHtml), and last, for a camera that doesn't find objects
+  // itself, Sentry's second look (an OAK camera's animals always have one).
   function camSettingsHtml(c, disabled) {
+    const own = settingsHtml(c, disabled);
+    if (c.oak || typeof c.secondLook !== "boolean") return own;
+    const on = c.secondLook;
+    return own.replace(/<\/div>$/, `<div class="row"><span class="grow">${SECOND_LOOK[0]}</span><button type="button" class="small${on ? " on" : ""}" data-second="${esc(c.id)}" aria-pressed="${on}"${disabled ? " disabled" : ""}>${on ? "On" : "Off"}</button></div>` +
+      `<div class="sub">${SECOND_LOOK[1]}</div></div>`);
+  }
+  // A camera's own settings, under its ⚙: Hand tracking (every camera), then an OAK camera's.
+  function settingsHtml(c, disabled) {
     const id = esc(c.id), on = c.tracking !== false;
     const track = `<div class="row"><span class="grow">Hand tracking</span><button type="button" class="small${on ? " on" : ""}" data-track="${id}" aria-pressed="${on}"${disabled ? " disabled" : ""}>${on ? "On" : "Off"}</button></div>`;
     if (c.oak) return oakSettingsHtml(c, disabled, track);
@@ -298,6 +309,8 @@
       if (again) again.focus(); // (the row was drawn again)
     } else if (b.dataset.track) {
       command("pick", { pick: { id: b.dataset.track, tracking: b.getAttribute("aria-pressed") !== "true" } });
+    } else if (b.dataset.second) {
+      command("pick", { pick: { id: b.dataset.second, secondLook: b.getAttribute("aria-pressed") !== "true" } });
     } else if (b.dataset.oakset) {
       command("oak", { oak: { id: b.dataset.oakid, options: { [b.dataset.oakset]: b.getAttribute("aria-pressed") !== "true" } } });
     } else if (b.dataset.kinset) {
