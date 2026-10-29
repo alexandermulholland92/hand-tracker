@@ -65,6 +65,7 @@
  *                          //   deleteAlerts: [alert ids] (their photos and videos too),
  *                          //   deleteAll (every Sentry photo and video in the folder) }
  *   Sentry.isArmed()
+ *   await Sentry.tell(title, message) // told of as its alerts are, by ntfy while it's on (false if it's not)
  *   Sentry.videoFps(cameraFps) // its videos' frame rate for a camera running at that: 30, or 60 (Frame rate 60)
  *   Sentry._test            // for the checks
  */
@@ -707,6 +708,17 @@
     const click = link && ev.id ? `${link.replace(/#.*$/, "")}#alert=${ev.id}&take=${encodeURIComponent(ev.take || "")}` : link;
     const req = { server: String(server || "https://ntfy.sh").replace(/\/+$/, ""), topic, title: m.title, message: m.message, tags: "rotating_light", priority: 4, click };
     if (photo && jpeg) Object.assign(req, { photo: new Uint8Array(await jpeg.arrayBuffer()), filename: `${(ev.photo && ev.photo.name) || "sentry.jpg"}` });
+    return postNtfy(req);
+  }
+  // Something else told of as its alerts are, while its ntfy is on (whether Sentry is on or not):
+  // remote-record-ui.js's "too hot". The phones watching this computer read that in its state.
+  async function tell(title, message) {
+    if (!cfg || !cfg.ntfy.on || !cfg.ntfy.topic) return false;
+    const server = String(cfg.ntfy.server || "https://ntfy.sh").replace(/\/+$/, "");
+    await postNtfy({ server, topic: cfg.ntfy.topic, title, message: `${message}${hostName() ? ` on ${hostName()}` : ""}.`, tags: "fire", priority: 4, click: linkOf() || "" });
+    return true;
+  }
+  async function postNtfy(req) {
     if (host && host.sentry && host.sentry.ntfy) return host.sentry.ntfy(req);
     // The website: straight to ntfy.sh (the page may only reach that one). As electron/ntfy.js
     // does: all but the photo in the address, so any language's letters arrive as they are.
@@ -891,7 +903,7 @@
   }
 
   global.Sentry = {
-    init, wantsMotion, wantsObjects, wantsTracking, remoteState, command,
+    init, wantsMotion, wantsObjects, wantsTracking, remoteState, command, tell,
     isArmed: () => !!cfg && cfg.armed,
     videoFps,
     _test: { shrink, blur, moved, levels, turn, turnBox, withoutAnimals, animalsOnly, animalSeen, remember, opinion, ntfyMessage, serverOnly, sample, events, per, toCamera, secondText, config: () => cfg },

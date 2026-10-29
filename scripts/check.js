@@ -153,6 +153,7 @@ const STEPS = [
   ["remote-takes", [], () => checkRemoteTakes()],
   ["remote-take-details", [], ({ js }) => checkRemoteTakeDetails(js)],
   ["remote-room", [], ({ js }) => checkRemoteRoom(js)],
+  ["device-heat", [], ({ js }) => checkDeviceHeat(js)],
   ["sentry-math", [], () => checkSentryMath()],
   ["sentry-animals", ["sentry-math"], () => checkSentryAnimals()],
   ["sentry-second-look", ["sentry-math"], () => checkSentrySecondLook()],
@@ -3929,6 +3930,116 @@ async function checkRemoteRoom(js) {
       st.storage && st.storage.free > 0 && st.storage.text && (storage.battery ? !!(st.battery && st.battery.text) : !st.battery) &&
       out.page && out.page.shown && out.page.text.startsWith(`Space: ${st.storage.text.split(" · ")[0]}`) && (!st.battery || out.page.text.includes(st.battery.text)),
     JSON.stringify({ ...out, status: undefined }));
+}
+
+// The device's temperature beside the room left: a computer's processor, an Android phone's
+// battery, an iPhone's warmth in words; too hot (85 °C, until under 80; a phone when Android says
+// its battery's overheating) in red on the card and the remote page, in the state the watching
+// phones read, and told once each time through Sentry's ntfy (a stand-in server) while it's on.
+// An OAK camera's chip temperature beside it (its tile, the state, the page), too hot the same.
+async function checkDeviceHeat(js) {
+  const got = [];
+  const ntfy = require("http").createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const q = new URL(req.url, "http://x").searchParams;
+      got.push({ title: q.get("title"), message: q.get("message") || body, tags: q.get("tags") });
+      res.setHeader("Content-Type", "application/json");
+      res.end("{}");
+    });
+  });
+  await new Promise((r) => ntfy.listen(0, "127.0.0.1", r));
+  const at = `http://127.0.0.1:${ntfy.address().port}`;
+  let out = {};
+  try {
+    out = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const R = RemoteRecordUI._room;
+      window.__heatNtfy = { ...Sentry._test.config().ntfy };
+      await Sentry.command({ ntfy: { on: false } });
+      const out = { off: await Sentry.tell("Too hot", "nothing") };
+      await Sentry.command({ ntfy: { on: true, server: ${JSON.stringify(at)} } });
+      const look = (t) => {
+        const told = R.heat(t);
+        const st = R.state();
+        return { told, temperature: st.temperature, card: document.getElementById("remoteRoom").innerHTML };
+      };
+      out.cool = look({ c: 52.3, of: "processor" });
+      out.hot = look({ c: 86.2, of: "processor" });
+      out.still = look({ c: 82, of: "processor" });
+      out.cooled = look({ c: 79, of: "processor" });
+      out.again = look({ c: 90, of: "processor" });
+      out.phone = look({ c: 31.5, of: "battery", overheat: false });
+      out.overheat = look({ c: 47, of: "battery", overheat: true });
+      out.iphone = look({ state: "serious" });
+      out.none = look(null);
+      // Two OAK cameras: one's chip at 91 °C.
+      await MultiCamera.start(["oak:SIMULATED-OAK-HOT-91", "oak:SIMULATED-OAK-COOL"]);
+      for (let i = 0; i < 100 && !(MultiCamera._tiles().length === 2 && MultiCamera._tiles().every((t) => typeof t.chipC === "number")); i++) await sleep(100);
+      out.chips = look(null);
+      out.chipState = R.state().cameras.map((c) => ({ name: c.name, chipC: c.chipC, chipHot: c.chipHot }));
+      out.labels = MultiCamera._tiles().map((t) => t.lbl);
+      out.chipsAgain = look(null).told;
+      // The remote page, with the processor too hot (until the next look at the room left).
+      look({ c: 88, of: "processor" });
+      out.wasOn = (await desktop.remote.status()).on;
+      let s = out.wasOn ? await desktop.remote.status() : await desktop.remote.start();
+      for (let i = 0; i < 50 && !(s && s.on); i++) { await sleep(100); s = await desktop.remote.status(); }
+      out.status = s;
+      return out;
+    })()`);
+    const keyed = out.status && (out.status.urls || []).find((u) => u.keyed);
+    const key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
+    if (out.status && out.status.port) {
+      const page = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-device-heat", backgroundThrottling: false } });
+      try {
+        await page.loadURL(`http://127.0.0.1:${out.status.port}/#k=${key}`);
+        out.page = await withLimit(page.webContents.executeJavaScript(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const room = document.getElementById("room");
+          const what = () => [0, 1].map((i) => (document.querySelector("#cam" + i + " .what") || {}).innerHTML || "");
+          for (let i = 0; i < 100 && !(/Processor/.test(room.textContent) && what().every((w) => /chip/.test(w))); i++) await sleep(100);
+          return { room: room.innerHTML, cams: what() };
+        })()`), "the remote page, the temperature");
+      } finally {
+        page.destroy();
+      }
+    }
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    await js(`(async () => {
+      MultiCamera.close();
+      if (window.__heatNtfy) await Sentry.command({ ntfy: { on: window.__heatNtfy.on, server: window.__heatNtfy.server } });
+      await RemoteRecordUI._room.look();
+      if (${!(out && out.wasOn)}) await desktop.remote.stop();
+    })()`).catch(() => {});
+    ntfy.close();
+  }
+  out.ntfy = got;
+  out.status = undefined;
+  const t = (k) => (out[k] || {}).temperature || {};
+  const told = (k) => ((out[k] || {}).told || []).join("|");
+  const red = (k) => /class="err">[^<]*(too hot|overheating)/.test((out[k] || {}).card || "");
+  const cams = out.chipState || [];
+  const page = out.page || { cams: [] };
+  check("Remote recording says the device's temperature beside the room left (a computer's processor, an Android phone's battery, how warm an iPhone says it is) and each OAK camera's chip's, in this app and on the remote page; too hot (85 °C until it's under 80, or a phone's battery overheating) in red, in its state for the phones watching it, and told once each time by Sentry's ntfy",
+    !out.error && out.off === false &&
+      t("cool").text === "Processor: 52 °C" && t("cool").hot === false && told("cool") === "" && !red("cool") && /Processor: 52 °C/.test(out.cool.card) &&
+      t("hot").text === "Processor: 86 °C, too hot" && t("hot").hot === true && told("hot") === "The processor is at 86 °C" && red("hot") &&
+      t("still").hot === true && told("still") === "" && t("cooled").hot === false && told("cooled") === "" && told("again") === "The processor is at 90 °C" &&
+      t("phone").text === "Battery temperature: 32 °C" && t("phone").hot === false && told("phone") === "" &&
+      t("overheat").text === "Battery temperature: 47 °C, overheating" && t("overheat").hot === true && told("overheat") === "The battery is overheating (47 °C)" && red("overheat") &&
+      t("iphone").text === "Temperature: hot" && t("iphone").hot === false && told("iphone") === "" && !out.none.temperature &&
+      cams.length === 2 && cams[0].chipC === 91 && cams[0].chipHot === true && cams[1].chipC === 47.5 && cams[1].chipHot === false &&
+      out.chips.told.length === 1 && out.chips.told[0] === `${cams[0].name}'s OAK camera chip is at 91 °C` && out.chipsAgain.length === 0 &&
+      /· chip 91 °C$/.test(out.labels[0]) && /· chip 48 °C$/.test(out.labels[1]) &&
+      /<span class="err">Processor: 88 °C, too hot<\/span>/.test(page.room || "") &&
+      /<span class="err">chip 91 °C, too hot<\/span>/.test(page.cams[0] || "") && /<span>chip 48 °C<\/span>/.test(page.cams[1] || "") &&
+      got.length === 5 && got.every((g) => g.title === "Too hot" && g.tags === "fire") &&
+      [/^The processor is at 86 °C( on .+)?\.$/, /^The processor is at 90 °C/, /^The battery is overheating \(47 °C\)/, /OAK camera chip is at 91 °C/, /^The processor is at 88 °C/].every((re) => got.some((g) => re.test(g.message))),
+    JSON.stringify(out));
 }
 
 // A take's details changed after recording. On the computer that keeps it: its details read back

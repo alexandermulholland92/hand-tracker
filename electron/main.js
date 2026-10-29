@@ -700,6 +700,8 @@ class SimulatedOak {
       // (CLOCK-<ms>: its own clock started that long after it did, as a real helper's starts
       // once its camera's running, seconds after its tile opened)
       const frame = { t: Math.round(t * 1000) - clockLate, u: Date.now(), w, h, fps: 30, hands: options.hands === false ? [] : [hand] };
+      // Its chip's temperature (one whose id has HOT-<°C>: that hot, for the checks' too-hot alerts).
+      frame.chipC = Number((/HOT-(\d+)/.exec(options.device || "") || [])[1]) || 47.5;
       // As oak_bridge.py --simulate: a cat walking along the bottom (moving its ninth of the
       // picture) and a person standing at the left.
       const catX = ((t * 0.25) % 1.2) - 0.1;
@@ -1227,8 +1229,9 @@ function registerRemoteIpc() {
   const simulateSystem = !!process.env.HAND_TRACKER_SYSTEM_SIMULATE;
   global.__systemAsked = [];
   handle("remote:system", () => (simulateSystem ? { reboot: "yes", powerOff: "yes", cameraReset: "power" } : systemControl.capabilities()));
-  // The room left where takes are saved, and whether this computer has a battery (storage.js).
-  handle("remote:storage", async () => ({ ...((await storage.space(remoteFolder())) || {}), battery: await storage.hasBattery() }));
+  // The room left where takes are saved, whether this computer has a battery, and how hot its
+  // processor is (storage.js).
+  handle("remote:storage", async () => ({ ...((await storage.space(remoteFolder())) || {}), battery: await storage.hasBattery(), temperature: await storage.temperature() }));
   handle("remote:power-off", () => {
     if (!simulateSystem) return systemControl.powerOff();
     global.__systemAsked.push("powerOff");

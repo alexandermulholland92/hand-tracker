@@ -2051,9 +2051,10 @@
     else if (!s.running) status.textContent = "Cameras off.";
     else if (running < cams.length) status.textContent = `Starting cameras… ${running} of ${cams.length} running`;
     else status.textContent = `${cams.length} camera${cams.length === 1 ? "" : "s"} running`;
-    // The space left where its takes are saved, the hours of takes it holds, its battery (a rig
-    // from before says neither).
-    const room = [s.storage && s.storage.text && [`Space: ${s.storage.text}`, s.storage.low], s.battery && s.battery.text && [s.battery.text, s.battery.low]].filter(Boolean);
+    // The space left where its takes are saved, the hours of takes it holds, its battery and its
+    // temperature, in red when too hot (a rig from before says none of them).
+    const room = [s.storage && s.storage.text && [`Space: ${s.storage.text}`, s.storage.low], s.battery && s.battery.text && [s.battery.text, s.battery.low],
+      s.temperature && s.temperature.text && [s.temperature.text, s.temperature.hot]].filter(Boolean);
     $("room").hidden = !room.length;
     $("room").innerHTML = room.map(([text, low]) => `<span${low ? ' class="err"' : ""}>${esc(text)}</span>`).join(" · ");
 
@@ -2144,7 +2145,9 @@
       box.style.order = slots[i];
       // (With hand tracking off, nothing about the hands.)
       const hands = c.tracking === false ? "" : c.hands && c.hands.length ? esc(c.hands.join(" + ")) : "no hands";
-      const what = c.error ? `<span class="err">${esc(c.error)}</span>` : c.fps > 0 ? `${c.fps} fps${hands ? ` · ${hands}` : ""}` : '<span class="muted">starting…</span>';
+      // (An OAK camera's chip temperature, in red when too hot.)
+      const chip = typeof c.chipC === "number" ? ` · <span${c.chipHot ? ' class="err"' : ""}>chip ${Math.round(c.chipC)} °C${c.chipHot ? ", too hot" : ""}</span>` : "";
+      const what = c.error ? `<span class="err">${esc(c.error)}</span>` : c.fps > 0 ? `${c.fps} fps${hands ? ` · ${hands}` : ""}${chip}` : '<span class="muted">starting…</span>';
       box.querySelector(".what").innerHTML = `<span class="muted">${esc(c.label || c.name)}</span><br />${what}`;
       const role = box.querySelector("select");
       if (document.activeElement !== role) role.value = c.roleId || "";

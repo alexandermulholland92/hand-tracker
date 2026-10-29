@@ -11,6 +11,9 @@ import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
@@ -20,7 +23,10 @@ import org.json.JSONObject;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -29,16 +35,23 @@ import java.util.Set;
  * the other is the ntfy app). A foreground service, with a quiet notification saying it's
  * watching, that asks each computer for its state every POLL_MS (over Tailscale from anywhere,
  * or on the same Wi-Fi with the computer's code) and shows a notification, with the photo, for
- * each new alert a computer's Sentry mode has. Started and stopped by SentryWatchPlugin.java;
- * the computers are kept in its SharedPreferences, so it carries on after a restart of the app.
+ * each new alert a computer's Sentry mode has. Also: a computer that hasn't answered for
+ * OFFLINE_MS (while this phone could reach it: on a network, with Tailscale on for one reached
+ * over it) has gone offline, and is back online when it answers again; and one too hot (its state
+ * says so: remote-record-ui.js, itself or one of its OAK cameras' chips) is told of once each
+ * time it gets so. Started and stopped by SentryWatchPlugin.java; the computers are kept in its
+ * SharedPreferences, so it carries on after a restart of the app (and what it's told of stays
+ * told).
  */
 public class SentryWatchService extends Service {
     static final String PREFS = "sentry-watch";
     static final String ACTION_STOP = "com.handtracker.app.STOP_SENTRY_WATCH";
     private static final String CHANNEL_ON = "sentry-watch";
     private static final String CHANNEL_ALERT = "sentry-alerts";
+    private static final String CHANNEL_DEVICE = "sentry-devices";
     private static final int NOTIFICATION_ID = 11;
     private static final long POLL_MS = 15000;
+    private static final long OFFLINE_MS = 60000;
 
     static volatile SentryWatchService running;
     private volatile boolean stop;
@@ -91,6 +104,9 @@ public class SentryWatchService extends Service {
         NotificationChannel loud = new NotificationChannel(CHANNEL_ALERT, "Sentry alerts", NotificationManager.IMPORTANCE_HIGH);
         loud.setDescription("Movement a computer's Sentry mode saw");
         nm.createNotificationChannel(loud);
+        NotificationChannel device = new NotificationChannel(CHANNEL_DEVICE, "Computers offline or too hot", NotificationManager.IMPORTANCE_HIGH);
+        device.setDescription("A computer this phone watches for Sentry alerts went offline, came back, or is too hot");
+        nm.createNotificationChannel(device);
     }
 
     // The app, at one of its pages (MainActivity.EXTRA_PAGE).
@@ -138,6 +154,10 @@ public class SentryWatchService extends Service {
     private void watch() {
         SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
         Set<String> seen = new HashSet<>(p.getStringSet("seen", new HashSet<>()));
+        Set<String> offline = new HashSet<>(p.getStringSet("offline", new HashSet<>()));
+        Set<String> hot = new HashSet<>(p.getStringSet("hot", new HashSet<>()));
+        Map<String, Long> answered = new HashMap<>(); // each computer: when it last answered (or this phone last couldn't reach it)
+        Map<String, String> names = new HashMap<>();
         Set<String> looked = new HashSet<>();
         int notified = 0;
         while (!stop) {
@@ -151,17 +171,34 @@ public class SentryWatchService extends Service {
                 JSONObject r = rigs.optJSONObject(i);
                 if (r == null) continue;
                 String rig = r.optString("rig", ""), key = r.optString("key", "");
+                RemotePlugin.RigAnswer a;
                 try {
-                    RemotePlugin.RigAnswer a = RemotePlugin.fetchRig(this, rig, "/api/state", "GET", "", key);
+                    a = RemotePlugin.fetchRig(this, rig, "/api/state", "GET", "", key);
+                } catch (Exception e) {
+                    // Not reachable (off, or this phone off its network or Tailscale): gone
+                    // offline once it's been so for OFFLINE_MS while this phone could reach it.
+                    long now = System.currentTimeMillis();
+                    Long since = answered.get(rig);
+                    if (since == null || !canReach(rig)) answered.put(rig, now);
+                    else if (now - since >= OFFLINE_MS && offline.add(rig)) {
+                        device(offlineId(rig), rig, nameOf(rig, names) + " went offline", "It hasn't answered for a minute.", android.R.drawable.ic_dialog_alert);
+                    }
+                    continue;
+                }
+                answered.put(rig, System.currentTimeMillis());
+                if (offline.remove(rig)) device(offlineId(rig), rig, nameOf(rig, names) + " is back online", "It's answering again.", android.R.drawable.ic_dialog_info);
+                try {
                     if (a.status != 200) continue;
                     JSONObject state = new JSONObject(new String(a.body, StandardCharsets.UTF_8));
+                    String host = state.optString("host", rig.replaceAll(":\\d+$", ""));
+                    names.put(rig, host);
+                    heat(rig, host, state, hot);
                     JSONObject sentry = state.optJSONObject("sentry");
                     if (sentry == null) {
                         looked.add(rig);
                         continue;
                     }
                     JSONArray events = sentry.optJSONArray("events");
-                    String host = state.optString("host", rig.replaceAll(":\\d+$", ""));
                     for (int j = events == null ? -1 : events.length() - 1; j >= 0; j--) {
                         JSONObject e = events.optJSONObject(j);
                         if (e == null) continue;
@@ -172,18 +209,88 @@ public class SentryWatchService extends Service {
                     }
                     looked.add(rig);
                 } catch (Exception e) {
-                    // not reachable now (off, or this phone off Tailscale): next time
+                    // (its state not as expected: next time)
                 }
             }
-            // Only the alerts the computers still list are worth remembering.
+            // Only the alerts the computers still list are worth remembering, and only the
+            // computers still watched.
             if (seen.size() > 400) seen.clear();
-            p.edit().putStringSet("seen", new HashSet<>(seen)).apply();
+            Set<String> watched = new HashSet<>();
+            for (int i = 0; i < rigs.length(); i++) {
+                JSONObject r = rigs.optJSONObject(i);
+                if (r != null) watched.add(r.optString("rig", ""));
+            }
+            offline.retainAll(watched);
+            hot.removeIf((k) -> !watched.contains(k.replaceAll("\\|.*$", "")));
+            p.edit().putStringSet("seen", new HashSet<>(seen)).putStringSet("offline", new HashSet<>(offline)).putStringSet("hot", new HashSet<>(hot)).apply();
             try {
                 Thread.sleep(POLL_MS);
             } catch (InterruptedException e) {
                 break;
             }
         }
+    }
+
+    // Whether this phone could reach a computer now: on a network at all, and for one reached over
+    // Tailscale (its 100.x address, a .ts.net name, or a name without dots, as "pi"), with a VPN
+    // (Tailscale) on. Otherwise its not answering says nothing about it.
+    private boolean canReach(String rig) {
+        ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+        if (cm == null || cm.getActiveNetwork() == null) return false;
+        String h = rig.replaceAll(":\\d+$", "").toLowerCase(Locale.ROOT);
+        boolean tailnet = h.endsWith(".ts.net") || (!h.contains(".") && !h.contains(":")) || h.matches("^100\\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\..*");
+        if (!tailnet) return true;
+        for (Network n : cm.getAllNetworks()) {
+            NetworkCapabilities c = cm.getNetworkCapabilities(n);
+            if (c != null && c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return true;
+        }
+        return false;
+    }
+
+    private static String nameOf(String rig, Map<String, String> names) {
+        String n = names.get(rig);
+        return n != null && !n.isEmpty() ? n : rig.replaceAll(":\\d+$", "");
+    }
+
+    private static int offlineId(String rig) {
+        return 2000 + Math.floorMod(rig.hashCode(), 500);
+    }
+
+    // Too hot, as its state says: the computer itself (temperature.hot) or an OAK camera's chip
+    // (a camera's chipHot). Told once each time it gets so (in hot, "<rig>|...", while it is).
+    private void heat(String rig, String host, JSONObject state, Set<String> hot) {
+        JSONObject t = state.optJSONObject("temperature");
+        String self = rig + "|device";
+        if (t != null && t.optBoolean("hot")) {
+            if (hot.add(self)) device(2500 + Math.floorMod(self.hashCode(), 500), rig, host + " is too hot", t.optString("text", "Too hot"), android.R.drawable.ic_dialog_alert);
+        } else {
+            hot.remove(self);
+        }
+        JSONArray cams = state.optJSONArray("cameras");
+        Set<String> now = new HashSet<>();
+        for (int i = 0; cams != null && i < cams.length(); i++) {
+            JSONObject c = cams.optJSONObject(i);
+            if (c == null || !c.optBoolean("chipHot")) continue;
+            String name = c.optString("name", "A camera"), k = rig + "|chip:" + name;
+            now.add(k);
+            if (hot.add(k)) {
+                device(2500 + Math.floorMod(k.hashCode(), 500), rig, host + ": " + name + "'s camera is too hot", "Its chip is at " + Math.round(c.optDouble("chipC", 0)) + " °C", android.R.drawable.ic_dialog_alert);
+            }
+        }
+        hot.removeIf((k) -> k.startsWith(rig + "|chip:") && !now.contains(k));
+    }
+
+    // Tapped: the computer's remote recording page in the app.
+    private void device(int id, String rig, String title, String text, int icon) {
+        Notification n = new Notification.Builder(this, CHANNEL_DEVICE)
+                .setSmallIcon(icon)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setShowWhen(true)
+                .setAutoCancel(true)
+                .setContentIntent(openPage(id, rigPage(rig)))
+                .build();
+        getSystemService(NotificationManager.class).notify(id, n);
     }
 
     // Tapped: the alert's video, on the computer's page in the app (its photo until it's saved).

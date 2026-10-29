@@ -74,9 +74,11 @@ import javax.crypto.spec.GCMParameterSpec;
  *   start({ key }) / stop() / status() / setKey({ key }) -> { on, port, addresses, urls, viewer }
  *   setState({ state: json }); setPreview({ i, jpeg: base64 }); result({ id, result: json })
  *   events: "command" { id, action, details?, settings? }, "wantPreviews" { on, focus }, "status"
- *   storage() -> { free, total, battery: { level, charging, hoursToFull?, currentUa?, chargeUah? } }:
- *       the room left in Documents (where takes are saved) and the battery (its time left is
- *       worked out by the page, remote-record-ui.js, from how fast it falls)
+ *   storage() -> { free, total, battery: { level, charging, hoursToFull?, currentUa?, chargeUah? },
+ *       temperature: { c, of: "battery", overheat } }: the room left in Documents (where takes are
+ *       saved), the battery (its time left is worked out by the page, remote-record-ui.js, from
+ *       how fast it falls) and its temperature (the only one Android tells an app), overheat
+ *       when Android says it's overheating
  *   bluetooth() -> { available, on, error, password: null | "set" }; setBluetoothPassword({ password })
  *       over Bluetooth Low Energy too (BtRigLink.java), while it's on and a Bluetooth password is
  *       set (8 to 63 characters; kept as its key only, encrypted with the app's Keystore key);
@@ -236,6 +238,14 @@ public class RigServerPlugin extends Plugin {
                 if (left != Long.MIN_VALUE && left > 0) bat.put("chargeUah", left);
             }
             o.put("battery", bat);
+        }
+        int tenths = b == null ? Integer.MIN_VALUE : b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
+        if (tenths != Integer.MIN_VALUE) {
+            JSObject t = new JSObject();
+            t.put("c", tenths / 10.0);
+            t.put("of", "battery");
+            t.put("overheat", b.getIntExtra(BatteryManager.EXTRA_HEALTH, -1) == BatteryManager.BATTERY_HEALTH_OVERHEAT);
+            o.put("temperature", t);
         }
         call.resolve(o);
     }

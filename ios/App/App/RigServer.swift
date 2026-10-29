@@ -13,9 +13,10 @@
 //   start({ key }) / stop() / status() / setKey({ key }) -> { on, port, addresses, urls, viewer }
 //   setState({ state: json }); setPreview({ i, jpeg: base64 }); result({ id, result: json })
 //   events: "command" { id, action, details?, settings? }, "wantPreviews" { on, focus }, "status"
-//   storage() -> { free, total, battery: { level, charging } }: the room left where takes are
-//       saved (Documents) and the battery (its time left is worked out by the page,
-//       remote-record-ui.js, from how fast it falls)
+//   storage() -> { free, total, battery: { level, charging }, temperature: { state } }: the room
+//       left where takes are saved (Documents), the battery (its time left is worked out by the
+//       page, remote-record-ui.js, from how fast it falls) and how warm the phone says it is
+//       (an iPhone gives no degrees: nominal, fair, serious or critical)
 //   bluetooth() -> { available, on, error, password: null | "set" }; setBluetoothPassword({ password })
 //       over Bluetooth Low Energy too (RigBluetooth.swift), while it's on and a Bluetooth password
 //       is set (8 to 63 characters; kept as its key only, in the Keychain); "bluetooth" events
@@ -176,6 +177,8 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
             if device.batteryLevel >= 0 {
                 out["battery"] = ["level": Double(device.batteryLevel), "charging": device.batteryState == .charging || device.batteryState == .full]
             }
+            let states: [ProcessInfo.ThermalState: String] = [.nominal: "nominal", .fair: "fair", .serious: "serious", .critical: "critical"]
+            if let state = states[ProcessInfo.processInfo.thermalState] { out["temperature"] = ["state": state] }
             call.resolve(out)
         }
     }

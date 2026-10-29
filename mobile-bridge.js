@@ -878,8 +878,9 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
         return () => Promise.resolve(h).then((x) => x && x.remove && x.remove());
       },
       setAutostart: async () => false,
-      // The room left in Documents and the battery: { free, total, battery: { level, charging,
-      // hoursToFull?, currentUa?, chargeUah? } | null } (null from an app from before it).
+      // The room left in Documents, the battery and its temperature: { free, total, battery: {
+      // level, charging, hoursToFull?, currentUa?, chargeUah? } | null, temperature?: { c, of:
+      // "battery", overheat } (Android) | { state } (iPhone) } (null from an app from before it).
       storage: () => Rig.storage().catch(() => null),
       chooseFolder: async () => `Documents/${FOLDER}`,
       saveTake: ({ baseName, files }) => saveFiles({ baseName, files }),

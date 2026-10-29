@@ -1138,8 +1138,8 @@ async function checkPhoneAsRig(win, js) {
     out.noKey = (await fetch(base + "/api/state")).status;
     const st = await state();
     out.state = { kind: st.kind, running: st.running, mode: st.mode, screenPictures: st.screenPictures };
-    // The room left on the phone and its battery, there and in the app (RigServer's storage()).
-    out.room = { storage: st.storage && st.storage.text, battery: st.battery && st.battery.text, card: await js(`document.getElementById("remoteRoomRow").hidden ? "" : document.getElementById("remoteRoom").textContent`) };
+    // The room left on the phone, its battery and its temperature, there and in the app (RigServer's storage()).
+    out.room = { storage: st.storage && st.storage.text, battery: st.battery && st.battery.text, temperature: st.temperature, card: await js(`document.getElementById("remoteRoomRow").hidden ? "" : document.getElementById("remoteRoom").textContent`) };
     // The phone's cameras, listed before they start (a new one ticked by itself).
     await post({ action: "scan" });
     let a = null;
@@ -1202,13 +1202,14 @@ async function checkPhoneAsRig(win, js) {
   }
   out.off = await js(`(async () => { document.getElementById("remoteToggle").click(); await new Promise((r) => setTimeout(r, 300)); return !(await mobile.remote.status()).on; })()`);
   const t = out.take || {};
-  check("Remote recording on the phone: over Bluetooth too once its password is set (too short refused); the space left (and about how many hours of takes its cameras have room for) and its battery shown, there and in the app; another device lists the phone's cameras (new ones ticked), picks the mode, starts them and recording (the take details optional; with the hidden switch on, needed; locked while recording), sees each camera (bigger full screen), and the take is saved on the phone, named after its details",
+  check("Remote recording on the phone: over Bluetooth too once its password is set (too short refused); the space left (and about how many hours of takes its cameras have room for), its battery and its battery's temperature shown, there and in the app; another device lists the phone's cameras (new ones ticked), picks the mode, starts them and recording (the take details optional; with the hidden switch on, needed; locked while recording), sees each camera (bigger full screen), and the take is saved on the phone, named after its details",
     !out.error && out.on.card && out.on.on && out.on.pair && out.on.pasteable && !out.on.folderBtn && out.page && out.noKey === 401 &&
       out.bluetooth.before.row && /set a password/.test(out.bluetooth.before.status) && /8 to 63/.test(out.bluetooth.short) &&
       out.bluetooth.after === "on, with its password" && out.bluetooth.cleared && out.bluetooth.asked === 1 &&
       out.state.kind === "rig" && !out.state.running && out.state.screenPictures === undefined &&
       /^52\.0 GB free of 128 GB/.test(out.room.storage || "") && out.room.battery === "Battery 62%: about 6 h left" &&
-      out.room.card.startsWith("Space: 52.0 GB free of 128 GB") && out.room.card.endsWith(" · Battery 62%: about 6 h left") &&
+      out.room.card.startsWith("Space: 52.0 GB free of 128 GB") && out.room.card.endsWith(" · Battery 62%: about 6 h left · Battery temperature: 31 °C") &&
+      out.room.temperature && out.room.temperature.text === "Battery temperature: 31 °C" && out.room.temperature.hot === false &&
       out.available.length >= 1 && out.available.every((c) => c.present && c.use && c.byName) &&
       /^52\.0 GB free of 128 GB · about .+ of takes \(\d+ cameras?, /.test(out.roomTakes || "") && (out.roomTakes || "").includes(` of takes (${out.available.length} camera`) && out.picked.ok && out.roomUnlisted === out.roomTakes &&
       out.mode.ok && out.defaultRequired === false && out.refused.ok === false && (out.refused.missing || []).length === 3 &&

@@ -35,7 +35,8 @@
  * the browser can't make MP4): the phone's Takes list has them too.
  * Only cameras that are plugged in get a tile. Nothing starts by itself: the cameras only run once the phone (or someone here) asks.
  * Here and on the page: the space left where takes are saved, about how many hours of takes (and
- * of Sentry's videos) it holds at these settings, and the battery's charge and time left.
+ * of Sentry's videos) it holds at these settings, the battery's charge and time left, and how hot
+ * it is (and each OAK camera's chip): too hot is told of as Sentry's alerts are.
  * While the phone's page is open, each camera's picture with its hands drawn goes to it, up to
  * about 15 times a second, or 30 for the one looked at full screen (fewer if making them would
  * take much of this computer's time).
@@ -156,6 +157,7 @@
   // ---------- what the phone's page shows ----------
   function state() {
     const st = cams().remoteState();
+    st.cameras = st.cameras.map((c) => (c.oak && typeof c.chipC === "number" ? { ...c, chipHot: hot.has(`chip:${c.name}`) } : c));
     const locked = detailsLocked();
     const common = { ...st, pending, saving, lastTake, notice, details: takeDetails || details(), detailsLocked: locked, detailsRequired: detailsRequired() };
     return {
@@ -274,6 +276,8 @@
     const r = await remote.storage().catch(() => null);
     space = r && r.free >= 0 && r.total > 0 ? { free: r.free, total: r.total } : null;
     battery = batteryNow(r && r.battery === true ? await browserBattery() : r && typeof r.battery === "object" ? r.battery : null);
+    temp = cleanTemp(r && r.temperature);
+    watchHeat();
     showRoom();
   }
 
@@ -294,12 +298,53 @@
     const what = `${s.cameras} camera${s.cameras === 1 ? "" : "s"}, ${remoteVideo() ? `${q === "low" ? "small" : QUALITY_NAMES[q]} video` : "no video"}`;
     return [`${bytesText(s.free)} free of ${bytesText(s.total)}`, s.hours !== null && `${about(s.hours)} of takes (${what})`, s.sentryHours !== null && `${about(s.sentryHours)} of Sentry videos`].filter(Boolean).join(" · ");
   }
+  // The device's temperature: its processor's (a computer that tells it: electron/storage.js), its
+  // battery's (an Android phone: the only one it tells an app), or how warm it says it is (an
+  // iPhone: no degrees). Too hot (HOT_C or more, until it's back under COOL_C; an Android phone
+  // when it says its battery's overheating; an OAK camera's chip at HOT_C too) is said in red and
+  // told of as Sentry's alerts are: the phones watching this computer read it in its state
+  // (SentryWatchService.java), and Sentry's ntfy, while it's on, is sent it once each time.
+  const HOT_C = 85, COOL_C = 80;
+  const WARM_WORDS = { nominal: "normal", fair: "warm", serious: "hot", critical: "critical" };
+  let temp = null; // { c, of: "processor" | "battery", overheat? } or { state } (an iPhone)
+  const hot = new Set(); // too hot now: "device", or "chip:" and an OAK camera's name
+  function cleanTemp(t) {
+    if (t && Number.isFinite(t.c)) return t.of === "battery" ? { c: t.c, of: "battery", overheat: !!t.overheat } : { c: t.c, of: "processor" };
+    return t && WARM_WORDS[t.state] ? { state: t.state } : null;
+  }
+  // Whether key is too hot now at c °C (or by its own say: overheat), newly so.
+  function heat(key, c, overheat) {
+    const was = hot.has(key);
+    const now = typeof overheat === "boolean" ? overheat : c >= HOT_C || (was && c >= COOL_C);
+    if (now) hot.add(key);
+    else hot.delete(key);
+    return now && !was;
+  }
+  function tempText(t, isHot) {
+    if (t.state) return `Temperature: ${WARM_WORDS[t.state]}`;
+    const c = `${Math.round(t.c)} °C`;
+    return t.of === "battery" ? `Battery temperature: ${c}${isHot ? ", overheating" : ""}` : `Processor: ${c}${isHot ? ", too hot" : ""}`;
+  }
+  // With each look at the room left: the device and its OAK cameras' chips; what's newly too hot
+  // is told of (-> what was told).
+  function watchHeat() {
+    const told = [];
+    if (temp && !temp.state) {
+      if (heat("device", temp.c, temp.overheat)) told.push(temp.of === "battery" ? `The battery is overheating (${Math.round(temp.c)} °C)` : `The processor is at ${Math.round(temp.c)} °C`);
+    } else hot.delete("device");
+    const chips = cams() && cams().isActive() ? cams().remoteState().cameras.filter((c) => c.oak && typeof c.chipC === "number") : [];
+    for (const c of chips) if (heat(`chip:${c.name}`, c.chipC)) told.push(`${c.name}'s OAK camera chip is at ${Math.round(c.chipC)} °C`);
+    for (const k of hot) if (k.startsWith("chip:") && !chips.some((c) => `chip:${c.name}` === k)) hot.delete(k);
+    for (const what of told) if (global.Sentry && global.Sentry.tell) global.Sentry.tell("Too hot", what).catch(() => {});
+    return told;
+  }
   function batteryText(b) {
     if (b.charging) return b.level >= 0.995 ? "Battery full, plugged in" : `Battery ${Math.round(b.level * 100)}%, charging${b.hoursToFull ? `: full in ${about(b.hoursToFull)}` : ""}`;
     return `Battery ${Math.round(b.level * 100)}%${b.hoursLeft ? `: ${about(b.hoursLeft)} left` : ", working out its time left…"}`;
   }
   // { storage: { free, total, hours, sentryHours, cameras, text, low }, battery: { level,
-  // charging, hoursLeft, hoursToFull, text, low } }, each only if it's known. While a take
+  // charging, hoursLeft, hoursToFull, text, low }, temperature: { c, of, overheat? | state, hot,
+  // text } }, each only if it's known. While a take
   // records, its share is taken off (it's kept in memory until it's saved).
   function roomState(list = space ? takeCameras() : []) {
     const out = {};
@@ -310,11 +355,12 @@
       out.storage = { ...s, text: spaceText(s), low: s.hours !== null && s.hours < LOW_HOURS };
     }
     if (battery) out.battery = { ...battery, text: batteryText(battery), low: !battery.charging && battery.level < LOW_BATTERY };
+    if (temp) out.temperature = { ...temp, hot: hot.has("device"), text: tempText(temp, hot.has("device")) };
     return out;
   }
   let shownRoom = "";
   function showRoom(r = roomState()) {
-    const parts = [r.storage && ["Space: " + r.storage.text, r.storage.low], r.battery && [r.battery.text, r.battery.low]].filter(Boolean);
+    const parts = [r.storage && ["Space: " + r.storage.text, r.storage.low], r.battery && [r.battery.text, r.battery.low], r.temperature && [r.temperature.text, r.temperature.hot]].filter(Boolean);
     if (!$("remoteRoom") || JSON.stringify(parts) === shownRoom) return;
     shownRoom = JSON.stringify(parts);
     $("remoteRoomRow").hidden = !parts.length;
@@ -1314,6 +1360,14 @@
   global.RemoteRecordUI = { init, tailnetLink, looking, cameras: () => available(), cameraState, changeCamera: (action, data) => carryOut(action, data), scanCameras: () => scan(),
     _carryOut: carryOut, _takeName: takeName, _sentryOnLaunch: sentryOnLaunch, _sentryAgain: SENTRY_AGAIN,
     _room: { rateOf, batteryNow, about, roomState, look: lookAtRoom, set: (s, b) => ((space = s), (battery = b), (drain = []), (current = 0)),
+      // (as if storage() had said this temperature: -> what was told of, newly too hot)
+      heat: (t) => {
+        temp = cleanTemp(t);
+        const told = watchHeat();
+        showRoom();
+        return told;
+      },
+      state,
       // (the room left as if the last look had found no camera)
       unlisted: () => {
         const was = scanned;

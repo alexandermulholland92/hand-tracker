@@ -914,6 +914,11 @@
     if (recording && t && t.imuReadings && Array.isArray(header.imu)) for (const r of header.imu) if (Array.isArray(r) && r.length === 7) t.imuReadings.push(r);
     const api = t && tileApi(t);
     if (t) t.frameAt = performance.now();
+    // Its chip's temperature: kept for remote recording (too hot: remote-record-ui.js), and on its tile.
+    if (t && typeof header.chipC === "number" && Math.round(header.chipC) !== Math.round(t.chipC)) {
+      t.chipC = header.chipC;
+      t.el.querySelector(".lbl").textContent = `${t.label} · chip ${Math.round(t.chipC)} °C`;
+    }
     if (!api || !api.oakHands) return desktop.oak.streamShown(id);
     let hands = null;
     try {
@@ -1033,7 +1038,7 @@
       t.label = `Luxonis ${s.camera || "OAK camera"}${s.depth ? " · depth" : ""}${s.night ? " · night vision" : ""}${s.usb === "HIGH" ? " · USB 2" : ""}`;
       t.night = !!s.night;
       t.infrared = !!s.infrared;
-      t.el.querySelector(".lbl").textContent = t.label;
+      t.el.querySelector(".lbl").textContent = t.label + (typeof t.chipC === "number" ? ` · chip ${Math.round(t.chipC)} °C` : "");
     } else if (s.status === "error" || s.status === "stopped") {
       t.oakState = s.status;
     }
@@ -1295,7 +1300,7 @@
         return {
           index: i, name: t.name, roleId: t.role || "", role: CameraRoles.label(t.role) || "", label: t.label, rotation: t.view.rotation, mirror: t.view.mirror,
           fps: st ? st.fps : 0, hands: st ? st.hands : [], tracking: st ? st.tracking !== false : tracking(t), error: st ? st.error || "" : "",
-          ...(t.oak ? { oak: true, night: !!t.night } : {}),
+          ...(t.oak ? { oak: true, night: !!t.night, chipC: typeof t.chipC === "number" ? t.chipC : null } : {}),
           ...(t.kinect ? { kinect: true, night: !!t.night, bodies: st && st.bodies ? st.bodies : 0, sound: t.audio ? { angle: t.audio.angle, level: Math.max(...(t.audio.level || [0])), active: t.audio.active } : null } : {}),
           ...(t.ps4 ? { ps4: true, night: !!t.night } : {}),
         };
@@ -1447,6 +1452,6 @@
     secondLook: ownSecondLook, setSecondLook,
     _again: AGAIN, // (the checks shorten its times)
     _kinectAgain: KINECT_AGAIN_S, // (and these)
-    _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null, cameraHands: t.oak ? t.cameraHands : undefined, oakWith: t.oak ? t.oakWith : undefined, oakState: t.oakState, again: (t.again || []).length })),
+    _tiles: () => tiles.map((t) => ({ name: t.name, role: t.role, status: tileApi(t) ? tileApi(t).status() : null, cameraHands: t.oak ? t.cameraHands : undefined, oakWith: t.oak ? t.oakWith : undefined, oakState: t.oakState, again: (t.again || []).length, chipC: t.chipC, lbl: t.el.querySelector(".lbl").textContent })),
   };
 })(window);

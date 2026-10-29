@@ -44,7 +44,8 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
      status says which ("night"). A camera without an infrared light stays in colour.
      --ir-dots: the infrared dot projector on (a camera with one), in colour or night vision:
      better depth, in the dark too, but a pattern of dots on the black-and-white pictures (night
-     vision's, left / right; the colour camera doesn't see them).)
+     vision's, left / right; the colour camera doesn't see them).
+     Each frame also brings the camera's chip temperature, "chipC" (°C, read every CHIP_S).)
     python oak_bridge.py --check        prints the versions it would use
     python oak_bridge.py --list         prints the OAK cameras found
     python oak_bridge.py --simulate     no camera: a moving synthetic hand, for testing
@@ -277,6 +278,7 @@ class NightCamera:
 
 
 IMU_HZ = 100  # the motion sensor's readings a second (--imu)
+CHIP_S = 5  # how often the camera's chip temperature is read (sent with each frame as chipC, °C)
 
 DETECT_GAP_S = 0.33
 # On the camera (a Script node): only every frame DETECT_GAP_S after the last one sent goes on.
@@ -856,6 +858,7 @@ def run(args):
         picture = None
         view = extras.get("picture")
         depth_now = None  # (blend, side: the last depth picture)
+        chip, chip_at = None, 0.0
         while True:
             frame, hands, _ = tracker.next_frame()
             if frame is None:
@@ -932,6 +935,15 @@ def run(args):
                 header["objects"] = objects
             if grey:
                 header["grey"] = grey  # (only when the camera made a new one)
+            # Its chip's temperature (the average of its sensors'), every CHIP_S.
+            if now - chip_at >= CHIP_S:
+                chip_at = now
+                try:
+                    chip = round(float(tracker.device.getChipTemperature().average), 1)
+                except Exception:
+                    chip = None
+            if chip is not None:
+                header["chipC"] = chip
             if "imu_out" in queues:
                 readings = []
                 for m in queues["imu_out"].tryGetAll():
