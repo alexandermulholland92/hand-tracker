@@ -55,6 +55,15 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Watching your own computers for Sentry mode alerts while the app is in the background" />
         </service>
+        <!-- ... started again after the phone restarts or the app is updated, if it was on (SentryWatchBoot.java). -->
+        <receiver
+            android:name=".SentryWatchBoot"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- A dashboard's own sign-in page (Capture Sessions, Live Rigs). -->
         <activity
@@ -94,6 +103,8 @@
     <!-- Sound with remote recording's videos and Sentry mode's (the phone as a camera rig). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Sentry mode's alerts on this phone started again after the phone restarts (SentryWatchBoot.java). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Hand tracking uses the camera (the web page asks via getUserMedia). -->
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- This phone as a Bluetooth mouse and keyboard for an iPhone or iPad (BtHidPlugin.java). -->

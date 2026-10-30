@@ -28,6 +28,12 @@ public class SentryWatchPlugin extends Plugin {
     private static final Pattern RIG = Pattern.compile("^[A-Za-z0-9.\\[\\]:-]{1,200}:\\d{1,5}$");
     private static final Pattern KEY = Pattern.compile("^[A-Za-z0-9_-]{0,64}$");
 
+    // The app opened: the alerts on again if they were left on (the phone restarted, the app updated).
+    @Override
+    public void load() {
+        SentryWatchService.startIfOn(getContext());
+    }
+
     private SharedPreferences prefs() {
         return getContext().getSharedPreferences(SentryWatchService.PREFS, android.content.Context.MODE_PRIVATE);
     }

@@ -41,7 +41,8 @@ import java.util.Set;
  * says so: remote-record-ui.js, itself or one of its OAK cameras' chips) is told of once each
  * time it gets so. Started and stopped by SentryWatchPlugin.java; the computers are kept in its
  * SharedPreferences, so it carries on after a restart of the app (and what it's told of stays
- * told).
+ * told), and it's started again after the phone restarts or the app is updated
+ * (SentryWatchBoot.java) and when the app opens (startIfOn).
  */
 public class SentryWatchService extends Service {
     static final String PREFS = "sentry-watch";
@@ -54,6 +55,17 @@ public class SentryWatchService extends Service {
     private static final long OFFLINE_MS = 60000;
 
     static volatile SentryWatchService running;
+
+    // Started if it's on (as it was left) and not running: after the phone restarts, the app is
+    // updated, or the app opens.
+    static void startIfOn(Context ctx) {
+        if (running != null || !ctx.getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("on", false)) return;
+        try {
+            ctx.startForegroundService(new Intent(ctx, SentryWatchService.class));
+        } catch (Exception ignored) {
+            // (not allowed now: the next time the app opens)
+        }
+    }
     private volatile boolean stop;
     private Thread thread;
     private PowerManager.WakeLock wake;
