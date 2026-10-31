@@ -12,7 +12,8 @@
  * a row; a single camera takes the whole grid); the roles with no camera are listed under it.
  * Changing a camera's role moves it. Each tile takes its camera's shape (a phone held upright
  * gives a tall one, not a wide one with black bars). Each tile can be turned 90° at a time and flipped (mirrored) on its own, remembered
- * for that camera: every camera starts mirrored like a selfie, OAK cameras too.
+ * for that camera: every camera starts mirrored like a selfie, OAK cameras too. Each tile's Restart stops its
+ * camera and starts it again, the others carrying on (and its USB off and on if that didn't bring it back: restartCamera).
  *
  * The picker ticks every camera found (up to four, OAK cameras first) except one that was
  * unticked before; only the ticked ones start. Remote recording shares the picks.
@@ -274,6 +275,7 @@
         `<button type="button" class="rot" data-i="${i}" title="Turn this camera's picture (and its tracking) 90° clockwise"></button> ` +
         `<button type="button" class="flip" data-i="${i}" aria-pressed="false" title="Show this camera's picture mirrored (only the look: the left hand stays the left)">Flip</button> ` +
         `<button type="button" class="gear" data-i="${i}" aria-expanded="false" title="This camera's own settings">⚙</button> ` +
+        `<button type="button" class="restart" data-i="${i}" title="Stop this camera and start it again (if it doesn't come back, its USB is turned off and on, where this computer can, and it's started once more)">Restart</button> ` +
         `<span class="lbl">${esc(labelOf(id))}</span> <span class="st"></span> <button type="button" class="retry" data-i="${i}" hidden>Try again</button></div>` +
         '<div class="multi-cam-set" hidden></div>';
       const frame = el.querySelector("iframe");
@@ -438,16 +440,16 @@
     syncOak();
     return oakSettings(id);
   }
-  async function restartOak(t) {
+  async function restartOak(t, message = "Starting the OAK camera again with the new settings…") {
     t.oakState = "starting";
     t.restarting = true; // (its old helper says "stopped" meanwhile: it's still being started again)
     t.grey = t.objects = null; // (Sentry mode measures afresh once the camera's back)
     const api = tileApi(t);
-    if (api && api.oakStatus) api.oakStatus({ status: "starting", message: "Starting the OAK camera again with the new settings…" });
+    if (api && api.oakStatus) api.oakStatus({ status: "starting", message });
     await desktop.oak.streamStop(t.oak).catch(() => {});
     await sleep(2500); // until the camera is let go
     t.restarting = false;
-    if (tiles.includes(t)) startOakTiles([t]);
+    if (tiles.includes(t)) await startOakTiles([t]);
   }
 
   // Hand tracking: each camera's own switch (remote recording's page, under its ⚙; on unless
@@ -498,6 +500,7 @@
       const hands = st && st.tracking === false ? "" : st && st.hands.length ? st.hands.join(" + ") : "no hands";
       t.el.querySelector(".st").textContent = !st ? "starting…" : st.error ? st.error : `${st.fps} fps${hands ? ` · ${hands}` : ""}${st.recording ? " · recording" : ""}${t.oak && !screenPictures() ? " · picture off" : ""}`;
       t.el.querySelector(".retry").hidden = !((t.oak || t.kinect || t.ps4) && st && st.error && t.oakState !== "starting");
+      t.el.querySelector(".restart").disabled = !!t.byHand || recording; // (not while a take records)
       if (st && !st.error) shape(t, st);
     }
   }
@@ -611,13 +614,13 @@
     }
     return kinectSettings(id);
   }
-  async function restartKinect(t) {
+  async function restartKinect(t, message = "Starting the Kinect again with the new settings…") {
     t.oakState = "starting";
     const api = tileApi(t);
-    if (api && api.kinectStatus) api.kinectStatus({ status: "starting", message: "Starting the Kinect again with the new settings…" });
+    if (api && api.kinectStatus) api.kinectStatus({ status: "starting", message });
     await desktop.kinect.streamStop(t.kinect).catch(() => {});
     await sleep(1500);
-    if (tiles.includes(t)) startKinectTiles([t]);
+    if (tiles.includes(t)) await startKinectTiles([t]);
   }
   // Retry: at once, and its restarts counted afresh.
   function retryKinect(t) {
@@ -692,7 +695,7 @@
       // Stopped while it ran (its pictures stopped coming, or its helper ended badly): again, by itself;
       // not one that's stopped answering (stuck): only its power going off and on brings that back.
       if (s.stuck) t.kinectStuck = true;
-      else if (ran && (s.status === "error" || s.code) && !t.kinectStuck) return kinectAgain(t, s.status === "error" ? s.message || "The Kinect stopped." : "The Kinect's helper stopped.");
+      else if (ran && (s.status === "error" || s.code) && !t.kinectStuck && !t.byHand) return kinectAgain(t, s.status === "error" ? s.message || "The Kinect stopped." : "The Kinect's helper stopped.");
     }
     if (api && api.kinectStatus) api.kinectStatus(s);
   }
@@ -761,7 +764,7 @@
     if (api && api.ps4Status) api.ps4Status({ status: "starting", message });
     await desktop.ps4cam.streamStop(t.ps4).catch(() => {});
     await sleep(1000);
-    if (tiles.includes(t)) startPs4Tiles([t]);
+    if (tiles.includes(t)) await startPs4Tiles([t]);
   }
   async function startPs4Tiles(list) {
     if (!ps4Off.length) ps4Off = [desktop.ps4cam.onFrame(onPs4Frame), desktop.ps4cam.onStatus(onPs4Status)];
@@ -1004,7 +1007,7 @@
     if (!keepGoing()) return;
     const now = performance.now();
     for (const t of tiles) {
-      if (!t.oak || t.oakState !== "running" || t.restarting || now - (t.frameAt || now) < AGAIN.frozenMs) continue;
+      if (!t.oak || t.oakState !== "running" || t.restarting || t.byHand || now - (t.frameAt || now) < AGAIN.frozenMs) continue;
       t.restarting = true; // (its helper's "stopped" is this)
       t.oakError = `The OAK camera sent nothing for ${Math.round(AGAIN.frozenMs / 1000)} seconds.`;
       desktop.oak
@@ -1018,10 +1021,124 @@
     }
   }
 
+  // ---------- Restart (each tile's button, and its camera's on remote recording's page) ----------
+  // A camera stopped and started again, the others carrying on (its automatic restarts counted
+  // afresh). If it isn't back (running, with frames) within RESTART.backMs, its USB is turned off
+  // and on where this computer can (a Raspberry Pi set up for it: system-control.js) and it's
+  // started once more, with any other camera on the ports switched with it. Not while a take records.
+  const RESTART = { backMs: 30000 };
+  const KINECT_USB = "045e:02c4,045e:02d8";
+  // How its USB device is found: an OAK camera by its id, a Kinect by its USB ids (and its id),
+  // a PS4 camera by its port (its id), a webcam by the USB ids in its name ("… (046d:082d)").
+  function usbOf(t) {
+    if (t.oak) return { serial: t.oak };
+    if (t.kinect) return { usb: KINECT_USB, serial: t.kinect };
+    if (t.ps4) return { dev: t.ps4 };
+    const m = /\(([0-9a-f]{4}):([0-9a-f]{4})\)\s*$/i.exec(t.label || "");
+    return m ? { usb: `${m[1]}:${m[2]}`.toLowerCase() } : null;
+  }
+  const switchedWith = (t, others) => {
+    const own = usbOf(t);
+    return !!own && others.some((o) => (own.serial && o.serial === own.serial) || (own.dev && o.dev === own.dev) || (!own.serial && !own.dev && own.usb && own.usb.split(",").includes(o.usb)));
+  };
+  function say(t, message) {
+    const api = tileApi(t);
+    const status = { status: "starting", message };
+    if (t.oak && api && api.oakStatus) api.oakStatus(status);
+    else if (t.kinect && api && api.kinectStatus) api.kinectStatus(status);
+    else if (t.ps4 && api && api.ps4Status) api.ps4Status(status);
+  }
+  // Stopped, and let go (before its USB goes off). An OAK camera stays "restarting" (its helper's
+  // "stopped" isn't a crash to start it again for) until it's started.
+  async function letGo(t) {
+    t.oakState = "starting";
+    if (t.oak) {
+      t.restarting = true;
+      await desktop.oak.streamStop(t.oak).catch(() => {});
+      await sleep(2500);
+    } else if (t.kinect) {
+      await desktop.kinect.streamStop(t.kinect).catch(() => {});
+      await sleep(1500);
+    } else if (t.ps4) {
+      await desktop.ps4cam.streamStop(t.ps4).catch(() => {});
+      await sleep(1000);
+    } else {
+      t.src = t.src || t.frame.src;
+      t.frame.src = "about:blank"; // (a tile's page going away releases its camera)
+      await sleep(1000);
+    }
+  }
+  // Started (again): stopped first unless it's been let go.
+  async function startOver(t, message, stopped = false) {
+    t.again = [];
+    t.oakError = null;
+    if (t.oak) {
+      if (!stopped) return restartOak(t, message);
+      t.restarting = false;
+      say(t, message);
+      return startOakTiles([t]);
+    }
+    if (t.kinect) {
+      t.kinectStuck = false;
+      clearTimeout(t.kinectTimer);
+      t.kinectTimer = null;
+      t.kinectAgain = [];
+      return stopped ? startKinectTiles([t]) : restartKinect(t, message);
+    }
+    if (t.ps4) return stopped ? startPs4Tiles([t]) : restartPs4(t, message);
+    if (!stopped) await letGo(t);
+    t.frame.src = t.src || t.frame.src;
+    await applyOptions(t);
+  }
+  // Running with frames (an OAK camera, a Kinect or a PS4 camera: a frame since `since`; a
+  // webcam's tile page is a new one) within RESTART.backMs: true; false once it's said it failed (or then).
+  async function cameBack(t, since) {
+    const until = Date.now() + RESTART.backMs;
+    while (tiles.includes(t) && Date.now() < until) {
+      const api = tileApi(t);
+      const st = api ? api.status() : null;
+      const fresh = t.oak || t.kinect || t.ps4 ? t.oakState === "running" && t.frameAt > since : st && st.fps > 0;
+      if (st && !st.error && fresh) return true;
+      if (st && st.error && t.oakState !== "starting") return false;
+      await sleep(500);
+    }
+    return false;
+  }
+  async function restartCamera(i) {
+    const t = tiles[i];
+    if (!t) return { ok: false, message: "That camera isn't running." };
+    if (recording) return { ok: false, message: "Stop recording first." };
+    if (t.byHand) return { ok: true, message: `${nameOf(t)} is already being started again…` };
+    t.byHand = true;
+    showStatus();
+    try {
+      let since = performance.now();
+      await startOver(t, "Starting the camera again…");
+      if (!tiles.includes(t)) return { ok: false, message: "The cameras were stopped." };
+      if (await cameBack(t, since)) return { ok: true, message: `${nameOf(t)} started again.` };
+      const match = usbOf(t);
+      const system = desktop.remote && desktop.remote.system ? await desktop.remote.system().catch(() => null) : null;
+      if (!match || !system || !system.cameraReset || !desktop.remote.resetCamera) return { ok: false, message: `${nameOf(t)} didn't start again. Check its cable and its power.` };
+      await letGo(t);
+      say(t, "Turning its USB off and on…");
+      const usb = await desktop.remote.resetCamera(match).catch((err) => ({ ok: false, message: errText(err), how: null, others: [] }));
+      await sleep(usb.how === "power" ? 5000 : 2500); // (back on the USB)
+      if (!tiles.includes(t)) return { ok: false, message: "The cameras were stopped." };
+      for (const o of tiles) if (o !== t && !o.byHand && switchedWith(o, usb.others || [])) startOver(o, "Starting the camera again: its USB was turned off and on with another's…");
+      since = performance.now();
+      await startOver(t, "Starting the camera again…", true);
+      if (await cameBack(t, since)) return { ok: true, message: `${nameOf(t)} started again. ${usb.message}` };
+      return { ok: false, message: `${nameOf(t)} didn't start again, even after this: ${usb.message} Check its cable and its power.` };
+    } finally {
+      t.byHand = false;
+      if (t.oak && t.restarting && t.oakState !== "starting") t.restarting = false;
+    }
+  }
+
   function onOakStatus(s) {
     const t = tiles.find((x) => x.oak === s.id);
     if (!t) return;
-    if (s.status === "stopped" && s.code && t.ran && !t.restarting && keepGoing()) return startAgain(t, s);
+    if (s.status === "stopped" && s.code && t.ran && !t.restarting && !t.byHand && keepGoing()) return startAgain(t, s);
     if (s.status === "running") {
       t.oakState = "running";
       t.ran = true;
@@ -1299,7 +1416,7 @@
         const st = api ? api.status() : null;
         return {
           index: i, name: t.name, roleId: t.role || "", role: CameraRoles.label(t.role) || "", label: t.label, rotation: t.view.rotation, mirror: t.view.mirror,
-          fps: st ? st.fps : 0, hands: st ? st.hands : [], tracking: st ? st.tracking !== false : tracking(t), error: st ? st.error || "" : "",
+          fps: st ? st.fps : 0, hands: st ? st.hands : [], tracking: st ? st.tracking !== false : tracking(t), error: st ? st.error || "" : "", restarting: !!t.byHand,
           ...(t.oak ? { oak: true, night: !!t.night, chipC: typeof t.chipC === "number" ? t.chipC : null } : {}),
           ...(t.kinect ? { kinect: true, night: !!t.night, bodies: st && st.bodies ? st.bodies : 0, sound: t.audio ? { angle: t.audio.angle, level: Math.max(...(t.audio.level || [0])), active: t.audio.active } : null } : {}),
           ...(t.ps4 ? { ps4: true, night: !!t.night } : {}),
@@ -1434,6 +1551,7 @@
       if (!b) return;
       const i = Number(b.dataset.i);
       if (b.matches("button.retry")) (tiles[i] && tiles[i].kinect ? retryKinect(tiles[i]) : tiles[i] && tiles[i].ps4 ? restartPs4(tiles[i], "Starting the PS4 camera again…") : retryOak(tiles[i]));
+      else if (b.matches("button.restart") && tiles[i]) restartCamera(i).then((r) => (els.note.textContent = r.message));
       else if (b.matches("button.rot") && tiles[i]) setView(i, { rotation: tiles[i].view.rotation + 90 });
       else if (b.matches("button.flip") && tiles[i]) setView(i, { mirror: !tiles[i].view.mirror });
       else if (b.matches("button.gear") && tiles[i]) {
@@ -1447,7 +1565,8 @@
 
   global.MultiCamera = {
     init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, tracking: ownTracking, setTracking, timingCheck, timingState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
-    oakSettings, setOakSettings, kinectSettings, setKinectSettings, saveKinect, kinectAvailable, ps4Settings, setPs4Settings,
+    oakSettings, setOakSettings, kinectSettings, setKinectSettings, saveKinect, kinectAvailable, ps4Settings, setPs4Settings, restartCamera,
+    _restart: RESTART, // (the checks shorten its wait)
     isActive: () => tiles.length > 0, runningIds: () => tiles.map((t) => t.deviceId), isRecording: () => recording, isTracking: () => tiles.some((t) => tracking(t)),
     secondLook: ownSecondLook, setSecondLook,
     _again: AGAIN, // (the checks shorten its times)

@@ -35,7 +35,8 @@
  * cameras first if need be), "stop" (stop and save the take), "close" (stop the cameras),
  * "details" (only the take details: { contributor, location, task }, which any request can
  * bring along, and which go into the takes), "camera" (one running camera's { index, role,
- * rotation, mirror }), "scan" (look for the cameras it can start), "pick" (one of those:
+ * rotation, mirror }), "restartCamera" (one running camera's { index }: stopped and started
+ * again, its USB off and on if that didn't bring it back), "scan" (look for the cameras it can start), "pick" (one of those:
  * { id, use, role, tracking, secondLook }), "mode" ("ego", "stereo" or "freeform") or "settings" ({ detailsRequired, screenPictures,
  * video, sound, videoQuality, photo }: whether the take details are needed, whether the OAK cameras' pictures
  * are drawn on its screen, each camera's video with a take, its sound and its quality, and each
@@ -79,7 +80,7 @@ const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it t
 const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
-const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "takeDetails", "editTake", "sentry", "oak", "kinect", "ps4", "resetCameras", "reboot", "powerOff", "timing"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "takeDetails", "editTake", "sentry", "oak", "kinect", "ps4", "resetCameras", "restartCamera", "reboot", "powerOff", "timing"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
 const ROLES = ["", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"]; // (camera-roles.js's)

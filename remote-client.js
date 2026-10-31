@@ -2155,6 +2155,11 @@
       const flip = box.querySelector(".flip");
       flip.classList.toggle("on", !!c.mirror);
       flip.setAttribute("aria-pressed", String(!!c.mirror));
+      // Restart: one camera stopped and started again (a rig that can: one that says whether it's
+      // restarting each camera); not while recording.
+      const restart = box.querySelector(".restart");
+      restart.hidden = typeof c.restarting !== "boolean";
+      restart.disabled = !!c.restarting || !!s.recording || sending;
     });
     $("grid").classList.toggle("one", cams.length === 1);
     $("missing").textContent = cams.length && emptyLabels.length ? `Not connected: ${emptyLabels.join(", ")}` : "";
@@ -2201,7 +2206,7 @@
       `<div class="cap"><div class="tools"><select data-i="${i}" aria-label="Role">${roleOptions("")}</select>` +
       `<button type="button" class="rot" data-i="${i}" aria-label="Turn 90 degrees clockwise"></button>` +
       `<button type="button" class="flip" data-i="${i}" aria-pressed="false">Flip</button>` +
-      `<button type="button" class="big" data-i="${i}" aria-label="Full screen">Full</button></div><div class="what"></div></div></div>`);
+      `<button type="button" class="restart" data-i="${i}" hidden>Restart</button></div><div class="what"></div></div></div>`);
     $("grid").innerHTML = cams.join("");
     for (let i = 0; i < n; i++) {
       const loop = { stop: false };
@@ -2224,7 +2229,7 @@
     if (!c) return;
     if (b.matches(".rot")) command("camera", { camera: { index: c.index, rotation: ((c.rotation || 0) + 90) % 360 } });
     else if (b.matches(".flip")) command("camera", { camera: { index: c.index, mirror: !c.mirror } });
-    else if (b.matches(".big")) openFull(c.index);
+    else if (b.matches(".restart")) command("restartCamera", { camera: { index: c.index } });
   });
   // A preview's box in its camera's shape (a phone held upright: tall, not wide with black
   // bars), no taller than most of the screen.

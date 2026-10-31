@@ -365,6 +365,9 @@ contextBridge.exposeInMainWorld("desktop", {
     reboot: () => ipcRenderer.invoke("remote:reboot"),
     powerOff: () => ipcRenderer.invoke("remote:power-off"),
     resetCameras: () => ipcRenderer.invoke("remote:reset-cameras"),
+    // One camera's USB off and on: { serial, usb, dev } (an OAK camera's id, USB ids, a USB port)
+    // -> { ok, message, how, others: [{ dev, serial, usb }] } (the other cameras switched with it)
+    resetCamera: (match) => ipcRenderer.invoke("remote:reset-camera", match),
     // The room left where takes are saved, and whether it has a battery (electron/storage.js):
     // -> { free, total, battery }
     storage: () => ipcRenderer.invoke("remote:storage"),

@@ -134,6 +134,7 @@ const STEPS = [
   ["oak-options", [], ({ js }) => checkOakOptions(js)],
   ["oak-pictures-off", [], ({ js }) => checkOakPicturesOff(js)],
   ["oak-tile-retry", [], ({ js }) => checkOakTileRetry(js)],
+  ["oak-tile-restart", [], ({ js }) => checkOakTileRestart(js)],
   ["oak-crash-again", [], ({ js }) => checkOakCrashAgain(js)],
   ["kinect", [], ({ js }) => checkKinect(js)],
   ["kinect-helper", [], () => checkKinectHelper()],
@@ -146,6 +147,7 @@ const STEPS = [
   ["timing-check", [], ({ js }) => checkTimingCheck(js)],
   ["remote-recording", [], ({ js }) => checkRemoteRecording(js)],
   ["remote-oak-settings", [], ({ js }) => checkRemoteOakSettings(js)],
+  ["remote-restart", [], ({ js }) => checkRemoteRestart(js)],
   ["remote-launcher", ["remote-recording"], ({ js }) => checkRemoteLauncher(js)], // downloads the take it saved
   ["remote-hotspot-wifi", [], () => checkRemoteHotspotWifi()],
   ["remote-settings-page", [], () => checkRemoteSettingsPage()],
@@ -5195,6 +5197,158 @@ async function checkOakTileRetry(js) {
     /didn't start this time/.test(r.error || "") && r.retryShown &&
       r.after && r.after.fps > 0 && r.after.hands.length === 1 && !r.after.error && /fps/.test(r.caption) && r.retryHidden && r.message === "none",
     JSON.stringify(r));
+}
+
+// Each tile's Restart: a camera started again (the other carrying on); one that doesn't come back
+// (STUCK: until its USB is turned off and on) has its USB turned off and on, then starts.
+async function checkOakTileRestart(js) {
+  const asked = global.__systemAsked.length;
+  process.env.HAND_TRACKER_KINECT_SIMULATE = "1"; // (the stand-in Kinect, for its part)
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const st = (i) => (MultiCamera._tiles()[i] || {}).status;
+    const btn = (i) => document.querySelectorAll("#multiCamGrid button.restart")[i];
+    const until = async (test, ms = 20000) => { for (let t = 0; t < ms && !test(); t += 100) await sleep(100); return test(); };
+    MultiCamera._restart.backMs = 4000;
+    const out = {};
+    try {
+      await MultiCamera.start(["oak:SIMULATED-OAK-A", "oak:SIMULATED-OAK-STUCK"]);
+      await until(() => st(0) && st(0).fps > 0 && st(1) && st(1).error);
+      out.buttons = [...document.querySelectorAll("#multiCamGrid button.restart")].map((b) => b.textContent + (b.disabled ? "(off)" : ""));
+      out.stuck = st(1) && st(1).error;
+      btn(0).click();
+      await sleep(300);
+      out.disabledWhile = btn(0).disabled && MultiCamera.remoteState().cameras[0].restarting === true;
+      await until(() => /started again/.test(document.getElementById("multiCamNote").textContent));
+      out.noteA = document.getElementById("multiCamNote").textContent;
+      await until(() => st(0) && st(0).fps > 0, 5000); // (its frame rate is counted afresh)
+      out.a = st(0) && { fps: st(0).fps, error: st(0).error };
+      out.bWhileA = st(1) && st(1).error;
+      out.restartB = await MultiCamera.restartCamera(1);
+      await until(() => st(1) && st(1).fps > 0);
+      out.b = st(1) && { fps: st(1).fps, error: st(1).error };
+      out.aStill = st(0) && st(0).fps > 0;
+      await sleep(700); // (the captions update every 0.5 s)
+      out.enabledAfter = !btn(0).disabled && !btn(1).disabled && MultiCamera.remoteState().cameras.every((c) => c.restarting === false);
+      MultiCamera.close();
+      await sleep(500);
+      // A webcam (its tile's page loaded again; here the test camera twice: the other carries on).
+      const cams = await HandTracker.listCameras();
+      await MultiCamera.start([cams[0].deviceId, cams[0].deviceId]);
+      await until(() => st(0) && st(0).fps > 0 && st(1) && st(1).fps > 0);
+      const page = document.querySelectorAll("#multiCamGrid iframe")[0].contentWindow.Tile;
+      out.webcam = await MultiCamera.restartCamera(0);
+      out.newPage = document.querySelectorAll("#multiCamGrid iframe")[0].contentWindow.Tile !== page;
+      await until(() => st(0) && st(0).fps > 0, 5000);
+      out.webcamFps = st(0) && st(0).fps;
+      out.otherWebcam = st(1) && st(1).fps;
+      MultiCamera.close();
+      await sleep(500);
+      // A Kinect (which starts alone).
+      await MultiCamera.start(["kinect:SIMULATED-KINECT"]);
+      out.kinectBefore = await until(() => st(0) && st(0).fps > 0);
+      out.kinect = await MultiCamera.restartCamera(0);
+      await until(() => st(0) && st(0).fps > 0, 5000);
+      out.kinectFps = st(0) && st(0).fps;
+    } catch (err) {
+      out.error = String((err && err.message) || err);
+    } finally {
+      MultiCamera._restart.backMs = 30000;
+      MultiCamera.close();
+      await sleep(300);
+    }
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  delete process.env.HAND_TRACKER_KINECT_SIMULATE;
+  r.asked = global.__systemAsked.splice(asked); // (taken out: the remote recording check counts its own)
+  check("Several cameras: Restart starts a webcam again (its tile's page anew, the other carrying on) and a Kinect",
+    !r.error && r.webcam && r.webcam.ok && /started again\.$/.test(r.webcam.message) && r.newPage && r.webcamFps > 0 && r.otherWebcam > 0 &&
+      r.kinectBefore && r.kinect && r.kinect.ok && /started again\.$/.test(r.kinect.message) && r.kinectFps > 0,
+    JSON.stringify({ webcam: r.webcam, newPage: r.newPage, webcamFps: r.webcamFps, otherWebcam: r.otherWebcam, kinectBefore: r.kinectBefore, kinect: r.kinect, kinectFps: r.kinectFps, asked: r.asked, error: r.error }));
+  check("Several cameras: each tile has Restart, which starts its camera again (the others carry on); one that doesn't come back has its USB turned off and on (that camera's only), then starts",
+    !r.error && (r.buttons || []).join() === "Restart,Restart" && /doesn't answer/.test(r.stuck || "") && r.disabledWhile &&
+      /^\S+ started again\.$/.test(r.noteA || "") && r.a && r.a.fps > 0 && !r.a.error && /doesn't answer/.test(r.bWhileA || "") &&
+      r.restartB && r.restartB.ok && /started again\. Its USB was turned off and on/.test(r.restartB.message) && r.b && r.b.fps > 0 && !r.b.error &&
+      r.aStill && r.enabledAfter && r.asked.join() === "resetCamera SIMULATED-OAK-STUCK",
+    JSON.stringify(r));
+}
+
+// Remote recording's page: Restart on each running camera's picture (no Full button: the picture
+// itself opens full screen), carried out by the computer and said once it's done.
+async function checkRemoteRestart(js) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = {};
+  let win = null, wasOn = true, base = "", key = "";
+  const post = (action, extra = {}) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...extra }) });
+  const state = async () => (await fetch(base + "/api/state", { headers: { "X-Key": key } })).json();
+  const asked = global.__systemAsked.length;
+  try {
+    const setup = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      if (MultiCamera.isActive()) MultiCamera.close();
+      await sleep(500);
+      let s = await desktop.remote.status();
+      const wasOn = s.on;
+      if (!s.on) document.getElementById("remoteToggle").click();
+      for (let i = 0; i < 50 && !s.on; i++) { await sleep(100); s = await desktop.remote.status(); }
+      MultiCamera._restart.backMs = 4000;
+      await MultiCamera.start(["oak:SIMULATED-OAK-B", "oak:SIMULATED-OAK-STUCK-2"]);
+      return { status: s, wasOn };
+    })()`);
+    wasOn = setup.wasOn;
+    const keyed = (setup.status.urls || []).find((u) => u.keyed);
+    key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
+    base = `http://127.0.0.1:${setup.status.port}`;
+    let st = null;
+    for (let i = 0; i < 100 && !(st && st.cameras && st.cameras.length === 2 && st.cameras[0].fps > 0 && st.cameras[1].error); i++) {
+      await sleep(200);
+      st = await state();
+    }
+    out.restarting = st.cameras.map((c) => c.restarting);
+    out.refused = await (await post("restartCamera", { camera: { index: 3 } })).json();
+    win = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-remote-restart", backgroundThrottling: false } });
+    await win.loadURL(`${base}/#k=${key}`);
+    const pjs = (code) => withLimit(win.webContents.executeJavaScript(code), "the remote page, Restart");
+    Object.assign(out, await pjs(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      const until = async (fn, ms = 20000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+      await until(() => /Hand Tracker on/.test($("title").textContent) && document.querySelectorAll("#grid .cam").length === 2 && !document.querySelector("#cam1 .restart").hidden);
+      const out = {
+        tools: [...document.querySelectorAll("#cam0 .tools button")].map((b) => b.textContent.trim() || b.className),
+        full: document.querySelectorAll("#grid button.big").length,
+      };
+      // Its picture still opens full screen.
+      document.querySelector("#cam0 .pic").click();
+      out.fullOpened = !!(await until(() => !$("full").hidden, 3000));
+      history.back();
+      await until(() => $("full").hidden, 3000);
+      document.querySelector("#cam1 .restart").click();
+      out.said = await until(() => /Restarting/.test($("message").textContent) && $("message").textContent, 5000);
+      out.disabledWhile = !!(await until(() => document.querySelector("#cam1 .restart").disabled, 3000));
+      out.done = await until(() => /started again/.test($("message").textContent) && $("message").textContent, 30000);
+      out.after = await until(() => !document.querySelector("#cam1 .restart").disabled && /fps/.test(document.querySelector("#cam1 .what").textContent) && document.querySelector("#cam1 .what").textContent, 10000);
+      return out;
+    })()`));
+  } catch (err) {
+    out.error = String((err && err.message) || err);
+  } finally {
+    if (win) win.destroy();
+    if (base) await post("close").catch(() => {});
+    await js(`(async () => {
+      MultiCamera._restart.backMs = 30000;
+      if (!${wasOn} && (await desktop.remote.status()).on) document.getElementById("remoteToggle").click();
+      return true;
+    })()`).catch(() => {});
+  }
+  out.asked = global.__systemAsked.splice(asked); // (taken out: the remote recording check counts its own)
+  check("Remote recording's page: each running camera has Restart under its picture (no Full button: the picture opens full screen); tapped, the computer starts that camera again, its USB off and on when it didn't come back, and says so",
+    !out.error && out.restarting.join() === "false,false" && out.refused.ok === false && /isn't running/.test(out.refused.message) &&
+      (out.tools || []).includes("Restart") && !(out.tools || []).includes("Full") && out.full === 0 && out.fullOpened &&
+      /Restarting/.test(out.said || "") && out.disabledWhile && /started again\. Its USB was turned off and on/.test(out.done || "") && /fps/.test(out.after || "") &&
+      out.asked.join() === "resetCamera SIMULATED-OAK-STUCK-2",
+    JSON.stringify(out));
 }
 
 // Live Rigs, against the stand-in capture-fleet dashboard (fleet-sim.js, which says what each rig does).

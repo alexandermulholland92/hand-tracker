@@ -27,6 +27,8 @@
  *             its metadata;
  *   camera  — one running camera's role (which moves it to that block of the grid), its turn
  *             (0, 90, 180 or 270 degrees) or its flip;
+ *   restartCamera — one running camera stopped and started again, the others carrying on (its
+ *             USB off and on if that didn't bring it back: MultiCamera.restartCamera);
  *   sentry  — Sentry mode (sentry.js, hidden on the page until its title is tapped five times):
  *             its settings, each camera's boxes, on and off (on, it starts the cameras if
  *             they're off: it watches them, with hand tracking off unless it's asked to track).
@@ -1036,6 +1038,19 @@
       return remote.powerOff();
     }
     if (pending) return { ok: false, message: `Busy: ${pending}` };
+    if (action === "restartCamera") {
+      // One camera stopped and started again (its USB off and on if that didn't bring it back),
+      // the others carrying on: what came of it is said once it's done.
+      const c = data.camera || {};
+      const cam = cams().remoteState().cameras.find((x) => x.index === c.index);
+      if (!cam || !cams().restartCamera) return { ok: false, message: "That camera isn't running." };
+      if (recording) return { ok: false, message: "Stop recording first." };
+      cams()
+        .restartCamera(c.index)
+        .then((r) => (notice = { at: Date.now(), message: r.message }), (err) => (notice = { at: Date.now(), message: errText(err) }))
+        .finally(push);
+      return { ok: true, message: `Restarting ${cam.role || cam.name}…` };
+    }
     if (action === "resetCameras") {
       // The cameras stopped, their USB off and on (as unplugging them), then the ones that ran
       // started again.

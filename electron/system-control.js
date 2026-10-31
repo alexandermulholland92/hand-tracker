@@ -10,6 +10,11 @@
  *   await reboot() -> { ok, message }          restarts it a moment later
  *   await powerOff() -> { ok, message }        turns it off a moment later
  *   await resetCameras() -> { ok, message, how, count }
+ *   await resetCamera({ serial, usb, dev }) -> { ok, message, how, others }
+ *     one camera's USB off and on (its tile's Restart, when starting it again didn't bring it
+ *     back): an OAK camera by its id (or, not started, the OAK cameras that aren't), another by
+ *     its USB ids or port (devicesOf); others: the other cameras on the ports switched
+ *     ({ dev, serial, usb } each)
  *
  * Linux: "sudo -n" for what pi/restart-setup.sh allows (systemctl reboot and poweroff, uhubctl),
  * else what the person logged in may do anyway. Windows: shutdown. Mac: System Events (it may
@@ -238,4 +243,97 @@ async function resetCameras() {
   };
 }
 
-module.exports = { capabilities, reboot, powerOff, resetCameras, cameraDevices, hubPort, rootGroup, driveOn };
+// Every device on the USB (not root hubs or interfaces): { dev, usb: "vvvv:pppp", serial, node }.
+function usbDevices(root = USB) {
+  let names = [];
+  try {
+    names = fs.readdirSync(root);
+  } catch {
+    return [];
+  }
+  return names.filter((n) => /^\d+-[\d.]+$/.test(n)).map((n) => {
+    const read = (f) => {
+      try {
+        return fs.readFileSync(path.join(root, n, f), "utf8").trim();
+      } catch {
+        return "";
+      }
+    };
+    return { dev: n, usb: `${read("idVendor")}:${read("idProduct")}`.toLowerCase(), serial: read("serial"), node: `/dev/bus/usb/${read("busnum").padStart(3, "0")}/${read("devnum").padStart(3, "0")}` };
+  });
+}
+
+// An OAK camera that isn't started shows only its boot loader (Myriad X, Myriad 2), without its id.
+const OAK_WAITING = new Set(["03e7:2485", "03e7:2150"]);
+
+// The devices one camera may be: by its USB port (dev: a PS4 camera's id); by its USB ids (usb:
+// "vvvv:pppp", or several with commas), the one with its serial if one has it (a Kinect's id);
+// an OAK camera by its id, and if it's not on the USB with it, the OAK cameras that aren't
+// started (still so 3 s later: one that's starting is only so for a moment).
+async function devicesOf(match, root = USB) {
+  if (match.dev) return usbDevices(root).filter((d) => d.dev === match.dev);
+  if (match.usb) {
+    const ids = String(match.usb).toLowerCase().split(",");
+    const all = usbDevices(root).filter((d) => ids.includes(d.usb));
+    const own = match.serial ? all.filter((d) => d.serial === match.serial) : [];
+    return own.length ? own : all;
+  }
+  const own = usbDevices(root).filter((d) => d.usb.startsWith("03e7:") && d.serial === match.serial);
+  if (own.length) return own;
+  const waiting = () => usbDevices(root).filter((d) => OAK_WAITING.has(d.usb)).map((d) => d.dev);
+  const first = waiting();
+  if (!first.length) return [];
+  await new Promise((r) => setTimeout(r, 3000));
+  const still = new Set(waiting());
+  return usbDevices(root).filter((d) => first.includes(d.dev) && still.has(d.dev));
+}
+
+async function resetCamera(match = {}) {
+  if (process.platform !== "linux") return { ok: false, message: "Only a Linux computer's cameras (a Raspberry Pi's) can have their USB turned off and on from here.", how: null, others: [] };
+  const list = await devicesOf(match);
+  if (!list.length) return { ok: false, message: "It isn't on the USB: check its cable.", how: null, others: [] };
+  const hub = uhubctl();
+  if (!hub || !(await allowed(hub))) {
+    const n = await softReset(list);
+    return { ok: n > 0, message: n ? "It was reset on the USB (to turn its USB off and on, run sudo bash restart-setup.sh on this computer once: pi/restart-setup.sh)." : "It couldn't be reset on the USB.", how: n ? "soft" : null, others: [] };
+  }
+  // A camera behind a hub: that hub's port. On a computer's own port: that controller's root
+  // ports (a Pi 5's own all together), not where a USB drive is.
+  const hubPorts = new Map(), roots = new Set();
+  for (const d of list) {
+    const hp = hubPort(d.dev);
+    if (hp && hp.hub.includes("-")) hubPorts.set(`${hp.hub}:${hp.port}`, hp);
+    else {
+      const group = rootGroup(d.dev.split("-")[0]);
+      if (driveOn(group)) {
+        const n = await softReset([d]);
+        return { ok: n > 0, message: `A USB drive is on the same USB ports, so their power wasn't turned off${n ? "; it was reset on the USB" : ""}.`, how: n ? "soft" : null, others: [] };
+      }
+      group.forEach((b) => roots.add(b));
+    }
+  }
+  const mine = new Set(list.map((d) => d.dev));
+  const switched = (dev) => roots.has(dev.split("-")[0]) || [...hubPorts.values()].some(({ hub: h, port }) => dev === `${h}.${port}` || dev.startsWith(`${h}.${port}.`));
+  const others = cameraDevices().filter((c) => !mine.has(c.dev) && switched(c.dev)).map((c) => usbDevices().find((d) => d.dev === c.dev) || { dev: c.dev }).map((d) => ({ dev: d.dev, serial: d.serial || "", usb: d.usb || "" }));
+  const sw = (args) => run("sudo", ["-n", hub, ...args], 30000);
+  const why = [];
+  for (const { hub: h, port } of hubPorts.values()) {
+    const r = await sw(["-a", "0", "-l", h, "-p", port]);
+    if (!r.ok) why.push(r.err.split("\n")[0]);
+  }
+  for (const b of roots) {
+    const r = await sw(["-a", "0", "-e", "-l", b]);
+    if (!r.ok) why.push(r.err.split("\n")[0]);
+  }
+  await new Promise((res) => setTimeout(res, 3000));
+  for (const b of roots) await sw(["-a", "1", "-e", "-l", b]);
+  for (const { hub: h, port } of hubPorts.values()) await sw(["-a", "1", "-l", h, "-p", port]);
+  if (why.length && why.length >= roots.size + hubPorts.size) {
+    const n = await softReset(list);
+    return { ok: n > 0, message: `Its USB port couldn't be turned off (${why[0] || "uhubctl failed"})${n ? ", so it was only reset on the USB" : ""}.`, how: n ? "soft" : null, others: [] };
+  }
+  const n = others.length;
+  return { ok: true, how: "power", others, message: `Its USB was turned off and on${n ? ` (with ${n} other camera${n === 1 ? "" : "s"} on the same ports, started again too)` : ""}.` };
+}
+
+module.exports = { capabilities, reboot, powerOff, resetCameras, resetCamera, cameraDevices, hubPort, rootGroup, driveOn, usbDevices };

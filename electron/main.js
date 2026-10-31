@@ -659,8 +659,14 @@ function stopOakStream(id) {
 class SimulatedOak {
   static failedOnce = new Set();
   static frozeOnce = new Set();
+  static usbReset = new Set(); // (the cameras whose USB was turned off and on: remote:reset-camera)
 
   start(options, onMessage) {
+    // A camera whose id has STUCK doesn't start until its USB has been turned off and on (Restart's last step).
+    if (/STUCK/.test(options.device || "") && !SimulatedOak.usbReset.has(options.device)) {
+      onMessage({ status: "error", message: "The simulated OAK camera doesn't answer." });
+      return;
+    }
     // A camera whose id has FAILS-ONCE doesn't start the first time (for the checks' Try again).
     if (/FAILS-ONCE/.test(options.device || "") && !SimulatedOak.failedOnce.has(options.device)) {
       SimulatedOak.failedOnce.add(options.device);
@@ -1246,6 +1252,15 @@ function registerRemoteIpc() {
     if (!simulateSystem) return systemControl.resetCameras();
     global.__systemAsked.push("resetCameras");
     return { ok: true, message: "The cameras' USB was turned off and on (simulated).", how: "power", count: 1 };
+  });
+  // One camera's (its tile's Restart): { serial, usb, dev } (system-control.js's resetCamera).
+  handle("remote:reset-camera", (event, match = {}) => {
+    const m = {};
+    for (const k of ["serial", "usb", "dev"]) if (match && typeof match[k] === "string" && /^[\w.,:-]{1,80}$/.test(match[k])) m[k] = match[k];
+    if (!simulateSystem) return systemControl.resetCamera(m);
+    global.__systemAsked.push(`resetCamera ${m.dev || m.usb || m.serial}`);
+    if (m.serial) SimulatedOak.usbReset.add(m.serial);
+    return { ok: true, message: "Its USB was turned off and on (simulated).", how: "power", others: [] };
   });
   handle("remote:new-key", () => remoteRecord.newKey());
   // The takes in the remote recording folder, on this computer's own screen too: listed, and
