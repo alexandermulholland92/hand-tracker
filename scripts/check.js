@@ -1961,6 +1961,11 @@ async function checkBluetoothPage() {
       document.querySelector("#cam0 .pic").click();
       out.picture = !!(await until(() => !document.querySelector("#cam0 img").hidden && document.querySelector("#cam0 img").naturalWidth === 64));
       out.full = !!document.getElementById("full") && !document.getElementById("full").hidden;
+      // A tap on that picture opens it full screen.
+      document.querySelector("#cam0 .pic").click();
+      out.fullOnPicture = !!(await until(() => !document.getElementById("full").hidden, 3000));
+      history.back();
+      await until(() => document.getElementById("full").hidden, 3000);
       return out;
     })()`));
     await pjs(`document.getElementById("offBtn").click(), true`);
@@ -1981,10 +1986,10 @@ async function checkBluetoothPage() {
     if (win) win.destroy();
     server.stop();
   }
-  check("The remote recording page over Bluetooth: its panel asks for the password, the wrong one is said, the right one connects (the page shows the computer, over Bluetooth); its buttons work; a camera's picture comes when its box is tapped (not full screen); only the password's key is kept, and with it the page connects again without the password",
+  check("The remote recording page over Bluetooth: its panel asks for the password, the wrong one is said, the right one connects (the page shows the computer, over Bluetooth); its buttons work; a camera's picture comes when its box is tapped (not full screen), and a tap on that picture opens it full screen; only the password's key is kept, and with it the page connects again without the password",
     !out.error && out.panel && /over Bluetooth/.test(out.note) && out.wrong && /\(Bluetooth\)/.test(out.title || "") && out.panelGone &&
       out.kept && !out.kept.includes("correct horse") && /"[A-Za-z0-9+/=]{20,}":"[A-Za-z0-9+/=]{40,}"/.test(out.kept) &&
-      out.camera && out.picture && !out.full && out.asked.includes("close") && out.again && /\(Bluetooth\)/.test(out.again.title || ""),
+      out.camera && out.picture && !out.full && out.fullOnPicture && out.asked.includes("close") && out.again && /\(Bluetooth\)/.test(out.again.title || ""),
     JSON.stringify({ ...out, kept: out.kept ? `${out.kept.length} chars` : out.kept }));
 }
 

@@ -1643,13 +1643,16 @@ async function checkRemoteBluetoothNetwork(win, js) {
     try {
       out.leFull = await js(`(async () => {
         ${PAGE}
-        await until(() => document.querySelector("#cam0 .big"));
-        document.querySelector("#cam0 .big").click();
+        // (The first tap gets its picture; a tap on that picture opens it full screen.)
+        const pic = await until(() => document.querySelector("#cam0 .pic")), img = pic.querySelector("img");
+        if (img.hidden) pic.click();
+        const got = !!(await until(() => !img.hidden, 15000));
+        pic.click();
         const rate = await until(() => /^[1-9]\\d* fps$/.test($("fullRate").textContent) && $("fullRate").textContent, 8000);
         await sleep(1500);
         const shownNow = !$("full").hidden && $("fullImg").naturalWidth === 64;
         document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-        return { rate, shown: shownNow };
+        return { got, rate, shown: shownNow };
       })()`);
     } finally {
       clearInterval(feed);
@@ -1668,7 +1671,7 @@ async function checkRemoteBluetoothNetwork(win, js) {
   }
   out.tried = tried;
   const l = out.launcher || {}, off = out.off || {}, c = out.connect || {};
-  check("Remote recording from the app over a computer's Bluetooth network: remote.html says how to join it and opens Bluetooth settings; on none, the computer's page says so; on it, its Bluetooth password is asked for (the wrong one said), the right one connects (over Bluetooth) and is kept; a computer out of reach goes over its Bluetooth network by itself (by name), another one's is offered, and a different computer on it is said; with a VPN keeping the app off it, Bluetooth Low Energy by itself (the computer asked for, its password once, a camera's picture on a tap, full screen with two requests on their way at once)",
+  check("Remote recording from the app over a computer's Bluetooth network: remote.html says how to join it and opens Bluetooth settings; on none, the computer's page says so; on it, its Bluetooth password is asked for (the wrong one said), the right one connects (over Bluetooth) and is kept; a computer out of reach goes over its Bluetooth network by itself (by name), another one's is offered, and a different computer on it is said; with a VPN keeping the app off it, Bluetooth Low Energy by itself (the computer asked for, its password once, a camera's picture on a tap, full screen from a tap on that picture, with two requests on their way at once)",
     !out.error && l.card && l.android && !l.web && /isn't on/.test(l.now) && l.settings &&
       /rig=10\.43\.0\.1/.test(decodeURIComponent(off.url || "")) && /Bluetooth Low Energy.*Faster: pair/.test(off.note) && off.settings && !off.password && off.asked &&
       /rig-test needs its Bluetooth password/.test(c.asked || "") && c.wrong && c.title === "Hand Tracker on rig-test (Bluetooth)" && c.panelGone && /Connected to rig-test over Bluetooth/.test(c.message) && c.rows === 1 &&
@@ -1679,7 +1682,7 @@ async function checkRemoteBluetoothNetwork(win, js) {
       out.le && /VPN/.test(out.le.asked || "") && /needs its Bluetooth password/.test(out.le.asked || "") && out.le.title === "Hand Tracker on rig-test (Bluetooth)" &&
       out.le.panelGone && out.le.tap && out.le.picture && out.le.calls.includes("btlink.connect AA:00:00:00:00:01") && !out.le.calls.includes("btlink.connect AA:00:00:00:00:02") && out.le.kept > 40 &&
       out.leAgain && out.leAgain.title === "Hand Tracker on rig-test (Bluetooth)" && !out.leAgain.password &&
-      out.leFull && out.leFull.rate && out.leFull.shown && out.leFull.atOnce === 2 && out.leFull.asked > 4,
+      out.leFull && out.leFull.got && out.leFull.rate && out.leFull.shown && out.leFull.atOnce === 2 && out.leFull.asked > 4,
     JSON.stringify(out));
 }
 

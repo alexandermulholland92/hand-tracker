@@ -23,7 +23,7 @@
  *     when a computer can't be reached over the network: each request over the link, sealed with
  *     a key made from its password (kept here as that key only, per computer). Bluetooth is slow
  *     (a few KB a second): its state is asked for less often, and a camera's picture only when
- *     its box is tapped;
+ *     its box is tapped (a tap on that picture then opens it full screen);
  *   - in the Android app, over a computer's Bluetooth network (a Raspberry Pi's, set up with
  *     pi/bluetooth-setup.sh; this phone paired with it in Android's Bluetooth settings, its
  *     Internet access on), as remote-client.html?rig=10.43.0.1:47821 from remote.html, or by itself
@@ -2222,7 +2222,9 @@
     const box = e.target.closest(".boxes button");
     if (box) return tapBox(box);
     const pic = e.target.closest(".cam .pic");
-    if (pic && bt) return (loops[Number(pic.parentElement.id.slice(3))] || {}).want = true;
+    // (Over Bluetooth a picture comes only when asked for: the first tap asks, a tap on the one
+    // that's there opens it full screen.)
+    if (pic && bt && pic.querySelector("img").hidden) return (loops[Number(pic.parentElement.id.slice(3))] || {}).want = true;
     if (pic) return openFull(Number(pic.parentElement.id.slice(3)));
     const b = e.target.closest("button");
     const c = b && state && (state.cameras || [])[Number(b.dataset.i)];
