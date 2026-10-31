@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Recording Converter (the "converter" flavor) has neither the hand mouse nor remote recording:
+     this phone's control (its camera window and its accessibility service) and Sentry mode's
+     alerts (their watcher and its start after a restart) aren't in it. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <service android:name=".PhoneControlService" tools:node="remove" />
+        <service android:name=".HandControlService" tools:node="remove" />
+        <service android:name=".SentryWatchService" tools:node="remove" />
+        <receiver android:name=".SentryWatchBoot" tools:node="remove" />
+    </application>
+</manifest>

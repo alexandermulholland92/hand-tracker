@@ -18,10 +18,10 @@
  *     Android front-camera videos, recognised from their metadata); opens several videos
  *     at once: two cameras of one moment are synced from the hand movement (motion capture
  *     on one clock, videos trimmed to start together), a video of something else gets the
- *     error and goes through the motion capture queue and the Recording Viewer's queue,
- *  7. opens the Recording Viewer with JSON, CSV (incl. spreadsheet-saved), C3D, TRC,
+ *     error and goes through the motion capture queue and the Recording Converter's queue,
+ *  7. opens the Recording Converter with JSON, CSV (incl. spreadsheet-saved), C3D, TRC,
  *     Motive CSV and — when OptiTrack Motive is installed — a sample .tak take,
- *  8. opens a WMV with sound in the Recording Viewer and converts it to every format,
+ *  8. opens a WMV with sound in the Recording Converter and converts it to every format,
  *  9. OptiTrack: receives a stand-in Motive's NatNet stream (scripts/natnet-sim.js) over
  *     multicast and unicast, records it with motion capture and checks the exported
  *     markers; tracks a crop of the screen picked in the "Screen or window" picker.
@@ -2111,8 +2111,9 @@ async function checkWebLink() {
 
 // The website's Download menu (download-menu.js): not in the app; on the website, each app's file
 // for each device on the "Latest build" release (named with the website's version), and picking one
-// shows how to install it on that device (the link itself downloads it). A copy run from the source
-// folder has no version: just the release's page.
+// shows how to install it on that device (the link itself downloads it; Recording Converter's
+// steps don't ask for the camera, which it doesn't use). A copy run from the source folder has no
+// version: just the release's page.
 async function checkWebsiteDownloads(js) {
   const out = { inApp: await js("document.getElementById('downloadMenu').hidden") };
   let win = null;
@@ -2142,7 +2143,8 @@ async function checkWebsiteDownloads(js) {
         shown.closed = $("installDialog").hidden;
         return shown;
       };
-      return { unversioned, apps, files, android: await pick("Hand Tracker", "Android"), pi: await pick("Remote Recording", "Raspberry Pi"), iphone: await pick("Hand Mouse", "iPhone"), chrome: await pick("Chrome extension", "Chrome, Edge") };
+      return { unversioned, apps, files, android: await pick("Hand Tracker", "Android"), pi: await pick("Remote Recording", "Raspberry Pi"), iphone: await pick("Hand Mouse", "iPhone"),
+        converter: await pick("Recording Converter", "Android"), chrome: await pick("Chrome extension", "Chrome, Edge") };
     })()`, true), "the website's Download menu");
   } catch (err) {
     out.error = String((err && err.stack) || err);
@@ -2151,14 +2153,16 @@ async function checkWebsiteDownloads(js) {
   }
   const s = out.site || {};
   const each = (file, deb) => [`Windows=${file}-1.2.3-portable.exe`, `Mac (Apple chip)=${file}-1.2.3-mac-arm64.dmg`, `Mac (Intel)=${file}-1.2.3-mac-x64.dmg`, `Linux=${deb}_1.2.3_amd64.deb`, `Raspberry Pi=${deb}_1.2.3_arm64.deb`, `Android=${file}-1.2.3.apk`, `iPhone=${file}-1.2.3-ios-unsigned.ipa`];
-  const files = [...each("HandTracker", "hand-tracker"), ...each("HandMouse", "hand-mouse"), ...each("RemoteRecording", "remote-recording"), "Chrome, Edge=HandTracker-1.2.3-chrome-extension.zip"];
+  const files = [...each("HandTracker", "hand-tracker"), ...each("HandMouse", "hand-mouse"), ...each("RemoteRecording", "remote-recording"), ...each("RecordingConverter", "recording-converter"),
+    "Chrome, Edge=HandTracker-1.2.3-chrome-extension.zip"];
   const shown = (p, title, again, words) => p && p.open && p.menuClosed && p.dialog && p.closed && p.title === title && p.again === again && words.every((w) => p.steps.includes(w));
   check("The website's Download menu (not in the app): each app's file for each device on the Latest build release, named with the website's version (just the release's page without one); picking one shows how to install it on that device",
     !out.error && out.inApp === true && (s.unversioned || []).join() === "https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build" &&
-      (s.apps || []).join() === "Hand Tracker,Hand Mouse,Remote Recording,Chrome extension" && (s.files || []).join() === files.join() &&
+      (s.apps || []).join() === "Hand Tracker,Hand Mouse,Remote Recording,Recording Converter,Chrome extension" && (s.files || []).join() === files.join() &&
       shown(s.android, "Hand Tracker for Android", "HandTracker-1.2.3.apk", ["HandTracker-1.2.3.apk", "install unknown apps", "Allow restricted settings"]) &&
       shown(s.pi, "Remote Recording for Raspberry Pi", "remote-recording_1.2.3_arm64.deb", ["sudo apt install ./remote-recording_1.2.3_arm64.deb", "Open Remote Recording from the app menu"]) &&
       shown(s.iphone, "Hand Mouse for iPhone and iPad", "HandMouse-1.2.3-ios-unsigned.ipa", ["Sideloadly", "VPN & Device Management", "7 days"]) &&
+      shown(s.converter, "Recording Converter for Android", "RecordingConverter-1.2.3.apk", ["RecordingConverter-1.2.3.apk", "install unknown apps"]) && !/camera/i.test(s.converter.steps) &&
       shown(s.chrome, "Hand Tracker Chrome extension", "HandTracker-1.2.3-chrome-extension.zip", ["Load unpacked", "Developer mode"]),
     JSON.stringify(out));
 }
@@ -2467,10 +2471,10 @@ async function checkVideoFilesStep({ win, js }) {
   await checkVideoFiles(win, js);
 }
 
-// The Recording Viewer: the capture's own files (and Motive's markers from the OptiTrack check).
+// The Recording Converter: the capture's own files (and Motive's markers from the OptiTrack check).
 async function checkViewerStep({ motion }) {
   const { jsonPath, mfile } = motion || {};
-  if (!jsonPath) return check("The Recording Viewer's checks have the capture's files", false, "no JSON was saved");
+  if (!jsonPath) return check("The Recording Converter's checks have the capture's files", false, "no JSON was saved");
   await checkViewer(jsonPath, { csv: mfile(".csv"), c3d: mfile(".c3d"), trc: mfile(".trc"), glb: mfile(".glb"), npz: mfile(".npz"), bvh: mfile("-left.bvh"), json: jsonPath, markers: path.join(outDir, "motive-take-motive.c3d") });
 }
 
@@ -4548,7 +4552,7 @@ async function checkKinectSimulated(js) {
     out.files = files.map((f) => ({ kind: f.kind, name: f.path.split(/[\\\\/]/).pop(), times: f.times && f.times.split(/[\\\\/]/).pop(), frames: f.frames || null, path: f.path }));
     // The take's exports: the bodies as a table of their own, and in its MCAP file.
     try {
-      // (With annotations, as the Recording Viewer's Annotate puts them on a take: they go into its MCAP.)
+      // (With annotations, as the Recording Converter's Annotate puts them on a take: they go into its MCAP.)
       take.annotations = { format: "hand-tracker-annotations", segments: [{ id: "s1", parent: null, start: 0.5, end: 1.5, label: "Wave at the camera", description: "d", kind: "task", hands: 1, quality: { verdict: "ok" }, review: "approved" }] };
       const built = MotionExport.build(take, ["csv", "mcap"], "k");
       const table = built.find((f) => f.suffix === "-bodies");
@@ -4896,7 +4900,7 @@ function checkAnnotateCore() {
     JSON.stringify(out));
 }
 
-// Annotating a take in the Recording Viewer (electron/annotate.js, annotate-ui.js), with a stand-in
+// Annotating a take in the Recording Converter (electron/annotate.js, annotate-ui.js), with a stand-in
 // for Claude's API on this computer: a take's camera video (70 s, dark from 20 s to 30 s, blurry
 // from 30 s to 40 s) and its hands beside it; the key kept; the cost said first; Claude asked a
 // minute at a time with frames, the hands' hints and the task (Opus 5.5, refusals falling back);
@@ -4998,7 +5002,7 @@ async function checkAnnotate() {
   } finally {
     win.destroy();
   }
-  const viewerAsked = asked.slice(); // (the Recording Viewer's; the session's way below asks again)
+  const viewerAsked = asked.slice(); // (the Recording Converter's; the session's way below asks again)
   // A capture session's way: the video read over the web through a link asked for afresh for each
   // look (signed, as a dashboard's storage gives them), the hands as Capture Sessions just tracked.
   const served = http.createServer((req, res) => {
@@ -5037,7 +5041,7 @@ async function checkAnnotate() {
   })();
   const csv = fs.existsSync(path.join(dir, "Annotate check.annotations.csv")) ? fs.readFileSync(path.join(dir, "Annotate check.annotations.csv"), "utf8") : "";
   const q = (r.quality || [])[0] || [];
-  check("Annotate (Recording Viewer): a take's video and hands beside it; it asks for the Claude API key and keeps it; says the cost first",
+  check("Annotate (Recording Converter): a take's video and hands beside it; it asks for the Claude API key and keeps it; says the cost first",
     r.card && r.card.shown && r.card.cameras.join() === "head" && r.askedKey && r.kept && /About 1\.2 minutes/.test(r.estimate || "") && /2 one-minute stretches/.test(r.estimate || ""), JSON.stringify({ card: r.card, askedKey: r.askedKey, kept: r.kept, estimate: r.estimate, error: r.error, status: r.status }));
   check("…asks Claude (Opus 5.5, with fallbacks, a JSON schema) a minute at a time with its frames, the take's task and the hands' hints",
     viewerAsked.length === 2 && viewerAsked.every((a) => /\/v1\/messages/.test(a.path) && a.key === "sk-ant-check-key" && a.model === "claude-opus-5-5" && a.fallbacks === "default" && /server-side-fallback-2026-07-01/.test(a.beta) && a.format === "json_schema" && a.task) &&
@@ -5815,7 +5819,7 @@ async function checkSeveralVideos(win, js) {
   const viewerBefore = await viewer(viewerQueue);
   await js(`document.getElementById("multiViewerBtn").click(); true`);
   const syncedQueued = await viewerHas(2);
-  check("Synced videos go to the Recording Viewer's queue, trimmed to the shared stretch (an open viewer shows them at once)",
+  check("Synced videos go to the Recording Converter's queue, trimmed to the shared stretch (an open converter shows them at once)",
     !viewerBefore.shown && syncedQueued.shown && syncedQueued.items.length === 2 && syncedQueued.items.every((t) => /synced: 0:0\d\.\d\d for 0:06\.[45]\d/.test(t)),
     JSON.stringify({ viewerBefore, syncedQueued }));
 
@@ -5843,7 +5847,7 @@ async function checkSeveralVideos(win, js) {
       motions.every((m) => m && m.hands.length === 1 && m.hands[0].frames.length > 200),
     JSON.stringify({ queued, ran, frames: motions.map((m) => m && m.hands[0] && m.hands[0].frames.length) }));
 
-  // ...and to the Recording Viewer's queue, each converted on its own.
+  // ...and to the Recording Converter's queue, each converted on its own.
   await js(`document.getElementById("multiViewerQueueBtn").click(); true`);
   const allQueued = await viewerHas(4);
   const converted = await viewer(`(async () => {
@@ -5862,7 +5866,7 @@ async function checkSeveralVideos(win, js) {
     const here = frameDiff(first, frameAt(video(name), at)), before = frameDiff(first, frameAt(video(name), Math.max(0, at - 0.5))), after = frameDiff(first, frameAt(video(name), at + 0.5));
     return here < 2 && (at < 0.5 || here < before) && here < after;
   });
-  check("The Recording Viewer converts its queue one video after another: synced ones trimmed to the shared stretch, the others whole; done ones leave the queue",
+  check("The Recording Converter converts its queue one video after another: synced ones trimmed to the shared stretch, the others whole; done ones leave the queue",
     allQueued.items.length === 4 && /^Converted 4 of 4 videos; saved 4 files/.test(converted.note) && !converted.items.some((t) => /Remove$/.test(t)) &&
       Math.abs(seconds["cam-a-synced.mp4"] - length) < 0.1 && Math.abs(seconds["cam-b-synced.mp4"] - length) < 0.1 && Math.abs(seconds["cam-a.mp4"] - 8) < 0.1 && Math.abs(seconds["other.mp4"] - 8) < 0.1 && startsRight,
     JSON.stringify({ note: converted.note, seconds, starts, startsRight }));
@@ -5872,7 +5876,7 @@ async function checkSeveralVideos(win, js) {
   const picked = await viewerHas(2);
   await viewer(`document.getElementById("queueClearBtn").click(); true`);
   const cleared = await viewerHas(0);
-  check("Several videos chosen in the Recording Viewer go into its export queue; Clear empties it",
+  check("Several videos chosen in the Recording Converter go into its export queue; Clear empties it",
     picked.items.length === 2 && picked.items.every((t) => /Remove$/.test(t) && !/synced/.test(t)) && cleared.items.length === 1 && /empty/.test(cleared.items[0]),
     JSON.stringify({ picked, cleared }));
 
@@ -5975,7 +5979,7 @@ async function checkMirrorDefaults(js) {
     JSON.stringify(kept));
 }
 
-// 7. Recording Viewer: open and convert hand recordings (JSON, CSV), C3D and OptiTrack .tak.
+// 7. Recording Converter: open and convert hand recordings (JSON, CSV), C3D and OptiTrack .tak.
 // 9. OptiTrack: Motive's live NatNet data, and a screen/window as the tracking source.
 async function checkOptiTrack(js) {
   const status = () => js("({ status: document.getElementById('motiveStatus').textContent, info: document.getElementById('motiveInfo').textContent, button: document.getElementById('motiveConnect').textContent, locked: document.getElementById('motiveToggle').disabled })");
@@ -6168,10 +6172,10 @@ async function checkOptiTrack(js) {
   check("…and back to the camera", !back.screen && back.width > 0 && back.mirrored, JSON.stringify(back));
 }
 
-// 8. Recording Viewer: open a video the page can't play (WMV, with sound) and convert it to every format.
-// Hand Mouse and Remote Recording, the apps of their own, as the computer apps open them (their
-// pages, each in a window of its own with the app's preload, as electron/main.js opens them for
-// --app mouse | remote):
+// 8. Recording Converter: open a video the page can't play (WMV, with sound) and convert it to every format.
+// Hand Mouse, Remote Recording and Recording Converter, the apps of their own, as the computer apps
+// open them (their pages, each in a window of its own with the app's preload, as electron/main.js
+// opens them for --app mouse | remote | converter):
 //  - Hand Mouse: this computer, a phone controlling it, the Bluetooth mouse (an iPhone or iPad's;
 //    on a Mac, iPhone Mirroring) and My gestures, none of the phones' choices. "A phone controls
 //    it" shows the code to pair a phone with, and back, stops listening for it; "This computer"
@@ -6179,6 +6183,8 @@ async function checkOptiTrack(js) {
 //    computer's cameras to pick from, and back, stops both.
 //  - Remote Recording: both choices; Be a rig is Hand Tracker's page as a rig (only the cameras,
 //    Record and Several cameras; remote recording on; no camera until it's asked).
+//  - Recording Converter: the Recording Converter, Annotate in it, and its own check (viewer.js
+//    selfTest: a recording converted to every motion format and read back).
 async function checkOwnApps() {
   const open = async (page) => {
     const win = new BrowserWindow({
@@ -6253,7 +6259,23 @@ async function checkOwnApps() {
     w.win.destroy();
   }
 
-  const m = out.mouse || {}, r = out.remote || {}, rp = r.page || {};
+  w = await open("viewer.html");
+  try {
+    out.converter = await w.js(`(async () => {
+      ${UNTIL}
+      const r = { title: document.title, heading: document.querySelector("h1").textContent, back: !!document.querySelector("a.back-link"), annotate: !!window.AnnotateUI,
+        buttons: ["chooseBtn", "convertRecordingsBtn", "videoBtn", "convertVideosBtn"].map((id) => $(id) && $(id).textContent).join() };
+      const st = await RecordingViewer.selfTest();
+      r.selfTest = { ok: st.ok, error: st.error, formats: Object.entries(st.formats).map(([f, x]) => \`\${f}:\${x.frames}\${x.error ? " " + x.error : ""}\`).join() };
+      return r;
+    })()`);
+  } catch (err) {
+    out.converter = { error: String((err && err.message) || err) };
+  } finally {
+    w.win.destroy();
+  }
+
+  const m = out.mouse || {}, r = out.remote || {}, rp = r.page || {}, c = out.converter || {};
   check("Hand Mouse (Windows, Mac, Linux): this computer, a phone controlling it, the Bluetooth mouse and My gestures; a phone's code to pair with, then no longer listening; this computer's camera and hand mouse at once, then both stopped",
     !m.error && m.platform === "desktop" && m.choices === "computer,linked,bluetooth,gestures" && m.code && m.linkedParts && m.linkOff && m.camera && m.mouseOn && m.cameras >= 1 && m.computerParts && m.stopped,
     JSON.stringify(m));
@@ -6261,6 +6283,10 @@ async function checkOwnApps() {
     !r.error && r.choices === "control,rig" && r.rig && rp.rigClass && rp.title === "Remote Recording" && rp.hidden.length === 0 && rp.kept.length === 0 && rp.remoteOn && rp.noCamera &&
       /Waiting for the phone/.test(rp.waiting) && rp.appName === "Remote Recording",
     JSON.stringify(r));
+  check("Recording Converter (Windows, Mac, Linux): its page is the Recording Converter, Annotate in it, and a recording converts to every motion format, each read back as the same hand (its own check)",
+    !c.error && c.title === "Recording Converter" && c.heading === "Recording Converter" && !c.back && c.annotate && c.buttons === "Choose Recording,Convert Recordings…,Open Video…,Convert Videos…" &&
+      c.selfTest && c.selfTest.ok === true,
+    JSON.stringify(c));
 }
 
 async function checkViewerVideo() {
@@ -6282,7 +6308,7 @@ async function checkViewerVideo() {
     return { width: v.videoWidth, converted: v.currentSrc.startsWith("app://hand-tracker/__media/"), meta: document.getElementById("videoMeta").textContent,
       formats: document.querySelectorAll("#exportGrid input:not(:disabled)").length, groups: document.querySelectorAll("#exportGrid .format-group").length };
   })()`);
-  check("Viewer opens a WMV (converted preview) and describes it", opened.width === 640 && opened.converted && /wmv2/.test(opened.meta) && /with sound/.test(opened.meta) && opened.formats === exporter.FORMATS.length && opened.groups === new Set(exporter.FORMATS.map((f) => f.group)).size,
+  check("The converter opens a WMV (converted preview) and describes it", opened.width === 640 && opened.converted && /wmv2/.test(opened.meta) && /with sound/.test(opened.meta) && opened.formats === exporter.FORMATS.length && opened.groups === new Set(exporter.FORMATS.map((f) => f.group)).size,
     `${opened.meta}; ${opened.formats} formats in ${opened.groups} groups`);
   const done = await js(`(async () => {
     document.getElementById("exportName").value = "viewer-converted";
@@ -6292,7 +6318,7 @@ async function checkViewerVideo() {
     return { ok: document.querySelectorAll("#exportResults li.ok").length, note: document.getElementById("exportNote").textContent,
       failed: [...document.querySelectorAll("#exportResults li.fail")].map((l) => l.textContent) };
   })()`);
-  check(`Viewer converts the video to all ${exporter.FORMATS.length} formats`, done.ok === exporter.FORMATS.length, done.failed.join(" | ") || done.note);
+  check(`The converter converts the video to all ${exporter.FORMATS.length} formats`, done.ok === exporter.FORMATS.length, done.failed.join(" | ") || done.note);
   const verified = verifyExports(outDir, "viewer-converted", exporter.FORMATS.map((f) => f.id), true);
   check("…each decodes as the right format, with the sound kept", verified.ok, verified.summary);
   win.destroy();
@@ -6476,7 +6502,7 @@ async function checkViewer(jsonPath, files) {
 
   // Hand recording (JSON): cards, playback, frame table, export panel.
   const v2 = await openText(path.basename(jsonPath), jsonText);
-  check("Viewer shows both hands from a two-hand file", v2.rows === 2 && v2.segs > 0 && v2.tableRows > 0 && v2.formats === 8 && v2.videoFormats >= 30,
+  check("The converter shows both hands from a two-hand file", v2.rows === 2 && v2.segs > 0 && v2.tableRows > 0 && v2.formats === 8 && v2.videoFormats >= 30,
     `${v2.rows} hand rows, ${v2.segs} phase segments, ${v2.tableRows} table rows, ${v2.formats} motion + ${v2.videoFormats} video export formats`);
   const played = await js(`(async () => {
     document.querySelector("#tableBody tr:nth-child(40)").click(); // jump playback to that frame
@@ -6500,15 +6526,15 @@ async function checkViewer(jsonPath, files) {
     task_segments: [{ phase: "reach", start_frame: 0, end_frame: 3 }],
   };
   const old = await openText("old.json", JSON.stringify(v1));
-  check("Viewer still opens old single-hand files", old.rows === 1 && old.segs === 1 && !old.error, old.error);
+  check("The converter still opens old single-hand files", old.rows === 1 && old.segs === 1 && !old.error, old.error);
   const hostile = { ...v1, handedness: '<img src=x onerror="window.__pwned=1">', notes: ['<script>window.__pwned=1</script>'] };
   const bad = await openText("bad.json", JSON.stringify(hostile));
-  check("Viewer escapes HTML inside recording files", !bad.injected && bad.text.includes("<img"));
+  check("The converter escapes HTML inside recording files", !bad.injected && bad.text.includes("<img"));
 
   // CSV: view it, round-trip it exactly, and rebuild a correct skeleton from it.
   const csvText = fs.readFileSync(files.csv, "utf8");
   const csvView = await openText("rec.csv", csvText);
-  check("Viewer opens the CSV export", csvView.rows === 2 && csvView.formats === 8 && !csvView.error, csvView.error || JSON.stringify(csvView).slice(0, 200));
+  check("The converter opens the CSV export", csvView.rows === 2 && csvView.formats === 8 && !csvView.error, csvView.error || JSON.stringify(csvView).slice(0, 200));
   const rt = await js(`(() => {
     const csv = ${JSON.stringify(csvText)};
     const { data, warnings } = MotionImport.parse(csv, "rec.csv");
@@ -6537,7 +6563,7 @@ async function checkViewer(jsonPath, files) {
   // C3D: the app's own C3D holds hands, so it opens as those hands again; the TRC they
   // produce must match the app's own TRC.
   const c3dView = await openFile("rec.c3d", files.c3d);
-  check("Viewer opens the app's own C3D as both hands again (all 8 formats)", c3dView.rows === 2 && c3dView.tableRows > 0 && c3dView.formats === 8, c3dView.error || JSON.stringify(c3dView).slice(0, 200));
+  check("The converter opens the app's own C3D as both hands again (all 8 formats)", c3dView.rows === 2 && c3dView.tableRows > 0 && c3dView.formats === 8, c3dView.error || JSON.stringify(c3dView).slice(0, 200));
   const markerTrc = await js(`MotionExport.build(RecordingViewer.current().data, ["trc"], "m")[0].data`);
   fs.writeFileSync(path.join(outDir, "from-c3d.trc"), markerTrc);
   const a = validators.parseTRC(path.join(outDir, "from-c3d.trc")), b = validators.parseTRC(files.trc);
@@ -6549,12 +6575,12 @@ async function checkViewer(jsonPath, files) {
   }));
   check("C3D → TRC matches the app's TRC export", a.labels.join() === b.labels.join() && a.rows.length === b.rows.length && worst < 0.05, `max difference ${worst.toFixed(4)} mm`);
   const saved = await exportAll("from-c3d", 9);
-  check("Viewer exports the C3D's hands to all 8 formats (9 files: one BVH per hand)", saved.ok === 9, saved.failed.join(" | ") || saved.note);
+  check("The converter exports the C3D's hands to all 8 formats (9 files: one BVH per hand)", saved.ok === 9, saved.failed.join(" | ") || saved.note);
   // Other C3Ds (here OptiTrack Motive's markers) open as markers, with the 7 marker formats.
   const markerView = await openFile("take.c3d", files.markers);
-  check("Viewer opens other C3D files as markers", /6\s*Markers/.test(markerView.text) && markerView.tableRows > 0 && markerView.formats === 7, markerView.error || markerView.text.slice(0, 120));
+  check("The converter opens other C3D files as markers", /6\s*Markers/.test(markerView.text) && markerView.tableRows > 0 && markerView.formats === 7, markerView.error || markerView.text.slice(0, 120));
   const markerSaved = await exportAll("from-take-c3d", 7);
-  check("Viewer exports C3D markers to all 7 formats", markerSaved.ok === 7, markerSaved.failed.join(" | ") || markerSaved.note);
+  check("The converter exports C3D markers to all 7 formats", markerSaved.ok === 7, markerSaved.failed.join(" | ") || markerSaved.note);
 
   // Every motion format to every other, and several recordings converted at once.
   await checkMotionConversion(js, files);

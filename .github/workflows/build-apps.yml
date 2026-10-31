@@ -35,10 +35,11 @@ jobs:
 
       - run: npm run dist
 
-      # Hand Mouse and Remote Recording: the same app, each with its own name, ID and page
-      # (scripts/dist.js --app).
+      # Hand Mouse, Remote Recording and Recording Converter: the same app, each with its own
+      # name, ID and page (scripts/dist.js --app).
       - run: node scripts/dist.js portable --app mouse
       - run: node scripts/dist.js portable --app remote
+      - run: node scripts/dist.js portable --app converter
 
       - uses: actions/upload-artifact@v4
         with:
@@ -97,25 +98,28 @@ jobs:
       - run: chmod +x kinect/bin/linux-*/kinect2-helper
 
       - run: npm run dist:deb
-      # Hand Mouse and Remote Recording (scripts/dist.js --app): packages of their own.
+      # Hand Mouse, Remote Recording and Recording Converter (scripts/dist.js --app): packages of
+      # their own.
       - run: node scripts/dist.js deb --app mouse
       - run: node scripts/dist.js deb --app remote
+      - run: node scripts/dist.js deb --app converter
 
       # The same for 64-bit ARM (Raspberry Pi 4 and 5): ARM Electron, and ARM ffmpeg swapped
       # in for this build (see scripts/dist.js).
       - run: npm run dist:deb-arm64
       - run: node scripts/dist.js deb --arm64 --app mouse
       - run: node scripts/dist.js deb --arm64 --app remote
+      - run: node scripts/dist.js deb --arm64 --app converter
 
       # The packages install and remove cleanly, side by side: Hand Tracker with the USB rules OAK
       # cameras and the Kinect need (build/linux/*-oak.sh, *-kinect.sh), the OAK helper where Python
       # can read it and the Kinect's helper (its own check passing where it's installed), Remote
-      # Recording with its own OAK and Kinect rules, Hand Mouse with its own virtual mouse rule;
-      # removing those two leaves Hand Tracker's.
+      # Recording with its own OAK and Kinect rules, Hand Mouse with its own virtual mouse rule,
+      # Recording Converter with none; removing those three leaves Hand Tracker's.
       - name: Install and remove the packages
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q ./dist/hand-tracker_*_amd64.deb ./dist/hand-mouse_*_amd64.deb ./dist/remote-recording_*_amd64.deb
+          sudo apt-get install -y -q ./dist/hand-tracker_*_amd64.deb ./dist/hand-mouse_*_amd64.deb ./dist/remote-recording_*_amd64.deb ./dist/recording-converter_*_amd64.deb
           grep -q 'idVendor}=="03e7"' /lib/udev/rules.d/80-hand-tracker-oak.rules
           test -L /usr/bin/hand-tracker
           test -f "/opt/Hand Tracker/resources/app.asar.unpacked/oak/oak_bridge.py"
@@ -129,7 +133,11 @@ jobs:
           grep -q uinput /lib/udev/rules.d/70-hand-mouse-uinput.rules
           test -L /usr/bin/hand-mouse
           test -d "/opt/Hand Mouse/resources"
-          sudo apt-get remove -y -q hand-mouse remote-recording
+          test -L /usr/bin/recording-converter
+          test -d "/opt/Recording Converter/resources"
+          test -z "$(ls /lib/udev/rules.d | grep recording-converter)"
+          sudo apt-get remove -y -q hand-mouse remote-recording recording-converter
+          test ! -e "/opt/Recording Converter/resources"
           test ! -e /lib/udev/rules.d/80-remote-recording-oak.rules
           test ! -e /lib/udev/rules.d/80-remote-recording-kinect.rules
           test ! -e /lib/udev/rules.d/70-hand-mouse-uinput.rules
@@ -161,7 +169,8 @@ jobs:
       - run: npm ci
 
       # Apple silicon, then Intel (Intel Electron, and Intel ffmpeg swapped in: scripts/dist.js),
-      # each as Hand Tracker, Hand Mouse and Remote Recording (scripts/dist.js --app). Each app is
+      # each as Hand Tracker, Hand Mouse, Remote Recording and Recording Converter (scripts/dist.js
+      # --app). Each app is
       # checked as soon as it's built (the next build of that processor replaces dist/mac*/): it's
       # signed whole, has its own ID, says why it wants the camera, microphone and Bluetooth, and
       # carries the input helper (both processors; it starts and answers) and ffmpeg for its own
@@ -188,13 +197,13 @@ jobs:
           : > mac-build.log
           for cpu in "arm64:mac-arm64:arm64" "x64:mac:x86_64"; do
             flag="--${cpu%%:*}"; rest="${cpu#*:}"; dir="${rest%%:*}"; arch="${rest##*:}"
-            for app in ":Hand Tracker:com.handtracker.app" "mouse:Hand Mouse:com.handtracker.mouse" "remote:Remote Recording:com.handtracker.remote"; do
+            for app in ":Hand Tracker:com.handtracker.app" "mouse:Hand Mouse:com.handtracker.mouse" "remote:Remote Recording:com.handtracker.remote" "converter:Recording Converter:com.handtracker.converter"; do
               kind="${app%%:*}"; rest="${app#*:}"; name="${rest%%:*}"; id="${rest##*:}"
               node scripts/dist.js mac "$flag" ${kind:+--app "$kind"} 2>&1 | tee -a mac-build.log
               check "$dir" "$name" "$arch" "$id"
             done
           done
-          echo "The Mac apps (Hand Tracker, Hand Mouse, Remote Recording; Apple silicon and Intel) are signed, with the input helper and the right ffmpeg"
+          echo "The Mac apps (Hand Tracker, Hand Mouse, Remote Recording, Recording Converter; Apple silicon and Intel) are signed, with the input helper and the right ffmpeg"
 
       # The end of a failed build's output, as an annotation on the run (anyone can read those;
       # the log needs signing in).
@@ -213,9 +222,9 @@ jobs:
   # The iPhone and iPad app (Capacitor's iOS app, ios/): built for the simulator and checked
   # there (the app launched with -HTSelfTest <test page> opens a page this job serves in its hand
   # browser and clicks its link with the hand mouse's calls), then built for iPhones, unsigned:
-  # Sideloadly or AltStore sign it with the user's own Apple ID when they install it. Hand Mouse
-  # and Remote Recording are made from it (scripts/ios-variant.js: their own pages, ID and name)
-  # and checked in the simulator too.
+  # Sideloadly or AltStore sign it with the user's own Apple ID when they install it. Hand Mouse,
+  # Remote Recording and Recording Converter are made from it (scripts/ios-variant.js: their own
+  # pages, ID and name) and checked in the simulator too.
   ios:
     runs-on: macos-latest
     timeout-minutes: 75
@@ -267,9 +276,10 @@ jobs:
           grep -a "HT-SELFTEST" sim.log | tail -1 | tee selftest.txt
           grep -q '"ok":true' selftest.txt || { tail -n 80 sim.log >> ios-build.log; cat site.log >> ios-build.log; exit 1; }
           echo "The hand browser opened a page and the hand mouse clicked its link"
-          # Hand Mouse (its hand browser, the same check) and Remote Recording (its rig: the same
-          # check, remote recording's part included).
-          for kind in mouse remote; do
+          # Hand Mouse (its hand browser, the same check), Remote Recording (its rig: the same
+          # check, remote recording's part included) and Recording Converter (its own: a recording
+          # converted to every motion format and read back, viewer.js).
+          for kind in mouse remote converter; do
             node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app "$kind" "build/ios-sim-$kind"
             xcrun simctl install "$udid" "build/ios-sim-$kind/App.app"
             xcrun simctl launch --console-pty "$udid" "com.handtracker.$kind" -HTSelfTest http://127.0.0.1:8765/ > "sim-$kind.log" 2>&1 &
@@ -294,8 +304,8 @@ jobs:
           mkdir -p Payload dist
           cp -R "$app" Payload/
           zip -qr "dist/HandTracker-$version-ios-unsigned.ipa" Payload
-          # Hand Mouse and Remote Recording, made from it.
-          for both in mouse:HandMouse remote:RemoteRecording; do
+          # Hand Mouse, Remote Recording and Recording Converter, made from it.
+          for both in mouse:HandMouse remote:RemoteRecording converter:RecordingConverter; do
             node scripts/ios-variant.js "$app" "${both%%:*}" "build/ios-${both%%:*}"
             rm -rf Payload && mkdir Payload && cp -R "build/ios-${both%%:*}/App.app" Payload/
             zip -qr "dist/${both##*:}-$version-ios-unsigned.ipa" Payload
@@ -423,4 +433,4 @@ jobs:
         run: |
           gh release delete latest-build --yes --cleanup-tag || true
           gh release create latest-build dist/* --target "$GITHUB_SHA" --prerelease --title "Latest build" \
-            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID). Chrome (the hand mouse for web pages): HandTracker-*-chrome-extension.zip, unzipped and loaded in chrome://extensions with Developer mode on (Load unpacked). Apps of their own, for each of these the same way: Hand Mouse (the hand mouse alone): HandMouse-*; Remote Recording (controlling camera rigs, or being one): RemoteRecording-*; on Linux hand-mouse_*.deb and remote-recording_*.deb."
+            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID). Chrome (the hand mouse for web pages): HandTracker-*-chrome-extension.zip, unzipped and loaded in chrome://extensions with Developer mode on (Load unpacked). Apps of their own, for each of these the same way: Hand Mouse (the hand mouse alone): HandMouse-*; Remote Recording (controlling camera rigs, or being one): RemoteRecording-*; Recording Converter (opening and converting recordings and videos): RecordingConverter-*; on Linux hand-mouse_*.deb, remote-recording_*.deb and recording-converter_*.deb."

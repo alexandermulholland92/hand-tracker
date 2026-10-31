@@ -1,5 +1,5 @@
 /**
- * annotate.js — annotating a take or a video (the Recording Viewer's Annotate, Windows, Mac and
+ * annotate.js — annotating a take or a video (the Recording Converter's Annotate, Windows, Mac and
  * Linux app), the way a capture pipeline's QA and annotation would:
  *   - quality: each camera's pictures looked at twice a second (ffmpeg, small and grey): blurry,
  *     too dark or too bright, how much of it, the longest bad stretch, and a verdict;

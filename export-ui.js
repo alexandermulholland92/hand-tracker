@@ -1,6 +1,6 @@
 /**
  * export-ui.js
- * Shared pieces of the export panels (main window and Recording Viewer):
+ * Shared pieces of the export panels (main window and Recording Converter):
  * format checkboxes, the list of saved files, and saving through whichever
  * platform is running — the Windows app (window.desktop), the Android app
  * (window.mobile, from mobile-bridge.js) or a plain browser (downloads).

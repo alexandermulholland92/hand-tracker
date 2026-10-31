@@ -1798,7 +1798,7 @@
       const viewerLink = document.querySelector('a[href="viewer.html"]');
       if (viewerLink) {
         viewerLink.removeAttribute("target");
-        viewerLink.textContent = "Recording Viewer";
+        viewerLink.textContent = "Recording Converter";
       }
       exportBtn.firstChild.textContent = "Save";
       motionExportBtn.firstChild.textContent = "Save";

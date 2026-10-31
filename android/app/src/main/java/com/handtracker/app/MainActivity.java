@@ -20,14 +20,16 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         // The app's own native plugins (Capacitor's come from their packages). Hand Mouse has
         // only the hand mouse's: the PC link's key in the Keystore and its messages, this phone's
-        // control, the Bluetooth mouse. Remote Recording has no hand mouse.
+        // control, the Bluetooth mouse. Remote Recording has no hand mouse, Recording Converter
+        // neither the hand mouse nor remote recording.
+        boolean converter = getResources().getBoolean(R.bool.recording_converter);
         registerPlugin(RemotePlugin.class);
-        if (!getResources().getBoolean(R.bool.remote_recording)) {
+        if (!getResources().getBoolean(R.bool.remote_recording) && !converter) {
             registerPlugin(UdpPlugin.class);
             registerPlugin(PhoneControlPlugin.class);
             registerPlugin(BtHidPlugin.class);
         }
-        if (!getResources().getBoolean(R.bool.hand_mouse)) {
+        if (!getResources().getBoolean(R.bool.hand_mouse) && !converter) {
             registerPlugin(NatNetPlugin.class);
             registerPlugin(RigServerPlugin.class);
             registerPlugin(SentryWatchPlugin.class);

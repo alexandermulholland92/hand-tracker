@@ -10,9 +10,9 @@
  *  3. saves the video (MP4 on phones) and all 8 motion formats through the
  *     Android save path, in small chunks to exercise chunked writes,
  *  4. verifies every saved file with the same independent readers as check.js,
- *  5. checks Share and the Recording Viewer's Back link,
+ *  5. checks Share and the Recording Converter's Back link,
  *  6. converts with ffmpeg.wasm as a phone would: the recording to other formats, an
- *     AVI opened for tracking, and a WMV (with sound) in the Recording Viewer.
+ *     AVI opened for tracking, and a WMV (with sound) in the Recording Converter.
  * The native Filesystem/Share plugins themselves can only be tested on a device.
  */
 
@@ -272,7 +272,7 @@ async function run() {
     await checkIphoneApp();
     return checkIphoneRemote();
   }
-  // npm run check:android -- --only own: just Hand Mouse's and Remote Recording's checks.
+  // npm run check:android -- --only own: just Hand Mouse's, Remote Recording's and Recording Converter's checks.
   if (/own/i.test(only)) return checkOwnApps();
 
   // Phone-sized window (a typical 412×915 dp Android screen).
@@ -303,7 +303,7 @@ async function run() {
     await checkRemoteFromPhone(win, js);
     return checkRemoteBluetoothNetwork(win, js);
   }
-  check("Viewer link opens in place and buttons say Save",
+  check("Converter link opens in place and buttons say Save",
     await js("!document.querySelector('a[href=\"viewer.html\"]').hasAttribute('target') && exportBtn.textContent.startsWith('Save') && motionExportBtn.textContent.startsWith('Save')"));
   const build = await js("document.getElementById('buildInfo').textContent");
   check("Header shows which build is running", /^v\d+\.\d+\.\d+ · built /.test(build), build);
@@ -773,9 +773,9 @@ async function run() {
 
   await js("document.querySelector('a[href=\"viewer.html\"]').click()");
   await sleep(1500);
-  check("Recording Viewer opens in place with a Back link", await js("location.pathname.endsWith('viewer.html') && !!document.querySelector('a.back-link[href=\"index.html\"]')"));
+  check("Recording Converter opens in place with a Back link", await js("location.pathname.endsWith('viewer.html') && !!document.querySelector('a.back-link[href=\"index.html\"]')"));
 
-  // Viewer on the phone: import the CSV and C3D just saved, convert, and save through Android.
+  // The converter on the phone: import the CSV and C3D just saved, convert, and save through Android.
   const viewerOpen = (name, file) => js(`(async () => {
     const bytes = Uint8Array.from(atob(${JSON.stringify(fs.readFileSync(file).toString("base64"))}), (c) => c.charCodeAt(0));
     await RecordingViewer.openBytes(${JSON.stringify(name)}, bytes.buffer);
@@ -793,16 +793,16 @@ async function run() {
       label: document.getElementById("exportBtn").textContent };
   })()`);
   const csvView = await viewerOpen("rec.csv", find(".csv"));
-  check("Viewer imports the CSV on the phone", csvView.hands === 2 && !csvView.error, csvView.error);
+  check("The converter imports the CSV on the phone", csvView.hands === 2 && !csvView.error, csvView.error);
   const csvSaved = await viewerSave("phone-from-csv", 9);
   check("…and saves all 8 formats from it through Android (9 files)", csvSaved.ok === 9 && csvSaved.share === 9 && csvSaved.label === "Save", JSON.stringify(csvSaved));
   // The app's own C3D and BVH hold hands: they open as those hands again, with every format.
   const c3dView = await viewerOpen("rec.c3d", find(".c3d"));
-  check("Viewer imports the app's C3D on the phone as both hands again", c3dView.hands === 2 && !c3dView.error, c3dView.error);
+  check("The converter imports the app's C3D on the phone as both hands again", c3dView.hands === 2 && !c3dView.error, c3dView.error);
   const c3dSaved = await viewerSave("phone-from-c3d", 9);
   check("…and saves all 8 formats from it through Android (9 files)", c3dSaved.ok === 9, JSON.stringify(c3dSaved));
   const bvhView = await viewerOpen("rec-left.bvh", find("-left.bvh"));
-  check("Viewer imports a BVH on the phone (as its hand)", bvhView.hands === 1 && !bvhView.error, bvhView.error);
+  check("The converter imports a BVH on the phone (as its hand)", bvhView.hands === 1 && !bvhView.error, bvhView.error);
   const takMsg = await js(`(async () => {
     const input = document.getElementById("fileInput"), dt = new DataTransfer();
     dt.items.add(new File([new Uint8Array(8)], "Take1.tak"));
@@ -813,7 +813,7 @@ async function run() {
   })()`);
   check("A .tak file on the phone explains it needs the Windows app with Motive", /Windows app/.test(takMsg) && /Motive/.test(takMsg), takMsg.slice(0, 90));
 
-  // Viewer on the phone: a WMV with sound (no phone plays it) previewed and converted with ffmpeg.wasm.
+  // The converter on the phone: a WMV with sound (no phone plays it) previewed and converted with ffmpeg.wasm.
   const wmv = path.join(outDir, "phone-source.wmv");
   spawnSync(require("../electron/exporter.js").ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
     "-t", "2", "-c:v", "wmv2", "-b:v", "2M", "-c:a", "wmav2", "-shortest", wmv]);
@@ -833,7 +833,7 @@ async function run() {
     return { ...preview, ok: document.querySelectorAll("#exportResults li.ok").length, share: document.querySelectorAll("#exportResults li button").length,
       note: document.getElementById("exportNote").textContent };
   })()`);
-  check(`Viewer on the phone previews a WMV (converted) and converts it to ${viewerFormats.length} formats`, vv.width === 640 && vv.ok === viewerFormats.length && vv.share === viewerFormats.length,
+  check(`The converter on the phone previews a WMV (converted) and converts it to ${viewerFormats.length} formats`, vv.width === 640 && vv.ok === viewerFormats.length && vv.share === viewerFormats.length,
     JSON.stringify(vv));
   const phoneFiles = await pullFiles(js);
   const viewerExports = verifyExports(outDir, "phone-viewer", viewerFormats, true);
@@ -860,8 +860,9 @@ async function run() {
   await checkOwnApps();
 }
 
-// Hand Mouse and Remote Recording, the apps of their own, as the phone apps open them (Capacitor
-// stood in for, with only each Android app's plugins: ?fakeapp=; ?fakeplatform=ios for the iPhone's):
+// Hand Mouse, Remote Recording and Recording Converter, the apps of their own, as the phone apps
+// open them (Capacitor stood in for, with only each Android app's plugins: ?fakeapp=;
+// ?fakeplatform=ios for the iPhone's):
 //  - Hand Mouse on Android: its four choices (this phone, a PC, Bluetooth mouse, My gestures),
 //    none of the computers' or the iPhone's; My gestures starts the camera, Back lets it go;
 //    This phone's page has no gesture actions, though those set up on A PC's still run. On
@@ -872,8 +873,13 @@ async function run() {
 //    Several cameras (no hand cards, 3D view, hand mouse or video recording), remote recording
 //    on, no camera started, and the way back, where remote recording stops. On an iPhone its
 //    self-test goes to the rig and passes there (remote recording's part too).
+//  - Recording Converter on Android: its first page opens the Recording Converter in its place
+//    (Back leaves the app), without the remote recording's or the hand mouse's plugins, without
+//    a "Back to tracker", and its own check passes (a recording converted to every motion format
+//    and read back). On an iPhone that check is its self-test, run by itself.
 async function checkOwnApps() {
-  const open = async (url) => {
+  // (landsOn: the page a first page opens straight away in its place, which it waits for.)
+  const open = async (url, landsOn = null) => {
     const win = new BrowserWindow({
       show: false, width: 412, height: 915, useContentSize: true,
       webPreferences: { preload: path.join(__dirname, "fake-capacitor.js"), contextIsolation: false, sandbox: false, backgroundThrottling: false },
@@ -883,7 +889,11 @@ async function checkOwnApps() {
       const d = args[0] && typeof args[0].message === "string" ? args[0] : { level: args[1], message: args[2] };
       logs.push(d.message);
     });
-    await win.loadURL(url);
+    const landed = landsOn && new Promise((resolve) => win.webContents.on("did-finish-load", () => win.webContents.getURL().includes(landsOn) && resolve()));
+    await win.loadURL(url).catch((err) => {
+      if (!landsOn) throw err; // (the first page's own load is cut short by the next one)
+    });
+    if (landed) await Promise.race([landed, sleep(15000)]);
     const js = (code) => win.webContents.executeJavaScript(code, true);
     const selfTest = async () => {
       for (let i = 0; i < 160 && !logs.some((m) => /^HT-SELFTEST /.test(m)); i++) await sleep(250);
@@ -998,7 +1008,35 @@ async function checkOwnApps() {
     w.win.destroy();
   }
 
+  // Recording Converter, Android: its first page, then the converter; its own check.
+  const converterPage = `(async () => {
+    const st = await RecordingViewer.selfTest();
+    return { title: document.title, back: !!document.querySelector("a.back-link"), plugins: Object.keys(Capacitor.Plugins).sort().join(),
+      selfTest: { ok: st.ok, ownApp: st.ownApp, error: st.error, formats: Object.entries(st.formats).map(([f, x]) => f + ":" + x.frames).join() } };
+  })()`;
+  w = await open(`app://${HOST}/recording-converter.html?fakeapp=converter`, "viewer.html");
+  try {
+    out.converterAndroid = { url: w.win.webContents.getURL().replace(/^app:\/\/[^/]+/, ""), ...(await w.js(converterPage)) };
+    out.converterAndroid.canGoBack = (w.win.webContents.navigationHistory || w.win.webContents).canGoBack();
+  } catch (err) {
+    out.converterAndroid = { error: String((err && err.message) || err) };
+  } finally {
+    w.win.destroy();
+  }
+
+  // Recording Converter, iPhone: its self-test, run by itself on the converter.
+  w = await open(`app://${HOST}/recording-converter.html?fakeplatform=ios&selftest=1`, "viewer.html");
+  try {
+    const st = await w.selfTest();
+    out.converterIos = { url: w.win.webContents.getURL().replace(/^app:\/\/[^/]+/, ""), selfTest: st && { ok: st.ok, ownApp: st.ownApp, back: st.back, error: st.error } };
+  } catch (err) {
+    out.converterIos = { error: String((err && err.message) || err) };
+  } finally {
+    w.win.destroy();
+  }
+
   const ma = out.mouseAndroid || {}, mi = out.mouseIos || {}, ra = out.remoteAndroid || {}, ri = out.remoteIos || {};
+  const ca = out.converterAndroid || {}, ci = out.converterIos || {};
   check("Hand Mouse (Android): its four choices only (this phone, a PC, Bluetooth mouse, My gestures); My gestures starts the camera, Back lets it go",
     !ma.error && ma.platform === "android" && ma.choices === "phone,pc,bluetooth,gestures" && ma.noApp && ma.camera && ma.shown && ma.released && ma.chooser, JSON.stringify(ma));
   check("Hand Mouse (Android): This phone's page has no gesture actions (A PC's has), and those set up there still run while it controls the phone; its hand mouse settings stay",
@@ -1012,6 +1050,11 @@ async function checkOwnApps() {
     JSON.stringify(ra));
   check("Remote Recording (iPhone): its self-test goes from its first page to the rig and passes there (remote recording's part too)",
     !ri.error && ri.url === "/index.html?rig=1" && ri.rigClass && ri.selfTest && ri.selfTest.ok === true && ri.selfTest.rig && ri.selfTest.rig.ok === true, JSON.stringify(ri));
+  check("Recording Converter (Android): its first page opens the Recording Converter in its place (Back leaves the app), with only its own plugins and no Back to tracker; a recording converts to every motion format, each read back as the same hand",
+    !ca.error && ca.url === "/viewer.html" && !ca.canGoBack && ca.title === "Recording Converter" && !ca.back && ca.plugins === "Filesystem,Remote,Share" &&
+      ca.selfTest && ca.selfTest.ok === true && ca.selfTest.ownApp === true, JSON.stringify(ca));
+  check("Recording Converter (iPhone): its self-test runs by itself on the converter and passes",
+    !ci.error && ci.url === "/viewer.html" && ci.selfTest && ci.selfTest.ok === true && ci.selfTest.ownApp === true && ci.selfTest.back === false, JSON.stringify(ci));
 }
 
 // The iPhone app (ios/: the same bundle, with Capacitor's iOS bridge, stood in for here with
@@ -1226,7 +1269,7 @@ async function checkPhoneAsRig(win, js) {
 async function checkRemoteFromPhone(win, js) {
   const { RemoteRecordServer } = require("../electron/remote-record.js");
   const wc = win.webContents;
-  // From the app's main page (a check before may have left the Recording Viewer open).
+  // From the app's main page (a check before may have left the Recording Converter open).
   await wc.loadURL(`app://${HOST}/index.html`);
   for (let i = 0; i < 60 && !(await js("!!(window.HandTracker && HandTracker.getCamera().width > 0)")); i++) await sleep(250);
   const state = {

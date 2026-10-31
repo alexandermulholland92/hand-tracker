@@ -1,9 +1,9 @@
 /**
  * video-queue.js
- * The Recording Viewer's export queue: videos waiting to be converted, each on its own, or
+ * The Recording Converter's export queue: videos waiting to be converted, each on its own, or
  * trimmed to the stretch it shares with the videos it was synced with (video-sync.js). It's
  * kept in the page's own database (IndexedDB), so the main window can add videos and the
- * viewer finds them, whether it's another window (Windows, Linux, website) or opens in
+ * converter finds them, whether it's another window (Windows, Linux, website) or opens in
  * place (Android), and the queue is still there after a restart.
  *
  *   await VideoQueue.add([{ name, path?, file?, trim?, group? }])

@@ -2,10 +2,12 @@
  * ios-variant.js — the iPhone and iPad apps of their own, made from the built iPhone app (on a
  * Mac: GitHub's iPhone job, .github/workflows/build-apps.yml): the same app, with its own pages,
  * ID and name, so each installs beside Hand Tracker.
- *   node scripts/ios-variant.js <App.app> mouse|remote <out folder>
- *     mouse:  Hand Mouse — only the hand mouse's files (build-web.js --hand-mouse), its page first
- *     remote: Remote Recording — all of Hand Tracker's files (its rig is Hand Tracker's page),
- *             opening on remote-recording.html (Capacitor's server.appStartPath)
+ *   node scripts/ios-variant.js <App.app> mouse|remote|converter <out folder>
+ *     mouse:     Hand Mouse — only the hand mouse's files (build-web.js --hand-mouse), its page first
+ *     remote:    Remote Recording — all of Hand Tracker's files (its rig is Hand Tracker's page),
+ *                opening on remote-recording.html (Capacitor's server.appStartPath)
+ *     converter: Recording Converter — all of Hand Tracker's files, opening on
+ *                recording-converter.html (the Recording Converter, viewer.html, on its own)
  * Writes <out folder>/App.app. The app isn't signed (nor is Hand Tracker's): Sideloadly or
  * AltStore sign it with the user's own Apple ID when they install it.
  */
@@ -17,12 +19,13 @@ const path = require("path");
 
 const APPS = {
   mouse: { id: "com.handtracker.mouse", name: "Hand Mouse", camera: "Hand Mouse follows your hand with the camera." },
-  remote: { id: "com.handtracker.remote", name: "Remote Recording", camera: "Remote Recording records hand motion with the cameras when a phone or browser starts it." },
+  remote: { id: "com.handtracker.remote", name: "Remote Recording", camera: "Remote Recording records hand motion with the cameras when a phone or browser starts it.", start: "remote-recording.html" },
+  converter: { id: "com.handtracker.converter", name: "Recording Converter", camera: "Recording Converter doesn't use the camera.", start: "recording-converter.html" },
 };
 const [from, kind, outDir] = process.argv.slice(2);
 const own = APPS[kind];
 if (!from || !own || !outDir) {
-  console.error("node scripts/ios-variant.js <App.app> mouse|remote <out folder>");
+  console.error("node scripts/ios-variant.js <App.app> mouse|remote|converter <out folder>");
   process.exit(1);
 }
 
@@ -44,7 +47,7 @@ if (kind === "mouse") {
 } else {
   const file = path.join(app, "capacitor.config.json");
   const config = JSON.parse(fs.readFileSync(file, "utf8"));
-  config.server = { ...(config.server || {}), appStartPath: "remote-recording.html" };
+  config.server = { ...(config.server || {}), appStartPath: own.start };
   fs.writeFileSync(file, JSON.stringify(config, null, "\t"));
 }
 

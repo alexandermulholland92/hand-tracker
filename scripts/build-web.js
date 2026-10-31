@@ -29,7 +29,7 @@ const APP_FILES = [
   "natnet-parse.js", "stage-overlay.js", "remote-core.js", "phone-link-protocol.js", "phone-link-ui.js", "remote-record-ui.js", "remote.html", "remote-launcher.js", "remote-client.html", "remote-client.js", "bt-link-client.js", "custom-gestures.js", "gestures.js", "phone-control.html", "phone-control.js", "qr-code.js", "video-native.js",
   "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
   "sentry.js", "camera-video.js", "object-finder.js", "object-finder-worker.js", "second-look.js", "second-look-worker.js", "web-pc.js", "hid-core.js",
-  "remote-recording.html", "remote-recording.js",
+  "remote-recording.html", "remote-recording.js", "recording-converter.html", "recording-converter.js",
   // (camera-tile.html loads them; a Kinect only runs in the computer apps)
   "kinect-view.js", "body-tracker.js",
   "camera-settings.js", "annotate-core.js", "annotate-ui.js", "take-names.js", "download-menu.js",

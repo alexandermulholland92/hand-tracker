@@ -38,12 +38,14 @@ const SCHEME = "app";
 const HOST = "hand-tracker";
 // Which app this is: Hand Tracker, or one of the apps of its own built from it (scripts/dist.js
 // --app, which puts appKind in the packaged package.json; from the source folder,
-// `electron . --app=mouse`): Hand Mouse (only the hand mouse: hand-mouse.html) or Remote
-// Recording (controlling camera rigs, or being one: remote-recording.html).
+// `electron . --app=mouse`): Hand Mouse (only the hand mouse: hand-mouse.html), Remote
+// Recording (controlling camera rigs, or being one: remote-recording.html) or Recording
+// Converter (the Recording Converter alone: viewer.html).
 const APPS = {
   full: { name: "Hand Tracker", page: "index.html", id: "com.handtracker.app", slug: "hand-tracker", size: { width: 1320, height: 940 } },
   mouse: { name: "Hand Mouse", page: "hand-mouse.html", id: "com.handtracker.mouse", slug: "hand-mouse", size: { width: 600, height: 900 } },
   remote: { name: "Remote Recording", page: "remote-recording.html", id: "com.handtracker.remote", slug: "remote-recording", size: { width: 1320, height: 940 } },
+  converter: { name: "Recording Converter", page: "viewer.html", id: "com.handtracker.converter", slug: "recording-converter", size: { width: 920, height: 960 } },
 };
 const APP = (() => {
   const arg = process.argv.find((a) => a.startsWith("--app="));
@@ -304,8 +306,8 @@ function buildMenu() {
       label: "File",
       submenu: [
         {
-          label: "Open Recording Viewer",
-          visible: APP.kind !== "mouse",
+          label: "Open Recording Converter",
+          visible: APP.kind !== "mouse" && APP.kind !== "converter", // (the converter's own app is it)
           accelerator: "CmdOrCtrl+Shift+O",
           click: () => createWindow("viewer.html", { width: 920, height: 960 }),
         },
@@ -1324,7 +1326,7 @@ function registerFleetIpc() {
   handle("fleet:set-ble-password", (event, { password }) => fleet.setBlePassword(password));
 }
 
-// ---------- annotating a take or a video (annotate.js; the Recording Viewer's Annotate) ----------
+// ---------- annotating a take or a video (annotate.js; the Recording Converter's Annotate) ----------
 // A take (its JSON) or a video opened there: the take and its cameras' videos beside it
 // (<take>.json and <take>-video-<camera>.mp4), Claude's look at the main one (the user's own API
 // key, kept encrypted), and the annotations saved beside them.
@@ -1670,7 +1672,7 @@ function registerIpc() {
     return frames;
   });
 
-  // A video file on disk (Recording Viewer): what's in it, and converting it to other formats.
+  // A video file on disk (Recording Converter): what's in it, and converting it to other formats.
   function videoFileArg(value) {
     const input = String(value || "");
     if (!input || !fs.existsSync(input) || !fs.statSync(input).isFile()) throw new Error("That video file can't be found.");
@@ -1764,7 +1766,7 @@ app.whenReady().then(() => {
     mainWindow = null;
     closeKeyboard(); // the keyboard types for the hand mouse, which lives in the main window
   });
-  if (APP.kind !== "remote") registerShortcuts(); // (the hand mouse's and its keyboard's)
+  if (APP.kind === "full" || APP.kind === "mouse") registerShortcuts(); // (the hand mouse's and its keyboard's)
 });
 
 app.on("window-all-closed", () => {

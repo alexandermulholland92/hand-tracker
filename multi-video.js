@@ -4,9 +4,9 @@
  * lined up from the hand movement in them (video-sync.js).
  *  - They line up: their motion capture is saved on one shared clock, trimmed to the
  *    stretch every video covers, with a -sync.json report of the offsets; and the videos
- *    can go to the Recording Viewer's queue, each trimmed to that same stretch.
+ *    can go to the Recording Converter's queue, each trimmed to that same stretch.
  *  - They don't: the reason is shown, and they can go to the motion capture queue (each
- *    video's motion capture saved on its own) and to the Recording Viewer's queue (each
+ *    video's motion capture saved on its own) and to the Recording Converter's queue (each
  *    video converted on its own).
  * Each video has a role, where its camera was worn (head, chest, left or right wrist:
  * camera-roles.js), guessed from its name or given in order, and changeable: its saved
@@ -235,7 +235,7 @@
     });
   }
 
-  // The Recording Viewer's queue, trimmed to the shared stretch when synced.
+  // The Recording Converter's queue, trimmed to the shared stretch when synced.
   async function toViewer(synced) {
     const group = synced ? `synced-${stamp()}` : "";
     const list = items.filter((it) => !synced || (result && result.videos.some((v) => v.name === it.name && !v.reason)));
@@ -244,7 +244,7 @@
         const v = synced && result.videos.find((x) => x.name === it.name);
         return { name: it.name, path: it.path, file: it.path ? null : it.file, group, trim: v ? { start: v.trimStart, length: result.window.length } : null };
       }));
-      els.note.innerHTML = `Added ${list.length} video${list.length === 1 ? "" : "s"} to the Recording Viewer's queue${synced ? ", each trimmed to the stretch they share" : ""}. <a href="viewer.html" id="multiOpenViewer">Open the Recording Viewer</a>`;
+      els.note.innerHTML = `Added ${list.length} video${list.length === 1 ? "" : "s"} to the Recording Converter's queue${synced ? ", each trimmed to the stretch they share" : ""}. <a href="viewer.html" id="multiOpenViewer">Open the Recording Converter</a>`;
       const link = $("multiOpenViewer"), header = document.querySelector('a[href="viewer.html"]');
       if (header && header.target) link.target = header.target;
     });

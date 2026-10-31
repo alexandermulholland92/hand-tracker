@@ -1,5 +1,5 @@
 /**
- * annotate-core.js — the arithmetic of annotating a video (the Recording Viewer's Annotate and
+ * annotate-core.js — the arithmetic of annotating a video (the Recording Converter's Annotate and
  * electron/annotate.js; the same in the page and in the app): where the hands suggest a step
  * changes, Claude's steps for each stretch made one list, each step's picture quality and share
  * of hands in sight, and the useful footage (hands-on work with hands in sight).

@@ -8,7 +8,7 @@
  * with Claude too", each session is also annotated once its cameras are tracked (electron/
  * annotate.js: its cameras' picture quality, Claude's steps from its main camera's video, the
  * useful footage), saved beside them as <its main camera's file name>.annotations.json, so opening
- * that file in the Recording Viewer shows them to review.
+ * that file in the Recording Converter shows them to review.
  *
  *   OpsSessions.init({ desktop, prefs, setPref });
  *   OpsSessions.toggleShown();   // shows or hides the Capture Sessions button (remembered)
@@ -167,7 +167,7 @@
     if (!streams.length) return error("Pick at least one camera to track.");
     if (!formats.length) return error("Pick at least one format to save.");
     const annotating = !!(els.annotate && els.annotate.checked);
-    if (annotating && !(await desktop.annotate.status().catch(() => ({}))).hasKey) return error("Add your Claude API key first: Recording Viewer, Annotate, Claude API key.");
+    if (annotating && !(await desktop.annotate.status().catch(() => ({}))).hasKey) return error("Add your Claude API key first: Recording Converter, Annotate, Claude API key.");
     const folder = await desktop.chooseFolder("Choose a folder for the tracked sessions");
     if (!folder || folder.canceled) return;
     running = true;

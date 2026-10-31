@@ -1,6 +1,6 @@
 /**
  * motion-video.js — turns an animation drawn frame by frame (a motion capture recording's
- * playback, in the Recording Viewer) into a video: every frame encoded with WebCodecs
+ * playback, in the Recording Converter) into a video: every frame encoded with WebCodecs
  * (VP8) at its exact time and written to a WebM file, which the video converters then turn
  * into any of the video formats. Nothing is recorded in real time, so no frame is dropped
  * and it runs as fast as the computer can draw and encode.

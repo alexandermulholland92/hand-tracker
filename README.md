@@ -20,7 +20,7 @@ Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmark
 
 **Android app:** install `dist/HandTracker-1.1.0.apk` on your phone (see [Android app](#android-app) below).
 
-**Hand Mouse** and **Remote Recording** are apps of their own, for every one of these (Windows, Mac, Linux and Raspberry Pi, Android, iPhone and iPad), from the same release: the hand mouse alone (`HandMouse-*`, `hand-mouse_*.deb`; see [Hand Mouse](#hand-mouse)), and remote recording alone, controlling camera rigs or being one (`RemoteRecording-*`, `remote-recording_*.deb`; see [Remote Recording](#remote-recording-app)). Each installs next to Hand Tracker.
+**Hand Mouse**, **Remote Recording** and **Recording Converter** are apps of their own, for every one of these (Windows, Mac, Linux and Raspberry Pi, Android, iPhone and iPad), from the same release: the hand mouse alone (`HandMouse-*`, `hand-mouse_*.deb`; see [Hand Mouse](#hand-mouse)), remote recording alone, controlling camera rigs or being one (`RemoteRecording-*`, `remote-recording_*.deb`; see [Remote Recording](#remote-recording-app)), and the Recording Converter alone (`RecordingConverter-*`, `recording-converter_*.deb`; see [Recording Converter](#recording-converter-app)). Each installs next to Hand Tracker.
 
 **From source** (Node.js 18+):
 
@@ -52,11 +52,11 @@ Video import and export work in all three: the Windows, Mac and Linux app conver
 - **Several cameras at once**: with two or more cameras connected, choose *Several cameras at once…* in the camera list and pick up to four (every camera found is ticked, OAK cameras first, except one you've unticked before; only the ticked ones start). Their grid takes the main view's place while they run (*Close* brings it back). Each gets its own tile and its own tracker, and a **role**: where the camera is worn (*Head*, *Chest*, *Left wrist* or *Right wrist*, given in order at first) or where it stands around the scene (*North*, *South*, *East* or *West*; pick another under its tile, and a camera that had it swaps; remembered for each camera). The tiles sit in a grid by role, two to a row: head, chest, left wrist, right wrist, so changing a camera's role moves it; a single camera takes the whole grid, and the roles with no camera are listed under it (*Not connected: …*). Each tile takes its camera's shape: a phone held upright gives a tall tile, not a wide one with black bars. Under each tile, **⟳** turns that camera's picture (and its tracking) 90° at a time and **Flip** mirrors it, each camera on its own and remembered for it: every camera starts mirrored like a selfie, OAK cameras too (flipping only changes the look: the left hand stays the left). Motion capture records them all together on one clock, each hand named after its camera's role (*Head Left*, *Chest Right*…; *Cam 1 Left* for a camera set to *No role*), and the recording lists each camera with its role. Each camera runs slower than one camera alone would. Luxonis OAK cameras can be among them (Windows, Mac and Linux app, after the [OAK setup](#luxonis-oak-cameras)): each one plugged in is listed, its hands are found on the camera itself, and they're started one after another. So can a [Kinect for Xbox One](#kinect-for-xbox-one) (Linux and Windows app), with its depth, infrared, bodies and microphones, and a [PlayStation 4 camera](#playstation-4-camera) (Linux and Windows app), with both its lenses and their depth.
   - **More settings and Overlay apply to every camera** while several run: *Square crop*, *Far-away hands* (and what it looks for), *Black gloves*, *Readable text*, the *Show* buttons and *Overlay*, changed at any time. *Pause* pauses every camera's tracking. Each tile draws the same tags as a single camera, sized by distance. OAK cameras find their own hands, so turning *Far-away hands* on or off starts each OAK camera again in that mode, and *Square crop*, *Black gloves* and *Readable text* don't apply to them. *Readable text* is only run in a tile while it's on (one text reader per camera).
 - **Track a video file** instead of the camera: *Open Video…* accepts MP4, MOV, MKV, WebM, AVI, MPEG, WMV, FLV, 3GP, Ogg, MPEG-TS, MXF, DV, ProRes, GIF and more; see [Tracking a video file](#tracking-a-video-file). Android phone selfie videos, which are saved mirrored, are flipped back automatically; for any other video where Left and Right come out swapped, turn on *Mirrored video*.
-- **Several videos at once**: choose more than one video in *Open Video…* (a capture rig's cameras, say) and they're tracked in turn and synced from the hand movement in them, their motion capture saved on one shared clock. Videos that don't line up can go to a motion capture queue and to the Recording Viewer's export queue instead; see [Several videos at once](#several-videos-at-once).
-- **Convert any video**: the Recording Viewer's *Open Video…* opens nearly any video and converts it to any of 36 formats, one at a time or several in a queue; see [Converting videos](#converting-videos).
+- **Several videos at once**: choose more than one video in *Open Video…* (a capture rig's cameras, say) and they're tracked in turn and synced from the hand movement in them, their motion capture saved on one shared clock. Videos that don't line up can go to a motion capture queue and to the Recording Converter's export queue instead; see [Several videos at once](#several-videos-at-once).
+- **Convert any video**: the Recording Converter's *Open Video…* opens nearly any video and converts it to any of 36 formats, one at a time or several in a queue; see [Converting videos](#converting-videos).
 - **Mirror view with readable text**: front (selfie) cameras and webcams are shown mirrored so movements feel natural; rear cameras and video files are shown as they are. The Mirror button switches it, and the app remembers your choice for each camera. Times in the picture, like a clock or a timestamp, are always shown the right way round: the app finds them with on-device OCR (tesseract.js, bundled) and flips them back. Other text (signs, screens, printing) reads backwards unless you turn on the optional **Readable text** button (off by default; your choice is remembered), which flips all text back. The app's own labels are always drawn the right way round. To avoid flipping things that only look like text (cloth, shadows, stripes), an area is only shown the right way round once it has been read as text in three scans running, so real text straightens about a second after it appears. Anything read on or right next to a hand is ignored too (OCR takes an OK sign's ring for an "O"), so no flipped patch is left behind when the hand moves away.
 - **Gestures**: pinch, OK sign (thumb and index in a ring, the other fingers out), thumbs up, fist, open palm, finger counting (*Two*: thumb and index out, like an L; *Three*: thumb, index and middle; *Four*: four fingers up with the thumb folded in; one is *Point* and five is *Open Palm*), peace (at any angle, upright, leaning or on its side), rock on, call me, shaka, point, thumbs down, *live long and prosper* (the Vulcan salute: fingers in two pairs with a V between the middle and ring fingers) and *the bird* (only the middle finger raised, pointing up or sideways but not down, with the hand facing the camera rather than side-on; sideways counts so it still works on a phone held on its side), plus palm yaw/pitch/roll and per-finger curl. Call Me and Shaka are the same hand shape: rocking the wrist back and forth makes it Shaka, holding it still is Call Me. A label must hold for a few frames before it changes, so it doesn't flicker. Gestures are judged mostly by how far each fingertip reaches from the wrist (in palm lengths), which holds up on real hands better than finger-bend angles do; the rules are checked against 202 hands measured from real photos (`scripts/fixtures/gesture-hands.json`) and were tuned on a live webcam session.
-- **Recording Viewer** (header link or *File → Open Recording Viewer*): opens hand recordings (JSON, CSV, BVH, NPZ, GLB, MCAP), **C3D** and TRC files, and **OptiTrack `.tak`** takes. You can play them back, browse the frames, and convert them to every other motion format, or to any of the 36 video formats, one at a time or several in a queue; see [Viewing and converting recordings](#viewing-and-converting-recordings).
+- **Recording Converter** (header link or *File → Open Recording Converter*): opens hand recordings (JSON, CSV, BVH, NPZ, GLB, MCAP), **C3D** and TRC files, and **OptiTrack `.tak`** takes. You can play them back, browse the frames, and convert them to every other motion format, or to any of the 36 video formats, one at a time or several in a queue; see [Viewing and converting recordings](#viewing-and-converting-recordings).
 - **Recovers from camera dropouts**: if the camera stops sending frames, the app shows a notice and reconnects automatically.
 - **3D view**: *Hand shape: Real size* draws each hand at its real size and shape in metres (MediaPipe's world landmarks), and with an OAK-D at its measured distance; *From the picture* shows it as the camera sees it. *View* can rotate or swing back and forth by itself.
 - **Control your PC** (Windows, Mac and Linux app): a hand mouse, a floating keyboard and gesture actions. The Android app can do the same to a PC over Wi-Fi, or to the phone itself, and the computer or phone can work an iPhone or iPad as its Bluetooth mouse; see [Control your PC](#control-your-pc).
@@ -81,7 +81,7 @@ Press **Start Motion Capture**, do the movement, press **Stop**, then pick forma
 
 | Format | Opens in | Contents |
 | --- | --- | --- |
-| **JSON** | Anything; the Recording Viewer | Everything: 21 joints per frame with position, orientation, velocity and acceleration, plus trajectories and task phases; each frame also has `world_joints`, the hand's real shape in metres, and with an OAK-D `distance_mm`; with OAK cameras in *Several cameras at once*, `imu`: each one's motion sensor readings on the take's clock |
+| **JSON** | Anything; the Recording Converter | Everything: 21 joints per frame with position, orientation, velocity and acceleration, plus trajectories and task phases; each frame also has `world_joints`, the hand's real shape in metres, and with an OAK-D `distance_mm`; with OAK cameras in *Several cameras at once*, `imu`: each one's motion sensor readings on the take's clock |
 | **CSV** | Excel, Google Sheets, pandas, MATLAB | One row per hand per frame. Columns: `hand, frame, t, phase`, the wrist's camera-frame position (`wrist_world_x/y/z`), the palm quaternion, x/y/z for all 21 joints relative to the wrist (`wrist_x` … `pinky_tip_z`), and `image_width, image_height`; then the real shape in metres (`wrist_real_x` … `pinky_tip_real_z`) and, with an OAK-D, `distance_x_mm, distance_y_mm, distance_z_mm`. Can be imported back (see below) |
 | **BVH** | Blender, Maya, MotionBuilder, Cinema 4D; Unity/Unreal via Blender | Animated skeleton, one file per hand (`…-left.bvh`, `…-right.bvh`) |
 | **GLB** (glTF 2.0) | Blender, three.js, Unity, Unreal, Windows 3D Viewer | Animated 3D hands (joints and bones) that play straight away |
@@ -183,7 +183,7 @@ On Android 13 and later, an app installed from a downloaded APK (not the Play St
 - **iPhone and iPad**: **Hand browser** (websites full screen, worked with your hand, with the camera in a small window: iOS lets no app tap inside other apps; see [iPhone and iPad app](#iphone-and-ipad-app)).
 - **My gestures** (everywhere): the camera on, to record your own hand shapes and movements and try them (it shows what each hand is doing), as described under *My gestures* above.
 - **The same gestures** as Hand Tracker's hand mouse, and its **gesture actions** (keys, typing, clicks, scrolling, web requests; on Android also Back, Home, Recents, volume and media keys). They're set up on the other choices' pages, not This phone's; the ones set up there still run while it controls the phone.
-- It's the same code as Hand Tracker's: its page is `hand-mouse.html` (`hand-mouse.js`). `npm run android:apk` builds the Android apps (the Android project's flavors *full*, *mouse* and *remote*), `node scripts/dist.js <portable|deb|mac> --app mouse` the computer app, and GitHub's iPhone job makes the iPhone app from Hand Tracker's (`scripts/ios-variant.js`: its own pages, ID and name).
+- It's the same code as Hand Tracker's: its page is `hand-mouse.html` (`hand-mouse.js`). `npm run android:apk` builds the Android apps (the Android project's flavors *full*, *mouse*, *remote* and *converter*), `node scripts/dist.js <portable|deb|mac> --app mouse` the computer app, and GitHub's iPhone job makes the iPhone app from Hand Tracker's (`scripts/ios-variant.js`: its own pages, ID and name).
 
 <a id="remote-recording-app"></a>
 ### Remote Recording (the app)
@@ -193,6 +193,14 @@ On Android 13 and later, an app installed from a downloaded APK (not the Play St
 - **Control a rig**: the computers (and phones) you've reached before, each with its running cameras' previews, its page a tap away to pick the cameras and mode, start and stop recording and run the timing check, over Wi-Fi, Tailscale or Bluetooth, as described under [Remote recording](#remote-recording). *← Remote Recording* (or Back) comes back to the choices.
 - **Be a rig**: Hand Tracker's page with only what a camera rig needs: the camera list (and *Several cameras at once*), *Record* with remote recording (on by itself) and its settings, and OptiTrack. The cameras stay off until a phone or browser starts them. On a computer, **Open Remote Recording when this computer starts** opens it straight as the rig at login (a Raspberry Pi with no screen, say). *← Remote Recording* goes back to the choices, and remote recording turns off.
 - It has no hand mouse (on Android, no *hand control* in Accessibility). Its first page is `remote-recording.html` (`remote-recording.js`); the rig is `index.html?rig=1`.
+
+<a id="recording-converter-app"></a>
+### Recording Converter (the app)
+
+**Recording Converter** is the [Recording Converter](#viewing-and-converting-recordings) alone, as an app of its own, for the same devices: `RecordingConverter-<version>.apk`, `RecordingConverter-<version>-ios-unsigned.ipa`, `RecordingConverter-<version>-portable.exe`, `RecordingConverter-<version>-mac-arm64.dmg` or `-mac-x64.dmg`, `recording-converter_<version>_amd64.deb` or `_arm64.deb`. It installs next to Hand Tracker (it's `com.handtracker.converter`), with its own settings, and opens straight on the converter: recordings to open, play back and convert, videos to convert, the export queues and, in the Windows, Mac and Linux apps, [Annotate](#annotate-windows-mac-and-linux-app).
+
+- It has no tracker, hand mouse or remote recording, and doesn't use the camera (on Android, no *hand control* in Accessibility and no Sentry alerts). Its export queue is its own, apart from Hand Tracker's: videos sent from Hand Tracker's several-videos panel go to Hand Tracker's own converter.
+- The computer apps open `viewer.html`; the phone apps open `recording-converter.html` (`recording-converter.js`), which opens `viewer.html` in its place without the *Back to tracker* link. `node scripts/dist.js <portable|deb|mac> --app converter` builds the computer app.
 
 ## Remote recording
 
@@ -283,7 +291,7 @@ The **PlayStation 4 camera** (CUH-ZEY1 or CUH-ZEY2, the one PlayStation VR uses:
 
 ## Viewing and converting recordings
 
-The **Recording Viewer** opens:
+The **Recording Converter** opens:
 
 | File | Where it comes from | Notes |
 | --- | --- | --- |
@@ -309,7 +317,7 @@ For every recording you get:
   - **Any recording can become a video** in any of the 36 video formats: its playback (the skeletons, or the markers from the front) is drawn frame by frame, 1280 pixels wide, at the recording's frame rate (up to 60), so it's as long as the recording.
 - **Several recordings at once**: choose or drop more than one, or use **Convert recordings…**, pick the formats and click **Convert all**. Hand recordings go to any format and marker recordings to the marker ones (BVH needs a skeleton, so a marker recording says it can't); a file isn't converted to its own format again. Each one leaves the list once it's done.
 
-Any file can be chosen or dropped either way: recordings (`.json`, `.csv`, `.c3d`, `.trc`, `.bvh`, `.npz`, `.glb`, `.mcap`, `.tak`) open in the viewer, and everything else opens as a video. **Convert videos…** queues several videos for converting.
+Any file can be chosen or dropped either way: recordings (`.json`, `.csv`, `.c3d`, `.trc`, `.bvh`, `.npz`, `.glb`, `.mcap`, `.tak`) open in the converter, and everything else opens as a video. **Convert videos…** queues several videos for converting.
 
 The **Markers** list, the **frame table** and the export **Formats** list start collapsed to one line, which says what's inside (for example "42 markers" or the formats that are ticked). Click **Show** to open them and **Hide** to fold them away again. The video converter's format list works the same way.
 
@@ -317,7 +325,7 @@ In the frame table for hand recordings, joint positions are measured **from the 
 
 ### Annotate (Windows, Mac and Linux app)
 
-A take opened in the Recording Viewer (its JSON, with its cameras' videos beside it as `<take>-video-<camera>.mp4`, as Remote recording saves them), or any video, can be **annotated**, as a capture pipeline's QA and annotation would:
+A take opened in the Recording Converter (its JSON, with its cameras' videos beside it as `<take>-video-<camera>.mp4`, as Remote recording saves them), or any video, can be **annotated**, as a capture pipeline's QA and annotation would:
 
 - **Picture quality**: each camera's video looked at twice a second, for blurry, too dark and too bright pictures: how much of it, the longest bad stretch, how much was looked at, its size and frame rate, and a verdict (*pass*, *flag*, *fail*).
 - **Steps**: [Claude](https://www.anthropic.com/claude) (Opus 5.5) is shown the main camera's video a minute at a time, a frame every 2.5 seconds, with the take's task and where the hands suggest a step changes (where they come into sight, go, start or stop moving, from the take's tracking). It divides it into steps, each with an instruction-style label ("Fold the towel in half", or *Transition or idle*), a sentence of what the person does, and its kind: hands-on task, setup, waiting, screen, or transition. It also says, for each frame, whether hands are in sight (used where there's no tracking).
@@ -331,9 +339,9 @@ It's kept beside the take as `<take>.annotations.json` (saved as the review goes
 
 `.tak` is OptiTrack's proprietary, undocumented format, which only OptiTrack's own software can read. So Hand Tracker opens takes through the **Motive installed on your PC**. A small script (`electron/tak-convert.ps1`) uses Motive's NMotive API to read the take. None of OptiTrack's software is bundled with Hand Tracker. Your original take is never modified; Motive works on a temporary copy.
 
-- **Viewing**: Motive exports the take's markers to C3D behind the scenes, and the viewer shows them.
+- **Viewing**: Motive exports the take's markers to C3D behind the scenes, and the converter shows them.
 - **Exporting**: C3D, TRC, CSV (Motive's format, including rigid bodies) and FBX come from **Motive's own exporters**. BVH is also available when the take contains a skeleton; Motive only writes BVH for skeletons. GLB, NPZ and JSON come from Hand Tracker.
-- **Without Motive** (another PC, the Android app, or the website): in Motive, use *File → Export Tracking Data* to save the take as **C3D**, then open that C3D in the viewer.
+- **Without Motive** (another PC, the Android app, or the website): in Motive, use *File → Export Tracking Data* to save the take as **C3D**, then open that C3D in the converter.
 
 ## OptiTrack cameras and Motive
 
@@ -374,10 +382,10 @@ Choose more than one video in **Open Video…** (the cameras of a capture rig, s
 
 - **When they line up**, a green message says how much later each video started and how well it matched.
   - **Save synced motion capture…** saves each video's motion capture on one shared clock: `t = 0` is the moment every video was running, and each file is trimmed to the stretch all of them cover. Files are named `<name>-<role>` (`<name>-head`, `<name>-wrist_left`…; `<name>-<video>` for a video with no role) in the formats you pick, each saying its role (`camera_role`), with `<name>-sync.json` next to them: each video's role, offset, where the shared stretch starts in it (`trim_start_s`), its length and how well each matched. In every file, `time_origin_s + t` is still the time in that video.
-  - **Export synced videos in the Recording Viewer** puts the videos in the viewer's [export queue](#the-export-queue), each trimmed to the same stretch, so the converted videos (`<video>-synced`) start and end together.
+  - **Export synced videos in the Recording Converter** puts the videos in the converter's [export queue](#the-export-queue), each trimmed to the same stretch, so the converted videos (`<video>-synced`) start and end together.
 - **When they don't**, a red message says *The motion capture data doesn't line up*, and why for each video: no hands were seen, the hands hardly move, the movement doesn't match, it only matches for part of the time, or it repeats so that several lineups fit.
   - **Add to motion capture queue**: each video's motion capture is saved on its own (`<video>-motion`). Videos already tracked aren't tracked again. **Add videos…** puts more in the queue (they're tracked when it runs), and **Capture and save all…** works through it; the Windows, Mac and Linux app asks for a folder once.
-  - **Add to Recording Viewer queue**: each video is converted on its own, whole.
+  - **Add to Recording Converter queue**: each video is converted on its own, whole.
 - **How it works:** 30 times a second, the app measures how fast the hands move in each video (the wrists and fingertips, in hand lengths per second, so a near and a far camera measure alike). It slides each video along the longest one to find where the movement matches best. Slow changes are ignored (every session starts with hands resting, then moving), because the detail of the movement is what tells two sessions apart. A lineup is trusted only when it matches well overall and in each half of the shared stretch, and no other lineup fits nearly as well. Offsets come out to within about a frame.
 - **For a good sync**, each camera should see at least one hand moving for most of the time, and the videos should overlap for at least half of the shortest one (and 2 seconds). A few claps or a quick wave at the start helps.
 
@@ -387,7 +395,7 @@ Press **Record Video**, choosing whether to include just the camera view or the 
 
 ## Converting videos
 
-In the **Recording Viewer**, click **Open Video…** (or drop a video on it) to open a video in nearly any format: everything in the list under *Tracking a video file*, and anything else ffmpeg can read. The viewer plays it (converting a preview copy first if the device can't play it), shows its length, size, frame rate, codec and whether it has sound, and converts it to any of the formats below. Pick as many as you like, or **Select all**.
+In the **Recording Converter**, click **Open Video…** (or drop a video on it) to open a video in nearly any format: everything in the list under *Tracking a video file*, and anything else ffmpeg can read. The converter plays it (converting a preview copy first if the device can't play it), shows its length, size, frame rate, codec and whether it has sound, and converts it to any of the formats below. Pick as many as you like, or **Select all**.
 
 - Conversion always starts from the original file, and keeps the sound wherever the format has sound.
 - **Windows app:** choose a folder; **Show in folder** opens each result.
@@ -397,7 +405,7 @@ In the **Recording Viewer**, click **Open Video…** (or drop a video on it) to 
 
 ### The export queue
 
-Choose or drop several videos at once in the Recording Viewer and they go into its **Export queue**. So do videos sent from the tracker's [several-videos panel](#several-videos-at-once), including synced ones, which are trimmed to the stretch they share. The queue is shared by the tracker and the viewer (an open viewer shows new videos straight away) and is still there after a restart.
+Choose or drop several videos at once in the Recording Converter and they go into its **Export queue**. So do videos sent from the tracker's [several-videos panel](#several-videos-at-once), including synced ones, which are trimmed to the stretch they share. The queue is shared by the tracker and the converter (an open converter shows new videos straight away) and is still there after a restart.
 
 Pick formats and click **Convert all**. The videos are converted one after another, each on its own, into one folder (Windows, Mac and Linux app), as downloads (website) or into Documents/Hand Tracker (Android). A video leaves the queue once it has converted; if anything failed, it stays for another go. On the website and Android, the browser keeps a copy of each queued video until it leaves the queue; the desktop app only remembers where the file is.
 
@@ -461,7 +469,7 @@ MPEG-1, MPG, VOB, MXF and DV only allow standard TV frame rates, so they use the
              task_segments: [ { phase, start_frame, end_frame } ] } ] }
 ```
 
-Files from earlier single-hand versions (with `frames` at the top level) still open in the Recording Viewer.
+Files from earlier single-hand versions (with `frames` at the top level) still open in the Recording Converter.
 
 ## Build the desktop apps
 
@@ -536,7 +544,7 @@ From a PC with USB debugging turned on, you can use `adb install dist/HandTracke
 - **Motion capture** exports all 8 formats, exactly as on the desktop.
 - Files are saved to **Documents/Hand Tracker** on the phone. Each saved file has a **Share** button to send it to Photos, Drive, email or another app.
 - The screen stays on while the app is open, so tracking and recording aren't interrupted.
-- The Recording Viewer opens in the same screen, with a *Back to tracker* link.
+- The Recording Converter opens in the same screen, with a *Back to tracker* link.
 
 **Rebuild the APK** (needs Android Studio, which provides Java and the Android SDK):
 
@@ -566,7 +574,7 @@ Chromium's built-in fake camera (its generated picture) crashed its capture proc
 
 It opens two simulated cameras of one moment together (the second started 1.5 s later) and checks that they sync to within a frame. The saved motion capture must be on one clock, and the converted videos must start on the same moment. A video of something else must get the error, then go through both queues.
 
-It also opens the Recording Viewer with new, old and deliberately malicious files, and converts a WMV with sound to all 36 video formats in it. For OptiTrack, it connects to a stand-in Motive (NatNet 4.1, over multicast and unicast), records its stream with motion capture and checks the exported markers' names, rate, axes and scale, and records video with Motive's view below the camera's. It also tracks a part of the screen chosen in the Screen or window picker. Windows will briefly appear on screen while it runs.
+It also opens the Recording Converter with new, old and deliberately malicious files, and converts a WMV with sound to all 36 video formats in it. For OptiTrack, it connects to a stand-in Motive (NatNet 4.1, over multicast and unicast), records its stream with motion capture and checks the exported markers' names, rate, axes and scale, and records video with Motive's view below the camera's. It also tracks a part of the screen chosen in the Screen or window picker. Windows will briefly appear on screen while it runs.
 
 There is also a check for the Android code:
 
@@ -574,7 +582,7 @@ There is also a check for the Android code:
 npm run check:android
 ```
 
-It runs the exact bundle that goes into the APK in a phone-sized window, with a simulated Android file system and share sheet. It records, saves the MP4 and all 7 motion formats through the Android save path, and verifies them with the same readers as above. It converts with ffmpeg.wasm as a phone does: the recording into other formats, an AVI opened for tracking, and a WMV with sound in the Recording Viewer into 16 formats, among them HEVC, AV1, AVIF, uncompressed AVI and Y4M. It receives a stand-in Motive's stream over multicast and unicast and records it, controls a stand-in PC over the network after pairing with its code, and starts phone control and drives its control window with simulated hands. It also checks the phone layout, the OCR, Share, and the viewer's Back link. The app's own Android plugins (Motive's network stream, the network link to a PC, phone control, saving and sharing) are stood in for by `scripts/fake-capacitor.js` with the same behaviour; they themselves can only be exercised on an actual phone.
+It runs the exact bundle that goes into the APK in a phone-sized window, with a simulated Android file system and share sheet. It records, saves the MP4 and all 7 motion formats through the Android save path, and verifies them with the same readers as above. It converts with ffmpeg.wasm as a phone does: the recording into other formats, an AVI opened for tracking, and a WMV with sound in the Recording Converter into 16 formats, among them HEVC, AV1, AVIF, uncompressed AVI and Y4M. It receives a stand-in Motive's stream over multicast and unicast and records it, controls a stand-in PC over the network after pairing with its code, and starts phone control and drives its control window with simulated hands. It also checks the phone layout, the OCR, Share, and the converter's Back link. The app's own Android plugins (Motive's network stream, the network link to a PC, phone control, saving and sharing) are stood in for by `scripts/fake-capacitor.js` with the same behaviour; they themselves can only be exercised on an actual phone.
 
 And one for OAK camera support, without a camera (GitHub runs it on Linux, on a 64-bit PC and 64-bit ARM):
 
@@ -599,7 +607,7 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `phone-control.html`, `phone-control.js` | Android: the small window that tracks your hand while controlling the phone itself |
 | `multi-camera.js`, `camera-tile.html`, `camera-tile.js` | Several cameras at once, each tracked in its own tile |
 | `camera-settings.js` | Each camera's own settings on this computer's pages: under each tile's ⚙ and in the main page's Cameras section |
-| `annotate-core.js`, `annotate-ui.js`, `electron/annotate.js` | Annotate: picture quality, Claude's steps, hands in sight, useful footage, the review (Recording Viewer) |
+| `annotate-core.js`, `annotate-ui.js`, `electron/annotate.js` | Annotate: picture quality, Claude's steps, hands in sight, useful footage, the review (Recording Converter) |
 | `timing-check.js` | The timing check: how far apart the cameras' timings are, from a flashing beacon |
 | `camera-video.js` | One camera's video (with sound), for remote recording's takes |
 | `electron/storage.js` | The room left where remote recording saves its takes, and whether the computer has a battery |
@@ -613,6 +621,7 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `remote.html`, `remote-launcher.js` | The Remote recording page (website and apps): opens a computer's remote recording page by its name; in the apps, each computer's camera previews under its name |
 | `hand-mouse.html`, `hand-mouse.js` | Hand Mouse, the app of its own: what your hand controls on each kind of device, with the hand mouse's controls (pc-control.js) |
 | `remote-recording.html`, `remote-recording.js` | Remote Recording, the app of its own: Control a rig (remote.html) or Be a rig (index.html?rig=1) |
+| `recording-converter.html`, `recording-converter.js` | Recording Converter, the app of its own: its first page on phones, which opens the Recording Converter (viewer.html) |
 | `scripts/ios-variant.js` | Hand Mouse's and Remote Recording's iPhone apps, made from Hand Tracker's (on GitHub's Mac) |
 | `motion-video.js` | Draws a recording's playback into a video (WebCodecs and a small WebM writer) |
 | `natnet-parse.js` | OptiTrack Motive's NatNet protocol (shared by the desktop and Android apps) |
@@ -629,7 +638,7 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `mcap.js` | MCAP files: a writer and reader, and ROS 2 messages in CDR (zstd chunks with fzstd) |
 | `electron/mcap-video.js` | A capture's videos added to its MCAP file, frame by frame (ffmpeg) |
 | `motion-import.js` | Reads JSON, CSV, C3D, TRC, BVH, NPZ, GLB and MCAP back in (with a C3D reader built from the format's published description), as hands where they hold Hand Tracker's hands |
-| `export-ui.js` | Export panels shared by the main window and the viewer |
+| `export-ui.js` | Export panels shared by the main window and the converter |
 | `hand-3d.js` | Three.js view of both hands and grippers |
 | `video-recorder.js` | Records the camera view (and the 3D and Motive views) with MediaRecorder |
 | `video-formats.js` | The 36 video export formats and their ffmpeg settings, and the file types the pickers offer (shared by all three versions) |
@@ -637,11 +646,11 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 | `video-native.js` | Website and Android: HEVC, AV1 and AVIF with the device's own encoders, and uncompressed AVI and Y4M made in parts |
 | `multi-video.js` | Several videos at once: tracking them in turn, syncing, and the motion capture queue |
 | `video-sync.js` | Lines videos up from the hand movement in them, and puts their motion capture on the shared clock |
-| `video-queue.js` | The Recording Viewer's export queue (kept in the page's database, shared by the tracker and the viewer) |
+| `video-queue.js` | The Recording Converter's export queue (kept in the page's database, shared by the tracker and the converter) |
 | `video-origin.js` | Reads a video's metadata to tell a phone's front-camera video (saved mirrored) from its back-camera one |
 | `readable-text.js` | Keeps text in the camera picture readable when mirrored |
 | `app.js`, `index.html` | Main window |
-| `viewer.js`, `viewer.html` | Recording Viewer |
+| `viewer.js`, `viewer.html` | Recording Converter |
 | `mobile-bridge.js` | Android: saving to Documents/Hand Tracker and sharing (Capacitor plugins), Motive's live data, controlling a PC or the phone |
 | `electron/` | Desktop app: secure local file serving, camera permission, save dialogs, ffmpeg export, `.tak` support through Motive (`tak.js`, `tak-convert.ps1`), Motive's live NatNet stream (`natnet.js`), mouse and keyboard input (`input.js`, with `input-helper.ps1` on Windows and `input-helper-mac.m` on a Mac), a phone controlling the PC (`phone-link.js`), and OAK cameras (`oak.js`) |
 | `android/`, `capacitor.config.json` | Android app project (Capacitor): permissions, icon, keep-screen-on, and the app's own plugins (Motive's network stream, the network link to a PC, phone control and its accessibility service) |

@@ -1,5 +1,5 @@
 /**
- * viewer.js — the Recording Viewer.
+ * viewer.js — the Recording Converter.
  * Opens motion recordings and converts them to other formats:
  *  - hand recordings: Hand Tracker JSON (current or older) and CSV (motion-import.js)
  *  - marker recordings: C3D files, and OptiTrack .tak takes read through the
@@ -16,7 +16,7 @@
  *
  * window.RecordingViewer.openBytes(name, arrayBuffer) / openTake(path, name) /
  * openVideo(file) / queueVideos(files) are the same entry points the file pickers use;
- * the automated checks call them.
+ * the automated checks call them. selfTest() is the Recording Converter app's own check.
  */
 
 (function () {
@@ -29,9 +29,14 @@
   const fileNameEl = $("fileName");
   const resultsEl = $("results");
 
-  // In the Android app the viewer replaces the tracker screen, so offer a way back.
+  // Recording Converter, the app of its own (recording-converter.js marked the tab): no tracker to go back to.
+  let ownApp = false;
+  try {
+    ownApp = sessionStorage.getItem("hand-tracker:app") === "converter";
+  } catch {}
+  // In the Android app the converter replaces the tracker screen, so offer a way back.
   const cap = window.Capacitor;
-  if (cap && cap.isNativePlatform && cap.isNativePlatform()) {
+  if (cap && cap.isNativePlatform && cap.isNativePlatform() && !ownApp) {
     const back = document.createElement("a");
     back.href = "index.html";
     back.textContent = "← Back to tracker";
@@ -1460,6 +1465,44 @@
     renderMotionQueue();
   });
 
+  // The converter's own check (the iPhone simulator's: the app launched with -HTSelfTest; the
+  // automated checks call it too): a made-up hand recording, as the app's CSV holds one, converted
+  // to every motion format, each read back as that hand again. Its result goes to the log.
+  async function selfTest() {
+    const out = { ownApp, back: !!document.querySelector("a.back-link"), title: document.title, formats: {} };
+    try {
+      const FRAMES = 30, JOINTS = MotionExport.JOINTS;
+      const cols = ["hand", "frame", "t", "phase", "wrist_world_x", "wrist_world_y", "wrist_world_z", "palm_qx", "palm_qy", "palm_qz", "palm_qw"];
+      for (const j of JOINTS) cols.push(`${j}_x`, `${j}_y`, `${j}_z`);
+      cols.push("image_width", "image_height");
+      const rows = [];
+      for (let i = 0; i < FRAMES; i++) {
+        // The wrist, then each finger's four joints spread out from it, bending a little over time.
+        const joints = [[0, 0, 0]];
+        for (let f = 0; f < 5; f++) for (let s = 1; s <= 4; s++) joints.push([(f - 2) * 0.03 + s * 0.002, -0.025 * s - 0.02, -0.004 * s * Math.sin(i / 5)]);
+        rows.push(["Right", i, (i / 30).toFixed(4), "idle", 0.4 + i * 0.005, 0.5, 0, 0, 0, 0, 1, ...joints.flat().map((v) => v.toFixed(5)), 1280, 720].join(","));
+      }
+      const csv = new TextEncoder().encode([cols.join(","), ...rows].join("\n") + "\n");
+      const { data } = await MotionImport.parseFileAsync("self-test.csv", csv.buffer);
+      for (const f of MotionExport.build(data, MotionExport.FORMATS.map((x) => x.id), "self-test")) {
+        const bytes = typeof f.data === "string" ? new TextEncoder().encode(f.data) : f.data instanceof ArrayBuffer ? new Uint8Array(f.data) : f.data;
+        try {
+          const back = (await MotionImport.parseFileAsync(`self-test${f.suffix}.${f.ext}`, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))).data;
+          const hand = (back.hands || []).find((h) => h.handedness === "Right");
+          out.formats[f.format] = { bytes: bytes.byteLength, frames: hand ? hand.frames.length : 0 };
+        } catch (err) {
+          out.formats[f.format] = { bytes: bytes.byteLength, error: cleanError(err) };
+        }
+      }
+      const got = Object.values(out.formats);
+      out.ok = got.length === MotionExport.FORMATS.length && got.every((r) => r.frames === FRAMES);
+    } catch (err) {
+      out.error = cleanError(err);
+    }
+    return out;
+  }
+  if (window.__htSelfTest && ownApp) selfTest().then((out) => console.log("HT-SELFTEST " + JSON.stringify(out)));
+
   window.RecordingViewer = {
     openBytes,
     openTake,
@@ -1467,6 +1510,7 @@
     openAny,
     queueVideos,
     queueRecordings,
+    selfTest,
     current: () => current,
   };
 })();

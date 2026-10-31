@@ -4,4 +4,6 @@
     <bool name="hand_mouse">false</bool>
     <!-- Remote Recording (the "remote" flavor, src/remote) is the app for remote recording only. -->
     <bool name="remote_recording">false</bool>
+    <!-- Recording Converter (the "converter" flavor, src/converter) is the Recording Converter alone. -->
+    <bool name="recording_converter">false</bool>
 </resources>

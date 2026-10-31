@@ -7,10 +7,11 @@
  *                                          Raspberry Pi OS) and other ARM boards; built on Linux
  *   node scripts/dist.js mac               macOS (.dmg) for this Mac's processor, built on a Mac
  *   node scripts/dist.js mac --x64         macOS (.dmg) for Intel Macs (or --arm64: Apple silicon)
- *   ... --app mouse | remote               Hand Mouse or Remote Recording, the apps of their own built
- *                                          from this one: the same files, their own name, ID, start
- *                                          page (electron/main.js reads appKind) and files' names, so
- *                                          each installs beside Hand Tracker
+ *   ... --app mouse | remote | converter   Hand Mouse, Remote Recording or Recording Converter, the
+ *                                          apps of their own built from this one: the same files,
+ *                                          their own name, ID, start page (electron/main.js
+ *                                          reads appKind) and files' names, so each installs
+ *                                          beside Hand Tracker
  * The Mac app is signed ad hoc (no Apple Developer ID), so macOS asks before opening it the first
  * time (see the README); it carries electron/input-helper-mac, built here first.
  * The .deb's install and removal scripts are electron-builder's own plus build/linux/*-*.sh
@@ -39,11 +40,17 @@ const APPS = {
     camera: "Remote Recording records hand motion with the cameras when a phone or browser starts it.",
     rules: ["kinect", "oak", "ps4cam"], // (OAK cameras, Kinects and PS4 cameras; no hand mouse)
   },
+  converter: {
+    name: "Recording Converter", id: "com.handtracker.converter", slug: "recording-converter", file: "RecordingConverter",
+    synopsis: "Open hand and motion capture recordings and videos, and convert them to other formats",
+    camera: "Recording Converter doesn't use the camera.",
+    rules: [], // (no cameras, no hand mouse)
+  },
 };
 const appAt = process.argv.indexOf("--app");
 const appKind = appAt >= 0 ? process.argv[appAt + 1] : null;
 if (appAt >= 0 && !APPS[appKind]) {
-  console.error("--app is mouse (Hand Mouse) or remote (Remote Recording).");
+  console.error("--app is mouse (Hand Mouse), remote (Remote Recording) or converter (Recording Converter).");
   process.exit(1);
 }
 const variant = APPS[appKind] || null;

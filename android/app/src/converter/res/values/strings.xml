@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Recording Converter (the "converter" flavor): its own names, over src/main's. -->
+<resources>
+    <string name="app_name">Recording Converter</string>
+    <string name="title_activity_main">Recording Converter</string>
+    <string name="package_name">com.handtracker.converter</string>
+    <string name="custom_url_scheme">com.handtracker.converter</string>
+</resources>

@@ -695,14 +695,16 @@
   const RigLink = {
     rigRequest: (o) => (calls.push(["riglink.rigRequest", o.rig, o.path]), Remote.rigRequest(o)),
   };
-  // ?fakeapp=mouse | remote: the Android app of its own's plugins only (MainActivity.java): Hand
-  // Mouse has no remote recording's, Remote Recording no hand mouse's. (Kept for later pages too.)
-  const fakeApp = (/[?&]fakeapp=(mouse|remote)\b/.exec(location.search) || [])[1] || sessionStorage.getItem("__fakeApp") || "full";
+  // ?fakeapp=mouse | remote | converter: the Android app of its own's plugins only
+  // (MainActivity.java): Hand Mouse has no remote recording's, Remote Recording no hand mouse's,
+  // Recording Converter neither. (Kept for later pages too.)
+  const fakeApp = (/[?&]fakeapp=(mouse|remote|converter)\b/.exec(location.search) || [])[1] || sessionStorage.getItem("__fakeApp") || "full";
   sessionStorage.setItem("__fakeApp", fakeApp);
   const androidPlugins = { Filesystem, Share, NatNet, Remote, Udp, PhoneControl, RigServer, SentryWatch, BtHid, BtLink };
-  if (fakeApp === "mouse") for (const k of ["NatNet", "RigServer", "SentryWatch", "BtLink"]) delete androidPlugins[k];
-  if (fakeApp === "remote") for (const k of ["Udp", "PhoneControl", "BtHid"]) delete androidPlugins[k];
-  // (The self-test too: Remote Recording's goes from its first page to its rig, which runs it.)
+  if (fakeApp === "mouse" || fakeApp === "converter") for (const k of ["NatNet", "RigServer", "SentryWatch", "BtLink"]) delete androidPlugins[k];
+  if (fakeApp === "remote" || fakeApp === "converter") for (const k of ["Udp", "PhoneControl", "BtHid"]) delete androidPlugins[k];
+  // (The self-test too: Remote Recording's goes from its first page to its rig, which runs it;
+  // Recording Converter's from its first page to the converter.)
   const selfTest = /[?&]selftest=1\b/.test(location.search) || sessionStorage.getItem("__fakeSelfTest") === "1";
   if (selfTest) {
     sessionStorage.setItem("__fakeSelfTest", "1");

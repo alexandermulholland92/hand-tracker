@@ -16,10 +16,11 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
-    // Two apps: Hand Tracker (full) and Hand Mouse (mouse: the hand mouse alone, hand-mouse.html),
-    // each its own app on the phone. Each has only its own web files: the full app's are what
-    // Capacitor copies into src/main/assets, Hand Mouse's go in src/mouse/assets
-    // (scripts/build-android.js).
+    // Four apps: Hand Tracker (full), Hand Mouse (mouse: the hand mouse alone, hand-mouse.html),
+    // Remote Recording (remote: remote-recording.html first) and Recording Converter (converter:
+    // the Recording Converter alone, recording-converter.html first), each its own app on the
+    // phone. Each has its own web files: the full app's are what Capacitor copies into
+    // src/main/assets, the others' go in src/<flavor>/assets (scripts/build-android.js).
     flavorDimensions = ["app"]
     productFlavors {
         full {
@@ -33,12 +34,17 @@ android {
             dimension "app"
             applicationId "com.handtracker.remote"
         }
+        converter {
+            dimension "app"
+            applicationId "com.handtracker.converter"
+        }
     }
     sourceSets {
         main.assets.srcDirs = []
         full.assets.srcDirs = ["src/main/assets"]
         mouse.assets.srcDirs = ["src/mouse/assets"]
         remote.assets.srcDirs = ["src/remote/assets"]
+        converter.assets.srcDirs = ["src/converter/assets"]
     }
     buildTypes {
         release {

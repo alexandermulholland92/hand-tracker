@@ -10,11 +10,12 @@
 (function (global) {
   const $ = (id) => document.getElementById(id);
   const RELEASE = "https://github.com/alexandermulholland92/hand-tracker/releases";
-  // name, its files' name, its Linux package's name, whether it has the hand mouse
+  // name, its files' name, its Linux package's name, whether it has the hand mouse, whether it uses the camera
   const APPS = [
-    { name: "Hand Tracker", file: "HandTracker", deb: "hand-tracker", mouse: true },
-    { name: "Hand Mouse", file: "HandMouse", deb: "hand-mouse", mouse: true },
-    { name: "Remote Recording", file: "RemoteRecording", deb: "remote-recording", mouse: false },
+    { name: "Hand Tracker", file: "HandTracker", deb: "hand-tracker", mouse: true, camera: true },
+    { name: "Hand Mouse", file: "HandMouse", deb: "hand-mouse", mouse: true, camera: true },
+    { name: "Remote Recording", file: "RemoteRecording", deb: "remote-recording", mouse: false, camera: true },
+    { name: "Recording Converter", file: "RecordingConverter", deb: "recording-converter", mouse: false, camera: false },
   ];
   // Each device: its label in the menu, the file's name, and how to install it.
   const DEVICES = [
@@ -48,8 +49,8 @@
           `Open ${a.name}. It isn't signed with an Apple Developer ID, so the first time macOS won't open it: go to System Settings → Privacy & Security and click <b>Open Anyway</b>.`,
           a.mouse
             ? "Allow the camera when it asks. For the hand mouse, turn it on under System Settings → Privacy & Security → Accessibility. macOS asks for these again after each update."
-            : "Allow the camera when it asks (macOS asks again after each update).",
-        ]];
+            : a.camera && "Allow the camera when it asks (macOS asks again after each update).",
+        ].filter(Boolean)];
       case "linux":
         return [`${a.name} for Linux`, "For 64-bit PCs with Ubuntu, Debian, Mint or another Linux that installs .deb packages.", debSteps(a, file)];
       case "pi":
@@ -60,8 +61,8 @@
           "If Android asks, allow your browser (or file manager) to <b>install unknown apps</b>, then tap <b>Install</b>. A newer one installs over the old one.",
           a.mouse
             ? "Allow the camera when it asks. If turning on hand control says <b>Restricted setting</b>: open App info → <b>⋮</b> (top right) → <b>Allow restricted settings</b>, then turn it on again."
-            : "Allow the camera when it asks.",
-        ]];
+            : a.camera && "Allow the camera when it asks.",
+        ].filter(Boolean)];
       case "iphone":
         return [`${a.name} for iPhone and iPad`, "For iOS 15 or later. It isn't on the App Store, so a sideloading tool installs it with your own Apple ID, from a computer.", [
           `On a Windows PC or Mac, open the downloaded ${code(file)} in <a class="header-link" href="https://sideloadly.io" target="_blank" rel="noopener">Sideloadly</a> (with the iPhone plugged in by USB) or <a class="header-link" href="https://altstore.io" target="_blank" rel="noopener">AltStore</a>, and install it with your Apple ID.`,

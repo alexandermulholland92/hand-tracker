@@ -1,5 +1,5 @@
 /**
- * annotate-ui.js — the Recording Viewer's Annotate (Windows, Mac and Linux app): for a take (its
+ * annotate-ui.js — the Recording Converter's Annotate (Windows, Mac and Linux app): for a take (its
  * JSON) or a video opened there, its cameras' picture quality, Claude's steps (each labelled as an
  * instruction, described, with its kind, its share of hands in sight and its picture's verdict),
  * the useful footage, and a review of each step: approve or reject it, edit it, add a subtask.

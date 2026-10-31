@@ -21,7 +21,7 @@ contextBridge.exposeInMainWorld("desktop", {
   exportVideo: (job) => ipcRenderer.invoke("video:export", job),
   cancelExport: () => ipcRenderer.invoke("video:cancel-export"),
 
-  // Any video file on disk (Recording Viewer): what's in it, and converting it.
+  // Any video file on disk (Recording Converter): what's in it, and converting it.
   // probeVideo resolves { duration, fps, width, height, videoCodec, hasAudio }.
   // convertVideoFile(job = { path, formats, baseName, token?, trim? }) asks for a folder (or
   // uses the one chooseFolder gave token for), then works like exportVideo (same progress
@@ -170,7 +170,7 @@ contextBridge.exposeInMainWorld("desktop", {
     },
   },
 
-  // Annotating a take or a video (electron/annotate.js; the Recording Viewer's Annotate): path is
+  // Annotating a take or a video (electron/annotate.js; the Recording Converter's Annotate): path is
   // the take's JSON or a video; its take and cameras' videos are found beside it.
   annotate: {
     status: () => ipcRenderer.invoke("annotate:status"), // { hasKey, model }
