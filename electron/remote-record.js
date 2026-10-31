@@ -48,7 +48,8 @@
  * camera one is looking at full screen (null for none), which then comes bigger
  * (/api/preview?i=N&full=1). Each preview request waits for that camera's next picture; each
  * picture is numbered (its type is "image/jpeg; seq=N"), and a page asking with &after=N gets the
- * first after that, so it can have a few requests on their way at once (full screen, faster).
+ * first after that, so it can have a few requests on their way at once (full screen, faster):
+ * none within NEXT_WAIT_MS, it gets nothing (204), never one it's had.
  * keyStore: { load() -> key | null, save(key) } (main.js keeps it encrypted by the OS).
  *
  * takes: () => the remote recording folder (or null: none listed). Its takes (each the files
@@ -847,11 +848,14 @@ class RemoteRecordServer extends EventEmitter {
       }
       this.setWanting(true);
       // The next picture after the one numbered &after= (full screen: a bigger one), else after
-      // the one last sent to any page.
+      // the one last sent to any page. None by then (the computer busy, say): nothing, rather than
+      // one that page has had (it asks again).
       const after = Number(url.searchParams.get("after"));
       if (url.searchParams.has("after") && Number.isInteger(after) && after >= 0) {
         const from = full ? Math.max(after + 1, this.focusFrom.get(i) || 0) : after + 1;
-        await this.nextPreview(i, (p) => p && p.seq >= from, NEXT_WAIT_MS);
+        const wanted = (p) => p && p.seq >= from;
+        await this.nextPreview(i, wanted, NEXT_WAIT_MS);
+        if (!wanted(this.previews.get(i))) return this.send(res, 204, "");
       } else {
         const since = this.lastSent.get(i) || 0;
         await this.nextPreview(i, (p) => p && p.at > since, NEXT_WAIT_MS);
