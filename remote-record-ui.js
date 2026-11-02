@@ -528,7 +528,7 @@
   const labels = {}; // camera id -> its label when last found (for one picked that's gone)
 
   const oakLabel = (id, port) => `Luxonis ${(prefs.oakNames || {})[id] || "OAK camera"}${port ? ` (USB ${port})` : ""} …${id.slice(-6)}`;
-  const labelOf = (id) => labels[id] || (id.startsWith("oak:") ? oakLabel(id.slice(4)) : id.startsWith("kinect:") ? `Kinect for Xbox One (${id.slice(-4)})` : id.startsWith("ps4:") ? `PlayStation 4 camera (USB ${id.slice(4)})` : id.startsWith("cam:") ? id.slice(4) : "Webcam");
+  const labelOf = (id) => labels[id] || (id.startsWith("oak:") ? oakLabel(id.slice(4)) : id.startsWith("kinect:") ? `Kinect for Xbox ${id.startsWith("kinect:360-") ? "360" : "One"} (${id.slice(-4)})` : id.startsWith("ps4:") ? `PlayStation 4 camera (USB ${id.slice(4)})` : id.startsWith("cam:") ? id.slice(4) : "Webcam");
   // Picked: every camera found, up to four (those picked before first, then OAK cameras), except
   // one unticked here or in Several cameras; one picked that isn't plugged in is still listed
   // (if there's room). Only the picked ones start.
@@ -583,7 +583,7 @@
     }
     // Kinects (the Linux and Windows app: electron/kinect.js).
     if (cams().kinectAvailable && (await cams().kinectAvailable().catch(() => false))) {
-      for (const k of await desktop.kinect.list().catch(() => [])) found.push({ id: `kinect:${k.id}`, label: `Kinect for Xbox One (${k.id.slice(-4)})` });
+      for (const k of await desktop.kinect.list().catch(() => [])) found.push({ id: `kinect:${k.id}`, label: `Kinect for Xbox ${k.model === "360" ? "360" : "One"} (${k.id.slice(-4)})` });
     }
     // PS4 cameras (the Linux and Windows app: electron/ps4cam.js); one needing the one-time setup or
     // its firmware file is said.

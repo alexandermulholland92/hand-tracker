@@ -18,7 +18,7 @@ const exporter = require("./exporter");
 const tak = require("./tak");
 const { InputDriver } = require("./input");
 const { OakCamera } = require("./oak");
-const { KinectCamera, KinectTake, SimulatedKinect } = require("./kinect");
+const { KinectCamera, KinectTake, SimulatedKinect, is360 } = require("./kinect");
 const { writeKinectMcap } = require("./kinect-mcap");
 const { Ps4Camera, SimulatedPs4Camera } = require("./ps4cam");
 const { OpsClient } = require("./ops");
@@ -759,18 +759,21 @@ class SimulatedOak {
 // last. While a take records, its depth, infrared, sound (and the colour camera's own pictures,
 // when asked for) are written here as they come, and saved with the take when it stops.
 const KINECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
-const KINECT_COMMAND = /^(source (color|infrared|auto)|exposure auto -?\d(\.\d{1,2})?|exposure manual \d{1,2}(\.\d{1,2})? \d(\.\d{1,2})?|whitebalance auto|led \d{1,4}|depthrange \d{1,2}(\.\d{1,2})? \d{1,2}(\.\d{1,2})?|filters (on|off))$/;
+// (A Kinect for Xbox 360's own: its tilt motor, -27° to 27°, and its light.)
+const KINECT_COMMAND = /^(source (color|infrared|auto)|exposure auto -?\d(\.\d{1,2})?|exposure manual \d{1,2}(\.\d{1,2})? \d(\.\d{1,2})?|whitebalance auto|led \d{1,4}|depthrange \d{1,2}(\.\d{1,2})? \d{1,2}(\.\d{1,2})?|filters (on|off)|tilt -?\d{1,2}|light (off|green|red|yellow|blink-green|blink-red-yellow))$/;
 function registerKinectIpc() {
-  // (The checks' stand-in Kinect, while HAND_TRACKER_KINECT_SIMULATE is set: read each time, so only the Kinect checks see it.)
+  // (The checks' stand-in Kinect, while HAND_TRACKER_KINECT_SIMULATE is set: read each time, so only the Kinect checks see it;
+  // set to "360", a Kinect for Xbox 360.)
   const simulated = () => !!process.env.HAND_TRACKER_KINECT_SIMULATE;
   const u8 = (b) => (b ? new Uint8Array(b) : null); // (a copy: just its own bytes go to the page)
+  const nameOf = (id) => (is360(id) ? "Kinect for Xbox 360" : "Kinect for Xbox One");
   handle("kinect:available", () => (simulated() ? { ok: true, simulated: true } : KinectCamera.available()));
   handle("kinect:list", async () => {
-    if (simulated()) return [{ id: "SIMULATED-KINECT", name: "Kinect for Xbox One" }];
+    if (simulated()) return process.env.HAND_TRACKER_KINECT_SIMULATE === "360" ? [{ id: "360-SIMULATED360", name: "Kinect for Xbox 360", model: "360" }] : [{ id: "SIMULATED-KINECT", name: "Kinect for Xbox One", model: "one" }];
     // (The other checks find no real Kinect, even one plugged into the computer they run on.)
     const found = process.env.HAND_TRACKER_KINECT_NONE ? [] : await KinectCamera.list(app.getPath("userData")).catch(() => []);
     // (One running is plugged in, even if listing it fails while it's in use.)
-    for (const id of kinectStreams.keys()) if (!found.some((k) => k.id === id)) found.push({ id, name: "Kinect for Xbox One" });
+    for (const id of kinectStreams.keys()) if (!found.some((k) => k.id === id)) found.push({ id, name: nameOf(id), model: is360(id) ? "360" : "one" });
     return found;
   });
   handle("kinect:stream-start", (event, { id, ...options } = {}) => {
@@ -779,7 +782,7 @@ function registerKinectIpc() {
     const viewer = event.sender;
     const stream = { cam: simulated() ? new SimulatedKinect() : new KinectCamera(app.getPath("userData")), busy: false, viewer, take: null, audio: null };
     kinectStreams.set(id, stream);
-    const opts = { device: id, source: options.source, size: options.size, mics: options.mics !== false, pipeline: options.pipeline };
+    const opts = { device: id, source: options.source, size: options.size, mics: options.mics !== false, pipeline: options.pipeline, tilt: options.tilt, light: options.light };
     stream.cam.start(opts, (msg) => {
       if (kinectStreams.get(id) !== stream && msg.status !== "stopped") return;
       if (viewer.isDestroyed()) return stopKinectStream(id);
@@ -801,6 +804,18 @@ function registerKinectIpc() {
       }
     });
     return true;
+  });
+  // A Kinect for Xbox 360's audio firmware (Linux and the Mac): the person's copy of Microsoft's audios.bin, chosen here and kept.
+  handle("kinect:choose-firmware", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: "Choose the Kinect for Xbox 360's audio firmware (audios.bin)",
+      buttonLabel: "Use This",
+      properties: ["openFile"],
+      filters: [{ name: "Firmware", extensions: ["bin"] }, { name: "All files", extensions: ["*"] }],
+    });
+    if (canceled || !filePaths || !filePaths[0]) return { ok: false, canceled: true };
+    return KinectCamera.setFirmware(app.getPath("userData"), filePaths[0]);
   });
   ipcMain.on("kinect:shown", (event, id) => {
     const stream = kinectStreams.get(id);

@@ -41,6 +41,13 @@
  * pixel whose brightness changed by more than CHANGE since the last look moved. A box moves
  * when enough of its pixels did (the sensitivity). When most of the whole picture changes at
  * once, that's the light (a lamp, the camera adjusting), not movement.
+ * A Kinect has a switch for each in its ⚙, its picture and its depth (both on at first): Sentry
+ * watches whichever are on, both at once when both are (movement in either is movement), and
+ * neither when both are off. Its depth: the middle reading of each of the small picture's
+ * pixels, moved where it's changed by more than DEPTH_MOVE_MM since the last look (more far off,
+ * where its depth is coarser). Light doesn't change it, so by night it sees what the infrared
+ * picture, lit only by its dots, can't (a Kinect 360's, hands moving at 2.4 m, 2026-11-01: its
+ * picture moved enough in none of 447 looks, its depth often).
  *
  *   Sentry.init({ prefs, setPref, views, host, onWantsChange, onTrackingChange, hostName, link, looking })
  *     views() -> the cameras now: [{ key, index (its place in remote recording's list), name,
@@ -48,7 +55,9 @@
  *       tracked), mirrored() (its preview is), rotation() (an OAK camera: the turn its own grey
  *       pictures need), grey() (OAK: its last { w, h, data } grey picture, or null), objects()
  *       (OAK: its last objects), oak, want(on) (draw its pictures often, for a video), secondLook()
- *       (not OAK: its second look is on) }]
+ *       (not OAK: its second look is on; an OAK camera's always is), depth() (a Kinect: its last
+ *       { w, h, data } depth, mm, 0 = none, lined up with its picture, or null), watch() (a
+ *       Kinect: { picture, depth }, which its ⚙ has watched) }]
  *     host: desktop or mobile (saving into the remote recording folder and deleting Sentry's
  *       files there: host.remote.deleteSentry({ names } or { all }), ntfy)
  *     onWantsChange(): the OAK cameras' options changed (wantsMotion / wantsObjects)
@@ -75,6 +84,10 @@
   const SMALL = 64; // the grey picture's longer side
   const CHANGE = 18; // out of 255: brightness change that counts as movement
   const LIGHT_SHARE = 0.6; // more of the whole picture than this at once: the light changed
+  // A Kinect's depth: a change this big moved (mm), or three of its depth's steps where they're
+  // bigger (a Kinect 360's: about 2.85e-6 x the distance squared, 26 mm at 3 m).
+  const DEPTH_MOVE_MM = 50;
+  const depthMove = (mm) => Math.max(DEPTH_MOVE_MM, 3 * 2.85e-6 * mm * mm);
   const SENSITIVITY = { low: 0.2, medium: 0.08, high: 0.03 }; // share of a box's pixels
   const STREAK = 2; // looks in a row with movement before it counts
   const ALERT_GAP_S = 60;
@@ -182,7 +195,7 @@
     const r = ((rotation % 360) + 360) % 360;
     if (!g || !r) return g;
     const { w, h, data } = g;
-    const out = new Uint8Array(w * h);
+    const out = new data.constructor(w * h); // (a Kinect's depth too)
     const W = r === 180 ? w : h, H = r === 180 ? h : w;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
@@ -222,6 +235,54 @@
     const share = n / mask.length;
     if (share > LIGHT_SHARE) return null;
     return { w: now.w, h: now.h, data: mask, share };
+  }
+
+  // A Kinect's depth as w x h (the small picture's size): each pixel the middle of the readings
+  // under it (mm), 0 where fewer than half of them have one.
+  function depthGrid(d, w, h) {
+    if (!d || !d.w || !d.h) return null;
+    const out = new Float32Array(w * h);
+    const got = new Uint16Array((Math.ceil(d.w / w) + 1) * (Math.ceil(d.h / h) + 1));
+    for (let y = 0; y < h; y++) {
+      const y0 = Math.floor((y * d.h) / h), y1 = Math.max(y0 + 1, Math.floor(((y + 1) * d.h) / h));
+      for (let x = 0; x < w; x++) {
+        const x0 = Math.floor((x * d.w) / w), x1 = Math.max(x0 + 1, Math.floor(((x + 1) * d.w) / w));
+        let n = 0;
+        for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) if (d.data[yy * d.w + xx]) got[n++] = d.data[yy * d.w + xx];
+        if (n * 2 < (y1 - y0) * (x1 - x0)) continue;
+        // (the middle one: its place found by insertion, as there are only a few)
+        for (let i = 1; i < n; i++) {
+          const v = got[i];
+          let j = i - 1;
+          for (; j >= 0 && got[j] > v; j--) got[j + 1] = got[j];
+          got[j + 1] = v;
+        }
+        out[y * w + x] = got[n >> 1];
+      }
+    }
+    return { w, h, data: out };
+  }
+
+  // Which of a Kinect's depth pixels moved since prev: { w, h, data, share }, or null (no
+  // earlier look). Only where both looks have a reading (one coming or going is its shadows).
+  function depthMoved(prev, now) {
+    if (!prev || prev.w !== now.w || prev.h !== now.h) return null;
+    const mask = new Uint8Array(now.w * now.h);
+    let n = 0;
+    for (let i = 0; i < mask.length; i++) {
+      const a = prev.data[i], b = now.data[i];
+      if (a && b && Math.abs(a - b) > depthMove(Math.min(a, b))) (mask[i] = 1), n++;
+    }
+    return { w: now.w, h: now.h, data: mask, share: n / mask.length };
+  }
+
+  // Movement in either (a Kinect's picture and depth, the same size), or whichever there is.
+  function either(a, b) {
+    if (!a || !b || a.w !== b.w || a.h !== b.h) return a || b;
+    const data = new Uint8Array(a.data.length);
+    let n = 0;
+    for (let i = 0; i < data.length; i++) if ((data[i] = a.data[i] | b.data[i])) n++;
+    return { w: a.w, h: a.h, data, share: n / data.length };
   }
 
   // The share of each box's pixels that moved, box by box (row by row, in the
@@ -365,27 +426,39 @@
     }
     for (const v of views) {
       const st = stateOf(v.key);
-      let now = null, from = "";
+      let now = null, from = "", deep = null;
+      // (a Kinect: its picture, its depth, both or neither, as its ⚙ says)
+      const watch = v.watch ? v.watch() : { picture: true, depth: false };
       try {
         // An OAK camera's own grey picture, else the picture shrunk here (an OAK camera
         // starting, or starting again). The two aren't alike enough to compare: a switch from
         // one to the other starts afresh.
         const g = v.grey && v.grey();
         from = g ? "camera" : "here";
-        now = g ? turn(g, v.rotation ? v.rotation() : 0) : shrink(v.frame());
+        const turnBy = v.rotation ? v.rotation() : 0;
+        if (watch.picture) now = g ? turn(g, turnBy) : shrink(v.frame());
+        // A Kinect's depth, the small picture's size (64 across, without it), turned as the picture is.
+        const d = watch.depth && v.depth ? v.depth() : null;
+        if (d) {
+          const across = d.w >= d.h ? [SMALL, Math.max(1, Math.round((SMALL * d.h) / d.w))] : [Math.max(1, Math.round((SMALL * d.w) / d.h)), SMALL];
+          const [w, h] = now ? (turnBy % 180 ? [now.h, now.w] : [now.w, now.h]) : across;
+          deep = turn(depthGrid(d, w, h), turnBy);
+        }
       } catch {
-        now = null;
+        now = deep = null;
       }
-      if (from !== st.from) Object.assign(st, { prev: null, streak: 0, from });
-      if (!now) {
-        // No picture now: nothing moves, and the next is a fresh start.
-        Object.assign(st, { prev: null, streak: 0, mask: null, levels: [], heat: [] });
+      if (from !== st.from) Object.assign(st, { prev: null, dprev: null, streak: 0, from });
+      if (!now && !deep) {
+        // No picture now (nor depth): nothing moves, and the next is a fresh start.
+        Object.assign(st, { prev: null, dprev: null, streak: 0, mask: null, levels: [], heat: [] });
         endIfStill(v, st);
         continue;
       }
-      now = blur(now);
-      const mask = moved(st.prev, now);
+      if (now) now = blur(now);
+      let mask = now ? moved(st.prev, now) : null;
+      if (deep) mask = either(mask, depthMoved(st.dprev, deep));
       st.prev = now;
+      st.dprev = deep;
       st.mask = mask;
       st.levels = levels(mask, cfg.rows, cfg.cols);
       // What the page shows as moving: each box's movement, fading over a few looks (the page
@@ -906,6 +979,6 @@
     init, wantsMotion, wantsObjects, wantsTracking, remoteState, command, tell,
     isArmed: () => !!cfg && cfg.armed,
     videoFps,
-    _test: { shrink, blur, moved, levels, turn, turnBox, withoutAnimals, animalsOnly, animalSeen, remember, opinion, ntfyMessage, serverOnly, sample, events, per, toCamera, secondText, config: () => cfg },
+    _test: { shrink, blur, moved, levels, turn, turnBox, depthGrid, depthMoved, either, withoutAnimals, animalsOnly, animalSeen, remember, opinion, ntfyMessage, serverOnly, sample, events, per, toCamera, secondText, config: () => cfg },
   };
 })(typeof window !== "undefined" ? window : globalThis);

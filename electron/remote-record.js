@@ -139,9 +139,10 @@ function cleanOak(o) {
   return Object.keys(options).length ? { id: o.id, options } : null;
 }
 // A Kinect's own settings (multi-camera.js's KINECT_OWN).
-const KINECT_CHOICES = { model: ["lite", "full"], hands: [1, 2], picture: ["color", "depth", "blend", "side"], night: ["auto", "on", "off"], size: ["960x540", "1440x810", "1920x1080"],
-  people: [1, 2, 3, 4, 5, 6], exposure: [-2, -1, 0, 1, 2], led: ["on", "dim", "off"], range: [3, 4.5, 8], processing: ["auto", "gpu", "cpu"] };
-const KINECT_SWITCHES = ["bodies", "faces", "depth", "filters", "saveDepth", "saveColor", "saveSound", "mics"];
+const KINECT_CHOICES = { model: ["lite", "full"], hands: [1, 2], picture: ["color", "depth", "blend", "side"], night: ["auto", "on", "off"], size: ["960x540", "1440x810", "1920x1080", "640x480", "1280x960"],
+  people: [1, 2, 3, 4, 5, 6], exposure: [-2, -1, 0, 1, 2], led: ["on", "dim", "off"], range: [3, 4.5, 8], processing: ["auto", "gpu", "cpu"],
+  tilt: [-27, -20, -15, -10, -5, 0, 5, 10, 15, 20, 27], light: ["green", "red", "yellow", "blink-green", "blink-red-yellow", "off"] };
+const KINECT_SWITCHES = ["bodies", "faces", "depth", "filters", "saveDepth", "saveColor", "saveSound", "mics", "sentryDepth", "sentryPicture"];
 function cleanKinect(o) {
   if (!o || typeof o !== "object" || typeof o.id !== "string" || !/^kinect:[A-Za-z0-9._-]{1,64}$/.test(o.id) || !o.options || typeof o.options !== "object") return null;
   const options = {};

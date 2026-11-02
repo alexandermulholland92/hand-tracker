@@ -47,9 +47,10 @@ jobs:
           path: dist/*.exe
           if-no-files-found: error
 
-  # The Kinect's Linux helper (kinect/kinect2-helper.cpp, through libfreenect2), built on an Intel
-  # and an ARM computer (Raspberry Pi 4 and 5), on the older Ubuntu so it runs on older systems
-  # too; its own check (made-up frames, no Kinect) runs on each.
+  # The Kinects' Linux helpers (kinect/kinect2-helper.cpp, the Kinect for Xbox One's, through
+  # libfreenect2; kinect/kinect360-helper.cpp, the Kinect for Xbox 360's, through libfreenect), built
+  # on an Intel and an ARM computer (Raspberry Pi 4 and 5), on the older Ubuntu so they run on older
+  # systems too; their own checks (made-up frames, no Kinect) run on each.
   kinect-helper:
     strategy:
       matrix:
@@ -66,10 +67,14 @@ jobs:
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev wayland-protocols libxkbcommon-dev libgl-dev libegl-dev
           bash kinect/build-linux.sh
           test -x kinect/bin/linux-${{ matrix.arch }}/kinect2-helper
+          bash kinect/build-kinect360.sh
+          test -x kinect/bin/linux-${{ matrix.arch }}/kinect360-helper
       - uses: actions/upload-artifact@v4
         with:
           name: kinect-helper-${{ matrix.arch }}
-          path: kinect/bin/linux-${{ matrix.arch }}/kinect2-helper
+          path: |
+            kinect/bin/linux-${{ matrix.arch }}/kinect2-helper
+            kinect/bin/linux-${{ matrix.arch }}/kinect360-helper
           if-no-files-found: error
 
   linux:
@@ -95,7 +100,7 @@ jobs:
         with:
           name: kinect-helper-arm64
           path: kinect/bin/linux-arm64
-      - run: chmod +x kinect/bin/linux-*/kinect2-helper
+      - run: chmod +x kinect/bin/linux-*/kinect2-helper kinect/bin/linux-*/kinect360-helper
 
       - run: npm run dist:deb
       # Hand Mouse, Remote Recording and Recording Converter (scripts/dist.js --app): packages of
@@ -125,6 +130,8 @@ jobs:
           test -f "/opt/Hand Tracker/resources/app.asar.unpacked/oak/oak_bridge.py"
           grep -q 'idProduct}=="02c4"' /lib/udev/rules.d/80-hand-tracker-kinect.rules
           "/opt/Hand Tracker/resources/app.asar.unpacked/kinect/bin/linux-x64/kinect2-helper" --selftest | grep -a -q '"ok":true'
+          grep -q 'idProduct}=="02ae"' /lib/udev/rules.d/80-hand-tracker-kinect.rules
+          "/opt/Hand Tracker/resources/app.asar.unpacked/kinect/bin/linux-x64/kinect360-helper" --selftest | grep -a -q '"ok":true'
           grep -q 'idVendor}=="03e7"' /lib/udev/rules.d/80-remote-recording-oak.rules
           grep -q 'idProduct}=="02c4"' /lib/udev/rules.d/80-remote-recording-kinect.rules
           test -x "/opt/Remote Recording/resources/app.asar.unpacked/kinect/bin/linux-x64/kinect2-helper"
@@ -168,6 +175,15 @@ jobs:
       # With install scripts: Electron and ffmpeg download their Mac (Apple silicon) binaries.
       - run: npm ci
 
+      # The Kinect for Xbox 360's helper (kinect/kinect360-helper.cpp, through libfreenect), for
+      # Apple silicon and Intel, each with its own check.
+      - name: Build the Kinect for Xbox 360 helper
+        run: |
+          brew install autoconf automake libtool || true
+          bash kinect/build-kinect360.sh
+          test -x kinect/bin/mac-arm64/kinect360-helper
+          test -x kinect/bin/mac-x64/kinect360-helper
+
       # Apple silicon, then Intel (Intel Electron, and Intel ffmpeg swapped in: scripts/dist.js),
       # each as Hand Tracker, Hand Mouse, Remote Recording and Recording Converter (scripts/dist.js
       # --app). Each app is
@@ -192,6 +208,10 @@ jobs:
             /usr/libexec/PlistBuddy -c "Print :NSBluetoothAlwaysUsageDescription" "$app/Contents/Info.plist"
             lipo -archs "$unpacked/node_modules/ffmpeg-static/ffmpeg" | grep -qx "$arch"
             test -f "$unpacked/oak/oak_bridge.py"
+            # (the Kinect for Xbox 360's helper for its processor, kinect/build-kinect360.sh's, and its own check)
+            k360="$unpacked/kinect/bin/mac-$5/kinect360-helper"
+            lipo -archs "$k360" | grep -qx "$arch"
+            if [ "$arch" = "$(uname -m)" ]; then "$k360" --selftest | strings | grep -q '"ok":true'; fi
             echo "Checked: $2 ($arch)"
           }
           : > mac-build.log
@@ -200,7 +220,7 @@ jobs:
             for app in ":Hand Tracker:com.handtracker.app" "mouse:Hand Mouse:com.handtracker.mouse" "remote:Remote Recording:com.handtracker.remote" "converter:Recording Converter:com.handtracker.converter"; do
               kind="${app%%:*}"; rest="${app#*:}"; name="${rest%%:*}"; id="${rest##*:}"
               node scripts/dist.js mac "$flag" ${kind:+--app "$kind"} 2>&1 | tee -a mac-build.log
-              check "$dir" "$name" "$arch" "$id"
+              check "$dir" "$name" "$arch" "$id" "${cpu%%:*}"
             done
           done
           echo "The Mac apps (Hand Tracker, Hand Mouse, Remote Recording, Recording Converter; Apple silicon and Intel) are signed, with the input helper and the right ffmpeg"

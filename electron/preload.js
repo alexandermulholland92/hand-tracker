@@ -192,11 +192,14 @@ contextBridge.exposeInMainWorld("desktop", {
       return () => ipcRenderer.removeListener("annotate:progress", listener);
     },
   },
-  // The Kinect for Xbox One (Linux and Windows app, electron/kinect.js): { ok, reason } here, the
-  // ones plugged in [{ id, name }], then a stream each by id, as the OAK cameras' streams.
+  // The Kinect for Xbox One (Linux and Windows app, electron/kinect.js) and for Xbox 360 (Linux, Mac
+  // and Windows app): { ok, reason } here, the ones plugged in [{ id, name, model }], then a stream
+  // each by id, as the OAK cameras' streams.
   kinect: {
     available: () => ipcRenderer.invoke("kinect:available"),
     list: () => ipcRenderer.invoke("kinect:list"),
+    // A Kinect for Xbox 360's audio firmware (Linux and the Mac): { ok, size } | { ok: false, reason | canceled }
+    chooseFirmware: () => ipcRenderer.invoke("kinect:choose-firmware"),
     // options: { source: "color" | "infrared" | "auto", size: "960x540"…, mics, pipeline }
     streamStart: (id, options) => ipcRenderer.invoke("kinect:stream-start", { ...options, id }),
     streamStop: (id) => ipcRenderer.invoke("kinect:stream-stop", id || null),

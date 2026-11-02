@@ -29,7 +29,7 @@
  */
 
 const { app, dialog, BrowserWindow, shell } = require("electron");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -138,6 +138,8 @@ const STEPS = [
   ["oak-crash-again", [], ({ js }) => checkOakCrashAgain(js)],
   ["kinect", [], ({ js }) => checkKinect(js)],
   ["kinect-helper", [], () => checkKinectHelper()],
+  ["kinect360", [], ({ js }) => checkKinect360(js)],
+  ["kinect360-helper", [], () => checkKinect360Helper()],
   ["kinect-sound", [], () => checkKinectSound()],
   ["ps4-camera", [], ({ js }) => checkPs4Camera(js)],
   ["ps4-helper", [], () => checkPs4Helper()],
@@ -786,8 +788,21 @@ function checkSentryMath() {
   out.server = [S.serverOnly("https://ntfy.sh/handtracker-abc/", "handtracker-abc"), S.serverOnly("https://ntfy.example.org/ntfy", "handtracker-abc"), S.serverOnly("nonsense", "x")];
   // Its videos at the camera's rate: 60 from a camera running at 60 (its Frame rate 60), else 30.
   out.videoFps = [58, 50, 31, 0].map(globalThis.Sentry.videoFps);
-  check("Sentry mode measures movement box by box (only the corner that changed), not the light changing everywhere at once; an OAK camera's turned grey picture turns with it, and its objects' boxes too; movement where an animal is (and no person) is left out, and where one was for a few seconds; ntfy's link as its server is just the server; its videos at the camera's frame rate (60 or 30)",
+  // A Kinect's depth (mm, 0 = none), 8x4 made 4x2: each pixel the middle of the 2x2 under it, none
+  // where fewer than half have a reading. Moved: 6 cm at 2 m, not 6 cm at 3.5 m (its depth coarser
+  // there), not a reading coming or going (its shadows). Movement in its picture or its depth.
+  const dep = (f) => ({ w: 8, h: 4, data: Uint16Array.from({ length: 32 }, (_, i) => f(i % 8, Math.floor(i / 8))) });
+  const grid = S.depthGrid(dep((x, y) => (x < 2 ? [2000, 2010, 1990, 3000][(y % 2) * 2 + (x % 2)] : x < 4 ? (x + y) % 2 ? 0 : 1500 : x < 6 ? (x === 4 && y === 0 ? 1000 : 0) : 3500)), 4, 2);
+  out.depthGrid = Array.from(grid.data).join();
+  const near = S.depthGrid(dep((x) => (x < 4 ? 2000 : 3500)), 4, 2), moved = S.depthGrid(dep((x) => (x < 4 ? 2060 : 3560)), 4, 2);
+  out.depthMoved = Array.from(S.depthMoved(near, moved).data).join();
+  out.depthShadow = S.depthMoved(near, S.depthGrid(dep((x) => (x < 2 ? 0 : x < 4 ? 2000 : 3500)), 4, 2)).share;
+  out.either = Array.from(S.either({ w: 2, h: 1, data: Uint8Array.from([1, 0]) }, { w: 2, h: 1, data: Uint8Array.from([0, 1]) }).data).join();
+  out.turnedDepth = Array.from(S.turn({ w: 2, h: 1, data: Float32Array.from([1234.5, 2000]) }, 90).data).join();
+  check("Sentry mode measures movement box by box (only the corner that changed), not the light changing everywhere at once; an OAK camera's turned grey picture turns with it, and its objects' boxes too; movement where an animal is (and no person) is left out, and where one was for a few seconds; ntfy's link as its server is just the server; its videos at the camera's frame rate (60 or 30); a Kinect's depth: the middle reading of each part (none where most have none), moved by 6 cm at 2 m but not at 3.5 m, not where a reading comes or goes, either it or its picture moving, turned keeping its numbers",
     out.corner.slice(0, 11).every((v) => v === 0) && out.corner[11] > 0.5 && out.light === null &&
+      out.depthGrid === "2010,1500,0,3500,2010,1500,0,3500" && out.depthMoved === "1,1,0,0,1,1,0,0" && out.depthShadow === 0 &&
+      out.either === "1,1" && out.turnedDepth === "1234.5,2000" &&
       out.turned === "2x4:4,0,5,1,6,2,7,3" && out.animals.none === 1 && out.animals.cat === 0 && out.animals.catAndPerson === 1 &&
       out.mirrored.join() === "15,30,5" && out.held.join() === "true,true,false,false" &&
       out.oakTurned[0] === "0,0,0.25,1" && out.oakTurned[1] === true &&
@@ -4668,6 +4683,167 @@ async function checkKinectSimulated(js) {
     JSON.stringify(mcapInfo));
 }
 
+// A Kinect for Xbox 360 as a tile of "Several cameras" (a stand-in: SimulatedKinect with its id
+// "360-…", 640 x 480 pictures, a wall 2 m away and a box 850 mm away in the middle; MediaPipe's hand
+// model in its tile stood in for by a hand in the middle): the picker lists it as one and it starts
+// alone; its hand's place comes from the depth; its tilt motor and light change as it runs and its
+// tilt sensor says so; night vision is its infrared picture; its ⚙ has its own settings (no Xbox One
+// ones); a take saves its 640 x 480 depth and infrared.
+async function checkKinect360(js) {
+  process.env.HAND_TRACKER_KINECT_SIMULATE = "360";
+  try {
+    await checkKinect360Simulated(js);
+  } finally {
+    delete process.env.HAND_TRACKER_KINECT_SIMULATE;
+  }
+}
+async function checkKinect360Simulated(js) {
+  const ID = "kinect:360-SIMULATED360";
+  const r = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const until = async (fn, ms = 20000) => { for (let i = 0; i < ms / 100; i++) { const v = await fn(); if (v) return v; await sleep(100); } return null; };
+    const out = {}, ID = ${JSON.stringify(ID)};
+    await MultiCamera.openPicker();
+    await until(() => document.querySelector('#multiCamPicks input[value^="kinect:"]'), 5000);
+    const box = document.querySelector('#multiCamPicks input[value^="kinect:"]');
+    out.box = box ? box.value : null;
+    out.label = box ? box.closest("label").textContent.trim() : null;
+    for (const b of document.querySelectorAll("#multiCamPicks input")) if (b.checked !== (b.value === out.box)) b.click();
+    out.startAlone = !document.getElementById("multiCamStart").disabled && document.getElementById("multiCamStart").textContent;
+    document.getElementById("multiCamCancel").click();
+    await MultiCamera.start([ID]);
+    const frame = () => document.querySelector("#multiCamGrid iframe");
+    const w = () => frame() && frame().contentWindow;
+    await until(() => w() && w().Tile && w().HandTracker && w().Hands && MultiCamera._tiles()[0].status && MultiCamera._tiles()[0].status.fps > 0, 30000);
+    const tw = w();
+    out.camera = tw.HandTracker.getCamera().width + "x" + tw.HandTracker.getCamera().height;
+    out.tileLabel = MultiCamera.remoteState().cameras[0].label;
+    // The hand model stood in for: a right hand in the middle of the picture (MediaPipe's own label, mirrored).
+    const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.1],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.2],[-.045,-.23],[0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.1],[.065,-.135],[.07,-.16],[.075,-.18]];
+    tw.Hands.prototype.send = async function () {
+      tw.HandTracker._processResults({ multiHandLandmarks: [T.map(([x, y]) => ({ x: 0.5 + x * 0.6, y: 0.56 + y * 0.6, z: 0 }))], multiHandedness: [{ label: "Left", score: 0.95 }] });
+    };
+    const hand = await until(() => { const h = tw.Tile.hands()[0]; return h && h.distance ? h : null; });
+    out.hand = hand && { side: hand.handedness, distance: hand.distance };
+    // Its tilt motor and its light, as it runs: its tilt sensor says where it is.
+    out.motionBefore = MultiCamera.kinectSettings(ID).motion;
+    MultiCamera.setKinectSettings(ID, { tilt: -10 });
+    out.tilted = await until(() => { const m = MultiCamera.kinectSettings(ID).motion; return m && m.tilt === -10 ? m : null; }, 5000);
+    MultiCamera.setKinectSettings(ID, { light: "blink-red-yellow" });
+    out.light = await until(() => { const m = MultiCamera.kinectSettings(ID).motion; return m && m.light === "blink-red-yellow" ? m.light : null; }, 5000);
+    // Its ⚙: its own settings, none of the Kinect for Xbox One's.
+    const tileEl = document.querySelector("#multiCamGrid .multi-cam-tile"), panel = () => tileEl.querySelector(".multi-cam-set");
+    tileEl.querySelector("button.gear").click();
+    const has = (k) => !!panel().querySelector('[data-csset="' + k + '"]');
+    const size = panel().querySelector('select[data-csset="size"]');
+    out.gear = { tilt: has("tilt"), light: has("light"), range: has("range"), bodies: has("bodies"), sizes: size ? [...size.options].map((o) => o.value).join() : null,
+      xboxOne: ["processing", "filters", "led", "exposure"].filter(has), sensor: /tilt sensor: tilted -10/.test(panel().textContent) };
+    const tiltSel = panel().querySelector('select[data-csset="tilt"]');
+    if (tiltSel) {
+      tiltSel.value = "15";
+      tiltSel.dispatchEvent(new Event("change", { bubbles: true }));
+      out.gear.tiltChosen = !!(await until(() => { const m = MultiCamera.kinectSettings(ID).motion; return MultiCamera.kinectSettings(ID).tilt === 15 && m && m.tilt === 15 ? true : null; }, 5000));
+    }
+    tileEl.querySelector("button.gear").click();
+    // Night vision: its infrared picture (the same size).
+    MultiCamera.setKinectSettings(ID, { night: "on" });
+    out.night = await until(() => { const c = tw.HandTracker.getCamera(); return c.width === 640 && c.height === 480 && MultiCamera.remoteState().cameras[0].night ? "640x480 night" : null; }, 8000);
+    out.state = MultiCamera.remoteState().cameras[0];
+    // A take by night: its depth and infrared, and its sound.
+    const started = await MultiCamera.startRecording();
+    await sleep(1500);
+    const take = MultiCamera.stopRecording(true);
+    const files = await MultiCamera.saveKinect("Kinect 360 check");
+    out.take = take && { started: started.ok, hands: take.hands.length };
+    out.files = files.map((f) => ({ kind: f.kind, name: f.path.split(/[\\\\/]/).pop(), frames: f.frames || null, path: f.path }));
+    MultiCamera.setKinectSettings(ID, { night: "auto", tilt: 0, light: "green" });
+    MultiCamera.close();
+    document.getElementById("motionDiscardBtn").click();
+    return out;
+  })()`).catch((err) => ({ error: String((err && err.message) || err) }));
+  const probe = (f) => String(spawnSync(exporter.ffmpegPath, ["-hide_banner", "-i", f], { encoding: "utf8" }).stderr || "");
+  const kinds = Object.fromEntries((r.files || []).map((f) => [f.kind, f]));
+  const depthInfo = kinds.depth ? probe(kinds.depth.path) : "", irInfo = kinds.ir ? probe(kinds.ir.path) : "";
+  const g = r.gear || {};
+  check("Kinect for Xbox 360 (Several cameras): the picker lists it as one and it starts alone, 640 x 480; its hand's place comes from the depth (850 mm ahead)",
+    r.box === ID && /Kinect for Xbox 360/.test(r.label || "") && /Kinect/.test(r.startAlone || "") && r.camera === "640x480" && /Kinect for Xbox 360/.test(r.tileLabel || "") &&
+      r.hand && r.hand.side === "Right" && r.hand.distance && Math.abs(r.hand.distance[2] - 850) <= 1,
+    JSON.stringify({ box: r.box, label: r.label, startAlone: r.startAlone, camera: r.camera, tileLabel: r.tileLabel, hand: r.hand, error: r.error }));
+  check("Kinect for Xbox 360: its tilt motor and light change as it runs (tilted to -10°, then 15° from its ⚙), its tilt sensor says which way is down",
+    r.motionBefore && r.motionBefore.tilt === 0 && r.tilted && r.tilted.tilt === -10 && Array.isArray(r.tilted.accel) && r.tilted.accel[2] < -1.5 && r.light === "blink-red-yellow" && g.tiltChosen === true,
+    JSON.stringify({ before: r.motionBefore, tilted: r.tilted, light: r.light, tiltChosen: g.tiltChosen }));
+  check("Kinect for Xbox 360: its ⚙ has its own settings (its tilt, light, depth range and 640 x 480 or 1280 x 960) and none of the Kinect for Xbox One's, and shows its tilt sensor",
+    g.tilt && g.light && g.range && g.bodies && g.sizes === "640x480,1280x960" && Array.isArray(g.xboxOne) && g.xboxOne.length === 0 && g.sensor, JSON.stringify(g));
+  check("Kinect for Xbox 360: night vision is its infrared picture; a take saves its depth and infrared (16-bit, lossless, 640 x 480) and its sound",
+    r.night === "640x480 night" && r.state && r.state.kinect === true && r.take && r.take.started && /gray16le/.test(depthInfo) && /640x480/.test(depthInfo) && /ffv1/.test(depthInfo) &&
+      /gray16le/.test(irInfo) && /640x480/.test(irInfo) && !!kinds.sound,
+    JSON.stringify({ night: r.night, take: r.take, files: (r.files || []).map((f) => f.name), depth: depthInfo.split("\n").filter((l) => /Stream/.test(l)).join(" "), error: r.error }));
+}
+
+// The Kinect for Xbox 360's helper: on Windows, Kinect360Helper.cs built (as the app builds it) against
+// a stand-in for the Kinect SDK 1.8's library (scripts/fake-kinect18.cs: made-up frames, one person,
+// a tone) and run: its own check, its list, and a few seconds of it (colour, then infrared, recording,
+// its tilt); on Linux and the Mac, where it's been built here (kinect/build-kinect360.sh), its own check.
+async function checkKinect360Helper() {
+  const { readMessages } = require("../electron/oak.js");
+  const heads = (exe, args) => readMessages(Buffer.from(spawnSync(exe, args, { encoding: "buffer", timeout: 30000 }).stdout || [])).messages.map((m) => m.header);
+  if (process.platform !== "win32") {
+    const exe = path.join(__dirname, "..", "kinect", "bin", `${process.platform === "darwin" ? "mac" : "linux"}-${process.arch}`, "kinect360-helper");
+    if (!fs.existsSync(exe)) return; // (built by GitHub's Linux and Mac jobs: they check it)
+    const st = heads(exe, ["--selftest"])[0] || {};
+    return check("Kinect for Xbox 360 helper: its own check passes", st.ok === true, JSON.stringify(st));
+  }
+  const fw = ["Framework64", "Framework"].map((d) => path.join(process.env.SystemRoot || "C:\\Windows", "Microsoft.NET", d, "v4.0.30319")).find((d) => fs.existsSync(path.join(d, "csc.exe")));
+  if (!fw) return check("Kinect for Xbox 360 helper (Windows): .NET Framework 4's compiler is here", false, "no csc.exe");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-kinect360-"));
+  const csc = (args) => spawnSync(path.join(fw, "csc.exe"), ["-nologo", ...args], { encoding: "utf8", timeout: 120000 });
+  const lib = csc(["-target:library", `-out:${path.join(dir, "Microsoft.Kinect.dll")}`, path.join(__dirname, "fake-kinect18.cs")]);
+  const exe = path.join(dir, "kinect360-helper.exe");
+  const built = csc(["-optimize", "-platform:x64", "-unsafe", `-out:${exe}`, `-r:${path.join(dir, "Microsoft.Kinect.dll")}`, `-r:${path.join(fw, "WPF", "PresentationCore.dll")}`,
+    `-r:${path.join(fw, "WPF", "WindowsBase.dll")}`, `-r:${path.join(fw, "System.Xaml.dll")}`, path.join(__dirname, "..", "kinect", "Kinect360Helper.cs")]);
+  if (!fs.existsSync(exe)) return check("Kinect for Xbox 360 helper (Windows): it builds", false, String(lib.stdout + built.stdout).slice(0, 800));
+  const st = heads(exe, ["--selftest"])[0] || {}, list = heads(exe, ["--list"])[0] || {};
+  // A few seconds of it: colour, then (recording, tilted) its infrared.
+  const seen = await new Promise((resolve) => {
+    const p = spawn(exe, ["--source", "color", "--tilt", "5"]);
+    let buf = Buffer.alloc(0);
+    const s = { color: 0, infrared: 0, raw: 0, rawIr: 0, rawcolor: 0, audio: 0, beam: 0, tilts: [], running: null };
+    p.stdout.on("data", (d) => {
+      buf = Buffer.concat([buf, d]);
+      const { messages, rest } = readMessages(buf);
+      buf = Buffer.from(rest);
+      for (const m of messages) {
+        const h = m.header, part = (n) => (h.parts && h.parts[n] ? h.parts[n] : null);
+        if (h.status === "running") s.running = { model: h.model, size: h.size, mics: h.mics, motor: h.motor };
+        else if (h.kind === "frame") {
+          s[h.source]++;
+          s.tilts.push(h.tilt);
+          s.size = [h.w, h.h];
+          s.accel = h.accel;
+          if (part("depth")) s.centre = m.jpeg.readUInt16LE(part("depth")[0] + (120 * 320 + 160) * 2);
+          if (part("body")) s.joints = JSON.parse(m.jpeg.subarray(part("body")[0], part("body")[0] + part("body")[1]).toString())[0].joints.length;
+        } else if (h.kind === "raw") (s.raw++, part("ir") && s.rawIr++, (s.rawSize = [h.w, h.h]));
+        else if (h.kind === "rawcolor") s.rawcolor++;
+        else if (h.kind === "audio") (s.audio++, part("beam") && (s.beam += part("beam")[1]));
+      }
+    });
+    const say = (l) => p.stdin.write(l + "\n");
+    setTimeout(() => (say("record on"), say("rawcolor on"), say("tilt -10")), 1500);
+    setTimeout(() => say("source infrared"), 3000);
+    setTimeout(() => say("quit"), 5000);
+    const timer = setTimeout(() => p.kill(), 15000);
+    p.on("close", () => (clearTimeout(timer), resolve(s)));
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  check("Kinect for Xbox 360 helper (Windows): it builds against the Kinect SDK 1.8's library, and its own check passes (the pictures turned back, its infrared brightened, the depth's range)",
+    st.ok === true && Array.isArray(list.devices) && list.devices.length === 1 && list.devices[0].name === "Kinect for Xbox 360", JSON.stringify({ selftest: st, list }));
+  check("Kinect for Xbox 360 helper (Windows): it streams its colour picture, then its infrared, 640 x 480 with the depth lined up (850 mm in the middle) and a body's 25 joints; its tilt moves (5° then -10°, the tilt sensor too); a take's depth, infrared, colour and sound come while it records",
+    seen.running && seen.running.model === "360" && seen.running.motor === true && seen.color > 20 && seen.infrared > 20 && seen.size && seen.size.join() === "640,480" && seen.centre === 850 &&
+      seen.joints === 25 && seen.tilts.includes(5) && seen.tilts[seen.tilts.length - 1] === -10 && seen.accel && seen.accel[2] < -1.5 && seen.raw > 20 && seen.rawIr > 10 && seen.rawSize.join() === "640,480" &&
+      seen.rawcolor > 5 && seen.audio > 20 && seen.beam > 10000,
+    JSON.stringify({ ...seen, tilts: [...new Set(seen.tilts)] }));
+}
+
 // The Kinect's Linux helper, where it's been built here (kinect/build-linux.sh): its own check
 // passes (the pictures turned back, depth lined up with colour, the microphones' delays).
 async function checkKinectHelper() {
@@ -4866,9 +5042,11 @@ function checkCameraSettingsTables() {
     ps4Choices: same(take(page, "PS4_CHOICES"), here.PS4_CHOICES), ps4Switches: same(take(page, "PS4_SWITCHES"), here.PS4_SWITCHES),
   };
   out.secondLook = !!take(page, "SECOND_LOOK") && same(take(page, "SECOND_LOOK"), take(read("camera-settings.js"), "SECOND_LOOK"));
+  // (A Kinect for Xbox 360's own sizes and save-colour label are the same settings, "size" and "saveColor", to the rig.)
   const rigChoices = take(rig, "KINECT_CHOICES") || {}, rigSwitches = take(rig, "KINECT_SWITCHES") || [];
-  out.rigChoices = Object.entries(here.KINECT_CHOICES).every(([k, [, options]]) => same(rigChoices[k], options.map(([v]) => v)));
-  out.rigSwitches = same([...rigSwitches].sort(), Object.keys(here.KINECT_SWITCHES).sort());
+  const values = (k) => here.KINECT_CHOICES[k][1].map(([v]) => v);
+  out.rigChoices = Object.keys(here.KINECT_CHOICES).filter((k) => !/360$/.test(k)).every((k) => same(rigChoices[k], k === "size" ? [...values("size"), ...values("size360")] : values(k)));
+  out.rigSwitches = same([...rigSwitches].sort(), Object.keys(here.KINECT_SWITCHES).filter((k) => !/360$/.test(k)).sort());
   const rigPs4 = take(rig, "PS4_CHOICES") || {}, rigPs4Switches = take(rig, "PS4_SWITCHES") || [];
   out.rigPs4Choices = same(Object.keys(rigPs4), Object.keys(here.PS4_CHOICES)) && Object.entries(here.PS4_CHOICES).every(([k, [, options]]) => same(rigPs4[k], options.map(([v]) => v)));
   out.rigPs4Switches = same([...rigPs4Switches].sort(), Object.keys(here.PS4_SWITCHES).sort());

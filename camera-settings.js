@@ -43,11 +43,18 @@
     led: ["Its light", [["on", "On"], ["dim", "Dim"], ["off", "Off"]]],
     range: ["Depth up to", [[3, "3 m"], [4.5, "4.5 m"], [8, "8 m"]]],
     processing: ["Depth worked out by", [["auto", "Automatic"], ["gpu", "The graphics chip"], ["cpu", "The processor"]]],
+    // (a Kinect for Xbox 360's own)
+    size360: ["Picture size", [["640x480", "640 × 480"], ["1280x960", "1280 × 960 (10 to 15 a second)"]]],
+    tilt: ["Its tilt (the motor in its stand)", [[-27, "−27° (down)"], [-20, "−20°"], [-15, "−15°"], [-10, "−10°"], [-5, "−5°"], [0, "Level"], [5, "5°"], [10, "10°"], [15, "15°"], [20, "20°"], [27, "27° (up)"]]],
+    light: ["Its light", [["green", "Green"], ["red", "Red"], ["yellow", "Yellow"], ["blink-green", "Blinking green"], ["blink-red-yellow", "Blinking red and yellow"], ["off", "Off"]]],
   };
   const KINECT_SWITCHES = { bodies: "Bodies (25 joints each)", faces: "Faces (which way each looks, and its expressions)", depth: "Depth (each hand's place)", filters: "Depth smoothing",
-    mics: "Its microphones", saveDepth: "Keep the depth and infrared with each take", saveColor: "Keep its full-size colour (1920 × 1080) with each take", saveSound: "Keep its sound with each take" };
-  const KINECT_NUMBERS = new Set(["hands", "people", "exposure", "range"]);
-  // (Only where libfreenect2 works the depth out: Linux.)
+    mics: "Its microphones", saveDepth: "Keep the depth and infrared with each take", saveColor: "Keep its full-size colour (1920 × 1080) with each take", saveSound: "Keep its sound with each take",
+    saveColor360: "Keep its colour camera's own pictures with each take", sentryPicture: "Movement in its picture (Sentry)", sentryDepth: "Movement in its depth (Sentry)" };
+  // (Sentry's two switches, for both Kinects)
+  const KINECT_SENTRY = "Sentry watches whichever of these are on, both at once when both are. Its depth sees movement in the dark, and light doesn't set it off; its picture sees past its depth's reach too (about 4.5 m).";
+  const KINECT_NUMBERS = new Set(["hands", "people", "exposure", "range", "tilt"]);
+  // (Only where libfreenect2 works the depth out: Linux, a Kinect for Xbox One.)
   const KINECT_LINUX = new Set(["processing", "filters"]);
   const PS4_CHOICES = {
     picture: ["Picture", [["side", "Both lenses side by side"], ["merged", "Merged into one"], ["anaglyph", "Red/cyan 3D"], ["blend", "Laid over each other"], ["left", "Left lens"], ["right", "Right lens"],
@@ -77,6 +84,23 @@
         (infrared ? choice("oak", "night", OAK_CHOICES.night, o.night) + sw("oak", "dots", OAK_SWITCHES.dots, o.dots) : "");
       out += `<div class="cs-sub">${infrared ? (o.infrared === null ? "Night vision needs an infrared light (OAK-D Pro); Automatic turns it on when it's dark. " : "Night vision: Automatic turns it on when it's dark. ") : "This camera has no infrared light, so no night vision. "}` +
         "Changed while the camera runs, it starts again with them (a few seconds).</div>";
+    } else if (c.kinect && c.kinect.k360) {
+      // A Kinect for Xbox 360: its own picture sizes, its tilt motor, light and tilt sensor.
+      const o = c.kinect, m = o.motion;
+      for (const k of ["picture", "night"]) out += choice("kinect", k, KINECT_CHOICES[k], o[k]);
+      out += sw("kinect", "bodies", KINECT_SWITCHES.bodies.replace("25", "20"), o.bodies) + choice("kinect", "people", KINECT_CHOICES.people, o.people) + sw("kinect", "faces", KINECT_SWITCHES.faces, o.faces) +
+        sw("kinect", "depth", KINECT_SWITCHES.depth, o.depth);
+      for (const k of ["model", "hands"]) out += choice("kinect", k, KINECT_CHOICES[k], o[k]);
+      out += choice("kinect", "size", KINECT_CHOICES.size360, o.size) + choice("kinect", "tilt", KINECT_CHOICES.tilt, o.tilt) + choice("kinect", "light", KINECT_CHOICES.light, o.light) +
+        choice("kinect", "range", KINECT_CHOICES.range, o.range);
+      for (const k of ["mics", "saveDepth"]) out += sw("kinect", k, KINECT_SWITCHES[k], o[k]);
+      out += sw("kinect", "saveColor", KINECT_SWITCHES.saveColor360, o.saveColor) + sw("kinect", "saveSound", KINECT_SWITCHES.saveSound, o.saveSound);
+      // (Linux and the Mac: its microphones, and a model 1473's motor, need its audio firmware, sent as it starts)
+      if (o.firmwareChoice) out += `<div class="cs-row"><span class="cs-grow">Its audio firmware (Microsoft's audios.bin: its microphones need it${o.audioFirmware === true ? "; kept" : ""})</span><button type="button" class="small" data-cskinectfw="${id}"${dis}>Choose…</button></div>`;
+      const sensor = m && Array.isArray(m.accel) ? `Its tilt sensor: ${Number.isFinite(m.tilt) ? `tilted ${Math.round(m.tilt)}°, ` : ""}down is (${m.accel.map((v) => Number(v).toFixed(1)).join(", ")}) m/s²${m.moving ? ", the motor moving" : ""}. ` : "";
+      out += `<div class="cs-sub">Its colour and infrared cameras can't both run at once: Night vision picks one (its depth runs either way). ${sensor}` +
+        "Picture size and Its microphones start it again (a few seconds); the rest change as it runs.</div>";
+      out += sw("kinect", "sentryPicture", KINECT_SWITCHES.sentryPicture, o.sentryPicture) + sw("kinect", "sentryDepth", KINECT_SWITCHES.sentryDepth, o.sentryDepth) + `<div class="cs-sub">${KINECT_SENTRY}</div>`;
     } else if (c.kinect) {
       const o = c.kinect, linux = o.linux !== false, keep = (k) => linux || !KINECT_LINUX.has(k);
       for (const k of ["picture", "night"]) out += choice("kinect", k, KINECT_CHOICES[k], o[k]);
@@ -88,6 +112,7 @@
       out += `<div class="cs-sub">Bodies: each person's 25 joints, where they are, each hand open, closed or "lasso". ` +
         (linux ? `Depth smoothing evens out the depth, but on a Raspberry Pi it takes most of the graphics chip, which the hand model needs. ${where ? `Its depth is worked out ${where} now. ` : ""}` : "") +
         "Picture size, Its microphones and Depth worked out by start it again (a few seconds); the rest change as it runs.</div>";
+      out += sw("kinect", "sentryPicture", KINECT_SWITCHES.sentryPicture, o.sentryPicture) + sw("kinect", "sentryDepth", KINECT_SWITCHES.sentryDepth, o.sentryDepth) + `<div class="cs-sub">${KINECT_SENTRY}</div>`;
     } else if (c.ps4) {
       const o = c.ps4;
       for (const k of ["picture", "night"]) out += choice("ps4", k, PS4_CHOICES[k], o[k]);
@@ -107,6 +132,8 @@
     el.addEventListener("click", (e) => {
       const f = e.target.closest && e.target.closest("button[data-csfirmware]");
       if (f && !f.disabled) return change("ps4firmware", { id: f.dataset.csfirmware });
+      const kf = e.target.closest && e.target.closest("button[data-cskinectfw]");
+      if (kf && !kf.disabled) return change("kinectfirmware", { id: kf.dataset.cskinectfw });
       const b = e.target.closest && e.target.closest("button[data-csset]");
       if (!b || b.disabled) return;
       const id = b.dataset.csid, kind = b.dataset.cskind, k = b.dataset.csset, v = b.getAttribute("aria-pressed") !== "true";
@@ -139,6 +166,10 @@
         if (action === "ps4firmware") {
           const r = await desktop.ps4cam.chooseFirmware();
           return r.canceled ? undefined : say(r.ok ? "The PS4 camera's firmware is kept: it starts with it." : r.reason);
+        }
+        if (action === "kinectfirmware") {
+          const r = await desktop.kinect.chooseFirmware();
+          return r.canceled ? undefined : say(r.ok ? "The Kinect's audio firmware is kept: it starts with it next time." : r.reason);
         }
         const res = await remote.changeCamera(action, action === "pick" ? { pick: data } : { [action]: data });
         say(res && res.message ? res.message : "");

@@ -5,15 +5,20 @@
  * kinect/KinectHelper.cs on Windows, through Microsoft's Kinect SDK, which adds the Kinect's own
  * body tracking). The page finds the hands (and on Linux the bodies) in its pictures, with the
  * depth for each part of them; this keeps a take's depth, infrared, full-size colour and sound.
+ * The Kinect for Xbox 360 (Kinect v1) too, in the Linux, Mac and Windows app, the same way, with
+ * its own helpers (kinect/kinect360-helper.cpp on Linux and the Mac, through libfreenect;
+ * kinect/Kinect360Helper.cs on Windows, through Microsoft's Kinect SDK 1.8, with its bodies), and
+ * its tilt motor, light and tilt sensor: its id is "360-<serial>" (and its tile "kinect:360-…").
  *
- *   KinectCamera.available()            -> { ok, reason }
- *   await KinectCamera.list(dataDir)    -> [{ id, name }]
+ *   KinectCamera.available()            -> { ok, reason, one: { ok, reason }, k360: { ok, reason } }
+ *   await KinectCamera.list(dataDir)    -> [{ id, name, model: "one" | "360" }]
  *   const cam = new KinectCamera(dataDir);
  *   cam.start(options, onMessage)       options: { device, source: "color" | "infrared" | "auto",
  *                                         size: "960x540"…, mics, pipeline: "auto" | "opengl" | "cpu" }
  *                                       onMessage: { status… } | { frame, jpeg, depth } | { raw, depth, ir }
  *                                         | { rawcolor, jpeg } | { audio, pcm, beam }
- *   cam.command(line)                   e.g. "source infrared", "record on" (kinect2-helper.cpp's list)
+ *   cam.command(line)                   e.g. "source infrared", "record on" (kinect2-helper.cpp's list;
+ *                                         a Kinect 360's: kinect360-helper.cpp's, as "tilt -10", "light green")
  *   cam.stop()
  *
  *   const take = new KinectTake(folder, { depth, ir, color, sound })   a take's files, as they come:
@@ -41,6 +46,17 @@ const KINECT_DLLS = [
 ];
 const kinectDll = () => KINECT_DLLS.find((f) => fs.existsSync(f)) || null;
 const RUNTIME_URL = "https://www.microsoft.com/download/details.aspx?id=44559";
+// The Kinect for Xbox 360's: its helper on Linux and the Mac, its source on Windows, and the
+// library Microsoft's Kinect for Windows Runtime 1.8 (or its SDK 1.8) puts in.
+const HELPER_360 = path.join(KINECT, "bin", `${process.platform === "darwin" ? "mac" : "linux"}-${process.arch}`, "kinect360-helper");
+const WINDOWS_SOURCE_360 = path.join(KINECT, "Kinect360Helper.cs");
+const KINECT18_DLLS = [
+  ...["GAC_MSIL", "GAC_64"].map((store) => path.join(process.env.SystemRoot || "C:\\Windows", "Microsoft.NET", "assembly", store, "Microsoft.Kinect", "v4.0_1.8.0.0__31bf3856ad364e35", "Microsoft.Kinect.dll")),
+  path.join(process.env.ProgramFiles || "C:\\Program Files", "Microsoft SDKs", "Kinect", "v1.8", "Assemblies", "Microsoft.Kinect.dll"),
+];
+const kinect18Dll = () => KINECT18_DLLS.find((f) => fs.existsSync(f)) || null;
+const RUNTIME18_URL = "https://www.microsoft.com/download/details.aspx?id=40277";
+const is360 = (device) => /^360-/.test(String(device || ""));
 
 // Linux: whether OpenGL depth processing works here (libfreenect2 ends the program when it
 // can't), found once a run; the CPU's otherwise.
@@ -55,24 +71,29 @@ function probeOpenGL() {
 }
 
 // Windows: the helper, built once per version of its source by Windows' own C# compiler,
-// against the Kinect runtime's library (as electron/bt-hid.js builds its helper).
-function buildWindowsHelper(folder) {
-  const dll = kinectDll();
-  if (!dll) return Promise.reject(Object.assign(new Error(`The Kinect needs Microsoft's Kinect for Windows Runtime 2.0 on this PC: ${RUNTIME_URL}`), { runtime: true }));
-  const hash = crypto.createHash("sha256").update(fs.readFileSync(WINDOWS_SOURCE)).digest("hex").slice(0, 12);
-  const exe = path.join(folder, `kinect-helper-${hash}.exe`);
+// against the Kinect runtime's library (as electron/bt-hid.js builds its helper). k360: the
+// Kinect for Xbox 360's (Kinect360Helper.cs, against the runtime 1.8's library), in a folder of
+// its own (its Microsoft.Kinect.dll, when it's the SDK's copy beside it, isn't the other's).
+function buildWindowsHelper(folder, k360 = false) {
+  const dll = k360 ? kinect18Dll() : kinectDll();
+  if (!dll) return Promise.reject(Object.assign(new Error(k360 ? `The Kinect for Xbox 360 needs Microsoft's Kinect for Windows Runtime 1.8 on this PC: ${RUNTIME18_URL}` : `The Kinect needs Microsoft's Kinect for Windows Runtime 2.0 on this PC: ${RUNTIME_URL}`), { runtime: true }));
+  if (k360) folder = path.join(folder, "360");
+  const prefix = k360 ? "kinect360-helper" : "kinect-helper";
+  const hash = crypto.createHash("sha256").update(fs.readFileSync(k360 ? WINDOWS_SOURCE_360 : WINDOWS_SOURCE)).digest("hex").slice(0, 12);
+  const exe = path.join(folder, `${prefix}-${hash}.exe`);
   if (fs.existsSync(exe)) return Promise.resolve(exe);
   const win = process.env.SystemRoot || "C:\\Windows";
   const fw = ["Framework64", "Framework"].map((d) => path.join(win, "Microsoft.NET", d, "v4.0.30319")).find((d) => fs.existsSync(path.join(d, "csc.exe")));
   if (!fw) return Promise.reject(new Error("This Windows is missing .NET Framework 4, which the Kinect's helper needs."));
   fs.mkdirSync(folder, { recursive: true });
-  for (const old of fs.readdirSync(folder)) if (/^kinect-helper-[0-9a-f]+\.exe$/.test(old)) fs.rmSync(path.join(folder, old), { force: true });
+  for (const old of fs.readdirSync(folder)) if (new RegExp(`^${prefix}-[0-9a-f]+\\.exe$`).test(old)) fs.rmSync(path.join(folder, old), { force: true });
   const refs = [`-r:${dll}`, `-r:${path.join(fw, "WPF", "PresentationCore.dll")}`, `-r:${path.join(fw, "WPF", "WindowsBase.dll")}`, `-r:${path.join(fw, "System.Xaml.dll")}`];
   // (The SDK's copy isn't in Windows' own store of libraries: the helper finds it beside itself.)
   if (!/[\\/]assembly[\\/]GAC_/i.test(dll)) fs.copyFileSync(dll, path.join(folder, "Microsoft.Kinect.dll"));
+  const source = k360 ? WINDOWS_SOURCE_360 : WINDOWS_SOURCE;
   const tmp = `${exe}.tmp.exe`;
   return new Promise((resolve, reject) => {
-    execFile(path.join(fw, "csc.exe"), ["-nologo", "-optimize", "-platform:x64", "-unsafe", `-out:${tmp}`, ...refs, WINDOWS_SOURCE], { windowsHide: true, timeout: 120000 }, (err, stdout) => {
+    execFile(path.join(fw, "csc.exe"), ["-nologo", "-optimize", "-platform:x64", "-unsafe", `-out:${tmp}`, ...refs, source], { windowsHide: true, timeout: 120000 }, (err, stdout) => {
       if (err) return reject(new Error(`The Kinect's helper didn't build: ${String(stdout || err.message).trim().split(/\r?\n/).find((l) => /error/i.test(l)) || err.message}`));
       fs.renameSync(tmp, exe);
       resolve(exe);
@@ -81,32 +102,80 @@ function buildWindowsHelper(folder) {
 }
 
 class KinectCamera {
+  // Whether this app can use a Kinect for Xbox One (one) or one for Xbox 360 (k360): ok if either.
   static available() {
+    const one = KinectCamera.availableOne(), k360 = KinectCamera.available360();
+    const ok = one.ok || k360.ok;
+    return { ok, runtime: !ok && (one.runtime || k360.runtime), reason: ok ? "" : [one.reason, k360.reason].filter(Boolean).join(" "), one, k360 };
+  }
+
+  static availableOne() {
     if (process.platform === "linux") {
       return fs.existsSync(LINUX_HELPER) ? { ok: true } : { ok: false, reason: `This build has no Kinect helper for ${process.arch} Linux.` };
     }
     if (process.platform === "win32") {
       if (process.arch !== "x64") return { ok: false, reason: "The Kinect works with 64-bit Windows." };
-      if (!kinectDll()) return { ok: false, runtime: true, reason: `The Kinect needs Microsoft's Kinect for Windows Runtime 2.0 on this PC: ${RUNTIME_URL}` };
+      if (!kinectDll()) return { ok: false, runtime: true, reason: `The Kinect for Xbox One needs Microsoft's Kinect for Windows Runtime 2.0 on this PC: ${RUNTIME_URL}` };
       return { ok: true };
     }
-    return { ok: false, reason: "The Kinect works in the Linux and Windows apps." };
+    return { ok: false, reason: "The Kinect for Xbox One works in the Linux and Windows apps." };
   }
 
-  static async helper(dataDir) {
-    if (process.platform === "win32") return buildWindowsHelper(path.join(dataDir, "kinect"));
-    return LINUX_HELPER;
+  static available360() {
+    if (process.platform === "linux" || process.platform === "darwin") {
+      return fs.existsSync(HELPER_360) ? { ok: true } : { ok: false, reason: `This build has no Kinect for Xbox 360 helper for ${process.arch} ${process.platform === "darwin" ? "Macs" : "Linux"}.` };
+    }
+    if (process.platform === "win32") {
+      if (process.arch !== "x64") return { ok: false, reason: "The Kinect works with 64-bit Windows." };
+      if (!kinect18Dll()) return { ok: false, runtime: true, reason: `The Kinect for Xbox 360 needs Microsoft's Kinect for Windows Runtime 1.8 on this PC: ${RUNTIME18_URL}` };
+      return { ok: true };
+    }
+    return { ok: false, reason: "The Kinect for Xbox 360 works in the Linux, Mac and Windows apps." };
   }
 
-  // The Kinects plugged in (none when there's no helper here).
+  static async helper(dataDir, k360 = false) {
+    if (process.platform === "win32") return buildWindowsHelper(path.join(dataDir, "kinect"), k360);
+    return k360 ? HELPER_360 : LINUX_HELPER;
+  }
+
+  // The Kinects plugged in (none when there's no helper here): a Kinect for Xbox 360's id is its
+  // serial after "360-".
   static async list(dataDir) {
-    if (!KinectCamera.available().ok) return [];
-    const exe = await KinectCamera.helper(dataDir);
+    const lists = [];
+    if (KinectCamera.availableOne().ok) lists.push(KinectCamera.listOf(dataDir, false).catch(() => []));
+    if (KinectCamera.available360().ok) lists.push(KinectCamera.listOf(dataDir, true).catch(() => []));
+    return (await Promise.all(lists)).flat();
+  }
+
+  // A Kinect for Xbox 360's audio firmware (Microsoft's audios.bin, the person's copy): where it's
+  // kept, and keeping a chosen one (its microphones, and a model 1473's motor, need it on Linux and
+  // the Mac). -> { ok, size } | { ok: false, reason }
+  static firmwarePath(dataDir) {
+    return path.join(dataDir, "kinect", "audios.bin");
+  }
+
+  static setFirmware(dataDir, file) {
+    let size = 0;
+    try {
+      size = fs.statSync(file).size;
+    } catch {
+      return { ok: false, reason: "That file can't be read." };
+    }
+    if (size < 16 << 10 || size > 4 << 20) return { ok: false, reason: "That doesn't look like the Kinect's audio firmware (audios.bin is about 100 to 200 KB)." };
+    fs.mkdirSync(path.join(dataDir, "kinect"), { recursive: true });
+    fs.copyFileSync(file, KinectCamera.firmwarePath(dataDir));
+    return { ok: true, size };
+  }
+
+  static async listOf(dataDir, k360) {
+    const exe = await KinectCamera.helper(dataDir, k360);
     return new Promise((resolve) => {
       execFile(exe, ["--list"], { encoding: "buffer", timeout: 15000, windowsHide: true, maxBuffer: 1 << 20 }, (err, stdout) => {
         const msg = readMessages(Buffer.from(stdout || [])).messages.map((m) => m.header).find((h) => h.status === "devices");
         const devices = msg && Array.isArray(msg.devices) ? msg.devices : [];
-        resolve(devices.filter((d) => d && /^[A-Za-z0-9._-]{1,64}$/.test(String(d.id))).map((d) => ({ id: String(d.id), name: String(d.name || "Kinect for Xbox One").slice(0, 60) })));
+        resolve(devices.filter((d) => d && /^[A-Za-z0-9._-]{1,60}$/.test(String(d.id))).map((d) => k360
+          ? { id: `360-${d.id}`, name: String(d.name || "Kinect for Xbox 360").slice(0, 60), model: "360" }
+          : { id: String(d.id), name: String(d.name || "Kinect for Xbox One").slice(0, 60), model: "one" }));
       });
     });
   }
@@ -121,15 +190,23 @@ class KinectCamera {
     this.stop();
     const started = (this.started = {});
     (async () => {
-      const exe = await KinectCamera.helper(this.dataDir);
+      const k360 = is360(options.device);
+      const exe = await KinectCamera.helper(this.dataDir, k360);
       const args = [];
-      if (options.device && /^[A-Za-z0-9._-]{1,64}$/.test(options.device)) args.push("--device", options.device);
+      if (options.device && /^[A-Za-z0-9._-]{1,64}$/.test(options.device)) args.push("--device", k360 ? options.device.slice(4) : options.device);
       if (["color", "infrared", "auto"].includes(options.source)) args.push("--source", options.source);
       if (/^\d{3,4}x\d{3,4}$/.test(options.size || "")) args.push("--size", options.size);
-      // (Its microphones through PipeWire where it runs, KinectMics, shared; else the helper opens them.)
-      const pw = process.platform === "linux" && options.mics !== false && KinectMics.usable();
+      // (Its microphones through PipeWire where it runs, KinectMics, shared; else the helper opens
+      // them. A Kinect 360's come from its helper, the sound itself: placed here, KinectMics.chunk.)
+      const pw = !k360 && process.platform === "linux" && options.mics !== false && KinectMics.usable();
       if (options.mics === false || pw) args.push("--no-mics");
-      if (process.platform === "linux") {
+      if (k360) {
+        // (its audio firmware, the person's copy, kept here: Linux and the Mac send it as it starts)
+        const fw = KinectCamera.firmwarePath(this.dataDir);
+        if (process.platform !== "win32" && fs.existsSync(fw)) args.push("--firmware", fw);
+        if (Number.isFinite(Number(options.tilt))) args.push("--tilt", String(Math.max(-27, Math.min(27, Math.round(Number(options.tilt))))));
+        if (/^[a-z-]{2,20}$/.test(options.light || "")) args.push("--light", options.light);
+      } else if (process.platform === "linux") {
         const want = options.pipeline || "auto";
         args.push("--pipeline", want === "cpu" ? "cpu" : want === "opengl" || (await probeOpenGL()) ? "opengl" : "cpu");
       }
@@ -161,7 +238,14 @@ class KinectCamera {
         const h = m.header;
         const part = (name) => (h.parts && Array.isArray(h.parts[name]) && m.jpeg ? m.jpeg.subarray(h.parts[name][0], h.parts[name][0] + h.parts[name][1]) : null);
         if (h.status) onMessage(h);
-        else if (h.kind === "frame") onMessage({ frame: h, jpeg: part("jpeg"), depth: part("depth"), body: part("body") });
+        else if (h.kind === "mics") {
+          // (a Kinect 360's four microphones, 100 ms of them: placed as KinectMics places PipeWire's)
+          const pcm = part("pcm");
+          if (!pcm || pcm.length % 16) continue;
+          if (!this.placer) this.placer = new KinectMics(onMessage);
+          this.placer.recording = this.recording;
+          this.placer.chunk(Buffer.from(pcm), Number(h.u) || undefined);
+        } else if (h.kind === "frame") onMessage({ frame: h, jpeg: part("jpeg"), depth: part("depth"), body: part("body") });
         else if (h.kind === "raw") onMessage({ raw: h, depth: part("depth"), ir: part("ir") });
         else if (h.kind === "rawcolor") onMessage({ rawcolor: h, jpeg: part("jpeg") });
         else if (h.kind === "audio") onMessage({ audio: h, pcm: part("pcm"), beam: part("beam") });
@@ -182,6 +266,7 @@ class KinectCamera {
   }
 
   command(line) {
+    if (/^record (on|off)$/.test(line)) this.recording = line === "record on";
     if (this.mics && /^record (on|off)$/.test(line)) this.mics.recording = line === "record on";
     if (this.proc && this.proc.stdin.writable) this.proc.stdin.write(`${String(line).replace(/[\r\n]/g, " ")}\n`);
   }
@@ -190,7 +275,7 @@ class KinectCamera {
   stop() {
     this.started = null;
     if (this.mics) this.mics.stop();
-    this.mics = null;
+    this.mics = this.placer = null;
     const proc = this.proc;
     if (!proc) return;
     this.proc = null;
@@ -294,7 +379,7 @@ class KinectMics {
     if (!this.stopped) this.timer = setTimeout(() => this.start(0).catch(() => {}), ms);
   }
 
-  chunk(pcm) {
+  chunk(pcm, startU) {
     const frames = pcm.length / 16;
     const ch = [0, 1, 2, 3].map(() => new Float32Array(frames));
     const level = [0, 0, 0, 0];
@@ -307,7 +392,7 @@ class KinectMics {
     }
     for (let m = 0; m < 4; m++) level[m] = Math.round(Math.sqrt(level[m] / frames) * 1e5) / 1e5;
     const b = this.beam.update(ch);
-    const header = { kind: "audio", u: Date.now() - (frames / 16000) * 1000, rate: 16000, channels: 4, frames, level, delays: b.delays.slice(1).map((d) => Math.round(d * 100) / 100), angle: Math.round(b.angle * 10) / 10, confidence: Math.round(b.confidence * 100) / 100,
+    const header = { kind: "audio", u: startU || Date.now() - (frames / 16000) * 1000, rate: 16000, channels: 4, frames, level, delays: b.delays.slice(1).map((d) => Math.round(d * 100) / 100), angle: Math.round(b.angle * 10) / 10, confidence: Math.round(b.confidence * 100) / 100,
       active: b.active, snr: Math.round(b.snr * 10) / 10 };
     this.onMessage(this.recording ? { audio: header, pcm, beam: b.mono(ch) } : { audio: header });
   }
@@ -465,7 +550,7 @@ class Beam {
 }
 
 // ---------- a take's Kinect files ----------
-// Depth and infrared: 512 x 424, 16 bits, lossless (FFV1 in Matroska), as the frames come
+// Depth and infrared: 512 x 424 (a Kinect 360's 640 x 480), 16 bits, lossless (FFV1 in Matroska), as the frames come
 // (nominally 30 a second: each frame's real time is in the .csv beside it). The colour camera's
 // own pictures (1920 x 1080 JPEGs) kept as they are (Motion JPEG in Matroska). The four
 // microphones: a 4-channel 32-bit WAV, and the beam (the four lined up on the loudest sound) a
@@ -494,9 +579,10 @@ class KinectTake {
 
   raw(header, depth, ir) {
     const u = Number(header.u) || Date.now();
+    const [w, h] = header.w === 640 && header.h === 480 ? [640, 480] : [512, 424];
     for (const [kind, data] of [["depth", depth], ["ir", ir]]) {
-      if (!this.want[kind] || !data || data.length !== 512 * 424 * 2) continue;
-      const s = (this.streams[kind] = this.streams[kind] || this.video(kind, ["-f", "rawvideo", "-pix_fmt", "gray16le", "-s", "512x424", "-framerate", "30"]));
+      if (!this.want[kind] || !data || data.length !== w * h * 2) continue;
+      const s = (this.streams[kind] = this.streams[kind] || this.video(kind, ["-f", "rawvideo", "-pix_fmt", "gray16le", "-s", `${w}x${h}`, "-framerate", "30"]));
       s.proc.stdin.write(Buffer.from(data));
       s.times.push(u);
     }
@@ -608,47 +694,61 @@ function wavHeader(dataBytes, channels, bits) {
 // For the automated checks (HAND_TRACKER_KINECT_SIMULATE): a Kinect without a Kinect, streaming as
 // the helper does: a grey picture (the checks give the hand tracker its hands), a wall 2 m away
 // with a box 850 mm away in the middle, the depth and infrared while it records, and a sound
-// reaching each microphone a sample after the one before.
+// reaching each microphone a sample after the one before. A Kinect for Xbox 360's (its id "360-…")
+// as its helper streams: 640 x 480 pictures, depth and infrared, and its tilt and tilt sensor.
 class SimulatedKinect {
   start(options, onMessage) {
     const { nativeImage } = require("electron");
     this.onMessage = onMessage;
     this.recording = false;
     this.rawcolor = false;
+    const k360 = is360(options.device);
     let source = ["infrared", "auto"].includes(options.source) ? options.source : "color";
+    let tilt = Number.isFinite(Number(options.tilt)) ? Math.max(-27, Math.min(27, Math.round(Number(options.tilt)))) : 0, light = options.light || "green";
     const night = () => source === "infrared";
-    const [w, h] = night() ? [512, 424] : [960, 540];
-    const jpegOf = (ww, hh, v) => nativeImage.createFromBitmap(Buffer.alloc(ww * hh * 4, v), { width: ww, height: hh }).toJPEG(70);
-    const pictures = { color: jpegOf(960, 540, 90), infrared: jpegOf(512, 424, 50), full: jpegOf(1920, 1080, 90) };
-    const map = (mw, mh) => {
+    // (sizes: the picture by day, by night, the depth map's by day, by night, and the raw depth's)
+    const S = k360 ? { day: [640, 480], ir: [640, 480], dayMap: [320, 240], irMap: [320, 240], raw: [640, 480], full: [640, 480] }
+      : { day: [960, 540], ir: [512, 424], dayMap: [480, 270], irMap: [256, 212], raw: [512, 424], full: [1920, 1080] };
+    const [w, h] = night() ? S.ir : S.day;
+    const jpegOf = ([ww, hh], v) => nativeImage.createFromBitmap(Buffer.alloc(ww * hh * 4, v), { width: ww, height: hh }).toJPEG(70);
+    const pictures = { color: jpegOf(S.day, 90), infrared: jpegOf(S.ir, 50), full: jpegOf(S.full, 90) };
+    const map = ([mw, mh]) => {
       const m = Buffer.alloc(mw * mh * 2);
       for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) m.writeUInt16LE(Math.abs(x / mw - 0.5) < 0.15 && Math.abs(y / mh - 0.5) < 0.2 ? 850 : 2000, (y * mw + x) * 2);
       return m;
     };
-    const maps = { color: map(480, 270), infrared: map(256, 212) };
-    const raw = Buffer.alloc(512 * 424 * 2);
-    for (let i = 0; i < 512 * 424; i++) raw.writeUInt16LE(2000, i * 2);
-    const color = { w: 1920, h: 1080, fx: 1081.37, fy: 1081.37, cx: 959.5, cy: 539.5 };
-    const ir = { w: 512, h: 424, fx: 365.46, fy: 365.46, cx: 256.12, cy: 205.4, k1: 0.09, k2: -0.27, k3: 0.09, p1: 0, p2: 0 };
-    onMessage({ status: "running", camera: "Kinect for Xbox One", id: options.device || "SIMULATED-KINECT", firmware: "simulated", pipeline: "cpu", color, ir, depth: true, infrared: true,
-      source, size: [w, h], unmirrored: true, version: "simulated", mics: options.mics !== false });
+    const maps = { color: map(S.dayMap), infrared: map(S.irMap) };
+    const raw = Buffer.alloc(S.raw[0] * S.raw[1] * 2);
+    for (let i = 0; i < S.raw[0] * S.raw[1]; i++) raw.writeUInt16LE(2000, i * 2);
+    const color = k360 ? { w: 640, h: 480, fx: 525, fy: 525, cx: 319.5, cy: 239.5 } : { w: 1920, h: 1080, fx: 1081.37, fy: 1081.37, cx: 959.5, cy: 539.5 };
+    const ir = k360 ? { w: 640, h: 480, fx: 580, fy: 580, cx: 319.5, cy: 239.5 } : { w: 512, h: 424, fx: 365.46, fy: 365.46, cx: 256.12, cy: 205.4, k1: 0.09, k2: -0.27, k3: 0.09, p1: 0, p2: 0 };
+    onMessage({ status: "running", camera: k360 ? "Kinect for Xbox 360" : "Kinect for Xbox One", model: k360 ? "360" : "one", id: options.device || "SIMULATED-KINECT", firmware: "simulated", pipeline: "cpu", color, ir, depth: true, infrared: true,
+      source, size: [w, h], unmirrored: true, version: "simulated", mics: options.mics !== false, ...(k360 ? { tilt, light, motor: true } : {}) });
     const scaled = (c, ww, hh) => ({ fx: (c.fx * ww) / c.w, fy: (c.fy * hh) / c.h, cx: ((c.cx + 0.5) * ww) / c.w - 0.5, cy: ((c.cy + 0.5) * hh) / c.h - 0.5 });
     let seq = 0;
     this.timer = setInterval(() => {
       const n = night(), u = Date.now();
-      const [iw, ih, mw, mh] = n ? [512, 424, 256, 212] : [960, 540, 480, 270];
+      const [iw, ih] = n ? S.ir : S.day, [mw, mh] = n ? S.irMap : S.dayMap;
       const cam = n ? ir : color;
+      // (a Kinect 360's tilt sensor: which way is down, in m/s², with its head tilted by tilt°)
+      const motion = k360 ? { tilt, accel: [0, Math.round(-9.81 * Math.cos((tilt * Math.PI) / 180) * 100) / 100, Math.round(9.81 * Math.sin((tilt * Math.PI) / 180) * 100) / 100], light } : {};
       onMessage({
         frame: { kind: "frame", seq: ++seq, t: u, u, source: n ? "infrared" : "color", w: iw, h: ih, image: scaled(cam, iw, ih), map: { w: mw, h: mh, ...scaled(cam, mw, mh) },
-          dark: n ? 10 : 120, fps: 30, depthFps: 30, colorFps: 30, night: n, auto: source === "auto" },
+          dark: n ? 10 : 120, fps: 30, depthFps: 30, colorFps: 30, night: n, auto: source === "auto", ...motion },
         jpeg: n ? pictures.infrared : pictures.color,
         depth: n ? maps.infrared : maps.color,
       });
       if (this.recording) {
-        onMessage({ raw: { kind: "raw", u, w: 512, h: 424 }, depth: raw, ir: raw });
-        if (this.rawcolor) onMessage({ rawcolor: { kind: "rawcolor", u }, jpeg: pictures.full });
+        // (a Kinect 360's infrared only while it's the picture: it can't send both at once)
+        onMessage({ raw: { kind: "raw", u, w: S.raw[0], h: S.raw[1] }, depth: raw, ir: !k360 || n ? raw : null });
+        if (this.rawcolor && (!k360 || !n)) onMessage({ rawcolor: { kind: "rawcolor", u }, jpeg: pictures.full });
       }
     }, 33);
+    this.motor = k360 ? (cmd, a) => {
+      if (cmd === "tilt") tilt = Math.max(-27, Math.min(27, Math.round(Number(a) || 0)));
+      else light = a;
+      onMessage({ status: "note", applied: `${cmd} ${a}`, tilt, light });
+    } : null;
     if (options.mics !== false) {
       let k = 0;
       this.audioTimer = setInterval(() => {
@@ -672,6 +772,7 @@ class SimulatedKinect {
     if (cmd === "record") this.recording = a === "on";
     else if (cmd === "rawcolor") this.rawcolor = a === "on";
     else if (cmd === "source" && this.source) this.source(a);
+    else if ((cmd === "tilt" || cmd === "light") && this.motor) this.motor(cmd, a);
     else if (this.onMessage) this.onMessage({ status: "note", applied: line });
   }
 
@@ -697,4 +798,4 @@ class SimulatedKinect {
   }
 }
 
-module.exports = { KinectCamera, KinectTake, KinectMics, SimulatedKinect, Beam, wavHeader, LINUX_HELPER };
+module.exports = { KinectCamera, KinectTake, KinectMics, SimulatedKinect, Beam, wavHeader, LINUX_HELPER, HELPER_360, is360 };

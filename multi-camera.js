@@ -47,8 +47,9 @@
  *   MultiCamera.setRole(i, role); MultiCamera.setView(i, { rotation, mirror })
  *   MultiCamera.setScreenPictures(on); MultiCamera.screenPictures()   // OAK pictures on this screen (remembered)
  *   MultiCamera.setPreviewWant({ on, focus, ms, focusMs })             // remote recording's previews: how often each is made
- * A Kinect for Xbox One can be among them too (Linux and Windows app): the picker lists each one
- * plugged in ("kinect:<id>"), a helper each streams its pictures with their depth (electron/kinect.js),
+ * A Kinect for Xbox One can be among them too (Linux and Windows app), and a Kinect for Xbox 360
+ * (Linux, Mac and Windows app: "kinect:360-<serial>", with its tilt motor, light and tilt sensor):
+ * the picker lists each one plugged in ("kinect:<id>"), a helper each streams its pictures with their depth (electron/kinect.js),
  * and its tile finds the hands (and bodies) in them, each with where it is. While a take records,
  * the Kinect's depth, infrared and sound (and its full-size colour, if asked) are kept beside it.
  *
@@ -95,7 +96,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const isOak = (id) => String(id).startsWith("oak:");
   const isKinect = (id) => String(id).startsWith("kinect:");
-  const kinectLabel = (id) => `Kinect for Xbox One${id ? ` (${String(id).slice(-4)})` : ""}`;
+  const kinectLabel = (id) => `Kinect for Xbox ${/^360-/.test(String(id)) ? "360" : "One"}${id ? ` (${String(id).slice(-4)})` : ""}`;
   async function kinectAvailable() {
     if (!global.desktop || !desktop.kinect) return false;
     // (Asked again until it's yes: Microsoft's runtime installed meanwhile, say.)
@@ -553,33 +554,44 @@
   //   filters: the depth smoothed (libfreenect2's two filters: on a Raspberry Pi they'd take most of
   //     its graphics chip, which the hand model needs); processing: where the depth is worked out
   //     (Linux: "auto" the graphics chip where it can, "gpu", "cpu" the processor).
+  //   A Kinect for Xbox 360's ("kinect:360-…"): tilt: its head's tilt motor (-27° to 27°); light: its
+  //     light (off, green, red, yellow, or blinking); size: 640x480 or 1280x960 (its colour camera's
+  //     bigger picture, 10 to 15 a second); it has no filters, processing, exposure or led of these.
   const KINECT_OWN = {
     model: (v) => ["lite", "full"].includes(v), hands: (v) => [1, 2].includes(v), picture: (v) => ["color", "depth", "blend", "side"].includes(v), night: (v) => ["auto", "on", "off"].includes(v),
-    size: (v) => ["960x540", "1440x810", "1920x1080"].includes(v), bodies: (v) => typeof v === "boolean", people: (v) => Number.isInteger(v) && v >= 1 && v <= 6, depth: (v) => typeof v === "boolean",
+    size: (v) => ["960x540", "1440x810", "1920x1080", "640x480", "1280x960"].includes(v), bodies: (v) => typeof v === "boolean", people: (v) => Number.isInteger(v) && v >= 1 && v <= 6, depth: (v) => typeof v === "boolean",
     faces: (v) => typeof v === "boolean",
     saveDepth: (v) => typeof v === "boolean", saveColor: (v) => typeof v === "boolean", saveSound: (v) => typeof v === "boolean", mics: (v) => typeof v === "boolean",
     exposure: (v) => [-2, -1, 0, 1, 2].includes(v), led: (v) => ["on", "dim", "off"].includes(v), range: (v) => [3, 4.5, 8].includes(v),
     filters: (v) => typeof v === "boolean", processing: (v) => ["auto", "gpu", "cpu"].includes(v),
+    tilt: (v) => Number.isInteger(v) && v >= -27 && v <= 27, light: (v) => ["off", "green", "red", "yellow", "blink-green", "blink-red-yellow"].includes(v),
+    sentryDepth: (v) => typeof v === "boolean", sentryPicture: (v) => typeof v === "boolean",
   };
+  const is360 = (id) => /^kinect:360-/.test(String(id));
   const kinectOwn = (id) => ((prefs && prefs.kinectCameraOptions) || {})[id] || {};
   function kinectSettingsOf(id) {
-    const o = { model: modelOf() === 1 ? "full" : "lite", hands: 2, picture: "color", night: "auto", size: "960x540", bodies: true, people: 1, depth: true, faces: false,
-      saveDepth: true, saveColor: false, saveSound: true, mics: true, exposure: 0, led: "on", range: 4.5, filters: false, processing: "auto" };
+    const k360 = is360(id);
+    const o = { model: modelOf() === 1 ? "full" : "lite", hands: 2, picture: "color", night: "auto", size: k360 ? "640x480" : "960x540", bodies: true, people: 1, depth: true, faces: false,
+      saveDepth: true, saveColor: false, saveSound: true, mics: true, exposure: 0, led: "on", range: 4.5, filters: false, processing: "auto", tilt: 0, light: "green",
+      sentryDepth: true, sentryPicture: true };
     const own = kinectOwn(id);
-    for (const k of Object.keys(KINECT_OWN)) if (KINECT_OWN[k](own[k])) o[k] = own[k];
+    const sizes = k360 ? ["640x480", "1280x960"] : ["960x540", "1440x810", "1920x1080"];
+    for (const k of Object.keys(KINECT_OWN)) if (KINECT_OWN[k](own[k]) && (k !== "size" || sizes.includes(own[k]))) o[k] = own[k];
     return o;
   }
   function kinectSettings(id) {
     const t = tiles.find((x) => x.deviceId === id);
-    // (linux: its depth is worked out here, by libfreenect2: the smoothing and where are choices.)
-    return { ...kinectSettingsOf(id), running: !!t, mics: kinectSettingsOf(id).mics, hasMics: t ? t.kinectMics : null, pipeline: t ? t.kinectPipeline || "" : "", linux: /Linux/i.test(navigator.platform || "") };
+    // (linux: its depth is worked out here, by libfreenect2: the smoothing and where are choices;
+    // k360: a Kinect for Xbox 360, with its tilt and light, and t.kinectMotion its tilt sensor's last.)
+    return { ...kinectSettingsOf(id), running: !!t, mics: kinectSettingsOf(id).mics, hasMics: t ? t.kinectMics : null, pipeline: t ? t.kinectPipeline || "" : "", linux: /Linux/i.test(navigator.platform || ""),
+      k360: is360(id), motion: t ? t.kinectMotion || null : null, firmwareChoice: is360(id) && !/Win/i.test(navigator.platform || ""), audioFirmware: t ? t.kinectFirmware : null };
   }
   // What a Kinect's helper is started with; a change to its size, microphones or where its depth
   // is worked out starts it again, the rest change as it runs (applyKinect).
   const kinectSource = (o) => (o.night === "on" ? "infrared" : o.night === "off" ? "color" : "auto");
   const kinectStart = (t) => {
     const o = kinectSettingsOf(t.deviceId);
-    return { source: kinectSource(o), size: o.size, mics: o.mics, pipeline: o.processing === "gpu" ? "opengl" : o.processing };
+    return { source: kinectSource(o), size: o.size, mics: o.mics, pipeline: o.processing === "gpu" ? "opengl" : o.processing, ...(is360(t.deviceId) ? { tilt: o.tilt, light: o.light } : {}) };
   };
   const kinectFixed = (t) => {
     const { size, mics, pipeline } = kinectStart(t);
@@ -592,9 +604,14 @@
     if (api && api.kinectOptions) api.kinectOptions({ view: o.picture, bodies: o.bodies, people: o.people, faces: o.faces, model: o.model === "lite" ? 0 : 1, hands: o.hands });
     const send = (line) => desktop.kinect.command(t.kinect, line).catch(() => {});
     send(`source ${kinectSource(o)}`);
+    send(`depthrange 0.5 ${o.range}`);
+    if (is360(t.deviceId)) {
+      send(`tilt ${o.tilt}`);
+      send(`light ${o.light}`);
+      return;
+    }
     send(`exposure auto ${o.exposure}`);
     send(`led ${o.led === "off" ? 0 : o.led === "dim" ? 150 : 1000}`);
-    send(`depthrange 0.5 ${o.range}`);
     send(`filters ${o.filters ? "on" : "off"}`);
   }
   function setKinectSettings(id, changes = {}) {
@@ -660,6 +677,10 @@
     if (timing && timing.phase === "measuring" && timing.oak.has(`kinect:${id}`)) timingSample(timing.oak.get(`kinect:${id}`), header, jpeg);
     t.night = !!header.night;
     t.audio = audio || null;
+    // (a Kinect 360's tilt motor, light and tilt sensor, as its frames say)
+    if (Array.isArray(header.accel)) t.kinectMotion = { tilt: header.tilt, accel: header.accel, light: header.light, moving: !!header.moving };
+    // (its depth for each part of the picture, for Sentry: mm, 0 = none)
+    t.kinectDepth = depth && header.map && header.map.w && header.map.h ? { w: header.map.w, h: header.map.h, bytes: depth } : null;
     let bodies = null;
     if (body && body.byteLength) {
       try {
@@ -684,7 +705,8 @@
       t.oakState = "running";
       t.kinectPipeline = s.pipeline || "";
       if (typeof s.mics === "boolean") t.kinectMics = s.mics;
-      t.label = `Kinect for Xbox One · depth · infrared${s.bodies ? " · bodies" : ""}`;
+      if (s.model === "360" && typeof s.firmware === "boolean") t.kinectFirmware = s.firmware;
+      t.label = `Kinect for Xbox ${s.model === "360" ? "360" : "One"} · depth · infrared${s.bodies ? " · bodies" : ""}${s.motor ? " · tilt" : ""}`;
       t.el.querySelector(".lbl").textContent = t.label;
       applyKinect(t);
     } else if (s.status === "error" || s.status === "stopped") {
@@ -835,6 +857,7 @@
         else if (kind === "kinect") setKinectSettings(data.id, data.options);
         else if (kind === "ps4") setPs4Settings(data.id, data.options);
         else if (kind === "ps4firmware") return choosePs4Firmware(t);
+        else if (kind === "kinectfirmware") return chooseKinectFirmware(t);
         drawSettings(t, true);
       });
     }
@@ -855,6 +878,15 @@
       return;
     }
     if (tiles.includes(t)) restartPs4(t, "Starting the PS4 camera with its firmware…");
+  }
+
+  // A Kinect for Xbox 360's audio firmware (Linux and the Mac), chosen here: it starts again with it.
+  async function chooseKinectFirmware(t) {
+    const r = await desktop.kinect.chooseFirmware().catch((err) => ({ ok: false, reason: errText(err) }));
+    if (r.canceled) return;
+    const api = tileApi(t);
+    if (!r.ok) return api && api.kinectStatus && api.kinectStatus({ status: "error", message: r.reason });
+    if (tiles.includes(t)) restartKinect(t, "Starting the Kinect again with its audio firmware…");
   }
 
   // A Kinect that stopped as it ran starts again by itself: after 3 s, then 6, 12, 24 and 48, five
@@ -1426,6 +1458,15 @@
     };
   }
 
+  // A Kinect's last depth as { w, h, data: mm }: null once it's a second old (its pictures stopped).
+  function kinectDepthOf(t) {
+    const d = t.kinectDepth;
+    if (!d || performance.now() - (t.frameAt || 0) > 1000 || d.bytes.byteLength < d.w * d.h * 2) return null;
+    const b = d.bytes;
+    const data = b.byteOffset % 2 ? new Uint16Array(b.slice(0, d.w * d.h * 2).buffer) : new Uint16Array(b.buffer, b.byteOffset, d.w * d.h);
+    return { w: d.w, h: d.h, data };
+  }
+
   // For Sentry mode (sentry.js): each tile's camera (its place in remoteState's list), its
   // picture and what it tracks.
   function sentryViews() {
@@ -1440,6 +1481,9 @@
       grey: t.oak ? () => t.grey || null : null,
       objects: t.oak ? () => t.objects || null : null,
       secondLook: t.oak ? null : () => ownSecondLook(t.deviceId),
+      // A Kinect: its depth (mm, 0 = none, lined up with its picture), and which of the two its ⚙ has Sentry watch.
+      depth: t.kinect ? () => kinectDepthOf(t) : null,
+      watch: t.kinect ? () => ({ picture: kinectSettingsOf(t.deviceId).sentryPicture, depth: kinectSettingsOf(t.deviceId).sentryDepth }) : null,
       oak: !!t.oak,
       want: (on) => (t.wants = Math.max(0, (t.wants || 0) + (on ? 1 : -1))),
       // Its frame rate now (Sentry's videos follow it).
