@@ -104,3 +104,98 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## libfreenect and libfreenect2 (the Kinects' helpers)
+
+The Kinect for Xbox 360's helper on Linux and the Mac (`kinect/kinect360-helper`, built by
+`kinect/build-kinect360.sh`) has libfreenect 0.7.5 linked into it
+(<https://github.com/OpenKinect/libfreenect>), and the Kinect for Xbox One's helper on Linux
+(`kinect/kinect2-helper`, built by `kinect/build-linux.sh`) has libfreenect2 linked into it, at a
+fixed commit with a small change of this project's (`kinect/libfreenect2.patch`)
+(<https://github.com/OpenKinect/libfreenect2>). Both are by the OpenKinect Project, copyright (c)
+2010 and (c) 2014 individual OpenKinect contributors (see each repository's CONTRIB file), and
+offered under the Apache License 2.0 or the GNU General Public License 2.0; Hand Tracker uses them
+under the Apache License 2.0 (<https://www.apache.org/licenses/LICENSE-2.0>).
+
+## libusb
+
+Both helpers have libusb 1.0 linked into them (<https://libusb.info>): on Linux the computer's own
+static copy where it has one (Debian's and Ubuntu's `libusb-1.0-0-dev`), on the Mac v1.0.27, built
+from its source by `kinect/build-kinect360.sh`. It's under the GNU Lesser General Public License
+2.1 (<https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html>). The helpers' own source and the
+scripts that build them are in `kinect/`, so either can be built again with a changed libusb.
+
+## libjpeg-turbo (TurboJPEG)
+
+Both helpers have libjpeg-turbo's TurboJPEG linked into them (<https://libjpeg-turbo.org>): on
+Linux the computer's own static copy where it has one (`libturbojpeg0-dev`), on the Mac 3.0.4,
+built from its source by `kinect/build-kinect360.sh`. This software is based in part on the work
+of the Independent JPEG Group. TurboJPEG is under the Modified (3-clause) BSD License:
+
+```
+Copyright (C)2009-2023 D. R. Commander.  All Rights Reserved.
+Copyright (C)2015 Viktor Szathmáry.  All Rights Reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+- Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+- Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+- Neither the name of the libjpeg-turbo Project nor the names of its
+  contributors may be used to endorse or promote products derived from this
+  software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS",
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+```
+
+## GLFW
+
+The Kinect for Xbox One's helper on Linux has GLFW 3.4 linked into it, for libfreenect2's depth
+worked out with the graphics chip (<https://www.glfw.org>), built from its source by
+`kinect/build-linux.sh`. zlib licence:
+
+```
+Copyright (c) 2002-2006 Marcus Geelnard
+
+Copyright (c) 2006-2019 Camilla Löwy
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would
+   be appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not
+   be misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source
+   distribution.
+```
+
+## Microsoft's Kinect software (not included)
+
+None of Microsoft's Kinect software is part of Hand Tracker. On Windows the Kinects' helpers
+(`kinect/KinectHelper.cs`, `kinect/Kinect360Helper.cs`) use Microsoft's Kinect for Windows
+Runtime 2.0 or 1.8, which the person installs from Microsoft. On Linux and the Mac, a Kinect for
+Xbox 360's audio firmware (Microsoft's `audios.bin`) is the person's own copy, chosen under its ⚙;
+libfreenect's `src/fwfetcher.py` can take it out of Microsoft's Xbox 360 system update.
