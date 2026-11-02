@@ -71,8 +71,11 @@ if [ "$(uname -s)" = Darwin ]; then
       -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_SIMD=OFF -DWITH_TURBOJPEG=ON -DCMAKE_INSTALL_PREFIX="$prefix" > "$work/jpeg-$name.cmake.log"
     cmake --build "$work/jpeg-$name" -j "$jobs" > "$work/jpeg-$name.log"
     cmake --install "$work/jpeg-$name" > /dev/null
+    # (libfreenect makes its shared library too, whatever BUILD_SHARED_LIBS says: with the static
+    # libusb in it, that needs the frameworks libusb uses)
     freenect "$work/libfreenect-$name" "$prefix" -DCMAKE_OSX_ARCHITECTURES="$cpu" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
-      -DLIBUSB_1_INCLUDE_DIR="$prefix/include/libusb-1.0" -DLIBUSB_1_LIBRARY="$prefix/lib/libusb-1.0.a" -DCMAKE_PREFIX_PATH="$prefix"
+      -DLIBUSB_1_INCLUDE_DIR="$prefix/include/libusb-1.0" -DLIBUSB_1_LIBRARY="$prefix/lib/libusb-1.0.a" -DCMAKE_PREFIX_PATH="$prefix" \
+      -DCMAKE_SHARED_LINKER_FLAGS="-framework IOKit -framework CoreFoundation -framework Security -lobjc"
     out="$here/bin/mac-$name"
     mkdir -p "$out"
     clang++ -arch "$cpu" -mmacosx-version-min=11.0 -O2 -std=c++17 -Wall -DKINECT360_WITH_AUDIO -I"$prefix/include" -I"$prefix/include/libfreenect" \
@@ -85,7 +88,7 @@ if [ "$(uname -s)" = Darwin ]; then
     if [ "$(uname -m)" = "$cpu" ] || arch -x86_64 /usr/bin/true 2>/dev/null; then
       if [ "$(uname -m)" = "$cpu" ]; then run=("$out/kinect360-helper"); else run=(arch -x86_64 "$out/kinect360-helper"); fi
       "${run[@]}" --check | strings | head -1
-      "${run[@]}" --selftest | strings | head -1 | grep -q '"ok":true'
+      "${run[@]}" --selftest | grep -a -q '"ok":true'
     fi
   done
   exit 0
@@ -115,4 +118,4 @@ strip "$out/kinect360-helper"
 echo "Built $out/kinect360-helper"
 ldd "$out/kinect360-helper" | sed 's/^/  /'
 "$out/kinect360-helper" --check | strings | head -1
-"$out/kinect360-helper" --selftest | strings | head -1 | grep -q '"ok":true'
+"$out/kinect360-helper" --selftest | grep -a -q '"ok":true'
