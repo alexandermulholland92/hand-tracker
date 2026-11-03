@@ -4,7 +4,7 @@ Real-time tracking of **both hands** from a webcam (MediaPipe Hands, 21 landmark
 
 ## Run it
 
-**On the web:** open **https://hand-tracker.pages.dev** in Chrome, Edge or Safari, on a computer or a phone. Nothing to install, and tracking runs entirely on your device; no video leaves it. Its **Download** menu (top right) has each app for each device, from the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release, and shows how to install the one picked as it downloads.
+**On the web:** open **https://hand-tracker.com** in Chrome, Edge or Safari, on a computer or a phone. Nothing to install, and tracking runs entirely on your device; no video leaves it. Its **Download** menu (top right) has each app for each device, from the [Latest build](https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build) release, and shows how to install the one picked as it downloads.
 
 **Windows app:** double-click `dist/HandTracker-1.1.0-portable.exe`. Nothing to install; it works offline.
 
