@@ -358,6 +358,30 @@
     if (e.target.matches("input[type=checkbox]")) command("pick", { pick: { id, use: e.target.checked } }, { quiet: true });
     else if (e.target.matches("select")) command("pick", { pick: { id, role: e.target.value } }, { quiet: true });
   });
+  // Folded away to one line (which are ticked) until wanted; open or not is remembered on this device.
+  let camsOpen = (() => {
+    try {
+      return localStorage.getItem("ht.camsOpen") === "1";
+    } catch {
+      return false;
+    }
+  })();
+  function foldCameras() {
+    $("camBody").hidden = !camsOpen;
+    $("camSummary").hidden = camsOpen;
+    $("camsShow").textContent = camsOpen ? "Hide" : "Show";
+    $("camsShow").setAttribute("aria-expanded", String(camsOpen));
+  }
+  $("camsShow").addEventListener("click", () => {
+    camsOpen = !camsOpen;
+    try {
+      localStorage.setItem("ht.camsOpen", camsOpen ? "1" : "0");
+    } catch {
+      // (not remembered here)
+    }
+    foldCameras();
+  });
+  foldCameras();
   let shownRows = "";
   function renderCameras(s) {
     const a = s.available || {};
@@ -390,6 +414,9 @@
     else if (!list.length) note.textContent = a.note || "No cameras found. Plug one in, then Refresh.";
     else note.textContent = a.note || "Tick the cameras to start; each one's role is where it's worn, or where it stands (north, south, east, west).";
     $("scanBtn").disabled = busy || !!a.scanning || sending;
+    const ticked = list.filter((c) => c.use);
+    $("camSummary").textContent = a.scanning && !list.length ? "Looking for cameras…" : !list.length ? "No cameras found."
+      : `${ticked.length} of ${list.length} ticked${ticked.length ? `: ${ticked.map((c) => c.label).join(" · ")}` : ""}`;
   }
 
   // ---------- take details: kept by Hand Tracker (every phone sees the same), sent as typed ----------

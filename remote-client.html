@@ -193,9 +193,12 @@
   </section>
 
   <section class="panel" id="camPanel" aria-labelledby="camTitle" hidden>
-    <h2><span id="camTitle" class="grow">Cameras</span><button type="button" id="scanBtn" class="small">Refresh</button></h2>
-    <div id="camRows"></div>
-    <div id="camNote"></div>
+    <h2><span id="camTitle" class="grow">Cameras</span><button type="button" id="scanBtn" class="small">Refresh</button><button type="button" id="camsShow" class="small" aria-expanded="false" aria-controls="camBody">Show</button></h2>
+    <div id="camSummary" class="muted"></div>
+    <div id="camBody" hidden>
+      <div id="camRows"></div>
+      <div id="camNote"></div>
+    </div>
   </section>
 
   <section class="panel details" id="detailsPanel" aria-labelledby="detailsTitle">
