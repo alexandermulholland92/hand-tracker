@@ -1254,7 +1254,7 @@ function registerRemoteIpc() {
   handle("remote:system", () => (simulateSystem ? { reboot: "yes", powerOff: "yes", cameraReset: "power" } : systemControl.capabilities()));
   // The room left where takes are saved, whether this computer has a battery, and how hot its
   // processor is (storage.js).
-  handle("remote:storage", async () => ({ ...((await storage.space(remoteFolder())) || {}), battery: await storage.hasBattery(), temperature: await storage.temperature() }));
+  handle("remote:storage", async () => ({ ...((await storage.space(remoteFolder())) || {}), battery: await storage.hasBattery(), temperature: await storage.temperature(), uptime: os.uptime() }));
   handle("remote:power-off", () => {
     if (!simulateSystem) return systemControl.powerOff();
     global.__systemAsked.push("powerOff");

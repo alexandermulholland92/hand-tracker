@@ -64,12 +64,14 @@
     font-size: 13.5px; line-height: 1.5; color: #c9c9cf; background: #0b0c0e;
   }
   #stageMessage.error { color: #ffc9c9; }
-  #recBadge {
-    position: absolute; top: 12px; left: 12px; padding: 4px 10px; border-radius: 20px;
+  #recBadge, .rec-clock {
+    padding: 4px 10px; border-radius: 20px;
     background: rgba(92, 43, 43, 0.9); border: 1px solid #ff6b6b; color: #ffc9c9;
     font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0.03em;
   }
-  #recBadge::before {
+  #recBadge { position: absolute; top: 12px; left: 12px; }
+  .rec-clock { align-self: center; }
+  #recBadge::before, .rec-clock::before {
     content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
     background: #ff6b6b; margin-right: 7px; vertical-align: 0; animation: blink 1s steps(1) infinite;
   }
@@ -564,6 +566,7 @@
               <label title="Sound from this computer's microphone, in each camera's video"><input type="checkbox" id="remoteSound" checked /> with sound</label>
               <label title="How much of each camera's picture detail its video keeps, and so its size: small files is under half the size of standard, high about twice, best about four times">Quality <select id="remoteQuality"><option value="low">small files</option><option value="standard">standard</option><option value="high">high</option><option value="best">best</option></select></label></div>
             <label class="remote-row" title="As each take starts, each camera's photo of what it sees is saved with the take, beside its motion capture and videos"><input type="checkbox" id="remotePhoto" checked /> A photo from each camera as each take starts</label>
+            <label class="remote-row" title="For a computer on a battery: once it has been on (since it started) this long, it's said in red under Remote recording and on its page, through Sentry's ntfy if that's set up, and on phones watching it for Sentry alerts"><input type="checkbox" id="remoteBatteryReminder" /> Remind me to change or charge the battery after <input type="number" id="remoteBatteryHours" min="0.5" max="48" step="0.5" value="4" style="width:4.5em" /> hours on</label>
             <label class="remote-row" id="remoteAutostartRow" hidden><input type="checkbox" id="remoteAutostart" /> Open <span id="remoteAppName">Hand Tracker</span> when this computer starts, waiting for the phone (for a computer with no screen)</label>
             <div class="remote-row" id="remoteBtRow" hidden title="Phones, the website and other computers can reach this page over Bluetooth too, when there's no network between them, with this password (a Raspberry Pi set up with pi/bluetooth-setup.sh uses its hotspot's)">Bluetooth: <span id="remoteBtStatus"></span>
               <input id="remoteBtPassword" type="password" minlength="8" maxlength="63" placeholder="Bluetooth password" autocomplete="new-password" /> <button id="remoteBtSet">Set</button></div>
@@ -881,6 +884,7 @@
   <div id="multiCamMissing" class="note"></div>
   <div class="toolbar" style="margin-top:10px">
     <button id="multiCamRecord" class="primary">Start Motion Capture</button>
+    <span id="multiCamClock" class="rec-clock" hidden>REC 00:00</span>
     <button id="multiCamClose">Close (back to one camera)</button>
     <button id="multiCamTiming" title="How far apart the cameras' timings are: this screen flashes for about 12 seconds while every camera films it (or start it from Remote recording's page, which flashes on the phone).">Timing check</button>
     <button id="multiCamScreen" aria-pressed="false" hidden title="The OAK cameras' pictures on this screen. Off leaves more of the processor for finding hands: they're still tracked and recorded, and Remote recording's page still shows the cameras.">Hide pictures</button>

@@ -126,6 +126,10 @@
       $("remoteQuality").disabled = !remoteVideo();
     }
     if ($("remotePhoto")) $("remotePhoto").checked = remotePhoto();
+    if ($("remoteBatteryReminder")) {
+      $("remoteBatteryReminder").checked = batteryReminder();
+      if (document.activeElement !== $("remoteBatteryHours")) $("remoteBatteryHours").value = reminderHours();
+    }
   }
 
   // ---------- the take details ----------
@@ -279,7 +283,9 @@
     space = r && r.free >= 0 && r.total > 0 ? { free: r.free, total: r.total } : null;
     battery = batteryNow(r && r.battery === true ? await browserBattery() : r && typeof r.battery === "object" ? r.battery : null);
     temp = cleanTemp(r && r.temperature);
+    uptime = r && r.uptime > 0 ? { s: r.uptime, at: Date.now() } : null;
     watchHeat();
+    watchBatteryReminder();
     showRoom();
   }
 
@@ -327,6 +333,22 @@
     const c = `${Math.round(t.c)} °C`;
     return t.of === "battery" ? `Battery temperature: ${c}${isHot ? ", overheating" : ""}` : `Processor: ${c}${isHot ? ", too hot" : ""}`;
   }
+  // The battery reminder (a switch, off at first, for a rig on a battery): once it has been on
+  // (since it started) for its hours, said in red and told once each time it starts, through
+  // Sentry's ntfy and to the phones watching it.
+  const batteryReminder = () => prefs.remoteBatteryReminder === true;
+  const reminderHours = () => (Number(prefs.remoteBatteryHours) >= 0.5 ? Math.min(48, Number(prefs.remoteBatteryHours)) : 4);
+  let uptime = null; // { s, at }: the seconds it had been on, and when that was read
+  const onFor = () => (uptime ? uptime.s + (Date.now() - uptime.at) / 1000 : null);
+  const reminderDue = () => batteryReminder() && onFor() >= reminderHours() * 3600;
+  function watchBatteryReminder() {
+    if (!reminderDue()) return;
+    const boot = Date.now() / 1000 - onFor(); // (when it started)
+    if (Math.abs(boot - (Number(prefs.remoteBatteryToldBoot) || 0)) < 300) return;
+    setPref("remoteBatteryToldBoot", Math.round(boot));
+    if (global.Sentry && global.Sentry.tell) global.Sentry.tell("Change the battery", `It has been on for ${about(onFor() / 3600)}: change or charge its battery`).catch(() => {});
+  }
+
   // With each look at the room left: the device and its OAK cameras' chips; what's newly too hot
   // is told of (-> what was told).
   function watchHeat() {
@@ -358,11 +380,13 @@
     }
     if (battery) out.battery = { ...battery, text: batteryText(battery), low: !battery.charging && battery.level < LOW_BATTERY };
     if (temp) out.temperature = { ...temp, hot: hot.has("device"), text: tempText(temp, hot.has("device")) };
+    if (uptime) out.batteryReminder = { on: batteryReminder(), hours: reminderHours(), due: reminderDue(), text: reminderDue() ? `On for ${about(onFor() / 3600)}: change or charge the battery` : "" };
     return out;
   }
   let shownRoom = "";
   function showRoom(r = roomState()) {
-    const parts = [r.storage && ["Space: " + r.storage.text, r.storage.low], r.battery && [r.battery.text, r.battery.low], r.temperature && [r.temperature.text, r.temperature.hot]].filter(Boolean);
+    const parts = [r.storage && ["Space: " + r.storage.text, r.storage.low], r.battery && [r.battery.text, r.battery.low], r.temperature && [r.temperature.text, r.temperature.hot],
+      r.batteryReminder && r.batteryReminder.due && [r.batteryReminder.text, true]].filter(Boolean);
     if (!$("remoteRoom") || JSON.stringify(parts) === shownRoom) return;
     shownRoom = JSON.stringify(parts);
     $("remoteRoomRow").hidden = !parts.length;
@@ -974,6 +998,15 @@
         showSettings();
         return { ok: true, message: st.photo ? "Each camera takes a photo as each take starts." : "No photos with the takes." };
       }
+      // The battery reminder and its hours (any time).
+      if (typeof st.batteryReminder === "boolean" || Number(st.batteryHours) > 0) {
+        if (typeof st.batteryReminder === "boolean") setPref("remoteBatteryReminder", st.batteryReminder);
+        if (Number(st.batteryHours) > 0) setPref("remoteBatteryHours", Math.min(48, Math.max(0.5, Number(st.batteryHours))));
+        showSettings();
+        watchBatteryReminder();
+        showRoom();
+        return { ok: true, message: batteryReminder() ? `A reminder to change or charge the battery once it has been on for ${reminderHours()} h.` : "No battery reminder." };
+      }
       // The OAK cameras' pictures on this computer's screen (any time: recording doesn't mind).
       if (typeof st.screenPictures === "boolean" && !onPhone) {
         cams().setScreenPictures(st.screenPictures);
@@ -1306,6 +1339,16 @@
       showSettings(); // (from the next take: not halfway through one)
       showRoom();
     });
+    if ($("remoteBatteryReminder")) {
+      const set = () => {
+        setPref("remoteBatteryReminder", $("remoteBatteryReminder").checked);
+        if (Number($("remoteBatteryHours").value) > 0) setPref("remoteBatteryHours", Math.min(48, Math.max(0.5, Number($("remoteBatteryHours").value))));
+        watchBatteryReminder();
+        showRoom();
+      };
+      $("remoteBatteryReminder").addEventListener("change", set);
+      $("remoteBatteryHours").addEventListener("change", set);
+    }
     for (const [id, key] of [["remoteVideo", "remoteVideo"], ["remoteSound", "remoteSound"], ["remotePhoto", "remotePhoto"]]) {
       if (!$(id)) continue;
       $(id).addEventListener("change", (e) => {

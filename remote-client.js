@@ -146,7 +146,7 @@
     if (text && !err) sayTimer = setTimeout(() => say(""), 5000);
   };
 
-  let state = null, sending = false, shownCams = -1;
+  let state = null, stateAt = 0, sending = false, shownCams = -1; // stateAt: when state came
   const loops = [];
 
   // ---------- roles ----------
@@ -525,6 +525,10 @@
   $("soundBtn").addEventListener("click", () => command("settings", { settings: { sound: !soundOn } }));
   // ...and its quality: how much of the picture's detail is kept, and so how big the files are.
   $("qualitySel").addEventListener("change", () => command("settings", { settings: { videoQuality: $("qualitySel").value } }));
+  // The battery reminder: on or off, and after how many hours on (for a rig on a battery).
+  let reminderOn = false;
+  $("batteryBtn").addEventListener("click", () => command("settings", { settings: { batteryReminder: !reminderOn, batteryHours: Number($("batteryHours").value) } }));
+  $("batteryHours").addEventListener("change", () => Number($("batteryHours").value) > 0 && command("settings", { settings: { batteryHours: Number($("batteryHours").value) } }));
   // A photo from each camera as the take starts, saved with it too.
   let photoOn = true;
   $("photoBtn").addEventListener("click", () => command("settings", { settings: { photo: !photoOn } }));
@@ -2056,15 +2060,22 @@
 
   // ---------- the page ----------
   let lastNoticeAt = null;
+  // The take's length, counted on each second from the rig's last answer (they come every 1-6 s).
+  function showRecClock() {
+    const t = clock(state.elapsed_s + (Date.now() - stateAt) / 1000);
+    document.title = `● ${t} · Hand Tracker`;
+    $("status").innerHTML = `<span class="dot"></span>Recording ${t}`;
+  }
+  setInterval(() => state && state.recording && showRecClock(), 1000);
   function render() {
     const s = state;
     $("title").textContent = (s.host ? `Hand Tracker on ${s.host}` : "Hand Tracker") + (bt || btNet ? " (Bluetooth)" : "");
-    document.title = s.recording ? `● ${clock(s.elapsed_s)} · Hand Tracker` : "Hand Tracker remote";
+    document.title = "Hand Tracker remote";
     const cams = s.cameras || [];
     const running = cams.filter((c) => c.fps > 0).length;
     const status = $("status");
     status.className = s.recording ? "rec" : "";
-    if (s.recording) status.innerHTML = `<span class="dot"></span>Recording ${clock(s.elapsed_s)}`;
+    if (s.recording) showRecClock();
     else if (s.pending) status.textContent = s.pending;
     else if (!s.running) status.textContent = "Cameras off.";
     else if (running < cams.length) status.textContent = `Starting cameras… ${running} of ${cams.length} running`;
@@ -2072,7 +2083,7 @@
     // The space left where its takes are saved, the hours of takes it holds, its battery and its
     // temperature, in red when too hot (a rig from before says none of them).
     const room = [s.storage && s.storage.text && [`Space: ${s.storage.text}`, s.storage.low], s.battery && s.battery.text && [s.battery.text, s.battery.low],
-      s.temperature && s.temperature.text && [s.temperature.text, s.temperature.hot]].filter(Boolean);
+      s.temperature && s.temperature.text && [s.temperature.text, s.temperature.hot], s.batteryReminder && s.batteryReminder.due && [s.batteryReminder.text, true]].filter(Boolean);
     $("room").hidden = !room.length;
     $("room").innerHTML = room.map(([text, low]) => `<span${low ? ' class="err"' : ""}>${esc(text)}</span>`).join(" · ");
 
@@ -2122,6 +2133,17 @@
       $("qualityRow").hidden = !q;
       if (q && document.activeElement !== $("qualitySel")) $("qualitySel").value = q;
       $("qualitySel").disabled = sending || !!s.recording || !videoOn;
+      // (A rig from before the battery reminder, or a phone, doesn't say it.)
+      const br = s.batteryReminder;
+      $("batteryRow").hidden = !br;
+      if (br) {
+        reminderOn = br.on;
+        $("batteryBtn").textContent = reminderOn ? "On" : "Off";
+        $("batteryBtn").classList.toggle("on", reminderOn);
+        $("batteryBtn").setAttribute("aria-pressed", String(reminderOn));
+        $("batteryBtn").disabled = $("batteryHours").disabled = sending;
+        if (document.activeElement !== $("batteryHours")) $("batteryHours").value = br.hours;
+      }
       // (A rig from before the photo setting doesn't say it.)
       const photos = typeof s.photo === "boolean";
       $("photoRow").hidden = !photos;
@@ -2417,6 +2439,7 @@
     for (;;) {
       try {
         state = (await api("/api/state")).json();
+        stateAt = Date.now();
         render();
         if (wantAlert) {
           const a = wantAlert;
@@ -2464,6 +2487,7 @@
       sending = false;
       try {
         state = (await api("/api/state")).json();
+        stateAt = Date.now();
         render();
       } catch {}
     }

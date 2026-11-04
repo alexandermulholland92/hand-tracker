@@ -79,7 +79,7 @@
   let tiles = []; // { name, deviceId, role, view: { rotation, mirror }, label, frame, el, oak (its id, for an OAK camera), oakState }
   let statusTimer = null;
   let recording = false;
-  let recordingSince = 0;
+  let recordingSince = 0, clockTimer = null;
   let oakOff = []; // the OAK stream listeners, while OAK tiles run
   let restoreOak = false; // the main window's OAK camera was in use: back to it when the tiles close
   let oakPorts = {}; // OAK camera id -> its USB port, from the last listing
@@ -1349,6 +1349,8 @@
     }
     recording = true;
     recordingSince = Date.now();
+    showClock();
+    clockTimer = setInterval(showClock, 250);
     els.record.textContent = "Stop Motion Capture";
     els.record.classList.add("recording");
     const hands = tiles.filter((t) => tracking(t) && live.includes(tileApi(t))).length;
@@ -1356,11 +1358,21 @@
     return { ok: true, message: `Recording ${live.length} camera${live.length === 1 ? "" : "s"}${hands ? "" : " (videos only: hand tracking is off)"}.` };
   }
 
+  // The take's length beside its button: "REC 01:05", or past an hour "REC 1:02:03".
+  function showClock() {
+    if (!els.clock) return;
+    const s = Math.floor((Date.now() - recordingSince) / 1000), h = Math.floor(s / 3600), p = (n) => String(n).padStart(2, "0");
+    els.clock.textContent = `REC ${h ? `${h}:` : ""}${p(Math.floor((s % 3600) / 60))}:${p(s % 60)}`;
+    els.clock.hidden = false;
+  }
+
   // Returns the take (null if no hands were recorded); show: hand it to the export card.
   // extra: more for the take (remote recording's take details).
   function stopRecording(show = true, extra = null) {
     if (!recording) return null;
     recording = false;
+    clearInterval(clockTimer);
+    if (els.clock) els.clock.hidden = true;
     for (const t of tiles) delete t.takeHands;
     els.record.textContent = "Start Motion Capture";
     els.record.classList.remove("recording");
@@ -1552,7 +1564,7 @@
     onClose = opts.onClose || onClose;
     els = {
       dialog: $("multiCamDialog"), pickList: $("multiCamPicks"), pickNote: $("multiCamPickNote"), start: $("multiCamStart"), cancel: $("multiCamCancel"),
-      card: $("multiCamCard"), grid: $("multiCamGrid"), record: $("multiCamRecord"), closeBtn: $("multiCamClose"), note: $("multiCamNote"),
+      card: $("multiCamCard"), grid: $("multiCamGrid"), record: $("multiCamRecord"), clock: $("multiCamClock"), closeBtn: $("multiCamClose"), note: $("multiCamNote"),
       screenBtn: $("multiCamScreen"), missing: $("multiCamMissing"), timingBtn: $("multiCamTiming"),
     };
     if (els.timingBtn) els.timingBtn.addEventListener("click", () => {

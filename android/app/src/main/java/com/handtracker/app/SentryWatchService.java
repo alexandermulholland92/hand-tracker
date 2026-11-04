@@ -271,6 +271,14 @@ public class SentryWatchService extends Service {
     // Too hot, as its state says: the computer itself (temperature.hot) or an OAK camera's chip
     // (a camera's chipHot). Told once each time it gets so (in hot, "<rig>|...", while it is).
     private void heat(String rig, String host, JSONObject state, Set<String> hot) {
+        // Its battery reminder (on for its hours, as its state says), told once each time it's due.
+        JSONObject br = state.optJSONObject("batteryReminder");
+        String battery = rig + "|battery";
+        if (br != null && br.optBoolean("due")) {
+            if (hot.add(battery)) device(2500 + Math.floorMod(battery.hashCode(), 500), rig, host + ": change the battery", br.optString("text", "Change or charge the battery"), android.R.drawable.ic_lock_idle_low_battery);
+        } else {
+            hot.remove(battery);
+        }
         JSONObject t = state.optJSONObject("temperature");
         String self = rig + "|device";
         if (t != null && t.optBoolean("hot")) {
