@@ -382,6 +382,29 @@
     foldCameras();
   });
   foldCameras();
+  // Sentry mode's settings and alerts folded away likewise (its switch and its line stay), closed at first.
+  let sentryOpen = (() => {
+    try {
+      return localStorage.getItem("ht.sentryOpen") === "1";
+    } catch {
+      return false;
+    }
+  })();
+  function foldSentry() {
+    $("sentryBody").hidden = !sentryOpen;
+    $("sentryShow").textContent = sentryOpen ? "Hide" : "Show";
+    $("sentryShow").setAttribute("aria-expanded", String(sentryOpen));
+  }
+  $("sentryShow").addEventListener("click", () => {
+    sentryOpen = !sentryOpen;
+    try {
+      localStorage.setItem("ht.sentryOpen", sentryOpen ? "1" : "0");
+    } catch {
+      // (not remembered here)
+    }
+    foldSentry();
+  });
+  foldSentry();
   let shownRows = "";
   function renderCameras(s) {
     const a = s.available || {};
@@ -556,6 +579,7 @@
   let reminderOn = false;
   $("batteryBtn").addEventListener("click", () => command("settings", { settings: { batteryReminder: !reminderOn, batteryHours: Number($("batteryHours").value) } }));
   $("batteryHours").addEventListener("change", () => Number($("batteryHours").value) > 0 && command("settings", { settings: { batteryHours: Number($("batteryHours").value) } }));
+  $("onTimeReset").addEventListener("click", () => confirm("Count its time on from now (a new or charged battery)?") && command("settings", { settings: { resetOnTime: true } }));
   // A photo from each camera as the take starts, saved with it too.
   let photoOn = true;
   $("photoBtn").addEventListener("click", () => command("settings", { settings: { photo: !photoOn } }));
@@ -2170,6 +2194,13 @@
         $("batteryBtn").setAttribute("aria-pressed", String(reminderOn));
         $("batteryBtn").disabled = $("batteryHours").disabled = sending;
         if (document.activeElement !== $("batteryHours")) $("batteryHours").value = br.hours;
+      }
+      // Its time on since the battery was changed, through restarts (a rig from before it, or a
+      // phone, doesn't say it).
+      $("onTimeRow").hidden = !s.onTime;
+      if (s.onTime) {
+        $("onTimeText").textContent = s.onTime.text;
+        $("onTimeReset").disabled = sending;
       }
       // (A rig from before the photo setting doesn't say it.)
       const photos = typeof s.photo === "boolean";

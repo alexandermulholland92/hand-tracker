@@ -226,8 +226,9 @@
   <div id="take" hidden></div>
 
   <section class="panel" id="sentryPanel" aria-labelledby="sentryTitle" hidden>
-    <h2><span id="sentryTitle" class="grow">Sentry mode</span><button type="button" id="sentryBtn" class="small" aria-pressed="false">Off</button></h2>
+    <h2><span id="sentryTitle" class="grow">Sentry mode</span><button type="button" id="sentryBtn" class="small" aria-pressed="false">Off</button><button type="button" id="sentryShow" class="small" aria-expanded="false" aria-controls="sentryBody">Show</button></h2>
     <div id="sentryNote" class="muted"></div>
+    <div id="sentryBody" hidden>
     <div id="sentrySettings" hidden>
       <div class="row"><span class="grow">Ignore pets and animals</span><button type="button" id="sentryPets" class="small" aria-pressed="false">Off</button></div>
       <div class="sub">Movement where a cat, dog, bird or other animal is (and no person) doesn't count.</div>
@@ -265,6 +266,7 @@
     <div id="sentryAlerts"></div>
     <div id="sentryAlertsNote" class="muted"></div>
     <button type="button" id="sentryDelAll" class="small" hidden>Delete every Sentry photo and video</button>
+    </div>
   </section>
 
   <div id="full" role="dialog" aria-label="One camera, full screen" hidden>
@@ -305,6 +307,7 @@
     <div class="row"><span class="grow">Sound</span><button type="button" id="soundBtn" class="small on" aria-pressed="true">On</button></div>
     <div class="row" id="qualityRow" hidden><span class="grow">Quality</span><select id="qualitySel"><option value="low">Small files</option><option value="standard">Standard</option><option value="high">High</option><option value="best">Best</option></select></div>
     <div class="row" id="batteryRow" hidden><span class="grow">Remind to change or charge the battery after <input type="number" id="batteryHours" min="0.5" max="48" step="0.5" value="4" style="width:4.5em" /> hours on</span><button type="button" id="batteryBtn" class="small" aria-pressed="false">Off</button></div>
+    <div class="row" id="onTimeRow" hidden><span class="grow" id="onTimeText"></span><button type="button" id="onTimeReset" class="small">Reset</button></div>
     <div class="row" id="photoRow" hidden><span class="grow">A photo from each camera as the take starts</span><button type="button" id="photoBtn" class="small on" aria-pressed="true">On</button></div>
     <div id="videoNote" class="muted"></div>
   </section>

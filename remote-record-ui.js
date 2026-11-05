@@ -284,6 +284,7 @@
     battery = batteryNow(r && r.battery === true ? await browserBattery() : r && typeof r.battery === "object" ? r.battery : null);
     temp = cleanTemp(r && r.temperature);
     uptime = r && r.uptime > 0 ? { s: r.uptime, at: Date.now() } : null;
+    countOnTime();
     watchHeat();
     watchBatteryReminder();
     showRoom();
@@ -333,17 +334,49 @@
     const c = `${Math.round(t.c)} °C`;
     return t.of === "battery" ? `Battery temperature: ${c}${isHot ? ", overheating" : ""}` : `Processor: ${c}${isHot ? ", too hot" : ""}`;
   }
+  // How long it has been on since its battery was changed (its Reset), kept through restarts:
+  // prefs.remoteOnTime = { base: the seconds from its starts before this one, boot: when this
+  // start was (s), from: this start's seconds on when its count began (0, or when it was Reset),
+  // last: this start's seconds on as last written, at: when that was (s) }, written each minute.
+  // A start it didn't see the end of counts to its last minute. A new start: its seconds on went
+  // back, or more time went by on the clock since the last write than it has been on (a clock put
+  // right after it started moves its start time, but not that).
+  let uptime = null; // { s, at }: the seconds it had been on since it started, and when that was read
+  const sinceStart = () => (uptime ? uptime.s + (Date.now() - uptime.at) / 1000 : null);
+  const onTime = () => (prefs.remoteOnTime && typeof prefs.remoteOnTime === "object" && Number.isFinite(prefs.remoteOnTime.base) ? prefs.remoteOnTime : null);
+  function countOnTime(reset = false) {
+    const up = sinceStart();
+    if (up === null) return;
+    const now = Date.now() / 1000, boot = Math.round(now - up);
+    let t = onTime();
+    if (reset || !t) t = { base: 0, boot, from: reset ? up : 0 };
+    else if (up + 5 < t.last || (Math.abs(boot - t.boot) > 300 && up + 5 < now - t.at)) t = { base: t.base + Math.max(0, t.last - t.from), boot, from: 0 };
+    else if (up - t.last < 60) return;
+    setPref("remoteOnTime", { ...t, last: Math.round(up), at: Math.round(now) });
+  }
+  const onFor = () => {
+    const t = onTime(), up = sinceStart();
+    return t && up !== null ? t.base + Math.max(0, up - t.from) : null;
+  };
+  function onForText(s) {
+    const min = Math.floor(s / 60), h = Math.floor(min / 60);
+    return h >= 48 ? `${Math.floor(h / 24)} days ${h % 24} h` : h ? `${h} h ${min % 60} min` : `${min} min`;
+  }
+  function resetOnTime() {
+    countOnTime(true);
+    setPref("remoteBatteryToldBoot", 0); // (the reminder can be told again)
+    showRoom();
+  }
+
   // The battery reminder (a switch, off at first, for a rig on a battery): once it has been on
-  // (since it started) for its hours, said in red and told once each time it starts, through
-  // Sentry's ntfy and to the phones watching it.
+  // (since its battery was changed: onFor) for its hours, said in red and told once each time it
+  // starts, through Sentry's ntfy and to the phones watching it.
   const batteryReminder = () => prefs.remoteBatteryReminder === true;
   const reminderHours = () => (Number(prefs.remoteBatteryHours) >= 0.5 ? Math.min(48, Number(prefs.remoteBatteryHours)) : 4);
-  let uptime = null; // { s, at }: the seconds it had been on, and when that was read
-  const onFor = () => (uptime ? uptime.s + (Date.now() - uptime.at) / 1000 : null);
   const reminderDue = () => batteryReminder() && onFor() >= reminderHours() * 3600;
   function watchBatteryReminder() {
     if (!reminderDue()) return;
-    const boot = Date.now() / 1000 - onFor(); // (when it started)
+    const boot = Date.now() / 1000 - sinceStart(); // (when it started)
     if (Math.abs(boot - (Number(prefs.remoteBatteryToldBoot) || 0)) < 300) return;
     setPref("remoteBatteryToldBoot", Math.round(boot));
     if (global.Sentry && global.Sentry.tell) global.Sentry.tell("Change the battery", `It has been on for ${about(onFor() / 3600)}: change or charge its battery`).catch(() => {});
@@ -380,11 +413,18 @@
     }
     if (battery) out.battery = { ...battery, text: batteryText(battery), low: !battery.charging && battery.level < LOW_BATTERY };
     if (temp) out.temperature = { ...temp, hot: hot.has("device"), text: tempText(temp, hot.has("device")) };
-    if (uptime) out.batteryReminder = { on: batteryReminder(), hours: reminderHours(), due: reminderDue(), text: reminderDue() ? `On for ${about(onFor() / 3600)}: change or charge the battery` : "" };
+    if (uptime && onTime()) {
+      out.onTime = { s: Math.round(onFor()), text: `On for ${onForText(onFor())} since the battery was changed` };
+      out.batteryReminder = { on: batteryReminder(), hours: reminderHours(), due: reminderDue(), text: reminderDue() ? `On for ${about(onFor() / 3600)}: change or charge the battery` : "" };
+    }
     return out;
   }
   let shownRoom = "";
   function showRoom(r = roomState()) {
+    if ($("remoteOnTimeRow")) {
+      $("remoteOnTimeRow").hidden = !r.onTime;
+      if (r.onTime) $("remoteOnTime").textContent = r.onTime.text;
+    }
     const parts = [r.storage && ["Space: " + r.storage.text, r.storage.low], r.battery && [r.battery.text, r.battery.low], r.temperature && [r.temperature.text, r.temperature.hot],
       r.batteryReminder && r.batteryReminder.due && [r.batteryReminder.text, true]].filter(Boolean);
     if (!$("remoteRoom") || JSON.stringify(parts) === shownRoom) return;
@@ -451,7 +491,10 @@
     await sendPreviews();
     if (run !== previewRun || !previewsOn) return;
     const took = performance.now() - t0;
-    const ms = Math.min(1000, Math.max(focus !== null ? FOCUS_MS : PREVIEW_MS, took / PREVIEW_SHARE));
+    // (Full screen, with its JPEG made in the worker: waiting for that hardly holds up the page,
+    // so the next as soon as it's made, up to the camera's 30 a second, not twice as long after.)
+    const share = focus !== null && encoder && !encoderOff ? 1 : PREVIEW_SHARE;
+    const ms = Math.min(1000, Math.max(focus !== null ? FOCUS_MS : PREVIEW_MS, took / share));
     const changed = Math.abs(ms - previewMs) > 10;
     previewMs = ms;
     if (changed) wantPictures();
@@ -998,6 +1041,11 @@
         showSettings();
         return { ok: true, message: st.photo ? "Each camera takes a photo as each take starts." : "No photos with the takes." };
       }
+      // The time on since the battery was changed, counted from now (any time).
+      if (st.resetOnTime === true) {
+        resetOnTime();
+        return { ok: true, message: "Counting its time on from now." };
+      }
       // The battery reminder and its hours (any time).
       if (typeof st.batteryReminder === "boolean" || Number(st.batteryHours) > 0) {
         if (typeof st.batteryReminder === "boolean") setPref("remoteBatteryReminder", st.batteryReminder);
@@ -1349,6 +1397,7 @@
       $("remoteBatteryReminder").addEventListener("change", set);
       $("remoteBatteryHours").addEventListener("change", set);
     }
+    if ($("remoteOnTimeReset")) $("remoteOnTimeReset").addEventListener("click", () => confirm("Count its time on from now (a new or charged battery)?") && resetOnTime());
     for (const [id, key] of [["remoteVideo", "remoteVideo"], ["remoteSound", "remoteSound"], ["remotePhoto", "remotePhoto"]]) {
       if (!$(id)) continue;
       $(id).addEventListener("change", (e) => {
