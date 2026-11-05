@@ -205,7 +205,8 @@
         return request(opts);
       },
       // The remote recording page's requests to a computer: plain HTTP to name:port, only its own.
-      async rigRequest({ rig, path, method = "GET", body = "", key = "" }) {
+      // connectMs: how long to wait for it to answer at all (500 ms to 10 s), as the apps' own.
+      async rigRequest({ rig, path, method = "GET", body = "", key = "", connectMs = 10000 }) {
         calls.push(["remote.rigRequest", rig, path, method]);
         // The same rules as the app (remote-record.js's list, which RemotePlugin.java copies).
         const { RIG_HOST, RIG_PATH } = require("../electron/remote-record.js");
@@ -236,6 +237,9 @@
             res.on("end", () => resolve({ status: res.statusCode, type: String(res.headers["content-type"] || ""), body: Buffer.concat(chunks).toString("base64"), sentPassword }));
           });
           req.on("timeout", () => req.destroy(new Error("No answer.")));
+          const connecting = setTimeout(() => req.destroy(new Error("Can't reach it.")), Math.max(500, Math.min(10000, Number(connectMs) || 10000)));
+          req.on("socket", (sock) => (sock.connecting ? sock.once("connect", () => clearTimeout(connecting)) : clearTimeout(connecting)));
+          req.on("close", () => clearTimeout(connecting));
           req.on("error", reject);
           if (method === "POST") req.write(body);
           req.end();

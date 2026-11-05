@@ -92,6 +92,10 @@
     return out;
   };
   const answer = (status, type, bytes) => ({ status, type: type || "", bytes, json: () => JSON.parse(new TextDecoder().decode(bytes)) });
+  // A picture the Android app saved for the page to show (rigRequest's toFile): its address here, no bytes.
+  const fileAnswer = (r) => ({ status: r.status, type: r.type || "", bytes: null, url: cap.convertFileSrc(r.file), json: () => ({}) });
+  // (Asked for where the app can save pictures: its own files served to this page.)
+  const filesOk = !!(nativeRemote && cap && typeof cap.convertFileSrc === "function");
 
   // In the phone apps: the cameras' pictures and the takes' downloads straight over the local
   // network when the computer said how (over Tailscale its state has direct: its own addresses
@@ -108,18 +112,18 @@
     const to = `${address}:${d.port}`;
     if (!direct || direct.rig !== to || direct.key !== d.key) direct = { rig: to, key: d.key, failedAt: 0 };
   }
-  async function directCall(path, method, body) {
+  async function directCall(path, method, body, file) {
     const d = direct;
     // (Only the pictures and takes' downloads, the heavy part: its state and commands still go
     // over Tailscale, where it trusts the phone with more, its Wi-Fi among it.)
     if (!d || Date.now() - d.failedAt < DIRECT_AGAIN_MS || !/^\/api\/(preview|take)\?/.test(path)) return null;
     try {
-      const r = await nativeRemote.rigRequest({ rig: d.rig, path, method, body: body || "", key: d.key, connectMs: DIRECT_CONNECT_MS });
+      const r = await nativeRemote.rigRequest({ rig: d.rig, path, method, body: body || "", key: d.key, connectMs: DIRECT_CONNECT_MS, toFile: !!file && filesOk });
       if (r.status === 401) {
         if (direct === d) direct = null; // (its key changed: until it says again over Tailscale)
         return null;
       }
-      return answer(r.status, r.type, fromBase64(r.body));
+      return r.file ? fileAnswer(r) : answer(r.status, r.type, fromBase64(r.body));
     } catch {
       d.failedAt = Date.now();
       return null;
@@ -127,7 +131,8 @@
   }
 
   // One request to the computer -> { status, type, bytes, json() }.
-  async function call(path, { method = "GET", body = null } = {}) {
+  // file: a picture, which the Android app may give as a file of its own to show (fileAnswer).
+  async function call(path, { method = "GET", body = null, file = false } = {}) {
     if (bt) {
       const r = await bt.request({ path, method, body });
       return answer(r.status, r.type, r.bytes);
@@ -138,11 +143,11 @@
       return answer(r.status, r.type, r.body instanceof Uint8Array ? r.body : new Uint8Array(r.body || []));
     }
     if (nativeRemote) {
-      const near = await directCall(path, method, body);
+      const near = await directCall(path, method, body, file);
       if (near) return near;
       let r;
       try {
-        r = await nativeRemote.rigRequest({ rig, path, method, body: body || "", key });
+        r = await nativeRemote.rigRequest({ rig, path, method, body: body || "", key, toFile: !!file && filesOk });
       } catch (err) {
         if (err && err.code === "BT_NETWORK_OFF") throw Object.assign(new Error("bluetooth network"), { btNetworkOff: true });
         if (err && err.code === "BT_NETWORK_BLOCKED") throw Object.assign(new Error("bluetooth network"), { btNetworkBlocked: true });
@@ -150,7 +155,7 @@
       }
       // (Its Bluetooth password missing, or not the one: asked for here.)
       if (btNet && r.status === 401) throw Object.assign(new Error("bluetooth password"), { btPassword: true, sent: !!r.sentPassword });
-      return answer(r.status, r.type, fromBase64(r.body));
+      return r.file ? fileAnswer(r) : answer(r.status, r.type, fromBase64(r.body));
     }
     if (rig) throw new Error("app only");
     const res = await fetch(path, { method, cache: "no-store", headers: { "X-Key": key, ...(body ? { "Content-Type": "application/json" } : {}) }, body });
@@ -2484,17 +2489,17 @@
       const m = /;\s*seq=(\d+)/.exec(type || "");
       return m ? Number(m[1]) : null;
     };
-    async function show(bytes, seq) {
-      pending = { bytes, seq };
+    async function show(bytes, seq, src) {
+      pending = { bytes, seq, src };
       if (drawing) return;
       drawing = true;
       while (pending && !loop.stop) {
         const p = pending;
         pending = null;
         if (p.seq !== null && p.seq <= shown) continue;
-        const next = URL.createObjectURL(new Blob([p.bytes], { type: "image/jpeg" }));
+        const next = p.src || URL.createObjectURL(new Blob([p.bytes], { type: "image/jpeg" }));
         await new Promise((r) => { img.onload = img.onerror = r; img.src = next; });
-        if (url) URL.revokeObjectURL(url);
+        if (url && url.startsWith("blob:")) URL.revokeObjectURL(url);
         url = next;
         if (p.seq !== null) shown = p.seq;
         frames++;
@@ -2510,7 +2515,7 @@
     async function asking(first) {
       while (!loop.stop && (first || numbered)) {
         try {
-          const res = await api(`/api/preview?i=${loop.i}&full=1&after=${ask++}`);
+          const res = await api(`/api/preview?i=${loop.i}&full=1&after=${ask++}`, { file: true });
           if (loop.stop) break;
           if (res.status === 200) {
             const seq = seqOf(res.type);
@@ -2519,7 +2524,7 @@
               if (numbered) for (let n = 1; n < (bt ? FULL_AT_ONCE_BT : FULL_AT_ONCE); n++) asking(false);
             }
             if (seq !== null) ask = Math.max(ask, seq);
-            show(res.bytes, seq);
+            show(res.bytes, seq, res.url);
           } else {
             await sleep(100);
           }

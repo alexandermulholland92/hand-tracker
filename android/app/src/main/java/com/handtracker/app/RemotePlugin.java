@@ -33,6 +33,8 @@ import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -346,7 +348,14 @@ public class RemotePlugin extends Plugin {
                 JSObject ret = new JSObject();
                 ret.put("status", a.status);
                 ret.put("type", a.type);
-                ret.put("body", Base64.encodeToString(a.body, Base64.NO_WRAP));
+                // toFile: a picture saved where the page can show it from (pictureFile), not sent
+                // back as base64 through Capacitor's bridge (full screen: 30 a second of ~45 KB).
+                if (Boolean.TRUE.equals(call.getBoolean("toFile", false)) && a.status == 200 && a.type.startsWith("image/") && a.body.length > 0) {
+                    ret.put("file", pictureFile(a.body));
+                    ret.put("body", "");
+                } else {
+                    ret.put("body", Base64.encodeToString(a.body, Base64.NO_WRAP));
+                }
                 ret.put("sentPassword", a.sentPassword);
                 call.resolve(ret);
             } catch (BtNetworkOff e) {
@@ -357,6 +366,32 @@ public class RemotePlugin extends Plugin {
                 call.reject(e.getMessage() == null ? e.toString() : e.getMessage());
             }
         });
+    }
+
+    // A computer's picture saved where the page can show it from (Capacitor serves the app's own
+    // files to it: its convertFileSrc): a file of its own each time (the page shows each once, a
+    // few on their way at once), the last PICTURES_KEPT kept; those from before it started, gone.
+    private static final int PICTURES_KEPT = 32;
+    private final java.util.ArrayDeque<File> pictures = new java.util.ArrayDeque<>();
+    private long pictureN = 0;
+
+    private String pictureFile(byte[] jpeg) throws IOException {
+        File dir = new File(getContext().getCacheDir(), "rig-pictures");
+        File f;
+        synchronized (pictures) {
+            if (pictureN == 0) {
+                File[] old = dir.listFiles();
+                if (old != null) for (File o : old) o.delete();
+            }
+            if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("Can't keep its pictures.");
+            f = new File(dir, "p" + (++pictureN) + ".jpg");
+            pictures.add(f);
+            while (pictures.size() > PICTURES_KEPT) pictures.poll().delete();
+        }
+        try (FileOutputStream os = new FileOutputStream(f)) {
+            os.write(jpeg);
+        }
+        return f.getAbsolutePath();
     }
 
     // ---------- a computer's Bluetooth network (BtNet.java) ----------
