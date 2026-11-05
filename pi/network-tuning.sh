@@ -12,7 +12,8 @@
 #    sends in its faster queue, ahead of bulk traffic.
 #  - No IPv6 on wlan0: with it, a Pi on some networks gets a Tailscale tunnel that only works
 #    one way ("tailscale ping" answers, but SSH and web pages time out). Tailscale then uses
-#    IPv4, which works. The Pi's hotspot and Ethernet keep their IPv6.
+#    IPv4, which works. It's off in the saved Wi-Fi networks themselves (what each had is kept,
+#    and --remove gives it back). The Pi's hotspot and Ethernet keep their IPv6.
 set -euo pipefail
 
 SYSCTL=/etc/sysctl.d/90-hand-tracker-network.conf
@@ -20,6 +21,7 @@ MODULE=/etc/modules-load.d/hand-tracker-network.conf
 RULES=/etc/hand-tracker/network.nft
 UNIT=/etc/systemd/system/hand-tracker-network.service
 DISPATCH=/etc/NetworkManager/dispatcher.d/91-hand-tracker-wlan0-ipv6
+SAVED=/etc/hand-tracker/wlan0-ipv6   # the saved Wi-Fi networks it took IPv6 off, and what they had (the dispatcher's too)
 TABLE="inet hand_tracker_net"
 
 if [ "$(id -u)" != 0 ]; then
@@ -30,7 +32,10 @@ fi
 if [ "${1:-}" = "--remove" ]; then
   systemctl disable --now hand-tracker-network.service >/dev/null 2>&1 || true
   nft delete table $TABLE >/dev/null 2>&1 || true
-  rm -f "$SYSCTL" "$MODULE" "$RULES" "$UNIT" "$DISPATCH"
+  if [ -f "$SAVED" ]; then
+    while read -r uuid method; do nmcli connection modify "$uuid" ipv6.method "$method" >/dev/null 2>&1 || true; done < "$SAVED"
+  fi
+  rm -f "$SYSCTL" "$MODULE" "$RULES" "$UNIT" "$DISPATCH" "$SAVED"
   rmdir /etc/hand-tracker 2>/dev/null || true
   systemctl daemon-reload
   echo cubic > /proc/sys/net/ipv4/tcp_congestion_control
@@ -100,23 +105,42 @@ systemctl daemon-reload
 systemctl enable hand-tracker-network.service >/dev/null 2>&1
 systemctl restart hand-tracker-network.service
 
-# No IPv6 on wlan0: the sysctl above when wlan0 appears, and NetworkManager told each time it
-# joins a network (it turns IPv6 back on then, and if it's only switched off under it, it keeps
-# trying to add an address, a warning every few seconds). Told for that connection only: the
-# saved Wi-Fi networks are left as they are.
+# No IPv6 on wlan0: the sysctl above when wlan0 appears, and NetworkManager told, in each saved
+# Wi-Fi network (it turns IPv6 back on when it joins one, and if it's only switched off under it,
+# it keeps trying to add an address, a warning every few seconds). In the saved network, not only
+# where it's running: one changed only there reads as changed since it was joined, and after a
+# dropped connection NetworkManager then won't use its saved password to join again (it gives up,
+# until the hotspot's keeper joins it a minute later). A network saved later is done when it's
+# first joined.
 cat > "$DISPATCH" <<'EOF'
 #!/bin/sh
-# Hand Tracker (pi/network-tuning.sh): no IPv6 on wlan0.
+# Hand Tracker (pi/network-tuning.sh): no IPv6 on wlan0, in the saved Wi-Fi network it joins.
+#   91-hand-tracker-wlan0-ipv6 wlan0 saved UUID   that saved network without IPv6 (network-tuning.sh)
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
+SAVED=/etc/hand-tracker/wlan0-ipv6
+# A saved network without IPv6, what it had kept for network-tuning.sh --remove (false: no change).
+no_ipv6() {
+  was=$(nmcli -g ipv6.method connection show "$1" 2>/dev/null)
+  [ -n "$was" ] && [ "$was" != disabled ] || return 1
+  grep -q "^$1 " "$SAVED" 2>/dev/null || echo "$1 $was" >> "$SAVED"
+  nmcli connection modify "$1" ipv6.method disabled
+}
 [ "$1" = wlan0 ] || exit 0
 case "$2" in
   pre-up) echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ;;
-  up) nmcli device modify wlan0 ipv6.method disabled >/dev/null 2>&1 || echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ;;
+  up) if no_ipv6 "$CONNECTION_UUID"; then
+        nmcli device reapply wlan0 >/dev/null 2>&1 || echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
+      fi ;;
+  saved) no_ipv6 "$3" || true ;;
 esac
 EOF
 chmod 755 "$DISPATCH"
+# The Wi-Fi networks saved now (the hotspot has none already), then wlan0 as it's running.
+nmcli -t -f UUID,TYPE connection show | sed -n 's/:802-11-wireless$//p' | while read -r uuid; do
+  "$DISPATCH" wlan0 saved "$uuid" >/dev/null
+done
 if [ "$(nmcli -g GENERAL.STATE device show wlan0 2>/dev/null | cut -d' ' -f1)" = 100 ]; then
-  nmcli device modify wlan0 ipv6.method disabled >/dev/null || echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
+  nmcli device reapply wlan0 >/dev/null 2>&1 || echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
 elif [ -e /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ]; then
   echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6
 fi
