@@ -16,6 +16,7 @@ const { Readable } = require("stream");
 const { promisify } = require("util");
 const exporter = require("./exporter");
 const tak = require("./tak");
+const transmission = require("./transmission"); // (slowed while a page looks at the cameras)
 const { InputDriver } = require("./input");
 const { OakCamera } = require("./oak");
 const { KinectCamera, KinectTake, SimulatedKinect, is360 } = require("./kinect");
@@ -1220,7 +1221,10 @@ function registerRemoteIpc() {
     keyStore,
     page: (name) => fs.readFileSync(path.join(APP_ROOT, name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8"),
     ask,
-    onWantPreviews: (on) => toWindow("remote:want-previews", on),
+    onWantPreviews: (on) => {
+      toWindow("remote:want-previews", on);
+      transmission.watching(!!(on && on.on));
+    },
     wifi: createWifi(), // a phone on the hotspot (or over Tailscale) can change the Wi-Fi
     takes: () => remoteFolder(), // its takes: listed, downloaded, and deleted once downloaded
     bluetoothPassword: (text) => checkBluetoothPassword(rigBluetooth.secret(), text), // a phone on the Bluetooth network
@@ -1791,6 +1795,7 @@ app.on("window-all-closed", () => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  transmission.restore();
   input.stop();
   if (btHid) btHid.stop();
   if (oak) oak.stop();

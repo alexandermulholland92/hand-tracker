@@ -557,7 +557,7 @@ class RemoteRecordServer extends EventEmitter {
     // Full screen's lightness (judgeLight): 0 at first, and what was made and fetched since lightAt.
     this.light = 0;
     this.lightAt = Date.now();
-    this.lightMade = this.lightServed = this.lightGood = 0;
+    this.lightMade = this.lightServed = this.lightGood = this.lightSlow = 0;
     this.key = (keyStore && keyStore.load()) || null;
     this.server = null;
     this.port = null;
@@ -702,9 +702,9 @@ class RemoteRecordServer extends EventEmitter {
   }
 
   // Full screen's pictures lighter (light 1, 2: smaller and more squeezed) while they're fetched
-  // far less often than they're made (a slow link: Tailscale on a phone, say), judged every 2 s;
-  // after 20 s of keeping up, heavier again, to see if they still come as fast (if not, lighter
-  // again 2 s later).
+  // far less often than they're made (a slow link: Tailscale on a phone, say), judged every 2 s:
+  // after SLOW_TIMES slow looks in a row (a dip of a second or two isn't one), and after
+  // GOOD_TIMES of keeping up, heavier again, to see if they still come as fast.
   judgeLight() {
     const now = Date.now(), s = (now - this.lightAt) / 1000;
     if (s < 2) return;
@@ -713,12 +713,19 @@ class RemoteRecordServer extends EventEmitter {
     this.lightMade = this.lightServed = 0;
     if (made < 8) return; // (too few made to tell: the computer busy)
     let light = this.light;
+    const SLOW_TIMES = 3, GOOD_TIMES = 5;
     if (served < 0.7 * made) {
       this.lightGood = 0;
-      if (light < 2) light++;
-    } else if (served >= 0.9 * made && ++this.lightGood >= 10 && light > 0) {
-      this.lightGood = 0;
-      light--;
+      if (++this.lightSlow >= SLOW_TIMES && light < 2) {
+        this.lightSlow = 0;
+        light++;
+      }
+    } else {
+      this.lightSlow = 0;
+      if (served >= 0.9 * made && ++this.lightGood >= GOOD_TIMES && light > 0) {
+        this.lightGood = 0;
+        light--;
+      }
     }
     if (light === this.light) return;
     this.light = light;
@@ -749,7 +756,7 @@ class RemoteRecordServer extends EventEmitter {
       this.focusFrom.set(i, (this.previewSeq.get(i) || 0) + 1);
     }
     this.lightAt = Date.now();
-    this.lightMade = this.lightServed = this.lightGood = 0;
+    this.lightMade = this.lightServed = this.lightGood = this.lightSlow = 0;
     if (this.wanting) this.onWantPreviews({ on: true, focus: i, light: this.light });
   }
 
