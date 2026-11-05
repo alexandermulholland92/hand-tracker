@@ -408,8 +408,15 @@
       await remote.stop();
     }
     r.off = !(await remote.status()).on;
+    // A computer's local-network way while the phone is somewhere else (an address that never
+    // answers): given up on within its short wait (connectMs), so the page goes back to
+    // Tailscale's soon, not after the usual 10 s.
+    const t0 = Date.now();
+    r.away = await P.RigLink.rigRequest({ rig: "10.255.255.1:47821", path: "/api/state", method: "GET", body: "", key: "", connectMs: 1500 }).then(() => "answered", () => "gave up");
+    r.awayMs = Date.now() - t0;
     r.ok = !!r.on && r.noKey === 401 && r.state.status === 200 && r.state.kind === "rig" && r.state.host && r.command.status === 200 && r.command.ok === true &&
-      r.link.status === 200 && r.link.kind === "rig" && r.link.iter >= 100000 && r.linkCommand === 200 && r.wrong === "password" && r.off;
+      r.link.status === 200 && r.link.kind === "rig" && r.link.iter >= 100000 && r.linkCommand === 200 && r.wrong === "password" && r.off &&
+      r.away === "gave up" && r.awayMs < 4000;
     return r;
   }
 

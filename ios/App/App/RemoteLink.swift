@@ -64,7 +64,10 @@ public class RigLinkPlugin: CAPPlugin, CAPBridgedPlugin {
         var request = Data(head.utf8)
         if post { request.append(b) }
         let host = g[1].trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        RigExchange(host: host, port: UInt16(port), request: request, queue: queue).run { result in
+        // connectMs: how long to wait for it to answer at all (the local network's way, when the
+        // phone may be somewhere else: given up on soon, for Tailscale's).
+        let connectMs = max(500, min(10000, call.getInt("connectMs") ?? 10000))
+        RigExchange(host: host, port: UInt16(port), request: request, queue: queue).run(connectMs: connectMs) { result in
             switch result {
             case .success(let a):
                 call.resolve(["status": a.status, "type": a.type, "body": a.body.base64EncodedString()])
@@ -91,6 +94,7 @@ final class RigExchange {
     private let request: Data
     private let queue: DispatchQueue
     private var received = Data()
+    private var connected = false
     private var done: ((Result<RigAnswer, RigError>) -> Void)?
 
     init(host: String, port: UInt16, request: Data, queue: DispatchQueue) {
@@ -99,11 +103,12 @@ final class RigExchange {
         self.queue = queue
     }
 
-    func run(_ finish: @escaping (Result<RigAnswer, RigError>) -> Void) {
+    func run(connectMs: Int = 10000, _ finish: @escaping (Result<RigAnswer, RigError>) -> Void) {
         done = finish
         conn.stateUpdateHandler = { [self] state in
             switch state {
             case .ready:
+                connected = true
                 conn.send(content: request, completion: .contentProcessed { [self] err in
                     if let err = err { end(.failure(RigError(message: "Can't reach it: \(err.localizedDescription)"))) } else { receive() }
                 })
@@ -114,6 +119,11 @@ final class RigExchange {
             }
         }
         conn.start(queue: queue)
+        if connectMs < 10000 {
+            queue.asyncAfter(deadline: .now() + .milliseconds(connectMs)) { [self] in
+                if !connected { end(.failure(RigError(message: "Can't reach it."))) }
+            }
+        }
         queue.asyncAfter(deadline: .now() + 10) { [self] in end(.failure(RigError(message: "No answer."))) }
     }
 

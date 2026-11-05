@@ -93,7 +93,7 @@
   };
   const answer = (status, type, bytes) => ({ status, type: type || "", bytes, json: () => JSON.parse(new TextDecoder().decode(bytes)) });
 
-  // In the Android app: the cameras' pictures and the takes' downloads straight over the local
+  // In the phone apps: the cameras' pictures and the takes' downloads straight over the local
   // network when the computer said how (over Tailscale its state has direct: its own addresses
   // there, its port and key) and it answers so; Tailscale on a phone carries far less (about
   // 0.8 MB/s where the same Wi-Fi carries 2), so its full screen comes faster. Not there within DIRECT_CONNECT_MS (another network), Tailscale
@@ -102,7 +102,7 @@
   let direct = null; // { rig: "192.168.1.116:47821", key, failedAt }
   function learnDirect(s) {
     const d = s && s.direct;
-    if (!nativeRemote || onIphone || !d || !Array.isArray(d.addresses) || !Number.isInteger(d.port) || typeof d.key !== "string") return;
+    if (!nativeRemote || !d || !Array.isArray(d.addresses) || !Number.isInteger(d.port) || typeof d.key !== "string") return;
     const address = d.addresses.find((a) => /^\d{1,3}(\.\d{1,3}){3}$/.test(a));
     if (!address) return;
     const to = `${address}:${d.port}`;
