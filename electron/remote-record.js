@@ -44,7 +44,7 @@
  * "sentry" (Sentry mode's settings, boxes and on/off: cleanSentry), "oak" (one OAK camera's own
  * settings: cleanOak), "kinect" (one Kinect's own settings: cleanKinect) or "ps4" (one PS4 camera's
  * own settings: cleanPs4).
- * onWantPreviews({ on, focus }): a page is (or stopped) looking at the previews; focus: the
+ * onWantPreviews({ on, focus, light }): a page is (or stopped) looking at the previews; focus: the
  * camera one is looking at full screen (null for none), which then comes bigger
  * (/api/preview?i=N&full=1). Each preview request waits for that camera's next picture; each
  * picture is numbered (its type is "image/jpeg; seq=N"), and a page asking with &after=N gets the
@@ -554,6 +554,10 @@ class RemoteRecordServer extends EventEmitter {
     this.host = host;
     this.ask = ask;
     this.onWantPreviews = onWantPreviews;
+    // Full screen's lightness (judgeLight): 0 at first, and what was made and fetched since lightAt.
+    this.light = 0;
+    this.lightAt = Date.now();
+    this.lightMade = this.lightServed = this.lightGood = 0;
     this.key = (keyStore && keyStore.load()) || null;
     this.server = null;
     this.port = null;
@@ -602,6 +606,15 @@ class RemoteRecordServer extends EventEmitter {
     const r = await this.takes.edit(id, details, busy);
     if (r.ok) this.emit("takes", { changed: id, id: r.id });
     return r;
+  }
+
+  // How to reach this computer straight over its local network: { addresses, port, key } (null
+  // with none: on Tailscale only, say).
+  directWay() {
+    const list = addresses().filter((a) => a.kind === "Wi-Fi" || a.kind === "local network").map((a) => a.address);
+    if (!list.length || !this.port) return null;
+    this.ensureKey();
+    return { addresses: list, port: this.port, key: this.key };
   }
 
   ensureKey() {
@@ -682,6 +695,34 @@ class RemoteRecordServer extends EventEmitter {
     this.previewSeq.set(i, seq);
     this.previews.set(i, { jpeg: Buffer.from(jpeg), at: Date.now(), seq });
     for (const check of [...this.previewWaiters]) check();
+    if (i === this.focus) {
+      this.lightMade++;
+      this.judgeLight();
+    }
+  }
+
+  // Full screen's pictures lighter (light 1, 2: smaller and more squeezed) while they're fetched
+  // far less often than they're made (a slow link: Tailscale on a phone, say), judged every 2 s;
+  // after 20 s of keeping up, heavier again, to see if they still come as fast (if not, lighter
+  // again 2 s later).
+  judgeLight() {
+    const now = Date.now(), s = (now - this.lightAt) / 1000;
+    if (s < 2) return;
+    const made = this.lightMade / s, served = this.lightServed / s;
+    this.lightAt = now;
+    this.lightMade = this.lightServed = 0;
+    if (made < 8) return; // (too few made to tell: the computer busy)
+    let light = this.light;
+    if (served < 0.7 * made) {
+      this.lightGood = 0;
+      if (light < 2) light++;
+    } else if (served >= 0.9 * made && ++this.lightGood >= 10 && light > 0) {
+      this.lightGood = 0;
+      light--;
+    }
+    if (light === this.light) return;
+    this.light = light;
+    if (this.wanting) this.onWantPreviews({ on: true, focus: this.focus, light });
   }
 
   // Until camera i's preview is one that's wanted (wanted(preview) -> true), or ms have gone.
@@ -707,13 +748,15 @@ class RemoteRecordServer extends EventEmitter {
       this.lastSent.set(i, Date.now());
       this.focusFrom.set(i, (this.previewSeq.get(i) || 0) + 1);
     }
-    if (this.wanting) this.onWantPreviews({ on: true, focus: i });
+    this.lightAt = Date.now();
+    this.lightMade = this.lightServed = this.lightGood = 0;
+    if (this.wanting) this.onWantPreviews({ on: true, focus: i, light: this.light });
   }
 
   setWanting(on) {
     if (this.wanting === on) return;
     this.wanting = on;
-    this.onWantPreviews({ on, focus: on ? this.focus : null });
+    this.onWantPreviews({ on, focus: on ? this.focus : null, light: this.light });
   }
 
   // The names this computer goes by: its addresses, its name, and its Tailscale name.
@@ -821,7 +864,11 @@ class RemoteRecordServer extends EventEmitter {
     // Changing this computer's Wi-Fi: only for phones on its hotspot or over Tailscale.
     const wifiHere = !!(this.wifi && this.wifi.available() && this.trusted(req));
     if (req.method === "GET" && url.pathname === "/api/state") {
-      return this.send(res, 200, { ...this.state, host: this.host, wifi: wifiHere ? { allowed: true, ...this.wifi.status() } : null });
+      // Over Tailscale: this computer's own addresses on its local network, and its key, so the
+      // phone app can come straight over that network when it's on the same one (Tailscale on a
+      // phone carries far less: about 0.8 MB/s where the same Wi-Fi carries 2).
+      const direct = !this.relayed(req) && tailnetPeer(req.socket.localAddress, req.socket.remoteAddress) ? this.directWay() : null;
+      return this.send(res, 200, { ...this.state, host: this.host, wifi: wifiHere ? { allowed: true, ...this.wifi.status() } : null, ...(direct ? { direct } : {}) });
     }
     if (req.method === "GET" && url.pathname === "/api/wifi") {
       if (!wifiHere) return this.send(res, 403, { error: "The Wi-Fi can be changed only from this computer's hotspot or over Tailscale." });
@@ -864,6 +911,7 @@ class RemoteRecordServer extends EventEmitter {
       }
       const p = this.previews.get(i);
       if (!p || Date.now() - p.at > PREVIEW_STALE_MS) return this.send(res, 204, "");
+      if (full && i === this.focus) this.lightServed++;
       return this.send(res, 200, p.jpeg, `image/jpeg; seq=${p.seq}`);
     }
     if (req.method === "POST" && url.pathname === "/api/command") {

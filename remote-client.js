@@ -86,8 +86,45 @@
   if (fromHash || wantAlert) history.replaceState(null, "", location.pathname + location.search);
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const fromBase64 = (b64) => Uint8Array.from(atob(b64 || ""), (c) => c.charCodeAt(0));
+  const fromBase64 = (b64) => {
+    const s = atob(b64 || ""), out = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+    return out;
+  };
   const answer = (status, type, bytes) => ({ status, type: type || "", bytes, json: () => JSON.parse(new TextDecoder().decode(bytes)) });
+
+  // In the Android app: the cameras' pictures and the takes' downloads straight over the local
+  // network when the computer said how (over Tailscale its state has direct: its own addresses
+  // there, its port and key) and it answers so; Tailscale on a phone carries far less (about
+  // 0.8 MB/s where the same Wi-Fi carries 2), so its full screen comes faster. Not there within DIRECT_CONNECT_MS (another network), Tailscale
+  // again, and tried again after DIRECT_AGAIN_MS.
+  const DIRECT_CONNECT_MS = 1500, DIRECT_AGAIN_MS = 60000;
+  let direct = null; // { rig: "192.168.1.116:47821", key, failedAt }
+  function learnDirect(s) {
+    const d = s && s.direct;
+    if (!nativeRemote || onIphone || !d || !Array.isArray(d.addresses) || !Number.isInteger(d.port) || typeof d.key !== "string") return;
+    const address = d.addresses.find((a) => /^\d{1,3}(\.\d{1,3}){3}$/.test(a));
+    if (!address) return;
+    const to = `${address}:${d.port}`;
+    if (!direct || direct.rig !== to || direct.key !== d.key) direct = { rig: to, key: d.key, failedAt: 0 };
+  }
+  async function directCall(path, method, body) {
+    const d = direct;
+    // (Only the pictures and takes' downloads, the heavy part: its state and commands still go
+    // over Tailscale, where it trusts the phone with more, its Wi-Fi among it.)
+    if (!d || Date.now() - d.failedAt < DIRECT_AGAIN_MS || !/^\/api\/(preview|take)\?/.test(path)) return null;
+    try {
+      const r = await nativeRemote.rigRequest({ rig: d.rig, path, method, body: body || "", key: d.key, connectMs: DIRECT_CONNECT_MS });
+      if (r.status === 401) {
+        if (direct === d) direct = null; // (its key changed: until it says again over Tailscale)
+        return null;
+      }
+      return answer(r.status, r.type, fromBase64(r.body));
+    } catch {
+      d.failedAt = Date.now();
+      return null;
+    }
+  }
 
   // One request to the computer -> { status, type, bytes, json() }.
   async function call(path, { method = "GET", body = null } = {}) {
@@ -101,6 +138,8 @@
       return answer(r.status, r.type, r.body instanceof Uint8Array ? r.body : new Uint8Array(r.body || []));
     }
     if (nativeRemote) {
+      const near = await directCall(path, method, body);
+      if (near) return near;
       let r;
       try {
         r = await nativeRemote.rigRequest({ rig, path, method, body: body || "", key });
@@ -120,6 +159,13 @@
   const api = async (path, opts) => {
     const r = await call(path, opts);
     if (r.status === 401) throw Object.assign(new Error("key"), { auth: true });
+    if (path === "/api/state" && r.status === 200) {
+      try {
+        learnDirect(r.json());
+      } catch {
+        // (not a state: nothing to learn)
+      }
+    }
     return r;
   };
   const post = async (body) => (await api("/api/command", { method: "POST", body: JSON.stringify(body) })).json();

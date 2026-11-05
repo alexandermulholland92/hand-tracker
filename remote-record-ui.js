@@ -61,7 +61,10 @@
   // A camera looked at full screen on the page: that one only, bigger and more often (up to
   // about 30 a second, as the camera's own frames).
   const FOCUS_MS = 33;
-  const FOCUS_WIDTH = 960;
+  // Its width and JPEG quality, lighter while they're fetched far slower than they're made (a
+  // slow link: the computer says, light 0, 1 or 2).
+  const FOCUS_LOOKS = [[960, 0.72], [800, 0.6], [640, 0.5]];
+  let light = 0;
 
   let remote = null, prefs = {}, setPref = () => {}, app = null;
   // The cameras remote recording uses: Several cameras, on a computer and on a phone alike (a
@@ -476,6 +479,7 @@
   function setPreviews(want) {
     const w = want && typeof want === "object" ? want : { on: !!want, focus: null };
     focus = w.on && Number.isInteger(w.focus) ? w.focus : null;
+    light = Number.isInteger(w.light) ? Math.min(FOCUS_LOOKS.length - 1, Math.max(0, w.light)) : 0;
     previewsOn = !!w.on;
     previewMs = focus !== null ? FOCUS_MS : PREVIEW_MS;
     wantPictures();
@@ -571,8 +575,9 @@
       const out = [];
       for (const { i, canvas } of cams().previewSources()) {
         if (!canvas || !canvas.width || !canvas.height || (focus !== null && i !== focus)) continue;
-        const w = Math.min(focus !== null ? FOCUS_WIDTH : PREVIEW_WIDTH, canvas.width);
-        const jpeg = await jpegOf(canvas, w, Math.round((w * canvas.height) / canvas.width), focus !== null ? 0.72 : 0.6);
+        const [focusWidth, focusQuality] = FOCUS_LOOKS[light];
+        const w = Math.min(focus !== null ? focusWidth : PREVIEW_WIDTH, canvas.width);
+        const jpeg = await jpegOf(canvas, w, Math.round((w * canvas.height) / canvas.width), focus !== null ? focusQuality : 0.6);
         if (jpeg) out.push({ i, jpeg });
       }
       if (out.length) remote.sendPreviews(out);

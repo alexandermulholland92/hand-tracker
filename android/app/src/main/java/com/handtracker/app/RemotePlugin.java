@@ -272,6 +272,10 @@ public class RemotePlugin extends Plugin {
     // recording has (RIG_PATH): also for SentryWatchService, which looks for Sentry mode's alerts.
     // To a computer's Bluetooth network (BtNet.ADDR): over it, with its password if one is kept.
     static RigAnswer fetchRig(Context ctx, String rig, String path, String method, String body, String key) throws IOException {
+        return fetchRig(ctx, rig, path, method, body, key, RIG_TIMEOUT_MS);
+    }
+
+    static RigAnswer fetchRig(Context ctx, String rig, String path, String method, String body, String key, int connectMs) throws IOException {
         Matcher m = RIG.matcher(rig == null ? "" : rig);
         int port = m.matches() ? Integer.parseInt(m.group(5)) : 0;
         if (port < 1 || port > 65535) throw new IOException("That isn't a computer's name and port.");
@@ -299,7 +303,7 @@ public class RemotePlugin extends Plugin {
         byte[] all;
         try (Socket socket = new Socket()) {
             if (via != null) bindTo(via, socket);
-            socket.connect(new InetSocketAddress(host, port), RIG_TIMEOUT_MS);
+            socket.connect(new InetSocketAddress(host, port), connectMs);
             socket.setSoTimeout(RIG_TIMEOUT_MS);
             OutputStream os = socket.getOutputStream();
             os.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
@@ -335,7 +339,10 @@ public class RemotePlugin extends Plugin {
     public void rigRequest(PluginCall call) {
         pool.execute(() -> {
             try {
-                RigAnswer a = fetchRig(getContext(), call.getString("rig", ""), call.getString("path", ""), call.getString("method", "GET"), call.getString("body", ""), call.getString("key", ""));
+                // connectMs: how long to wait for it to answer at all (the local network's way, when the
+                // phone may be somewhere else: given up on soon, for Tailscale's).
+                int connectMs = Math.max(500, Math.min(RIG_TIMEOUT_MS, call.getInt("connectMs", RIG_TIMEOUT_MS)));
+                RigAnswer a = fetchRig(getContext(), call.getString("rig", ""), call.getString("path", ""), call.getString("method", "GET"), call.getString("body", ""), call.getString("key", ""), connectMs);
                 JSObject ret = new JSObject();
                 ret.put("status", a.status);
                 ret.put("type", a.type);
