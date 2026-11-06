@@ -131,6 +131,7 @@
   .join button { padding: 9px 14px; font-weight: 600; }
   .join .quiet { background: #495057; }
   .muted { color: var(--muted); }
+  .camlist { margin: 4px 0 0; padding-left: 1.3em; }
   #btDevices button { display: block; width: 100%; margin-top: 6px; text-align: left; }
   #btNetRow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
   #videoPanel .row, #sentryPanel .row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin: 0 0 6px; }
@@ -194,6 +195,7 @@
 
   <section class="panel" id="camPanel" aria-labelledby="camTitle" hidden>
     <h2><span id="camTitle" class="grow">Cameras</span><button type="button" id="scanBtn" class="small">Refresh</button><button type="button" id="camsShow" class="small" aria-expanded="false" aria-controls="camBody">Show</button></h2>
+    <div class="row" id="onTimeRow" hidden><span class="grow" id="onTimeText"></span><button type="button" id="onTimeReset" class="small">Reset</button></div>
     <div id="camSummary" class="muted"></div>
     <div id="camBody" hidden>
       <div id="camRows"></div>
@@ -306,8 +308,7 @@
     <h2><span id="videoTitle" class="grow">Video with each take</span><button type="button" id="videoBtn" class="small on" aria-pressed="true">On</button></h2>
     <div class="row"><span class="grow">Sound</span><button type="button" id="soundBtn" class="small on" aria-pressed="true">On</button></div>
     <div class="row" id="qualityRow" hidden><span class="grow">Quality</span><select id="qualitySel"><option value="low">Small files</option><option value="standard">Standard</option><option value="high">High</option><option value="best">Best</option></select></div>
-    <div class="row" id="batteryRow" hidden><span class="grow">Remind to change or charge the battery after <input type="number" id="batteryHours" min="0.5" max="48" step="0.5" value="4" style="width:4.5em" /> hours on</span><button type="button" id="batteryBtn" class="small" aria-pressed="false">Off</button></div>
-    <div class="row" id="onTimeRow" hidden><span class="grow" id="onTimeText"></span><button type="button" id="onTimeReset" class="small">Reset</button></div>
+    <div class="row" id="batteryRow" hidden><span class="grow">Remind to change or charge the battery after <select id="batteryH" aria-label="Hours"></select> h <select id="batteryM" aria-label="Minutes"></select> min on <span id="reminderCount" class="muted"></span></span><button type="button" id="reminderReset" class="small" title="Count the reminder's hours from now (the time on under Cameras isn't changed)">Reset</button><button type="button" id="batteryBtn" class="small" aria-pressed="false">Off</button></div>
     <div class="row" id="photoRow" hidden><span class="grow">A photo from each camera as the take starts</span><button type="button" id="photoBtn" class="small on" aria-pressed="true">On</button></div>
     <div id="videoNote" class="muted"></div>
   </section>

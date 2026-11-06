@@ -131,7 +131,7 @@
     if ($("remotePhoto")) $("remotePhoto").checked = remotePhoto();
     if ($("remoteBatteryReminder")) {
       $("remoteBatteryReminder").checked = batteryReminder();
-      if (document.activeElement !== $("remoteBatteryHours")) $("remoteBatteryHours").value = reminderHours();
+      showReminderTime($("remoteBatteryH"), $("remoteBatteryM"), reminderHours());
     }
   }
 
@@ -346,43 +346,75 @@
   // right after it started moves its start time, but not that).
   let uptime = null; // { s, at }: the seconds it had been on since it started, and when that was read
   const sinceStart = () => (uptime ? uptime.s + (Date.now() - uptime.at) / 1000 : null);
-  const onTime = () => (prefs.remoteOnTime && typeof prefs.remoteOnTime === "object" && Number.isFinite(prefs.remoteOnTime.base) ? prefs.remoteOnTime : null);
-  function countOnTime(reset = false) {
+  // The battery reminder keeps a count of its own the same way (prefs.remoteReminderTime), with
+  // its own Reset: the two don't move each other.
+  const counted = (key) => (prefs[key] && typeof prefs[key] === "object" && Number.isFinite(prefs[key].base) ? prefs[key] : null);
+  const onTime = () => counted("remoteOnTime");
+  function countTime(key, reset = false) {
     const up = sinceStart();
     if (up === null) return;
     const now = Date.now() / 1000, boot = Math.round(now - up);
-    let t = onTime();
+    let t = counted(key);
     if (reset || !t) t = { base: 0, boot, from: reset ? up : 0 };
     else if (up + 5 < t.last || (Math.abs(boot - t.boot) > 300 && up + 5 < now - t.at)) t = { base: t.base + Math.max(0, t.last - t.from), boot, from: 0 };
     else if (up - t.last < 60) return;
-    setPref("remoteOnTime", { ...t, last: Math.round(up), at: Math.round(now) });
+    setPref(key, { ...t, last: Math.round(up), at: Math.round(now) });
   }
-  const onFor = () => {
-    const t = onTime(), up = sinceStart();
+  function countOnTime() {
+    // (The reminder's own count, first time: it goes on from where it was, the counter's.)
+    if (!counted("remoteReminderTime") && onTime()) setPref("remoteReminderTime", { ...onTime() });
+    countTime("remoteOnTime");
+    countTime("remoteReminderTime");
+  }
+  const countedFor = (key) => {
+    const t = counted(key), up = sinceStart();
     return t && up !== null ? t.base + Math.max(0, up - t.from) : null;
   };
+  const onFor = () => countedFor("remoteOnTime");
+  const reminderFor = () => countedFor("remoteReminderTime");
   function onForText(s) {
     const min = Math.floor(s / 60), h = Math.floor(min / 60);
     return h >= 48 ? `${Math.floor(h / 24)} days ${h % 24} h` : h ? `${h} h ${min % 60} min` : `${min} min`;
   }
   function resetOnTime() {
-    countOnTime(true);
+    countTime("remoteOnTime", true);
+    showRoom();
+  }
+  function resetReminder() {
+    countTime("remoteReminderTime", true);
     setPref("remoteBatteryToldBoot", 0); // (the reminder can be told again)
+    showSettings();
     showRoom();
   }
 
   // The battery reminder (a switch, off at first, for a rig on a battery): once it has been on
-  // (since its battery was changed: onFor) for its hours, said in red and told once each time it
-  // starts, through Sentry's ntfy and to the phones watching it.
+  // for its hours (its own count, from its own Reset: reminderFor), said in red and told once each
+  // time it starts, through Sentry's ntfy and to the phones watching it.
   const batteryReminder = () => prefs.remoteBatteryReminder === true;
-  const reminderHours = () => (Number(prefs.remoteBatteryHours) >= 0.5 ? Math.min(48, Number(prefs.remoteBatteryHours)) : 4);
-  const reminderDue = () => batteryReminder() && onFor() >= reminderHours() * 3600;
+  // Its time: from 1 min to 99 h 59 min (an hours menu and a minutes menu), kept in hours.
+  const REMINDER_MIN = 1 / 60, REMINDER_MAX = 99 + 59 / 60;
+  const reminderClamp = (h) => Math.min(REMINDER_MAX, Math.max(REMINDER_MIN, h));
+  const reminderHours = () => (Number(prefs.remoteBatteryHours) >= REMINDER_MIN ? Math.min(REMINDER_MAX, Number(prefs.remoteBatteryHours)) : 4);
+  const reminderText = (h) => {
+    const m = Math.round(h * 60);
+    return m % 60 ? (m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`) : `${m / 60} h`;
+  };
+  // The two menus (filled once), set to a time unless one is being picked from; -> the hours picked.
+  function showReminderTime(hSel, mSel, hours) {
+    if (!hSel || !mSel) return;
+    for (const [sel, n] of [[hSel, 100], [mSel, 60]]) if (!sel.options.length) for (let i = 0; i < n; i++) sel.add(new Option(String(i), String(i)));
+    if (document.activeElement === hSel || document.activeElement === mSel) return;
+    const m = Math.round(hours * 60);
+    hSel.value = String(Math.floor(m / 60));
+    mSel.value = String(m % 60);
+  }
+  const reminderDue = () => batteryReminder() && reminderFor() >= reminderHours() * 3600;
   function watchBatteryReminder() {
     if (!reminderDue()) return;
     const boot = Date.now() / 1000 - sinceStart(); // (when it started)
     if (Math.abs(boot - (Number(prefs.remoteBatteryToldBoot) || 0)) < 300) return;
     setPref("remoteBatteryToldBoot", Math.round(boot));
-    if (global.Sentry && global.Sentry.tell) global.Sentry.tell("Change the battery", `It has been on for ${about(onFor() / 3600)}: change or charge its battery`).catch(() => {});
+    if (global.Sentry && global.Sentry.tell) global.Sentry.tell("Change the battery", `It has been on for ${about(reminderFor() / 3600)}: change or charge its battery`).catch(() => {});
   }
 
   // With each look at the room left: the device and its OAK cameras' chips; what's newly too hot
@@ -416,9 +448,11 @@
     }
     if (battery) out.battery = { ...battery, text: batteryText(battery), low: !battery.charging && battery.level < LOW_BATTERY };
     if (temp) out.temperature = { ...temp, hot: hot.has("device"), text: tempText(temp, hot.has("device")) };
-    if (uptime && onTime()) {
-      out.onTime = { s: Math.round(onFor()), text: `On for ${onForText(onFor())} since the battery was changed` };
-      out.batteryReminder = { on: batteryReminder(), hours: reminderHours(), due: reminderDue(), text: reminderDue() ? `On for ${about(onFor() / 3600)}: change or charge the battery` : "" };
+    if (uptime && onTime()) out.onTime = { s: Math.round(onFor()), text: `On for ${onForText(onFor())} since the battery was changed` };
+    if (uptime && counted("remoteReminderTime")) {
+      const s = reminderFor();
+      out.batteryReminder = { on: batteryReminder(), hours: reminderHours(), s: Math.round(s), counted: `${onForText(s)} so far`, due: reminderDue(),
+        text: reminderDue() ? `On for ${about(s / 3600)}: change or charge the battery` : "" };
     }
     return out;
   }
@@ -428,6 +462,7 @@
       $("remoteOnTimeRow").hidden = !r.onTime;
       if (r.onTime) $("remoteOnTime").textContent = r.onTime.text;
     }
+    if ($("remoteReminderCount")) $("remoteReminderCount").textContent = r.batteryReminder ? `(${r.batteryReminder.counted})` : "";
     const parts = [r.storage && ["Space: " + r.storage.text, r.storage.low], r.battery && [r.battery.text, r.battery.low], r.temperature && [r.temperature.text, r.temperature.hot],
       r.batteryReminder && r.batteryReminder.due && [r.batteryReminder.text, true]].filter(Boolean);
     if (!$("remoteRoom") || JSON.stringify(parts) === shownRoom) return;
@@ -1051,14 +1086,19 @@
         resetOnTime();
         return { ok: true, message: "Counting its time on from now." };
       }
+      // The battery reminder's own count, from now (any time).
+      if (st.resetReminder === true) {
+        resetReminder();
+        return { ok: true, message: `The battery reminder counts from now: ${reminderText(reminderHours())} on.` };
+      }
       // The battery reminder and its hours (any time).
       if (typeof st.batteryReminder === "boolean" || Number(st.batteryHours) > 0) {
         if (typeof st.batteryReminder === "boolean") setPref("remoteBatteryReminder", st.batteryReminder);
-        if (Number(st.batteryHours) > 0) setPref("remoteBatteryHours", Math.min(48, Math.max(0.5, Number(st.batteryHours))));
+        if (Number(st.batteryHours) > 0) setPref("remoteBatteryHours", reminderClamp(Number(st.batteryHours)));
         showSettings();
         watchBatteryReminder();
         showRoom();
-        return { ok: true, message: batteryReminder() ? `A reminder to change or charge the battery once it has been on for ${reminderHours()} h.` : "No battery reminder." };
+        return { ok: true, message: batteryReminder() ? `A reminder to change or charge the battery once it has been on for ${reminderText(reminderHours())}.` : "No battery reminder." };
       }
       // The OAK cameras' pictures on this computer's screen (any time: recording doesn't mind).
       if (typeof st.screenPictures === "boolean" && !onPhone) {
@@ -1395,14 +1435,17 @@
     if ($("remoteBatteryReminder")) {
       const set = () => {
         setPref("remoteBatteryReminder", $("remoteBatteryReminder").checked);
-        if (Number($("remoteBatteryHours").value) > 0) setPref("remoteBatteryHours", Math.min(48, Math.max(0.5, Number($("remoteBatteryHours").value))));
+        setPref("remoteBatteryHours", reminderClamp(Number($("remoteBatteryH").value) + Number($("remoteBatteryM").value) / 60));
+        showSettings();
         watchBatteryReminder();
         showRoom();
       };
       $("remoteBatteryReminder").addEventListener("change", set);
-      $("remoteBatteryHours").addEventListener("change", set);
+      $("remoteBatteryH").addEventListener("change", set);
+      $("remoteBatteryM").addEventListener("change", set);
     }
     if ($("remoteOnTimeReset")) $("remoteOnTimeReset").addEventListener("click", () => confirm("Count its time on from now (a new or charged battery)?") && resetOnTime());
+    if ($("remoteReminderReset")) $("remoteReminderReset").addEventListener("click", () => confirm("Count the battery reminder's hours from now?") && resetReminder());
     for (const [id, key] of [["remoteVideo", "remoteVideo"], ["remoteSound", "remoteSound"], ["remotePhoto", "remotePhoto"]]) {
       if (!$(id)) continue;
       $(id).addEventListener("change", (e) => {

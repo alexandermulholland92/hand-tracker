@@ -180,6 +180,10 @@ function cleanSettings(s) {
   const out = {};
   for (const k of ["detailsRequired", "screenPictures", "video", "sound", "photo"]) if (typeof s[k] === "boolean") out[k] = s[k];
   if (VIDEO_QUALITIES.includes(s.videoQuality)) out.videoQuality = s.videoQuality;
+  // The battery reminder (on or off, its hours) and the counts' Resets: the time on, the reminder's.
+  if (typeof s.batteryReminder === "boolean") out.batteryReminder = s.batteryReminder;
+  if (Number.isFinite(s.batteryHours) && s.batteryHours >= 1 / 60 - 1e-9 && s.batteryHours <= 99 + 59 / 60 + 1e-9) out.batteryHours = s.batteryHours;
+  for (const k of ["resetOnTime", "resetReminder"]) if (s[k] === true) out[k] = true;
   return Object.keys(out).length ? out : null;
 }
 

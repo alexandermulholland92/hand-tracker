@@ -3557,6 +3557,18 @@ async function checkRemoteRecording(js) {
     out.photoOff = await (await post("settings", { settings: { photo: false } })).json();
     out.photoOffState = [(await state()).photo, await js(`JSON.parse(localStorage.getItem("hand-tracker:prefs") || "{}").remotePhoto`)];
     await post("settings", { settings: { photo: true } });
+    // The battery reminder from the page: its hours and On/Off reach the app (they were refused as
+    // "Which setting?"), and its own Reset leaves the time on alone.
+    const prefOf = (k) => js(`JSON.parse(localStorage.getItem("hand-tracker:prefs") || "{}").${k}`);
+    out.hours = await (await post("settings", { settings: { batteryHours: 6 } })).json();
+    out.reminderOn = await (await post("settings", { settings: { batteryReminder: true, batteryHours: 6 } })).json();
+    out.reminderState = [await prefOf("remoteBatteryHours"), await prefOf("remoteBatteryReminder")];
+    const onTimeBefore = JSON.stringify(await prefOf("remoteOnTime"));
+    out.reminderReset = await (await post("settings", { settings: { resetReminder: true } })).json();
+    out.onTimeKept = JSON.stringify(await prefOf("remoteOnTime")) === onTimeBefore;
+    out.minutes = await (await post("settings", { settings: { batteryHours: 1 + 25 / 60 } })).json();
+    out.hoursBad = (await post("settings", { settings: { batteryHours: 100 } })).status;
+    await post("settings", { settings: { batteryReminder: false, batteryHours: 4 } });
     out.egoRecordOptional = await (await post("record")).json();
     await post("settings", { settings: { detailsRequired: true } });
     await post("mode", { mode: "stereo" });
@@ -3732,6 +3744,7 @@ async function checkRemoteRecording(js) {
       out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_\d+s\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
       out.videos.map((v) => v.f).sort().join() === "-video-chest.mp4,-video-head.mp4" && out.videos.every((v) => v.plain && v.video === "h264" && ["aac", "none"].includes(v.sound) && v.kb > 5 && v.fps > 16) &&
       out.photoDefault === true && out.photoOff.ok && out.photoOffState.join() === "false,false" &&
+      out.hours.ok && out.reminderOn.ok && out.reminderState.join() === "6,true" && out.reminderReset.ok && out.onTimeKept && out.minutes.message === "A reminder to change or charge the battery once it has been on for 1 h 25 min." && out.hoursBad === 400 &&
       out.photos.map((p) => p.f).sort().join() === "-photo-chest.jpg,-photo-head.jpg" && out.photos.every((p) => p.jpeg && p.kb > 1) && out.photosListed === 2 &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
       /^0:\d\d$/.test(out.metadata.length) && out.metadata.length_s > 1 &&

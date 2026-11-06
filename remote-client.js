@@ -489,8 +489,9 @@
     else note.textContent = a.note || "Tick the cameras to start; each one's role is where it's worn, or where it stands (north, south, east, west).";
     $("scanBtn").disabled = busy || !!a.scanning || sending;
     const ticked = list.filter((c) => c.use);
-    $("camSummary").textContent = a.scanning && !list.length ? "Looking for cameras…" : !list.length ? "No cameras found."
-      : `${ticked.length} of ${list.length} ticked${ticked.length ? `: ${ticked.map((c) => c.label).join(" · ")}` : ""}`;
+    // Folded: how many are ticked, then each camera found on a line of its own, ticked or not.
+    $("camSummary").innerHTML = a.scanning && !list.length ? "Looking for cameras…" : !list.length ? "No cameras found."
+      : `${ticked.length} of ${list.length} ticked<ul class="camlist">${list.map((c) => `<li>${esc(c.label)}${c.use ? "" : " (not ticked)"}</li>`).join("")}</ul>`;
   }
 
   // ---------- take details: kept by Hand Tracker (every phone sees the same), sent as typed ----------
@@ -628,8 +629,12 @@
   $("qualitySel").addEventListener("change", () => command("settings", { settings: { videoQuality: $("qualitySel").value } }));
   // The battery reminder: on or off, and after how many hours on (for a rig on a battery).
   let reminderOn = false;
-  $("batteryBtn").addEventListener("click", () => command("settings", { settings: { batteryReminder: !reminderOn, batteryHours: Number($("batteryHours").value) } }));
-  $("batteryHours").addEventListener("change", () => Number($("batteryHours").value) > 0 && command("settings", { settings: { batteryHours: Number($("batteryHours").value) } }));
+  // Its time: an hours menu (0-99) and a minutes menu (0-59); 0 h 0 min is 1 min.
+  for (const [id, n] of [["batteryH", 100], ["batteryM", 60]]) for (let i = 0; i < n; i++) $(id).add(new Option(String(i), String(i)));
+  const hoursPicked = () => Math.max(1 / 60, Number($("batteryH").value) + Number($("batteryM").value) / 60);
+  $("batteryBtn").addEventListener("click", () => command("settings", { settings: { batteryReminder: !reminderOn, batteryHours: hoursPicked() } }));
+  for (const id of ["batteryH", "batteryM"]) $(id).addEventListener("change", () => command("settings", { settings: { batteryHours: hoursPicked() } }));
+  $("reminderReset").addEventListener("click", () => confirm("Count the battery reminder's hours from now?") && command("settings", { settings: { resetReminder: true } }));
   $("onTimeReset").addEventListener("click", () => confirm("Count its time on from now (a new or charged battery)?") && command("settings", { settings: { resetOnTime: true } }));
   // A photo from each camera as the take starts, saved with it too.
   let photoOn = true;
@@ -2243,11 +2248,19 @@
         $("batteryBtn").textContent = reminderOn ? "On" : "Off";
         $("batteryBtn").classList.toggle("on", reminderOn);
         $("batteryBtn").setAttribute("aria-pressed", String(reminderOn));
-        $("batteryBtn").disabled = $("batteryHours").disabled = sending;
-        if (document.activeElement !== $("batteryHours")) $("batteryHours").value = br.hours;
+        $("batteryBtn").disabled = $("batteryH").disabled = $("batteryM").disabled = sending;
+        if (document.activeElement !== $("batteryH") && document.activeElement !== $("batteryM")) {
+          const m = Math.round(br.hours * 60);
+          $("batteryH").value = String(Math.floor(m / 60));
+          $("batteryM").value = String(m % 60);
+        }
+        // (Its own count, from its own Reset: a rig from before it doesn't have them.)
+        $("reminderCount").textContent = br.counted ? `(${br.counted})` : "";
+        $("reminderReset").hidden = !br.counted;
+        $("reminderReset").disabled = sending;
       }
-      // Its time on since the battery was changed, through restarts (a rig from before it, or a
-      // phone, doesn't say it).
+      // Its time on since the battery was changed, through restarts, under Cameras' title (a rig
+      // from before it, or a phone, doesn't say it).
       $("onTimeRow").hidden = !s.onTime;
       if (s.onTime) {
         $("onTimeText").textContent = s.onTime.text;
