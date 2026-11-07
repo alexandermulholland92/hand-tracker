@@ -54,15 +54,16 @@ const FAST_MODELS = [
   ["hand_landmark_full_sh6.blob", "43e40e21f729ba371c2c08be07533be0412921009bc61cc3e3e2986fe01d4463"],
   ["hand_landmark_lite_sh6.blob", "219cca957379ad0338f1278d6593be9e6c4780dfd2e77984d4783e9783071c50"],
 ];
-// The object finder (YOLOv8 nano trained on COCO: Ultralytics, AGPL-3.0; made for OpenVINO 2021.4
-// by scripts/yolo-blob.py, on the oak-models-2 release): downloaded the first time Find objects
-// is turned on, not with the setup. OLD_DETECT_MODELS: the ones before it, deleted then.
+// The object finder (YOLOv8 nano: Ultralytics, AGPL-3.0; trained further on animals for this app,
+// run 7's animals7, its kinds in models/kinds.js; made for OpenVINO 2021.4 by scripts/yolo-blob.py,
+// on the oak-models-3 release): downloaded the first time Find objects is turned on, not with the
+// setup. OLD_DETECT_MODELS: the ones before it, deleted then.
 const DETECT_MODEL = {
-  name: "yolov8n_coco_640x352_2021.4_6shave.blob",
-  url: "https://github.com/alexandermulholland92/hand-tracker/releases/download/oak-models-2/yolov8n_coco_640x352_2021.4_6shave.blob",
-  sha256: "e883843bb0df59e0ba5bfcd1f3dad6582f83e7495dad11209f88502c3d012f07",
+  name: "animals7_640x352_2021.4_6shave.blob",
+  url: "https://github.com/alexandermulholland92/hand-tracker/releases/download/oak-models-3/animals7_640x352_2021.4_6shave.blob",
+  sha256: "059deb1d452f502fd8e9e72c788938c2b08f26d6a68f1fbd52959a61451460ff",
 };
-const OLD_DETECT_MODELS = ["mobilenet-ssd_openvino_2021.4_5shave.blob"];
+const OLD_DETECT_MODELS = ["mobilenet-ssd_openvino_2021.4_5shave.blob", "yolov8n_coco_640x352_2021.4_6shave.blob"];
 // Python reads the bridge from disk, so in the packaged app it's outside app.asar.
 const BRIDGE = path.join(__dirname, "..", "oak", "oak_bridge.py").replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
 
@@ -204,14 +205,17 @@ class OakCamera {
     return s;
   }
 
-  // The object finder's model, downloaded once (and checked) the first time it's wanted.
+  // The object finder's model, downloaded once (and checked) the first time it's wanted, with
+  // its kinds beside it (the bridge reads their names there: this app's models/kinds.js).
   async detectModel(onMessage) {
     const file = path.join(this.paths.models, DETECT_MODEL.name);
-    if (fs.existsSync(file)) return true;
+    const kinds = () => fs.writeFileSync(file + ".kinds.json", JSON.stringify({ names: require("../models/kinds.js").names }));
+    if (fs.existsSync(file)) return kinds(), true;
     onMessage({ status: "starting", message: "Downloading the object finder for the OAK camera (6 MB, only the first time)…" });
     try {
       await this.download(DETECT_MODEL.url, file, () => {}, { sha256: DETECT_MODEL.sha256 });
       for (const old of OLD_DETECT_MODELS) fs.rmSync(path.join(this.paths.models, old), { force: true });
+      kinds();
       return true;
     } catch (err) {
       onMessage({ status: "starting", message: `The object finder couldn't be downloaded (${err.message.replace(/\.$/, "")}), so the camera starts without it.` });

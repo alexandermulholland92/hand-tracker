@@ -1577,10 +1577,11 @@ function registerIpc() {
     const { cleanNtfy, sendNtfy } = require("./ntfy");
     return sendNtfy(cleanNtfy(req));
   });
-  // Sentry's second look's model (electron/second-look.js): its bytes, downloaded the first time.
-  handle("sentry:second-look-model", async () => {
-    const { secondLookModel } = require("./second-look");
-    return new Uint8Array(await secondLookModel(app.getPath("userData"), (url) => net.fetch(url)));
+  // Sentry's models (electron/sentry-models.js: "finder" or "second"): its bytes, downloaded the first time.
+  handle("sentry:model", async (event, which) => {
+    const { sentryModel } = require("./sentry-models");
+    if (which !== "finder" && which !== "second") throw new Error("Which model?");
+    return new Uint8Array(await sentryModel(app.getPath("userData"), (url) => net.fetch(url), which));
   });
   handle("remote:choose-folder", async (event) => {
     const dir = await chooseFolder(event, "Choose a folder for remote recordings");

@@ -24,9 +24,10 @@
  * on for as long as one is found there (then STILL_S more), with no length limit. It's made sure
  * of first: found steadily for ANIMAL_CONFIRM_MS (so a stray find or two isn't), not where a
  * person is found too, not one measured as tall as a person (a depth camera's), and found again by
- * another model: an OAK camera's by the app's own object finder; another camera's, where its ⚙
- * asks for it, by Sentry's second look (second-look.js; without it, the app's object finder's
- * find alone is an alert). Movement too: movement is an alert as well, as without it. The app's
+ * another model, Sentry's second look (second-look.js: a model of another kind than the first
+ * look's YOLOv8, so the two don't make the same mistakes, looking at a close-up around the animal):
+ * an OAK camera's always, another camera's where its ⚙ asks for it (without it, the app's object
+ * finder's find alone is an alert). The first look's animals count from TRACK_SCORE. Movement too: movement is an alert as well, as without it. The app's
  * object finder looks every ANIMAL_LOOK_MS meanwhile (an animal lying still is still found).
  *
  * Hand tracking is off while it's on (the cameras' pictures carry on, with no hands): nobody's
@@ -97,7 +98,14 @@
   const FAST_FPS = 45; // a camera running faster than this (its Frame rate 60): its videos at 60
   const MAX_EVENTS = 50;
   const MAX_ROWS = 9, MAX_COLS = 16;
-  const ANIMALS = new Set(["bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe"]);
+  // The animals among the object finder's kinds (models/kinds.js: COCO's ten, and those it's been
+  // taught: owls, coyotes, raccoons…), and those of them as tall as a person (not checked by size).
+  const KINDS = global.Kinds || { animals: ["bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe"], tall: ["horse", "cow", "elephant", "bear", "zebra", "giraffe"] };
+  const ANIMALS = new Set(KINDS.animals);
+  const TALL_ANIMALS = new Set(KINDS.tall);
+  // Tracking animals: the first look's animals this sure or more (run 7's models were measured so,
+  // 2026-11-07: fewer toys taken for animals than at 0.4, nearly as many animals found).
+  const TRACK_SCORE = 0.45;
   const ANIMAL_MARGIN = 0.25; // an animal's box grown by this much each way (its movement blurs past it)
   const ANIMAL_HOLD_MS = 3000; // an animal found this recently still counts where it was (a finder misses it now and then)
   const LOOSE_STREAK = 2; // ignoring animals: looks in a row with movement no animal explains before it counts
@@ -106,9 +114,8 @@
   const ANIMAL_LOOK_MS = 1000; // tracking animals: the app's object finder looks this often (an OAK camera, 3 times a second)...
   const ANIMAL_CHECK_MS = 350; // ...and this often while it's making sure of one it found
   const PERSON_COVER = 0.5; // an animal's box covered this much by a person's (found within ANIMAL_HOLD_MS) is the person
-  const SMALL_ANIMALS = new Set(["bird", "cat", "dog", "sheep"]);
-  const SMALL_MAX_MM = 1300; // one of those a depth camera measures taller than this is a person
-  const SECOND_GAP_MS = 1000; // an OAK camera's animal looked for again by the app's object finder at most this often
+  const SMALL_MAX_MM = 1300; // an animal not as tall as a person (not TALL_ANIMALS) a depth camera measures taller than this is one
+  const SECOND_GAP_MS = 1000; // an animal looked at again by the second look at most this often
   // ...where an OAK camera finds the objects: it looks 3 times a second (oak_bridge.py's
   // DETECT_GAP_S), so an animal walking in may not be found until up to ~0.45 s later.
   const OAK_LOOSE_STREAK = 4;
@@ -335,22 +342,23 @@
   }
 
   // A depth camera's object measured as tall as a person (size: [w, h] mm, in the camera's own
-  // picture, before it's turned) can't be a cat, dog, bird or sheep.
+  // picture, before it's turned) can't be a cat, dog, raccoon… (an animal not in TALL_ANIMALS).
   function tooTall(o, rotation) {
-    if (!SMALL_ANIMALS.has(String(o.label).toLowerCase()) || !Array.isArray(o.size)) return false;
+    const label = String(o.label).toLowerCase();
+    if (!ANIMALS.has(label) || TALL_ANIMALS.has(label) || !Array.isArray(o.size)) return false;
     return Number(o.size[(((rotation % 180) + 180) % 180) === 90 ? 0 : 1]) > SMALL_MAX_MM;
   }
 
   // The animals among objects found, remembered (for ANIMAL_HOLD_MS), and the people (for twice
   // that: an animal is the person's if a person's found there before or after) -> the objects
-  // with boxes.
-  function remember(st, objects, rotation, now = Date.now()) {
+  // with boxes. minScore: the animals as sure as this or more (tracking them: TRACK_SCORE).
+  function remember(st, objects, rotation, now = Date.now(), minScore = 0) {
     const found = (objects || []).filter((o) => o && Array.isArray(o.box) && o.box.length === 4);
     st.animals = (st.animals || []).filter((a) => now - a.at < ANIMAL_HOLD_MS);
     st.people = (st.people || []).filter((p) => now - p.at < 2 * ANIMAL_HOLD_MS);
     for (const o of found) {
       const label = String(o.label).toLowerCase();
-      if (ANIMALS.has(label) && !tooTall(o, rotation)) st.animals.push({ label, box: turnBox(o.box, rotation), at: now });
+      if (ANIMALS.has(label) && !(Number(o.score) < minScore) && !tooTall(o, rotation)) st.animals.push({ label, box: turnBox(o.box, rotation), at: now });
       else if (label === "person") st.people.push({ box: turnBox(o.box, rotation), at: now });
     }
     for (const list of [st.animals, st.people]) if (list.length > 200) list.splice(0, list.length - 200);
@@ -396,13 +404,13 @@
     return { label: last.label, box: last.box, span: now - last.at <= ANIMAL_GAP_MS ? last.at - first.at : 0 };
   }
 
-  // The app's object finder's look at the picture an OAK camera found an animal in (box, as
-  // shown) -> "person" (a person's there), "animal" (an animal of any kind is there), or "".
+  // The second look's finds around the animal the first look found (box, as shown) -> "person" (a
+  // person's there), "animal" (an animal of any kind is there: it says just "animal"), or "".
   function opinion(objects, box) {
     const there = (o) => Array.isArray(o.box) && o.box.length === 4 && Math.max(covered(box, o.box), covered(o.box, box)) >= 0.5;
     const kinds = objects.filter(there).map((o) => String(o.label).toLowerCase());
     if (objects.some((o) => String(o.label).toLowerCase() === "person" && Array.isArray(o.box) && covered(box, o.box) >= PERSON_COVER)) return "person";
-    return kinds.some((k) => ANIMALS.has(k)) ? "animal" : "";
+    return kinds.some((k) => k === "animal" || ANIMALS.has(k)) ? "animal" : "";
   }
 
   // ---------- each camera, eight times a second ----------
@@ -495,7 +503,7 @@
     const sure = !st.session && (st.animals || []).some((a) => now - a.at <= ANIMAL_GAP_MS); // (making sure of one)
     if (v.objects) {
       const objects = v.objects();
-      if (objects) remember(st, objects, v.rotation ? v.rotation() : 0, now);
+      if (objects) remember(st, objects, v.rotation ? v.rotation() : 0, now, TRACK_SCORE);
     } else if (!st.finding && now - (st.lookedAt || 0) >= (sure ? ANIMAL_CHECK_MS : ANIMAL_LOOK_MS)) {
       st.finding = true;
       st.lookedAt = now;
@@ -507,23 +515,23 @@
       }
       if (image) {
         findObjects(image)
-          .then((objects) => objects && remember(st, objects, 0))
+          .then((objects) => objects && remember(st, objects, 0, Date.now(), TRACK_SCORE))
           .finally(() => (st.finding = false));
       } else st.finding = false;
     }
     const seen = animalSeen(st, off, cfg.rows, cfg.cols, now);
     if (!seen || (!st.session && seen.span < ANIMAL_CONFIRM_MS)) return;
-    if (!st.session && (v.objects || wantsSecond(v)) && !(now - (st.agreedAt || 0) < ANIMAL_HOLD_MS)) return secondLook(v, st, seen, now);
+    if (!st.session && wantsSecond(v) && !(now - (st.agreedAt || 0) < ANIMAL_HOLD_MS)) return secondLook(v, st, seen, now);
     moving(v, st, seen.label);
   }
 
-  const wantsSecond = (v) => !v.objects && !!(v.secondLook && v.secondLook());
+  // (An OAK camera's animals always have a second look; another camera's when its ⚙ turns it on.)
+  const wantsSecond = (v) => !!v.objects || !!(v.secondLook && v.secondLook());
 
-  // An animal found (not yet an alert), looked for again by another model in the picture as shown:
-  // an OAK camera's by the app's own object finder; another camera's (its second look on) by the
-  // second look's. It agrees (st.agreedAt: then it's an alert), finds a person there (the animal's
-  // theirs), or neither (looked at again in a moment). Without that model, or a picture, it isn't
-  // one: one model alone can take a person for an animal.
+  // An animal found (not yet an alert), looked at again by the second look, close up, in the
+  // picture as shown. It agrees (st.agreedAt: then it's an alert), finds a person there (the
+  // animal's theirs), or neither (looked at again in a moment). Without that model, or a picture,
+  // it isn't one: one model alone can take a person for an animal.
   function secondLook(v, st, seen, now) {
     if (st.second || now - (st.secondAt || 0) < SECOND_GAP_MS) return;
     st.secondAt = now;
@@ -535,7 +543,7 @@
     }
     if (!image) return;
     st.second = true;
-    (v.objects ? findObjects(image) : secondObjects(image))
+    secondObjects(image, seen.box)
       .then((objects) => {
         const verdict = objects ? opinion(objects, seen.box) : "";
         if (verdict === "animal") st.agreedAt = Date.now();
@@ -544,11 +552,11 @@
       .finally(() => (st.second = false));
   }
 
-  // The second look's objects in a picture (second-look.js), or null while it can't look (not ready
-  // yet, or not working: secondText says so).
-  async function secondObjects(image) {
+  // The second look's objects close up around box in a picture (second-look.js), or null while it
+  // can't look (not ready yet, or not working: secondText says so).
+  async function secondObjects(image, box) {
     try {
-      return global.SecondLook ? await global.SecondLook.find(image) : null;
+      return global.SecondLook ? await global.SecondLook.find(image, box) : null;
     } catch {
       return null;
     }
@@ -559,11 +567,11 @@
   function secondText(views) {
     if (!cfg.trackAnimals || !views.some(wantsSecond)) return "";
     const look = global.SecondLook;
-    if (!look) return "The second look isn't in this Hand Tracker: no animal is told of on the cameras that have it on.";
+    if (!look) return "The second look isn't in this Hand Tracker: no animal is told of on the cameras it checks.";
     const s = look.state();
     if (s.state === "ready") return "";
-    if (s.state === "failed") return `The second look didn't work (${errText(s.error)}): no animal is told of on the cameras that have it on until it does.`;
-    return "Getting the second look ready (its model is downloaded the first time, 13 MB): no animal is told of on the cameras that have it on until then.";
+    if (s.state === "failed") return `The second look didn't work (${errText(s.error)}): no animal is told of on the cameras it checks until it does.`;
+    return "Getting the second look ready (its model is downloaded the first time, 9 MB): no animal is told of on the cameras it checks until then.";
   }
 
   // Movement in a watched box: an alert (or more of one going on), unless it's an animal's.
@@ -613,7 +621,7 @@
       return objects;
     } catch (err) {
       if (finder.loading && finder.loading()) {
-        finderNote = "Loading the object finder…";
+        finderNote = "Getting the object finder ready (its model is downloaded the first time, 13 MB)…";
         return undefined;
       }
       finderNote = `The object finder didn't work (${errText(err)}): ${cfg.trackAnimals ? "no animal is told of until it does" : "animals aren't left out"}.`;

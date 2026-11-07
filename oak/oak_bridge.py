@@ -17,9 +17,10 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
      --mjpeg: the camera sends its pictures as JPEG from its own encoder, about a tenth of the
      data; auto: over USB 2, where the raw pictures of one camera nearly fill the link, and on
      ARM boards such as a Raspberry Pi, where it also saves the processor encoding them.
-     --detect: also find objects on the camera (YOLOv8 nano, COCO's 80 kinds: person, cat,
-     dog...), each with its distance and size on a depth camera; needs DETECT_MODEL in the models
-     folder. If the camera can't run it alongside the hands, it starts without.
+     --detect: also find objects on the camera (YOLOv8 nano trained further on animals: COCO's
+     80 kinds, person, cat, dog..., and the animals it's been taught: owls, coyotes, raccoons...),
+     each with its distance and size on a depth camera; needs DETECT_MODEL and its kinds in the
+     models folder. If the camera can't run it alongside the hands, it starts without.
      --picture depth: send the depth picture (coloured: near is red, far is blue) instead of the
      colour one, lined up with it; depth cameras only. blend: the colour picture with the depth
      picture laid over it, half see-through; side: the two side by side (twice as wide; the
@@ -96,11 +97,14 @@ def status(state, **extra):
     send({"status": state, **extra})
 
 
-# The object finder: YOLOv8 nano, trained on COCO, for OpenVINO 2021.4 like the hands' models (one
-# pipeline's models share a version), from scripts/yolo-blob.py; its picture is 640 x 352.
-DETECT_MODEL = "yolov8n_coco_640x352_2021.4_6shave.blob"
+# The object finder: YOLOv8 nano, trained further on animals for this app (run 7's animals7), for
+# OpenVINO 2021.4 like the hands' models (one pipeline's models share a version), from
+# scripts/yolo-blob.py; its picture is 640 x 352.
+DETECT_MODEL = "animals7_640x352_2021.4_6shave.blob"
 DETECT_SIZE = (640, 352)
-# COCO's kinds of object, by the model's label number.
+# The model's kinds of object, by its label number: beside the model (DETECT_MODEL + ".kinds.json",
+# written by the app from its models/kinds.js: COCO's 80 and the animals it's been taught). COCO's
+# are its first 80.
 COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light", "fire hydrant",
         "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe",
         "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat",
@@ -108,6 +112,7 @@ COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "t
         "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
         "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave",
         "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"]
+LABELS = COCO
 MOTION_SIZE = (64, 36)  # the small grey picture Sentry mode measures movement on (made on the camera)
 
 
@@ -142,7 +147,7 @@ def object_of(det, focal=None):
     """A detection as sent: its kind, how sure, its box (0-1 of the picture) and, from a depth
     camera, where it is (mm: x right, y down, z forward) and its size (mm: width, height), by the
     picture's focal length (focal: its share of the picture's width and height)."""
-    label = COCO[det.label] if 0 <= det.label < len(COCO) else str(det.label)
+    label = LABELS[det.label] if 0 <= det.label < len(LABELS) else str(det.label)
     box = [min(1.0, max(0.0, float(v))) for v in (det.xmin, det.ymin, det.xmax, det.ymax)]
     o = {"label": label, "score": round(float(det.confidence), 3), "box": [round(v, 4) for v in box]}
     sc = getattr(det, "spatialCoordinates", None)
@@ -343,8 +348,8 @@ def add_extras(dai, pipeline, cam, stereo, extras, tracker):
         else:
             nn = pipeline.create(dai.node.YoloDetectionNetwork)
         nn.setBlobPath(extras["detect"])
-        # YOLOv8: no anchors; each box's kind among COCO's.
-        nn.setNumClasses(len(COCO))
+        # YOLOv8: no anchors; each box's kind among the model's.
+        nn.setNumClasses(len(LABELS))
         nn.setCoordinateSize(4)
         nn.setIouThreshold(0.5)
         nn.setConfidenceThreshold(0.4)  # (a cat seen from above, in poor light, is often less sure than 0.5)
@@ -739,6 +744,13 @@ def run(args):
     if detect and not os.path.isfile(detect):
         warnings.append("The object finder's model isn't downloaded, so objects aren't found.")
         detect = None
+    global LABELS
+    if detect:
+        try:
+            LABELS = json.load(open(detect + ".kinds.json", encoding="utf8"))["names"]
+        except (OSError, ValueError, KeyError):
+            warnings.append("The object finder's kinds aren't beside its model, so objects aren't found.")
+            detect = None
     extras = {"detect": detect, "picture": args.picture, "motion": args.motion, "imu": False}
 
     import depthai as dai

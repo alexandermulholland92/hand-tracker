@@ -28,7 +28,7 @@ const APP_FILES = [
   "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js", "ops-sessions.js", "rig-live.js", "rig-ble.js", "timing-check.js", "motion-video.js",
   "natnet-parse.js", "stage-overlay.js", "remote-core.js", "phone-link-protocol.js", "phone-link-ui.js", "remote-record-ui.js", "remote.html", "remote-launcher.js", "remote-client.html", "remote-client.js", "bt-link-client.js", "custom-gestures.js", "gestures.js", "phone-control.html", "phone-control.js", "qr-code.js", "video-native.js",
   "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
-  "sentry.js", "camera-video.js", "object-finder.js", "object-finder-worker.js", "second-look.js", "second-look-worker.js", "web-pc.js", "hid-core.js",
+  "sentry.js", "camera-video.js", "sentry-models.js", "models/kinds.js", "object-finder.js", "object-finder-worker.js", "second-look.js", "second-look-worker.js", "web-pc.js", "hid-core.js",
   "remote-recording.html", "remote-recording.js", "recording-converter.html", "recording-converter.js",
   // (camera-tile.html loads them; a Kinect only runs in the computer apps)
   "kinect-view.js", "body-tracker.js",
@@ -56,17 +56,12 @@ const LIBRARY_FILES = [
     .filter((f) => /\.(js|wasm|data|binarypb)$/.test(f) || f === "pose_landmark_lite.tflite")
     .map((f) => `node_modules/@mediapipe/pose/${f}`),
   "node_modules/@mediapipe/drawing_utils/drawing_utils.js",
-  // MediaPipe's object finder, for Sentry mode's "ignore animals" (loaded only when that's on):
-  // the SIMD build only (every browser and Android WebView of the last few years has SIMD).
-  "node_modules/@mediapipe/tasks-vision/vision_bundle.js",
-  "node_modules/@mediapipe/tasks-vision/wasm/vision_wasm_internal.js",
-  "node_modules/@mediapipe/tasks-vision/wasm/vision_wasm_internal.wasm",
-  "models/efficientdet_lite0.tflite",
   "node_modules/fzstd/umd/index.js",
   "node_modules/three/build/three.min.js",
   "node_modules/three/examples/js/controls/OrbitControls.js",
-  // Sentry's second look (second-look.js, loaded only when a camera's ⚙ asks for it): ONNX
-  // Runtime's WebAssembly build, its SIMD one only. Its model is downloaded the first time.
+  // Sentry mode's object finder and second look (object-finder.js, second-look.js, loaded only when
+  // they're wanted): ONNX Runtime's WebAssembly build, its SIMD one only (every browser and Android
+  // WebView of the last few years has SIMD). Their models are downloaded the first time.
   "node_modules/onnxruntime-web/dist/ort.wasm.min.js",
   "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs",
   "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm",

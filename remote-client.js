@@ -255,7 +255,7 @@
   // it's running (not while recording).
   const openOak = new Set();
   // Sentry's second look (camera-settings.js has the same): its switch and what it does.
-  const SECOND_LOOK = ["Second look at animals (Sentry)", "With Track animals, an animal found in this camera's picture is an alert only once a second model (YOLOv8 nano, as OAK cameras run) finds one there too, and not where it finds a person. Its model (13 MB) is downloaded the first time it's turned on."];
+  const SECOND_LOOK = ["Second look at animals (Sentry)", "With Track animals, an animal found in this camera's picture is an alert only once a second model (of another kind than the object finder's, looking at it close up, as OAK cameras' animals always have) finds one there too, and not where it finds a person. Its model (9 MB) is downloaded the first time it's turned on."];
   const OAK_CHOICES = {
     model: ["Hand model", [["lite", "Lite"], ["full", "Full"]]],
     hands: ["Hands", [[1, "One"], [2, "Two"]]],

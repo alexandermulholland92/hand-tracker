@@ -161,7 +161,7 @@ const STEPS = [
   ["sentry-math", [], () => checkSentryMath()],
   ["sentry-animals", ["sentry-math"], () => checkSentryAnimals()],
   ["sentry-second-look", ["sentry-math"], () => checkSentrySecondLook()],
-  ["second-look-model", [], ({ js }) => checkSecondLookModel(js)],
+  ["sentry-models", [], ({ js }) => checkSentryModels(js)],
   ["ntfy", [], () => checkNtfy()],
   ["sentry", [], ({ js }) => checkSentry(js)],
   ["web-link", [], () => checkWebLink()],
@@ -761,6 +761,7 @@ async function checkRotate({ js }) {
 // turn as its grey picture does; ntfy's link saved as its server is just the server.
 function checkSentryMath() {
   global.window = undefined;
+  require("../models/kinds.js"); // (the object finder's kinds: Sentry's animals)
   require("../sentry.js");
   const S = globalThis.Sentry._test;
   const pic = (w, h, f) => ({ w, h, data: Uint8Array.from({ length: w * h }, (_, i) => f(i % w, Math.floor(i / w))) });
@@ -811,28 +812,31 @@ function checkSentryMath() {
 }
 
 // Sentry mode tracking animals (sentry.js, as loaded by checkSentryMath), with a stand-in OAK
-// camera whose picture never moves and whose objects are set here, and a stand-in for the app's
-// own object finder (its second look: "same" sees what the camera found). Made sure of first: a cat
-// found for a moment isn't an alert, nor one found twice with a gap; one found steadily for a
-// second is (its kind on the alert and in ntfy's message), and its video goes on while it's there.
-// Not a dog where a person's found too, nor one as tall as a person (a depth camera's size), nor one
-// the app's finder sees as a person or doesn't see (until it does), nor one without that look (no
-// picture for it, or the finder broken: the camera alone can take a person for an animal), nor one
-// in a box left out. Ignoring animals and tracking them go one or the other.
+// camera whose picture never moves and whose objects are set here, and a stand-in for the second
+// look ("same" sees what the camera found). Made sure of first: a cat found for a moment isn't an
+// alert, nor one found twice with a gap, nor one the camera isn't sure enough of (under 0.45); one
+// found steadily for a second is (its kind on the alert and in ntfy's message), and its video goes
+// on while it's there; a raccoon (a kind the model's been taught) is one too. Not a dog where a
+// person's found too, nor one as tall as a person (a depth camera's size), nor one the second look
+// sees as a person or doesn't see (until it does: "animal" is its word for any), close up around
+// the animal's box, nor one without that look (no picture for it, or it broken: the camera alone
+// can take a person for an animal), nor one in a box left out. Ignoring animals and tracking them
+// go one or the other.
 async function checkSentryAnimals() {
   const S = globalThis.Sentry;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const grey = { w: 64, h: 36, data: new Uint8Array(64 * 36).fill(100) };
   const pic = { stand_in: true };
   let objects = null, picture = pic, finderSays = "same";
-  const asked = [];
+  const asked = [], boxes = [];
   const view = { key: "check-cam", index: 0, name: "Check cam", grey: () => grey, objects: () => objects, rotation: () => 0, mirrored: () => false, canvas: () => null, frame: () => picture };
-  const realFinder = globalThis.ObjectFinder;
-  globalThis.ObjectFinder = {
-    load: async () => {},
-    loading: () => false,
-    find: async (image) => {
+  const realSecond = globalThis.SecondLook;
+  globalThis.SecondLook = {
+    prepare: () => {},
+    state: () => (finderSays === "broken" ? { state: "failed", error: "broken" } : { state: "ready", error: "" }),
+    find: async (image, box) => {
       asked.push(image);
+      boxes.push(box);
       if (finderSays === "broken") throw new Error("broken");
       return finderSays === "same" ? objects || [] : finderSays;
     },
@@ -865,6 +869,8 @@ async function checkSentryAnimals() {
     // A cat found for a moment (one stray find), then nothing; then found twice with a gap.
     out.stray = await during(200, [cat]);
     await afresh();
+    out.unsure = await during(1800, [{ ...cat, score: 0.42 }]);
+    await afresh();
     out.gapped = (await during(300, [cat])) + (await during(800, [])) + (await during(300, [cat]));
     await afresh();
     // A cat found steadily (the app's finder sees it too): an alert, with its kind.
@@ -877,6 +883,8 @@ async function checkSentryAnimals() {
     out.more = await during(600, [cat]);
     out.recording = !!(S._test.per.get("check-cam") || {}).session;
     await afresh();
+    out.raccoon = await during(1800, [{ label: "raccoon", score: 0.7, box: [0.5, 0.5, 0.7, 0.8] }]);
+    await afresh();
     // A dog where a person's found too (the person's box covers it).
     out.person = await during(1800, [{ label: "dog", score: 0.6, box: [0.42, 0.3, 0.58, 0.7] }, { label: "person", score: 0.7, box: [0.4, 0.05, 0.62, 0.98] }]);
     await afresh();
@@ -886,7 +894,7 @@ async function checkSentryAnimals() {
     await afresh();
     out.small = await during(1800, [{ label: "dog", score: 0.7, box: [0.4, 0.5, 0.6, 0.95], xyz: [0, 0, 2500], size: [500, 600] }]);
     await afresh();
-    // Without the app's finder's look, no alert: no picture for it; then the finder broken (said so).
+    // Without the second look, no alert: no picture for it; then it broken (said so).
     picture = null;
     out.noPicture = await during(1800, [cat]);
     picture = pic;
@@ -895,7 +903,8 @@ async function checkSentryAnimals() {
     out.noFinder = await during(1800, [cat]);
     out.brokenNote = S.remoteState().note;
     await afresh();
-    // The app's finder looks again: it sees a person, then nothing, then the cat (an alert).
+    // The second look: it sees a person, then nothing, then an animal (an alert), around the cat's box.
+    boxes.length = 0;
     finderSays = [{ label: "person", score: 0.9, box: [0.05, 0.05, 0.35, 0.6] }];
     out.secondPerson = await during(2200, [cat]);
     out.secondAsked = asked.length;
@@ -903,10 +912,11 @@ async function checkSentryAnimals() {
     await afresh();
     finderSays = [];
     out.secondNothing = await during(1800, [cat]);
-    finderSays = [{ label: "cat", score: 0.6, box: [0.12, 0.12, 0.31, 0.42] }];
+    finderSays = [{ label: "animal", score: 0.6, box: [0.12, 0.12, 0.31, 0.42] }];
     out.secondAgrees = await during(1500, [cat]);
     out.secondPicture = asked.every((a) => a === picture);
-    out.opinion = [S._test.opinion([{ label: "dog", box: [0.1, 0.1, 0.3, 0.4] }], cat.box), S._test.opinion([{ label: "person", box: [0, 0, 0.5, 0.9] }, { label: "cat", box: cat.box }], cat.box), S._test.opinion([{ label: "cat", box: [0.7, 0.7, 0.9, 0.9] }], cat.box)];
+    out.secondBoxes = boxes.length > 0 && boxes.every((b) => Array.isArray(b) && b.join() === cat.box.join());
+    out.opinion = [S._test.opinion([{ label: "dog", box: [0.1, 0.1, 0.3, 0.4] }], cat.box), S._test.opinion([{ label: "person", box: [0, 0, 0.5, 0.9] }, { label: "animal", box: cat.box }], cat.box), S._test.opinion([{ label: "animal", box: [0.7, 0.7, 0.9, 0.9] }], cat.box), S._test.opinion([{ label: "animal", box: [0.11, 0.1, 0.3, 0.42] }], cat.box)];
     finderSays = "same";
     await afresh();
     // A dog in a box left out isn't one.
@@ -920,15 +930,15 @@ async function checkSentryAnimals() {
   } finally {
     objects = picture = null;
     await S.command({ armed: false, shown: false }).catch(() => {});
-    globalThis.ObjectFinder = realFinder;
+    globalThis.SecondLook = realSecond;
   }
-  check("Sentry mode tracking animals: only an animal is an alert, made sure of first: not one stray find, nor two with a gap; one found steadily for a second is, with its kind on the alert and in ntfy's message (\"A cat at…\"), its video going on while it's there (one alert). Not a dog where a person's found too, nor one a depth camera measures as tall as a person; the app's own finder looks again first (not while it sees a person, or nothing there, until it sees an animal; none without its look: no picture for it, or it broken, said so); not in a box left out; ignoring animals and tracking them, one or the other",
+  check("Sentry mode tracking animals: only an animal is an alert, made sure of first: not one stray find, nor two with a gap, nor one the camera's less sure of than 0.45; one found steadily for a second is, with its kind on the alert and in ntfy's message (\"A cat at…\"), its video going on while it's there (one alert); a raccoon too. Not a dog where a person's found too, nor one a depth camera measures as tall as a person; the second look looks again first, close up around the animal's box (not while it sees a person, or nothing there, until it sees an animal; none without its look: no picture for it, or it broken, said so); not in a box left out; ignoring animals and tracking them, one or the other",
     !out.error && out.tracking.track === true && out.tracking.ignore === false && out.tracking.objects === false && out.wants === true &&
-      out.stray === 0 && out.gapped === 0 && out.steady === 1 && out.alert && out.alert.animal === "cat" && out.state === "cat" && /for animals/.test(out.note) && out.more === 0 && out.recording &&
+      out.stray === 0 && out.gapped === 0 && out.unsure === 0 && out.raccoon === 1 && out.steady === 1 && out.alert && out.alert.animal === "cat" && out.state === "cat" && /for animals/.test(out.note) && out.more === 0 && out.recording &&
       out.person === 0 && out.tall === 0 && out.tallRemembered === 0 && out.small === 1 &&
       out.noPicture === 0 && out.noFinder === 0 && /no animal is told of/.test(out.brokenNote) &&
-      out.secondPerson === 0 && out.secondAsked >= 1 && out.secondPeople > 0 && out.secondNothing === 0 && out.secondAgrees === 1 && out.secondPicture &&
-      out.opinion.join() === "animal,person," &&
+      out.secondPerson === 0 && out.secondAsked >= 1 && out.secondPeople > 0 && out.secondNothing === 0 && out.secondAgrees === 1 && out.secondPicture && out.secondBoxes &&
+      out.opinion.join() === "animal,person,,animal" &&
       out.leftOut === 0 && out.ignoring.track === false && out.ignoring.ignore === true &&
       /^A cat at /.test(out.ntfy[0]) && /^An elephant at /.test(out.ntfy[1]) && /^Movement at /.test(out.ntfy[2]),
     JSON.stringify(out));
@@ -1028,19 +1038,20 @@ async function checkSentrySecondLook() {
     JSON.stringify(out));
 }
 
-// Sentry's second look's model (electron/second-look.js), with a stand-in download: one that isn't
-// whole (short, or changed) is refused and not kept; a whole one is kept and used again without
-// downloading; a kept copy that's spoilt is downloaded again; a failed download says so. Then the
-// real one in the app (the release's own, downloaded once into the checks' cache, then served from
-// here as HAND_TRACKER_SECOND_LOOK_URL): made ready on the page, kept in the app's data folder, and
-// looking at a picture.
-async function checkSecondLookModel(js) {
+// Sentry's models (electron/sentry-models.js, sentry-models.js), with a stand-in download: one
+// that isn't whole (short, or changed) is refused and not kept; a whole one is kept and used again
+// without downloading; a kept copy that's spoilt is downloaded again; a failed download says so.
+// Then the real ones in the app (the release's own, downloaded once into the checks' cache, then
+// served from here as HAND_TRACKER_SENTRY_MODELS_URL): the object finder and the second look made
+// ready on the page, kept in the app's data folder (the second look's model before them deleted),
+// the finder looking at a picture and the second look close up around a box in it.
+async function checkSentryModels(js) {
   const crypto = require("crypto");
   const http = require("http");
-  const { secondLookModel } = require("../electron/second-look.js");
-  const { MODEL } = require("../second-look.js");
+  const { sentryModel } = require("../electron/sentry-models.js");
+  const { MODELS, OLD } = require("../sentry-models.js");
   const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-second-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-models-"));
   const good = Buffer.from("a stand-in model");
   const expect = { name: "stand-in.onnx", url: "https://example.invalid/stand-in.onnx", size: good.length, sha256: sha(good) };
   let body = good, fetched = 0;
@@ -1050,13 +1061,14 @@ async function checkSecondLookModel(js) {
   };
   const tryWith = async (fetchFn, want = expect) => {
     try {
-      return (await secondLookModel(dir, fetchFn, want)).equals(good) ? "kept" : "other";
+      return (await sentryModel(dir, fetchFn, "finder", want)).equals(good) ? "kept" : "other";
     } catch (err) {
       return err.message;
     }
   };
   const out = {};
   let server = null;
+  const models = path.join(app.getPath("userData"), "models");
   try {
     body = good.subarray(1);
     out.short = await tryWith(fake);
@@ -1070,26 +1082,36 @@ async function checkSecondLookModel(js) {
     fs.writeFileSync(path.join(dir, "models", expect.name), "spoilt");
     out.spoilt = (await tryWith(fake)) === "kept" && fetched === n + 1;
     out.failed = await tryWith(async () => ({ ok: false, status: 404 }), { ...expect, name: "other.onnx" });
-    // The real one.
-    const cache = path.join(os.tmpdir(), "hand-tracker-check-cache", MODEL.name);
-    let model = fs.existsSync(cache) ? fs.readFileSync(cache) : null;
-    if (!model || sha(model) !== MODEL.sha256) {
-      const res = await require("electron").net.fetch(MODEL.url);
-      model = res.ok ? Buffer.from(await res.arrayBuffer()) : null;
-      if (model && sha(model) === MODEL.sha256) {
-        fs.mkdirSync(path.dirname(cache), { recursive: true });
-        fs.writeFileSync(cache, model);
-      } else out.download = res.ok ? "not whole" : `${res.status}`;
+    out.which = await sentryModel(dir, fake, "other").catch((err) => err.message);
+    // The real ones.
+    const cache = path.join(os.tmpdir(), "hand-tracker-check-cache");
+    for (const m of Object.values(MODELS)) {
+      const file = path.join(cache, m.name);
+      const have = fs.existsSync(file) ? fs.readFileSync(file) : null;
+      if (have && sha(have) === m.sha256) continue;
+      const res = await require("electron").net.fetch(m.url);
+      const got = res.ok ? Buffer.from(await res.arrayBuffer()) : null;
+      if (got && sha(got) === m.sha256) {
+        fs.mkdirSync(cache, { recursive: true });
+        fs.writeFileSync(file, got);
+      } else out.download = `${m.name}: ${res.ok ? "not whole" : res.status}`;
     }
     if (!out.download) {
-      server = http.createServer((req, res) => res.writeHead(200, { "Content-Type": "application/octet-stream" }).end(model));
+      server = http.createServer((req, res) => {
+        const file = path.join(cache, path.basename(decodeURIComponent(req.url)));
+        if (!fs.existsSync(file)) return res.writeHead(404).end();
+        res.writeHead(200, { "Content-Type": "application/octet-stream" }).end(fs.readFileSync(file));
+      });
       await new Promise((r) => server.listen(0, "127.0.0.1", r));
-      process.env.HAND_TRACKER_SECOND_LOOK_URL = `http://127.0.0.1:${server.address().port}/${MODEL.name}`;
+      process.env.HAND_TRACKER_SENTRY_MODELS_URL = `http://127.0.0.1:${server.address().port}/`;
+      fs.mkdirSync(models, { recursive: true });
+      for (const old of OLD) fs.writeFileSync(path.join(models, old), "the model before");
       out.page = await js(`(async () => {
         const t0 = performance.now();
+        await ObjectFinder.load();
         await SecondLook.prepare(true);
-        const s = SecondLook.state();
-        if (s.state !== "ready") return s;
+        const s = SecondLook.state(), f = ObjectFinder.state();
+        if (s.state !== "ready" || f.state !== "ready") return { second: s, finder: f };
         const readyMs = Math.round(performance.now() - t0);
         const pic = Object.assign(document.createElement("canvas"), { width: 640, height: 360 });
         const g = pic.getContext("2d");
@@ -1098,22 +1120,27 @@ async function checkSecondLookModel(js) {
         g.fillStyle = "#c8b090";
         g.fillRect(260, 120, 120, 200);
         const t1 = performance.now();
-        const found = await SecondLook.find(pic);
-        return { state: s.state, readyMs, ok: Array.isArray(found), ms: Math.round(performance.now() - t1) };
+        const found = await ObjectFinder.find(pic);
+        const findMs = Math.round(performance.now() - t1);
+        const t2 = performance.now();
+        const close = await SecondLook.find(pic, [0.4, 0.33, 0.6, 0.9]);
+        const inside = close.every((o) => o.box.every((v) => v >= 0 && v <= 1) && (o.label === "person" || o.label === "animal"));
+        return { second: s.state, finder: f.state, readyMs, found: Array.isArray(found), findMs, close: Array.isArray(close), inside, closeMs: Math.round(performance.now() - t2) };
       })()`);
-      out.keptByApp = fs.existsSync(path.join(app.getPath("userData"), "models", MODEL.name));
+      out.keptByApp = Object.values(MODELS).every((m) => fs.existsSync(path.join(models, m.name)));
+      out.oldGone = OLD.every((old) => !fs.existsSync(path.join(models, old)));
     }
   } catch (err) {
     out.error = String((err && err.stack) || err);
   } finally {
     if (server) server.close();
-    delete process.env.HAND_TRACKER_SECOND_LOOK_URL;
+    delete process.env.HAND_TRACKER_SENTRY_MODELS_URL;
     fs.rmSync(dir, { recursive: true, force: true });
   }
   const p = out.page || {};
-  check("Sentry's second look's model: a download that isn't whole (short, or changed) is refused and not kept; a whole one is kept and used again without downloading; a kept copy that's spoilt is downloaded again; a failed download says so; the real one (13 MB, checked) is made ready on the page, kept in the app's data folder, and looks at a picture",
-    !out.error && /didn't download whole/.test(out.short) && /didn't download whole/.test(out.changed) && out.notKept && out.first === "kept" && out.again && out.spoilt && /download failed \(404\)/.test(out.failed) &&
-      !out.download && p.state === "ready" && p.ok && out.keptByApp,
+  check("Sentry's models: a download that isn't whole (short, or changed) is refused and not kept; a whole one is kept and used again without downloading; a kept copy that's spoilt is downloaded again; a failed download says so; the real ones (13 MB and 9 MB, checked) are made ready on the page and kept in the app's data folder, the second look's model before them deleted; the object finder looks at a picture, the second look close up around a box in it",
+    !out.error && /didn't download whole/.test(out.short) && /didn't download whole/.test(out.changed) && out.notKept && out.first === "kept" && out.again && out.spoilt && /download failed \(404\)/.test(out.failed) && /no such model/.test(out.which) &&
+      !out.download && p.second === "ready" && p.finder === "ready" && p.found && p.close && p.inside && out.keptByApp && out.oldGone,
     JSON.stringify(out));
 }
 
@@ -1557,11 +1584,12 @@ async function checkSentry(js) {
       return !!(await until(() => $("sentryPanel").hidden && document.querySelector("#cam0 .boxes").hidden));
     })()`);
     out.hiddenStateAgain = await js(`JSON.stringify(Sentry.remoteState())`);
-    // The object finder for "ignore pets and animals" loads (it ships with the app) and runs.
+    // The object finder for "ignore pets and animals" loads (its model downloaded the first time) and runs.
     out.finder = await js(`(async () => {
       try {
         const pic = Object.assign(document.createElement("canvas"), { width: 320, height: 180 });
         pic.getContext("2d").drawImage(HandTracker.getFrameImage(), 0, 0, 320, 180);
+        await ObjectFinder.load();
         const t0 = performance.now();
         const found = await ObjectFinder.find(pic);
         return { ok: Array.isArray(found), ms: Math.round(performance.now() - t0), labels: found.map((o) => o.label) };
