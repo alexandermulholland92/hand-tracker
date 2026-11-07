@@ -347,7 +347,7 @@
   let uptime = null; // { s, at }: the seconds it had been on since it started, and when that was read
   const sinceStart = () => (uptime ? uptime.s + (Date.now() - uptime.at) / 1000 : null);
   // The battery reminder keeps a count of its own the same way (prefs.remoteReminderTime), with
-  // its own Reset: the two don't move each other.
+  // its own Reset (the time on's Reset resets it too: a new battery).
   const counted = (key) => (prefs[key] && typeof prefs[key] === "object" && Number.isFinite(prefs[key].base) ? prefs[key] : null);
   const onTime = () => counted("remoteOnTime");
   function countTime(key, reset = false) {
@@ -376,9 +376,10 @@
     const min = Math.floor(s / 60), h = Math.floor(min / 60);
     return h >= 48 ? `${Math.floor(h / 24)} days ${h % 24} h` : h ? `${h} h ${min % 60} min` : `${min} min`;
   }
+  // (A new or charged battery: the battery reminder counts from now too.)
   function resetOnTime() {
     countTime("remoteOnTime", true);
-    showRoom();
+    resetReminder();
   }
   function resetReminder() {
     countTime("remoteReminderTime", true);
@@ -1084,7 +1085,7 @@
       // The time on since the battery was changed, counted from now (any time).
       if (st.resetOnTime === true) {
         resetOnTime();
-        return { ok: true, message: "Counting its time on from now." };
+        return { ok: true, message: "Counting its time on, and the battery reminder's, from now." };
       }
       // The battery reminder's own count, from now (any time).
       if (st.resetReminder === true) {
@@ -1444,7 +1445,7 @@
       $("remoteBatteryH").addEventListener("change", set);
       $("remoteBatteryM").addEventListener("change", set);
     }
-    if ($("remoteOnTimeReset")) $("remoteOnTimeReset").addEventListener("click", () => confirm("Count its time on from now (a new or charged battery)?") && resetOnTime());
+    if ($("remoteOnTimeReset")) $("remoteOnTimeReset").addEventListener("click", () => confirm("Count its time on, and the battery reminder's, from now (a new or charged battery)?") && resetOnTime());
     if ($("remoteReminderReset")) $("remoteReminderReset").addEventListener("click", () => confirm("Count the battery reminder's hours from now?") && resetReminder());
     for (const [id, key] of [["remoteVideo", "remoteVideo"], ["remoteSound", "remoteSound"], ["remotePhoto", "remotePhoto"]]) {
       if (!$(id)) continue;
