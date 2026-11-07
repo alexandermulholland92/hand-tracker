@@ -25,6 +25,7 @@
   #status { color: var(--muted); min-height: 1.45em; }
   #status.rec { color: var(--text); font-weight: 600; }
   #room { font-size: 14px; }
+  #roomRow { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
   #room .err { color: var(--err); }
   .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--red); margin-right: 7px; vertical-align: 1px; animation: blink 1.2s infinite; }
   @keyframes blink { 50% { opacity: 0.25; } }
@@ -173,7 +174,7 @@
   <p id="back" hidden><a href="remote.html">← Computers</a></p>
   <h1 id="title">Hand Tracker</h1>
   <div id="status">Connecting…</div>
-  <div id="room" class="muted" hidden></div>
+  <div id="roomRow"><div id="room" class="muted" hidden></div><button type="button" id="roomReminderReset" class="small" hidden title="Count the battery reminder's hours from now (the time on under Cameras isn't changed)">Reset reminder</button></div>
 
   <section class="panel" id="btPanel" aria-labelledby="btTitle" hidden>
     <h2 id="btTitle">Over Bluetooth</h2>

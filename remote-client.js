@@ -634,7 +634,7 @@
   const hoursPicked = () => Math.max(1 / 60, Number($("batteryH").value) + Number($("batteryM").value) / 60);
   $("batteryBtn").addEventListener("click", () => command("settings", { settings: { batteryReminder: !reminderOn, batteryHours: hoursPicked() } }));
   for (const id of ["batteryH", "batteryM"]) $(id).addEventListener("change", () => command("settings", { settings: { batteryHours: hoursPicked() } }));
-  $("reminderReset").addEventListener("click", () => confirm("Count the battery reminder's hours from now?") && command("settings", { settings: { resetReminder: true } }));
+  for (const id of ["reminderReset", "roomReminderReset"]) $(id).addEventListener("click", () => confirm("Count the battery reminder's hours from now?") && command("settings", { settings: { resetReminder: true } }));
   $("onTimeReset").addEventListener("click", () => confirm("Count its time on from now (a new or charged battery)?") && command("settings", { settings: { resetOnTime: true } }));
   // A photo from each camera as the take starts, saved with it too.
   let photoOn = true;
@@ -2193,6 +2193,9 @@
       s.temperature && s.temperature.text && [s.temperature.text, s.temperature.hot], s.batteryReminder && s.batteryReminder.due && [s.batteryReminder.text, true]].filter(Boolean);
     $("room").hidden = !room.length;
     $("room").innerHTML = room.map(([text, low]) => `<span${low ? ' class="err"' : ""}>${esc(text)}</span>`).join(" · ");
+    // The battery reminder's own Reset beside its warning (as on the device settings page).
+    $("roomReminderReset").hidden = !(s.batteryReminder && s.batteryReminder.due && s.batteryReminder.counted);
+    $("roomReminderReset").disabled = sending;
 
     // The mode, and whether the cameras (picked, or running) are what it needs.
     const mode = s.mode || "freeform";
