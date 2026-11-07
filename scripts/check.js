@@ -4454,6 +4454,7 @@ async function checkRemoteSettingsPage() {
       $("wifiAddPw").value = "long enough";
       $("wifiAdd").querySelector("button[type=submit]").click();
       await until(() => $("wifiSaved").textContent.includes("Field 2"));
+      out.savedSaid = await until(() => /Saved Field 2/.test($("wifiMsg").textContent) && $("wifiMsg").textContent); // (in the Wi-Fi panel itself)
       const forget = () => [...$("wifiSaved").querySelectorAll("button[data-forget]")].find((b) => b.parentElement.textContent.includes("Home"));
       forget().click();
       out.forgetAsks = forget().textContent;
@@ -4493,7 +4494,7 @@ async function checkRemoteSettingsPage() {
   check("The device settings page: the link under Sentry opens it, with Video, Pictures on its screen, Wi-Fi and Restart (gone from the main page); saved networks listed, one saved (not joined) and one forgotten after a second tap; hotspot mode on after a second tap, staying until switched back; Restart cameras, Restart and Turn off asked once more, then asked of the computer; back to the cameras",
     !out.error && b.link && !b.video && !b.wifi && !b.restart && o.hash === "#settings" && !o.main && o.video && o.screen && o.wifi && o.restart && /pi/.test(o.host) &&
       o.saved.join() === "Home,Lab" && /comes on when it isn't on a network/.test(o.hotspot) && o.hotspotBtn === "Hotspot mode" &&
-      out.savedAfter.join() === "Lab,Field 2" && /Tap again/i.test(out.forgetAsks) && /tap again/i.test(out.hotspotAsks) && out.forced === "Back to Wi-Fi" &&
+      out.savedAfter.join() === "Lab,Field 2" && /Saved Field 2/.test(out.savedSaid) && /Tap again/i.test(out.forgetAsks) && /tap again/i.test(out.hotspotAsks) && out.forced === "Back to Wi-Fi" &&
       /tap again/i.test(out.resetAsks) && out.resetSaid && /Restart pi\? Tap again/.test(out.rebootAsks) && out.rebootSaid && /Turn off pi\? Tap again/.test(out.offAsks) && out.offSaid &&
       out.did.join("|") === "save Field 2 long enough|forget Home|hotspot true|resetCameras|reboot|powerOff" &&
       out.back.hash === "" && out.back.main && !out.back.settings && out.back.fits,

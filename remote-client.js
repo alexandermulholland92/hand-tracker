@@ -1820,6 +1820,18 @@
   // doesn't need it), and the computer joins it. Its hotspot goes off while it's on a network,
   // so a phone on the hotspot then reaches it on that network (or over Tailscale).
   let networks = [], wifiOpen = false, lastWifiAt = null, wifiNow = "";
+  // What Join, Save and Forget did: said in the Wi-Fi panel itself too (and shown), as the page's
+  // message is at its top, out of sight from here.
+  let wifiMsgTimer = null;
+  function wifiSay(text, err = false) {
+    say(text, err);
+    clearTimeout(wifiMsgTimer);
+    const el = $("wifiMsg");
+    el.textContent = text || "";
+    el.className = err ? "err" : "";
+    if (text && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+    if (text && !err) wifiMsgTimer = setTimeout(() => (el.textContent = ""), 15000);
+  }
   async function loadWifi() {
     $("wifiNote").textContent = "Looking for networks…";
     try {
@@ -1863,18 +1875,18 @@
       form.addEventListener("submit", async (ev) => {
         ev.preventDefault();
         const password = pw ? pw.value : "";
-        if (ask && password.length < 8) return say("A Wi-Fi password is at least 8 characters.", true);
+        if (ask && password.length < 8) return wifiSay("A Wi-Fi password is at least 8 characters.", true);
         form.querySelector("button[type=submit]").disabled = true;
         try {
           const res = await post({ action: "wifi", wifi: { ssid: n.ssid, password } });
-          say(res.message || res.error || "", res.ok === false || !!res.error);
+          wifiSay(res.message || res.error || "", res.ok === false || !!res.error);
           if (res.ok) {
             wifiOpen = false;
             $("wifiList").hidden = true;
             $("wifiBtn").textContent = "Change";
           }
         } catch (err) {
-          say(err.auth ? needsKey() : unreachable(), true);
+          wifiSay(err.auth ? needsKey() : unreachable(), true);
         } finally {
           if (pw) pw.value = "";
           form.remove();
@@ -1901,10 +1913,10 @@
   async function wifiOp(wifi) {
     try {
       const res = await post({ action: "wifi", wifi });
-      say(res.message || res.error || "", res.ok === false || !!res.error);
+      wifiSay(res.message || res.error || "", res.ok === false || !!res.error);
       return res;
     } catch (err) {
-      say(err.auth ? needsKey() : unreachable(), true);
+      wifiSay(err.auth ? needsKey() : unreachable(), true);
       return { ok: false };
     }
   }
@@ -1919,8 +1931,8 @@
   $("wifiAdd").addEventListener("submit", async (e) => {
     e.preventDefault();
     const ssid = $("wifiAddSsid").value.trim(), password = $("wifiAddPw").value;
-    if (!ssid) return say("Its network name, please.", true);
-    if (password && password.length < 8) return say("A Wi-Fi password is at least 8 characters (or none, for an open network).", true);
+    if (!ssid) return wifiSay("Its network name, please.", true);
+    if (password && password.length < 8) return wifiSay("A Wi-Fi password is at least 8 characters (or none, for an open network).", true);
     const res = await wifiOp({ op: "save", ssid, password });
     if (res.ok) {
       $("wifiAddSsid").value = "";
@@ -1957,7 +1969,7 @@
     // What became of the last network asked for, said once.
     const at = w.last ? w.last.at : 0;
     if (lastWifiAt !== null && at && at !== lastWifiAt) {
-      say(w.last.message, !w.last.ok);
+      wifiSay(w.last.message, !w.last.ok);
       wifiNow = "";
       if (wifiOpen) loadWifi();
     }
