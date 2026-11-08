@@ -74,14 +74,27 @@
   #requiredRow { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 9px; }
   .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   @media (max-width: 340px) { .grid { grid-template-columns: 1fr; } }
-  .cam { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .cam { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; container-type: inline-size; }
   .pic { position: relative; aspect-ratio: 16 / 9; background: #000; margin: 0 auto; }
   .pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
   .pic span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #adb5bd; font-size: 13px; padding: 8px; text-align: center; }
   .cap { padding: 7px 10px 9px; font-size: 13px; }
-  .tools { display: flex; gap: 6px; margin-bottom: 5px; }
+  .tools { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 5px; }
   .tools select { flex: 1 1 auto; min-width: 0; }
   .tools button { flex: none; font-size: 13px; font-weight: 500; padding: 6px 10px; border-radius: 8px; background: #495057; }
+  /* A narrow tile (four cameras on a phone): the role on a row of its own, the buttons sharing the
+     one under it, rather than Restart cut off at the tile's edge. */
+  @container (max-width: 300px) {
+    .tools select { flex-basis: 100%; }
+    .tools button { flex: 1 1 auto; padding: 6px 4px; }
+  }
+  /* (a phone's older WebView, without container queries: two tiles a row up to 640 px wide) */
+  @supports not (container-type: inline-size) {
+    @media (max-width: 640px) {
+      .tools select { flex-basis: 100%; }
+      .tools button { flex: 1 1 auto; padding: 6px 4px; }
+    }
+  }
   .tools button.on, button.small.on { background: var(--green); }
   .cam .pic { cursor: zoom-in; }
   #full { position: fixed; inset: 0; z-index: 20; background: #000; display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
