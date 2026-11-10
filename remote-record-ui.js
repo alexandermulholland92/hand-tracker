@@ -531,9 +531,11 @@
     await sendPreviews();
     if (run !== previewRun || !previewsOn) return;
     const took = performance.now() - t0;
-    // (Full screen, with its JPEG made in the worker: waiting for that hardly holds up the page,
-    // so the next as soon as it's made, up to the camera's 30 a second, not twice as long after.)
-    const share = focus !== null && encoder && !encoderOff ? 1 : PREVIEW_SHARE;
+    // (With the JPEGs made in the worker, waiting for them hardly holds up the page: so the next
+    // round as soon as they're made, up to 15 a second each (full screen: the camera's 30), not
+    // twice as long after. Four cameras on a Raspberry Pi 5 got 8 a second each with the rest
+    // between rounds, measured 2026-11-10.)
+    const share = encoder && !encoderOff ? 1 : PREVIEW_SHARE;
     const ms = Math.min(1000, Math.max(focus !== null ? FOCUS_MS : PREVIEW_MS, took / share));
     const changed = Math.abs(ms - previewMs) > 10;
     previewMs = ms;
@@ -608,14 +610,19 @@
     if (sending) return;
     sending = true;
     try {
-      const out = [];
-      for (const { i, canvas } of cams().previewSources()) {
-        if (!canvas || !canvas.width || !canvas.height || (focus !== null && i !== focus)) continue;
-        const [focusWidth, focusQuality] = FOCUS_LOOKS[light];
+      const [focusWidth, focusQuality] = FOCUS_LOOKS[light];
+      const make = async ({ i, canvas }) => {
+        if (!canvas || !canvas.width || !canvas.height || (focus !== null && i !== focus)) return null;
         const w = Math.min(focus !== null ? focusWidth : PREVIEW_WIDTH, canvas.width);
         const jpeg = await jpegOf(canvas, w, Math.round((w * canvas.height) / canvas.width), focus !== null ? focusQuality : 0.6);
-        if (jpeg) out.push({ i, jpeg });
-      }
+        return jpeg ? { i, jpeg } : null;
+      };
+      // In the worker the cameras' JPEGs are made at the same time; on this page's own canvas
+      // (no worker), one after another.
+      let out = [];
+      if (workerEncoder()) out = await Promise.all(cams().previewSources().map((c) => make(c).catch(() => null)));
+      else for (const c of cams().previewSources()) out.push(await make(c));
+      out = out.filter(Boolean);
       if (out.length) remote.sendPreviews(out);
     } catch {
       // a tile going away meanwhile: the next round has the rest
