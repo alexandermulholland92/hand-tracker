@@ -22,7 +22,7 @@ const arg = (name) => (process.argv.includes(name) ? process.argv[process.argv.i
 const OUT = arg("--out") ? path.resolve(arg("--out")) : path.join(ROOT, "www");
 
 const APP_FILES = [
-  "index.html", "viewer.html", "camera-tile.html", "camera-tile.js", "camera-roles.js", "multi-camera.js",
+  "index.html", "favicon.png", "apple-touch-icon.png", "viewer.html", "camera-tile.html", "camera-tile.js", "camera-roles.js", "multi-camera.js",
   "app.js", "viewer.js", "mobile-bridge.js", "export-ui.js", "motion-import.js", "mcap.js",
   "hand-tracker.js", "far-hands.js", "robot-motion.js", "hand-3d.js",
   "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js", "ops-sessions.js", "rig-live.js", "rig-ble.js", "timing-check.js", "motion-video.js",
@@ -39,7 +39,7 @@ const APP_FILES = [
 // the hand browser's pointer (web-pc.js, iPhone).
 const HAND_MOUSE = process.argv.includes("--hand-mouse");
 const HAND_MOUSE_FILES = [
-  "hand-mouse.js", "hand-tracker.js", "custom-gestures.js", "gestures.js", "phone-link-protocol.js", "hid-core.js", "mobile-bridge.js",
+  "favicon.png", "apple-touch-icon.png", "hand-mouse.js", "hand-tracker.js", "custom-gestures.js", "gestures.js", "phone-link-protocol.js", "hid-core.js", "mobile-bridge.js",
   "pc-control.js", "phone-link-ui.js", "phone-control.html", "phone-control.js", "web-pc.js", "qr-code.js",
 ];
 const HAND_MOUSE_LIBRARIES = (list) => list.filter((rel) => rel.startsWith("node_modules/@mediapipe/hands/") || rel === "node_modules/@mediapipe/drawing_utils/drawing_utils.js");

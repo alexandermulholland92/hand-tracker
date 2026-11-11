@@ -82,9 +82,18 @@ FIELDS = ["alt-speed-enabled", "alt-speed-down", "speed-limit-down", "speed-limi
 def saved(path):
     try:
         with open(path, encoding="utf8") as f:
-            return json.load(f)
+            s = json.load(f)
+        return s if isinstance(s, dict) else {}
     except Exception:
         return {}
+
+
+def port(s):  # (9091 when its settings give none that's a port)
+    try:
+        p = int(s.get("rpc-port", 9091))
+        return p if 0 < p < 65536 else 9091
+    except Exception:
+        return 9091
 
 
 def login():  # (the background service's, as the Jellyfin turtle saved it: "name:password")
@@ -152,7 +161,8 @@ def main():
         caps, told = {}, []
         for name, file, auth, key in who:
             s = saved(file)
-            a = ask(int(s.get("rpc-port", 9091)), auth()) if s.get("rpc-enabled", True) else None
+            a = ask(port(s), auth()) if s.get("rpc-enabled", True) else None
+            a = a if isinstance(a, dict) else None
             caps[key] = limit(a if a is not None else s)  # (not answering: as its settings file says)
             told.append("%s %s%s" % (name, "no cap" if caps[key] is None else "%d kB/s" % caps[key], "" if a is not None else " (from its settings file)"))
         if caps != last:

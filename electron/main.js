@@ -182,17 +182,27 @@ function serveAppFiles() {
   protocol.handle(SCHEME, async (request) => {
     const url = new URL(request.url);
     if (url.host !== HOST) return new Response("Not found", { status: 404 });
+  // (A part of an address as written; null when it can't be read: a bad % in it.)
+  const plain = (text) => {
+    try {
+      return decodeURIComponent(text || "");
+    } catch {
+      return null;
+    }
+  };
     if (url.pathname.startsWith("/__media/")) return serveMedia(request, url.pathname.slice("/__media/".length));
     if (url.pathname.startsWith("/__ops/") && ops) return ops.serve(request, url.pathname.slice("/__ops/".length));
     if (url.pathname.startsWith("/__fleet/") && fleet) {
       // /__fleet/<rig>/<camera>[?kind=keyframe|jpeg][&full=1]: that camera's latest picture.
-      const [host, camera] = url.pathname.slice("/__fleet/".length).split("/");
-      return fleet.serveFrame(decodeURIComponent(host || ""), decodeURIComponent(camera || ""), {
+      const [host, camera] = url.pathname.slice("/__fleet/".length).split("/").slice(0, 2).map(plain);
+      if (host === null || camera === null) return new Response("Not found", { status: 404 });
+      return fleet.serveFrame(host || "", camera || "", {
         kind: url.searchParams.get("kind") === "keyframe" ? "keyframe" : "jpeg",
         full: url.searchParams.get("full") === "1",
       });
     }
-    let rel = decodeURIComponent(url.pathname);
+    let rel = plain(url.pathname);
+    if (rel == null) return new Response("Not found", { status: 404 });
     if (rel === "/" || rel === "") rel = "/index.html";
     const filePath = path.normalize(path.join(APP_ROOT, rel));
     if (!filePath.startsWith(APP_ROOT + path.sep)) return new Response("Forbidden", { status: 403 });

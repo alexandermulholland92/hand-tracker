@@ -24,7 +24,13 @@ const MIME = {
 
 http
   .createServer((req, res) => {
-    let rel = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
+    let rel;
+    try {
+      rel = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
+    } catch {
+      res.writeHead(404).end("Not found"); // (an address that can't be read: a bad % in it)
+      return;
+    }
     if (rel === "/") rel = "/index.html";
     const filePath = path.normalize(path.join(ROOT, rel));
     if (!filePath.startsWith(ROOT + path.sep)) {

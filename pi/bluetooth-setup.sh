@@ -55,7 +55,15 @@ USER_NAME="${SUDO_USER:-}"
 if [ -z "$USER_NAME" ] || [ "$USER_NAME" = root ]; then
   USER_NAME=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" {print $3; exit}')
 fi
-HOME_DIR=$(getent passwd "$USER_NAME" | cut -d: -f6)
+if [ -z "$USER_NAME" ]; then
+  echo "Who runs Hand Tracker here? Run it as them with sudo." >&2
+  exit 1
+fi
+HOME_DIR=$(getent passwd "$USER_NAME" | cut -d: -f6 || true)
+if [ -z "$HOME_DIR" ]; then
+  echo "$USER_NAME has no home folder here." >&2
+  exit 1
+fi
 SECRET="$HOME_DIR/.config/Hand Tracker/bluetooth.json"
 
 if [ "${1:-}" = "--remove" ]; then

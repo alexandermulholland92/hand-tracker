@@ -258,6 +258,13 @@ class Takes {
   constructor(folder) {
     this.folder = folder;
     this.edited = new Map(); // take -> when its files were last written by a change of its details here
+    this.turn = Promise.resolve(); // changes to the takes (details, deleting), one at a time
+  }
+  // One change at a time: two at once to the same take would rename its files across each other.
+  inTurn(change) {
+    const done = this.turn.then(change);
+    this.turn = done.catch(() => {});
+    return done;
   }
   // -> [{ id, at (ms, its newest file), size, files: [{ name, size }] }], newest first.
   async all() {
@@ -298,7 +305,7 @@ class Takes {
     try {
       fh = await fs.promises.open(path.join(this.folder(), name), "r");
       const st = await fh.stat();
-      if (!st.isFile()) return null;
+      if (!st.isFile() || at > st.size) return null; // (past its end: not there)
       const buf = Buffer.alloc(Math.max(0, Math.min(TAKE_SLICE, st.size - at)));
       const { bytesRead } = await fh.read(buf, 0, buf.length, at);
       return buf.subarray(0, bytesRead);
@@ -352,7 +359,10 @@ class Takes {
   // (take-names.js: its length and time kept). Not while it's being saved (busy: the computer is
   // in the middle of a step, or one of its files was written in the last few seconds).
   // -> { ok, id (its name now), message }
-  async edit(id, wanted, busy = false) {
+  edit(id, wanted, busy = false) {
+    return this.inTurn(() => this.editNow(id, wanted, busy));
+  }
+  async editNow(id, wanted, busy = false) {
     const dir = this.folder();
     const files = await this.filesOf(id);
     if (!files.length) return { ok: false, message: "That take isn't there any more." };
@@ -421,13 +431,23 @@ class Takes {
 
   // Deletes the takes whose every file a page has, as it received them:
   // [{ id, files: [{ name, size, crc }] }]; each file's size and CRC32 must match the one here.
-  async remove(wanted) {
+  // Not one that may still be being saved (busy: the computer is in the middle of a step, and its
+  // files were written in the last few seconds), nor one changed while it was being checked.
+  remove(wanted, busy = false) {
+    return this.inTurn(() => this.removeNow(wanted, busy));
+  }
+  async removeNow(wanted, busy = false) {
     const all = new Map((await this.all()).map((t) => [t.id, t]));
     const deleted = [], refused = [];
+    const written = (f) => fs.promises.stat(path.join(this.folder(), f.name)).then((s) => `${s.size} ${s.mtimeMs}`, () => "");
     for (const w of wanted) {
       const t = all.get(w.id);
       if (!t) {
         refused.push({ id: w.id, why: "It isn't there any more." });
+        continue;
+      }
+      if (busy && Date.now() - t.at < EDIT_QUIET_MS) {
+        refused.push({ id: w.id, why: "It's still being saved: try again in a moment." });
         continue;
       }
       const sent = new Map(w.files.map((f) => [f.name, f]));
@@ -436,10 +456,13 @@ class Takes {
         continue;
       }
       let whole = true;
+      const before = await Promise.all(t.files.map(written));
       for (const f of t.files) {
         const got = sent.get(f.name);
-        if (got.size !== f.size || got.crc !== (await fileCrc(path.join(this.folder(), f.name)))) whole = false;
+        if (got.size !== f.size || got.crc !== (await fileCrc(path.join(this.folder(), f.name)).catch(() => -1))) whole = false;
       }
+      // (As they were when their check began: none written to meanwhile.)
+      if (whole && (await Promise.all(t.files.map(written))).some((x, i) => !x || x !== before[i])) whole = false;
       if (!whole) {
         refused.push({ id: w.id, why: "Not every file arrived intact: download it again." });
         continue;
@@ -685,6 +708,8 @@ class RemoteRecordServer extends EventEmitter {
     this.setWanting(false);
     this.previews.clear();
     this.viewer = null;
+    this.focus = null; // (no page is looking at a camera full screen any more)
+    this.focusUntil = 0;
     this.emitStatus();
     return this.status();
   }
@@ -969,7 +994,7 @@ class RemoteRecordServer extends EventEmitter {
       if (action === "deleteTakes") {
         if (!this.takes) return this.send(res, 404, { error: "No takes here." });
         if (!takes) return this.send(res, 400, { error: "Which takes?" });
-        return this.send(res, 200, await this.takes.remove(takes));
+        return this.send(res, 200, await this.takes.remove(takes, !!(this.state && (this.state.pending || this.state.saving))));
       }
       // A take's details: asked for (to change them), or changed (its files renamed to match).
       if (action === "takeDetails" || action === "editTake") {

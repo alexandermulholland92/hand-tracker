@@ -227,7 +227,7 @@ public class RemotePlugin extends Plugin {
 
     // ---------- remote recording on another computer ----------
     private static final Pattern RIG = Pattern.compile("^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*):(\\d{1,5})$");
-    private static final Pattern RIG_PATH = Pattern.compile("^/api/(state|command|wifi|takes|preview\\?i=[0-3](&full=1(&after=\\d{1,12})?)?|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12})$");
+    private static final Pattern RIG_PATH = Pattern.compile("^/api/(state|command|wifi|takes|preview\\?i=[0-3](&full=1)?(&after=\\d{1,12})?|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12})$");
     private static final Pattern RIG_KEY = Pattern.compile("^[A-Za-z0-9_-]{8,64}$");
     private static final int RIG_TIMEOUT_MS = 10000;
     private static final int RIG_MAX_BYTES = 4 * 1024 * 1024;
@@ -320,19 +320,25 @@ public class RemotePlugin extends Plugin {
         if (first.length < 2 || !first[0].startsWith("HTTP/")) throw new IOException("Not an answer from Hand Tracker.");
         String type = "";
         boolean chunked = false;
-        int length = -1;
-        for (int i = 1; i < lines.length; i++) {
-            int c = lines[i].indexOf(':');
-            if (c < 0) continue;
-            String name = lines[i].substring(0, c).trim().toLowerCase();
-            String value = lines[i].substring(c + 1).trim();
-            if (name.equals("content-type")) type = value;
-            else if (name.equals("content-length")) length = Integer.parseInt(value);
-            else if (name.equals("transfer-encoding")) chunked = value.toLowerCase().contains("chunked");
+        int length = -1, status;
+        // (A status or length that isn't a number: not Hand Tracker's answer, said so.)
+        try {
+            status = Integer.parseInt(first[1]);
+            for (int i = 1; i < lines.length; i++) {
+                int c = lines[i].indexOf(':');
+                if (c < 0) continue;
+                String name = lines[i].substring(0, c).trim().toLowerCase();
+                String value = lines[i].substring(c + 1).trim();
+                if (name.equals("content-type")) type = value;
+                else if (name.equals("content-length")) length = Integer.parseInt(value);
+                else if (name.equals("transfer-encoding")) chunked = value.toLowerCase().contains("chunked");
+            }
+        } catch (NumberFormatException e) {
+            throw new IOException("Not an answer from Hand Tracker.");
         }
         byte[] rest = java.util.Arrays.copyOfRange(all, split + 4, all.length);
         byte[] out = chunked ? dechunk(rest) : length >= 0 && length < rest.length ? java.util.Arrays.copyOf(rest, length) : rest;
-        RigAnswer answer = new RigAnswer(Integer.parseInt(first[1]), type, out);
+        RigAnswer answer = new RigAnswer(status, type, out);
         answer.sentPassword = btPassword != null;
         return answer;
     }

@@ -85,6 +85,8 @@
       "remote-recording.html",
       "remote.html",
       "remote-client.html",
+      "favicon.png",
+      "apple-touch-icon.png",
       "*.js",
       "*.css",
       "!scripts/**",
