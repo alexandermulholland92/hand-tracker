@@ -2421,6 +2421,13 @@
   async function previewLoop(i, loop) {
     const img = document.querySelector(`#cam${i} img`), note = document.querySelector(`#cam${i} .pic span`);
     let url = null;
+    // Where the computer numbers its pictures ("image/jpeg; seq=N"), the next one after the last
+    // this page had is asked for (&after=N), so each page looking gets every picture: asked for
+    // without it, two pages looking at once got about half each (the computer gave each picture to
+    // whichever asked first; pi, 2026-11-10). Not where that's refused (an app from before this,
+    // passing the page's requests on), nor after the computer has none for that number (it
+    // started again, counting from 1).
+    let last = null, plain = false;
     while (!loop.stop) {
       if (document.hidden || full || settingsOpen) {
         await sleep(500);
@@ -2437,7 +2444,17 @@
       try {
         const asked = performance.now();
         if (bt) note.textContent = "Getting its picture…";
-        const res = await api(`/api/preview?i=${i}`);
+        const numbered = last !== null && !plain && !bt;
+        let res;
+        try {
+          res = await api(`/api/preview?i=${i}${numbered ? `&after=${last}` : ""}`);
+        } catch (err) {
+          if (!numbered) throw err;
+          plain = true;
+          continue;
+        }
+        const seq = /;\s*seq=(\d+)/.exec(res.type || "");
+        last = res.status === 200 && seq ? Number(seq[1]) : null;
         if (res.status === 200 && !loop.stop) {
           const next = URL.createObjectURL(new Blob([res.bytes], { type: "image/jpeg" }));
           await new Promise((r) => { img.onload = img.onerror = r; img.src = next; });
@@ -2450,7 +2467,7 @@
           // (The computer waits for each new picture; one that doesn't is asked at most this often.)
           await sleep(Math.max(0, PREVIEW_EVERY_MS - (performance.now() - asked)));
         } else {
-          await sleep(700);
+          await sleep(numbered ? 100 : 700); // (none after that number: asked for plainly next)
         }
       } catch {
         await sleep(1500);
