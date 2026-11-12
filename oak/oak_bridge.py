@@ -97,10 +97,10 @@ def status(state, **extra):
     send({"status": state, **extra})
 
 
-# The object finder: YOLOv8 nano, trained further on animals for this app (run 7's animals7), for
+# The object finder: YOLOv8 nano, trained further on animals for this app (run 8's animals8), for
 # OpenVINO 2021.4 like the hands' models (one pipeline's models share a version), from
 # scripts/yolo-blob.py; its picture is 640 x 352.
-DETECT_MODEL = "animals7_640x352_2021.4_6shave.blob"
+DETECT_MODEL = "animals8_640x352_2021.4_6shave.blob"
 DETECT_SIZE = (640, 352)
 # The model's kinds of object, by its label number: beside the model (DETECT_MODEL + ".kinds.json",
 # written by the app from its models/kinds.js: COCO's 80 and the animals it's been taught). COCO's

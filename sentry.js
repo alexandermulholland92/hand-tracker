@@ -104,7 +104,7 @@
   const ANIMALS = new Set(KINDS.animals);
   const TALL_ANIMALS = new Set(KINDS.tall);
   // Tracking animals: the first look's animals this sure or more (run 7's models were measured so,
-  // 2026-11-07: fewer toys taken for animals than at 0.4, nearly as many animals found).
+  // 2026-11-07, and run 8's, 2026-11-12: fewer toys taken for animals than at 0.4, nearly as many animals found).
   const TRACK_SCORE = 0.45;
   const ANIMAL_MARGIN = 0.25; // an animal's box grown by this much each way (its movement blurs past it)
   const ANIMAL_HOLD_MS = 3000; // an animal found this recently still counts where it was (a finder misses it now and then)

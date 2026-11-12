@@ -55,15 +55,15 @@ const FAST_MODELS = [
   ["hand_landmark_lite_sh6.blob", "219cca957379ad0338f1278d6593be9e6c4780dfd2e77984d4783e9783071c50"],
 ];
 // The object finder (YOLOv8 nano: Ultralytics, AGPL-3.0; trained further on animals for this app,
-// run 7's animals7, its kinds in models/kinds.js; made for OpenVINO 2021.4 by scripts/yolo-blob.py,
-// on the oak-models-3 release): downloaded the first time Find objects is turned on, not with the
+// run 8's animals8, its kinds in models/kinds.js; made for OpenVINO 2021.4 by scripts/yolo-blob.py,
+// on the oak-models-4 release): downloaded the first time Find objects is turned on, not with the
 // setup. OLD_DETECT_MODELS: the ones before it, deleted then.
 const DETECT_MODEL = {
-  name: "animals7_640x352_2021.4_6shave.blob",
-  url: "https://github.com/alexandermulholland92/hand-tracker/releases/download/oak-models-3/animals7_640x352_2021.4_6shave.blob",
-  sha256: "059deb1d452f502fd8e9e72c788938c2b08f26d6a68f1fbd52959a61451460ff",
+  name: "animals8_640x352_2021.4_6shave.blob",
+  url: "https://github.com/alexandermulholland92/hand-tracker/releases/download/oak-models-4/animals8_640x352_2021.4_6shave.blob",
+  sha256: "1689102ef16b4add2d333adcfdb61d256b53fc759ae32ecc473427a535005c37",
 };
-const OLD_DETECT_MODELS = ["mobilenet-ssd_openvino_2021.4_5shave.blob", "yolov8n_coco_640x352_2021.4_6shave.blob"];
+const OLD_DETECT_MODELS = ["mobilenet-ssd_openvino_2021.4_5shave.blob", "yolov8n_coco_640x352_2021.4_6shave.blob", "animals7_640x352_2021.4_6shave.blob"];
 // Python reads the bridge from disk, so in the packaged app it's outside app.asar.
 const BRIDGE = path.join(__dirname, "..", "oak", "oak_bridge.py").replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
 
@@ -214,7 +214,7 @@ class OakCamera {
     onMessage({ status: "starting", message: "Downloading the object finder for the OAK camera (6 MB, only the first time)…" });
     try {
       await this.download(DETECT_MODEL.url, file, () => {}, { sha256: DETECT_MODEL.sha256 });
-      for (const old of OLD_DETECT_MODELS) fs.rmSync(path.join(this.paths.models, old), { force: true });
+      for (const old of OLD_DETECT_MODELS) for (const f of [old, old + ".kinds.json"]) fs.rmSync(path.join(this.paths.models, f), { force: true });
       kinds();
       return true;
     } catch (err) {

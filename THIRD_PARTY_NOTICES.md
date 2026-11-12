@@ -45,22 +45,22 @@ SOFTWARE.
 
 The object finder an OAK camera runs with *Find objects* on: YOLOv8 nano by Ultralytics
 (`yolov8n.pt`, trained on COCO), trained further for this app on more pictures of animals
-(animals7: open collections of camera-trap and wildlife pictures, and the user's own), under the
+(animals8: open collections of camera-trap and wildlife pictures, and the user's own), under the
 GNU Affero General Public License v3.0 (<https://github.com/ultralytics/ultralytics/blob/main/LICENSE>).
 Hand Tracker's `scripts/yolo-blob.py` makes it into the camera's model (its last layer as
 Luxonis's luxonis/tools make it for depthai, Apache License 2.0), compiled with Luxonis's
 blobconverter. It isn't part of the app: the desktop app downloads it from this project's
-oak-models-3 release, checked against its checksum, the first time *Find objects* is turned on.
+oak-models-4 release, checked against its checksum, the first time *Find objects* is turned on.
 
 The app's own object finder (Sentry mode's animals on cameras that don't find objects themselves)
-runs the same model, as Ultralytics' own exporter makes it for ONNX (`animals7.onnx`, its kinds in
+runs the same model, as Ultralytics' own exporter makes it for ONNX (`animals8.onnx`, its kinds in
 `models/kinds.js`), under the same licence. It isn't part of the apps either: they download it
-from this project's sentry-models-2 release, checked against its checksum, the first time it's
+from this project's sentry-models-3 release, checked against its checksum, the first time it's
 wanted. ONNX Runtime Web runs it (below).
 
 ## SSDLite with MobileNetV3 (Sentry mode's second look)
 
-Sentry mode's second look (`nightlook5.onnx`, on this project's sentry-models-2 release,
+Sentry mode's second look (`nightlook6.onnx`, on this project's sentry-models-3 release,
 downloaded with a checksum the first time it's wanted) is torchvision's SSDLite320 with a
 MobileNetV3-Large backbone, from its COCO weights, trained further for this app to find people
 and animals in black-and-white pictures. torchvision is by the PyTorch team under the BSD 3-Clause

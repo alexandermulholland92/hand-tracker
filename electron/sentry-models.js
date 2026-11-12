@@ -1,7 +1,7 @@
 /**
  * sentry-models.js — Sentry mode's models for the Windows, Mac and Linux app (the page's
  * sentry-models.js says what they are): each downloaded the first time it's wanted (from this
- * project's sentry-models-2 release), checked against its size and SHA-256, and kept in the
+ * project's sentry-models-3 release), checked against its size and SHA-256, and kept in the
  * app's data folder (<userData>/models). A copy kept there that isn't whole is downloaded again;
  * the ones before (SentryModels.OLD) are deleted. HAND_TRACKER_SENTRY_MODELS_URL (a folder's
  * address, ending in /) downloads them from elsewhere (the checks).

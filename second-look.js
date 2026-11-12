@@ -3,7 +3,7 @@
  * is an alert, another model looks at it too. The first look is the OAK cameras' model (YOLOv8
  * nano trained further on animals), on the camera or, for the others, in the app (object-finder.js);
  * the second is a model of another kind, so the two don't make the same mistakes: SSDLite with
- * MobileNetV3 (nightlook5), which finds people and animals in a black-and-white close-up around
+ * MobileNetV3 (nightlook6), which finds people and animals in a black-and-white close-up around
  * the animal (second-look-worker.js says how). An OAK camera's animals always have it; another
  * camera's when its ⚙ turns it on. Its model (9 MB) is downloaded the first time it's wanted and
  * checked (sentry-models.js). It runs in a worker of its own (second-look-worker.js).

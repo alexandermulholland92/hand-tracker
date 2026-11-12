@@ -1,6 +1,6 @@
 /**
  * object-finder-worker.js — object-finder.js's worker: the object finder, YOLOv8 nano trained
- * further on animals (animals7: sentry-models.js; its kinds in models/kinds.js), by ONNX Runtime's
+ * further on animals (animals8: sentry-models.js; its kinds in models/kinds.js), by ONNX Runtime's
  * WebAssembly build (MIT), in a worker of its own: off the page's thread, and away from the hand
  * tracker's MediaPipe (each expects its WebAssembly runtime to be the only one).
  *

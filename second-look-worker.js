@@ -1,6 +1,6 @@
 /**
  * second-look-worker.js — second-look.js's worker: Sentry's second look, a model of another kind
- * than the object finder's (SSDLite with MobileNetV3, trained for this app: nightlook5,
+ * than the object finder's (SSDLite with MobileNetV3, trained for this app: nightlook6,
  * sentry-models.js) that finds people and animals (any kind: "animal") in a black-and-white
  * picture, by ONNX Runtime's WebAssembly build (MIT), in a worker of its own: off the page's
  * thread, and away from the hand tracker's MediaPipe (each expects its WebAssembly runtime to be

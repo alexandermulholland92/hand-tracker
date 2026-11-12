@@ -135,7 +135,8 @@
     "lizard",
     "turtle",
     "frog",
-    "salamander"
+    "salamander",
+    "air conditioner"
    ],
    "animals": [
     "bird",
