@@ -14,11 +14,16 @@
  *     leave them empty: then not looked at again); not a Mac (only with an administrator's
  *     password). null if it can't be told.
  *
+ *   await reserve() -> { on, level?, volts? }: whether a Raspberry Pi with a PiSugar under it is
+ *     running on the PiSugar's own cell (its reserve), the power on the PiSugar's own socket gone
+ *     (a power bank there run empty, say); null on a computer without one (not looked at again).
+ *
  * The battery's level and time left come from the page (navigator.getBattery): this only says
  * whether there's one, as a computer without one says it's full and plugged in.
  */
 
 const { execFile } = require("child_process");
+const net = require("net");
 const fs = require("fs");
 const path = require("path");
 
@@ -111,6 +116,51 @@ async function windowsTemperature(now = Date.now()) {
   return winTemp.value;
 }
 
+// A PiSugar (pisugar-server installed): one that says whether its socket has power (PiSugar 2 and
+// 3: "battery_power_plugged", with its cell's level) is asked. A PiSugar S Pro says nothing while
+// its socket has power: it holds the I2C clock low then (its jumper), so the bus is dead and the
+// server answers "I2C not connected"; with that power gone the bus works, and its power monitor
+// (an INA219 at 0x40, its bus voltage in register 2) answers: that is "on its reserve" (seen on
+// piradise, 2026-11-11). Looked at every RESERVE_MS at most.
+const RESERVE_MS = 10000;
+const PISUGAR = { server: "/usr/bin/pisugar-server", bus: "/dev/i2c-1", port: 8423 };
+const INA219 = 'import fcntl,os\nf=os.open("/dev/i2c-1",os.O_RDWR)\nfcntl.ioctl(f,0x0703,0x40)\nos.write(f,bytes([2]))\nb=os.read(f,2)\nprint(((b[0]<<8|b[1])>>3)*0.004)';
+let reserved = { at: 0, value: null, none: false };
+// What pisugar-server answers to a question ("battery: 87.5"), "" if it doesn't.
+const askPisugar = (question) =>
+  new Promise((resolve) => {
+    let out = "";
+    const socket = net.connect({ host: "127.0.0.1", port: PISUGAR.port });
+    const done = () => (socket.destroy(), resolve(out.split("\n")[0].trim()));
+    socket.setTimeout(2000, done);
+    socket.on("connect", () => socket.write(question + "\n"));
+    socket.on("data", (d) => ((out += d), /\n/.test(out) && done()));
+    socket.on("error", done);
+    socket.on("close", done);
+  });
+// (answers: what pisugar-server says to each question; probe: the power monitor's volts, "" unanswered)
+async function pisugarReserve(answers = askPisugar, probe = () => run("python3", ["-c", INA219])) {
+  const plugged = await answers("get battery_power_plugged");
+  const said = /:\s*(true|false)\s*$/i.exec(plugged);
+  if (said) {
+    const level = Number((/:\s*([\d.]+)/.exec(await answers("get battery")) || [])[1]);
+    return { on: said[1].toLowerCase() === "false", ...(level >= 0 && level <= 100 ? { level: Math.round(level) } : {}) };
+  }
+  if (!/I2C not connected/i.test(plugged)) return null; // (the server isn't answering: not told)
+  const volts = Number((await probe()).trim());
+  return volts > 0 ? { on: true, volts: Math.round(volts * 100) / 100 } : { on: false };
+}
+async function reserve(now = Date.now()) {
+  if (process.platform !== "linux" || reserved.none) return null;
+  if (now - reserved.at < RESERVE_MS) return reserved.value;
+  if (!fs.existsSync(PISUGAR.server) || !fs.existsSync(PISUGAR.bus)) {
+    reserved.none = true;
+    return null;
+  }
+  reserved = { at: now, value: await pisugarReserve().catch(() => null), none: false };
+  return reserved.value;
+}
+
 async function temperature() {
   try {
     if (process.platform === "linux") return linuxTemperature();
@@ -121,4 +171,4 @@ async function temperature() {
   return null;
 }
 
-module.exports = { space, hasBattery, linuxBattery, temperature, linuxTemperature };
+module.exports = { space, hasBattery, linuxBattery, temperature, linuxTemperature, reserve, pisugarReserve };

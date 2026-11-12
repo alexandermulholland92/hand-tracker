@@ -279,6 +279,15 @@ public class SentryWatchService extends Service {
         } else {
             hot.remove(battery);
         }
+        // On its reserve battery (a Raspberry Pi on its PiSugar's own cell, as its state says), told
+        // once each time it gets so.
+        JSONObject rv = state.optJSONObject("reserve");
+        String reserve = rig + "|reserve";
+        if (rv != null && rv.optBoolean("on")) {
+            if (hot.add(reserve)) device(2500 + Math.floorMod(reserve.hashCode(), 500), rig, host + " is on its reserve battery", rv.optString("text", "Its power has run out or is unplugged"), android.R.drawable.ic_dialog_alert);
+        } else {
+            hot.remove(reserve);
+        }
         JSONObject t = state.optJSONObject("temperature");
         String self = rig + "|device";
         if (t != null && t.optBoolean("hot")) {

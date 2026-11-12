@@ -286,6 +286,7 @@
     space = r && r.free >= 0 && r.total > 0 ? { free: r.free, total: r.total } : null;
     battery = batteryNow(r && r.battery === true ? await browserBattery() : r && typeof r.battery === "object" ? r.battery : null);
     temp = cleanTemp(r && r.temperature);
+    reserve = r && r.reserve && typeof r.reserve.on === "boolean" ? r.reserve : null;
     uptime = r && r.uptime > 0 ? { s: r.uptime, at: Date.now() } : null;
     countOnTime();
     watchHeat();
@@ -319,6 +320,10 @@
   const HOT_C = 85, COOL_C = 80;
   const WARM_WORDS = { nominal: "normal", fair: "warm", serious: "hot", critical: "critical" };
   let temp = null; // { c, of: "processor" | "battery", overheat? } or { state } (an iPhone)
+  // A Raspberry Pi on its PiSugar's own cell, the power on the PiSugar's socket gone
+  // (electron/storage.js): { on, level?, volts? }; null where there's none.
+  let reserve = null;
+  const reserveText = (v) => `On its reserve battery${v.level >= 0 ? ` (${v.level}%)` : ""}: its power has run out or is unplugged`;
   const hot = new Set(); // too hot now: "device", or "chip:" and an OAK camera's name
   function cleanTemp(t) {
     if (t && Number.isFinite(t.c)) return t.of === "battery" ? { c: t.c, of: "battery", overheat: !!t.overheat } : { c: t.c, of: "processor" };
@@ -449,6 +454,7 @@
     }
     if (battery) out.battery = { ...battery, text: batteryText(battery), low: !battery.charging && battery.level < LOW_BATTERY };
     if (temp) out.temperature = { ...temp, hot: hot.has("device"), text: tempText(temp, hot.has("device")) };
+    if (reserve) out.reserve = { ...reserve, text: reserve.on ? reserveText(reserve) : "" };
     if (uptime && onTime()) out.onTime = { s: Math.round(onFor()), text: `On for ${onForText(onFor())} since the battery was changed` };
     if (uptime && counted("remoteReminderTime")) {
       const s = reminderFor();
@@ -465,7 +471,7 @@
     }
     if ($("remoteReminderCount")) $("remoteReminderCount").textContent = r.batteryReminder ? `(${r.batteryReminder.counted})` : "";
     const parts = [r.storage && ["Space: " + r.storage.text, r.storage.low], r.battery && [r.battery.text, r.battery.low], r.temperature && [r.temperature.text, r.temperature.hot],
-      r.batteryReminder && r.batteryReminder.due && [r.batteryReminder.text, true]].filter(Boolean);
+      r.reserve && r.reserve.on && [r.reserve.text, true], r.batteryReminder && r.batteryReminder.due && [r.batteryReminder.text, true]].filter(Boolean);
     if (!$("remoteRoom") || JSON.stringify(parts) === shownRoom) return;
     shownRoom = JSON.stringify(parts);
     $("remoteRoomRow").hidden = !parts.length;
