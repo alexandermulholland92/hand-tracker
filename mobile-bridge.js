@@ -878,6 +878,15 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
         return () => Promise.resolve(h).then((x) => x && x.remove && x.remove());
       },
       setAutostart: async () => false,
+      // Restart the app, on a phone: its page loaded again inside the app (the app itself isn't
+      // closed: ending an Android app's process leaves its accessibility service, the hand mouse's,
+      // switched on but not running until the app is installed again; OnePlus, 2026-11-13). Remote
+      // recording comes back on as the page opens; the cameras stay off.
+      system: async () => ({ restartApp: "yes" }),
+      restartApp: async () => {
+        setTimeout(() => location.reload(), 1200); // (after the answer has gone)
+        return { ok: true, message: "Restarting the app… This page reconnects when it's back." };
+      },
       // The room left in Documents, the battery and its temperature: { free, total, battery: {
       // level, charging, hoursToFull?, currentUa?, chargeUah? } | null, temperature?: { c, of:
       // "battery", overheat } (Android) | { state } (iPhone) } (null from an app from before it).

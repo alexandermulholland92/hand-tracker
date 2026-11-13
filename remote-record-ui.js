@@ -184,6 +184,14 @@
   // This computer restarted, and its cameras' USB turned off and on (the device settings page):
   // what it can do ({ reboot, cameraReset }, electron/system-control.js), looked at now and then.
   let system = null;
+  // Restart the app: a phone's page saves a take being recorded first, as Stop would (waited for
+  // SAVE_WAIT_MS at most, so a page stuck recording restarts all the same); a computer's app
+  // does that itself (electron/main.js).
+  const SAVE_WAIT_MS = 120000;
+  async function restartThisApp() {
+    if (settings.phone && cams() && cams().isRecording()) await Promise.race([stopAndSave().catch(() => null), new Promise((r) => setTimeout(r, SAVE_WAIT_MS))]);
+    return remote.restartApp();
+  }
   function lookAtSystem() {
     if (remote && remote.system) remote.system().then((c) => (system = c || null), () => (system = null));
   }
@@ -1201,6 +1209,14 @@
       const restarts = Object.keys(o.options || {}).some((k) => k === "size" || k === "fps");
       return { ok: true, message: running ? (restarts ? `${labelOf(o.id)} starts again with its new settings (a few seconds).` : `${labelOf(o.id)}: done.`) : `Saved: ${labelOf(o.id)} starts with these.` };
     }
+    // (A computer's app does this itself, before it gets here: electron/main.js. A phone's page is
+    // loaded again, a take being recorded saved first.)
+    if (action === "restartApp") {
+      if (!remote.restartApp || !system || !system.restartApp) return { ok: false, message: "This device's app can't be restarted from here." };
+      const saving = recording;
+      restartThisApp();
+      return { ok: true, message: `${saving ? "Saving the take, then restarting" : "Restarting"} the app… This page reconnects when it's back.` };
+    }
     if (action === "reboot") {
       if (!remote.reboot || !system || !system.reboot) return { ok: false, message: "This device can't be restarted from here." };
       if (recording) return { ok: false, message: "Stop recording first." };
@@ -1531,7 +1547,7 @@
       $("remoteRestartAppRow").hidden = false;
       $("remoteRestartApp").addEventListener("click", async () => {
         if (!confirm(cams().isRecording() ? "Save the take being recorded, then close this app and open it again? The cameras stop." : "Close this app and open it again? The cameras stop.")) return;
-        const r = await remote.restartApp().catch((err) => ({ ok: false, message: errText(err) }));
+        const r = await restartThisApp().catch((err) => ({ ok: false, message: errText(err) }));
         if (r && !r.ok) alert(r.message || "It couldn't be restarted.");
       });
     }
