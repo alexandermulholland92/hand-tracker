@@ -3683,6 +3683,8 @@ async function checkRemoteRecording(js) {
     await Promise.all([first, asking(), asking(), asking()]);
     out.numbered = { got: seqs.length, distinct: new Set(seqs).size, fps: Math.round(seqs.length / 2) };
     await sleep(1500);
+    // Restart the app while recording: the take is saved first (simulated here: only noted).
+    out.restartRecording = await (await post("restartApp")).json();
     out.stop = await (await post("stop")).json();
     await post("settings", { settings: { detailsRequired: false } }); // (as it was: optional)
     const after = await state();
@@ -3723,11 +3725,14 @@ async function checkRemoteRecording(js) {
     // The device settings page's Restart cameras (their USB off and on) and Restart (simulated
     // here: only noted, global.__systemAsked).
     out.system = (await state()).system;
+    // Its memory, with its status readings: how full, and this app's own (not nearly full here).
+    out.memory = (await state()).memory || null;
     out.resetCams = await (await post("resetCameras")).json();
     for (let i = 0; i < 60 && (await state()).pending; i++) await sleep(250);
     out.resetNotice = ((await state()).notice || {}).message || "";
     out.reboot = await (await post("reboot")).json();
     out.powerOff = await (await post("powerOff")).json();
+    out.restartApp = await (await post("restartApp")).json();
     out.systemAsked = global.__systemAsked.slice();
     out.backAfterClose = await js(`(() => { const card = document.getElementById("multiCamCard"), wrap = document.getElementById("wrap"); return !card.classList.contains("in-place") && card.nextElementSibling !== wrap && getComputedStyle(wrap).display !== "none"; })()`);
     await post("mode", { mode: "freeform" });
@@ -3761,7 +3766,7 @@ async function checkRemoteRecording(js) {
       out.stereo.mode === "stereo" && out.stereo.need.ok && !out.stereo.running &&
       out.inPlace.inPlace && out.inPlace.beforeView && !out.inPlace.viewShown && out.backAfterClose &&
       out.system && out.system.reboot === "yes" && out.system.cameraReset === "power" && out.resetCams.ok && /simulated/.test(out.resetNotice) &&
-      out.reboot.ok && out.powerOff.ok && out.systemAsked.join() === "resetCameras,reboot,powerOff" &&
+      out.reboot.ok && out.powerOff.ok && out.systemAsked.join() === "restartApp after saving,resetCameras,reboot,powerOff,restartApp" && out.restartRecording.ok && /^Saving the take/.test(out.restartRecording.message) && out.restartApp.ok && out.system.restartApp === "yes" && out.memory && out.memory.app > 0 && out.memory.full === false && /^Memory \d+% used \(Hand Tracker [\d.]+ (GB|MB)\)$/.test(out.memory.text) &&
       out.refused.ok === false && (out.refused.missing || []).join() === "location,task" && /Fill in Location and Task first/.test(out.refused.message) && out.refusedStarted === false &&
       out.record.ok && out.changedDetails.ok === false && out.changedDetails.locked && out.lockedDetails.locked === true &&
       out.lockedDetails.details.location === "Lab 2" && out.lockedDetails.details.task === "Pick up cup" && out.unlocked.locked === false && out.unlocked.cleared && /^Sam-Smith_Lab-2_Pick-up-cup_/.test(out.nameLocked) &&

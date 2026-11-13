@@ -1211,6 +1211,9 @@ function registerRemoteIpc() {
   let asked = 0;
   const ask = (action, extra = {}) =>
     new Promise((resolve) => {
+      // The app itself closed and opened again: done here, so it works when the window's page has
+      // died (a computer out of memory) and nothing there answers.
+      if (action === "restartApp") return resolve(restartApp());
       if (!mainWindow || mainWindow.isDestroyed()) return resolve({ ok: false, message: "Hand Tracker's window isn't open." });
       const id = ++asked;
       const timer = setTimeout(() => {
@@ -1265,10 +1268,46 @@ function registerRemoteIpc() {
   // checks (HAND_TRACKER_SYSTEM_SIMULATE) only note what was asked, in global.__systemAsked.
   const simulateSystem = !!process.env.HAND_TRACKER_SYSTEM_SIMULATE;
   global.__systemAsked = [];
-  handle("remote:system", () => (simulateSystem ? { reboot: "yes", powerOff: "yes", cameraReset: "power" } : systemControl.capabilities()));
+  handle("remote:system", async () => ({ ...(simulateSystem ? { reboot: "yes", powerOff: "yes", cameraReset: "power" } : await systemControl.capabilities()), restartApp: "yes" }));
+  // This app closed and opened again, as it was opened (waiting for the phone, if it was): the
+  // remote recording page's Restart the app, and the button here. While recording, the take is
+  // stopped and saved first, as Stop would (its page is asked, and waited for while it saves:
+  // SAVE_WAIT_MS at most, so an app stuck recording restarts all the same). A page that has died
+  // has nothing left to save.
+  const SAVE_WAIT_MS = 120000;
+  const state = () => (remoteRecord && remoteRecord.state) || {};
+  const saveThenRelaunch = async () => {
+    const until = Date.now() + SAVE_WAIT_MS;
+    if (state().recording) await ask("stop").catch(() => null);
+    while (Date.now() < until && (state().recording || state().saving)) await new Promise((r) => setTimeout(r, 500));
+    relaunchApp();
+  };
+  restartApp = () => {
+    const dead = !mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isCrashed();
+    const taking = !dead && !!(state().recording || state().saving);
+    if (simulateSystem) global.__systemAsked.push(taking ? "restartApp after saving" : "restartApp");
+    else if (taking) saveThenRelaunch();
+    else setTimeout(relaunchApp, 1200); // (after the answer has gone)
+    return { ok: true, message: `${taking ? "Saving the take, then restarting" : "Restarting"} ${APP.name}… This page reconnects when it's back.${simulateSystem ? " (simulated)" : ""}` };
+  };
+  handle("remote:restart-app", () => restartApp());
   // The room left where takes are saved, whether this computer has a battery, and how hot its
   // processor is (storage.js).
-  handle("remote:storage", async () => ({ ...((await storage.space(remoteFolder())) || {}), battery: await storage.hasBattery(), temperature: await storage.temperature(), reserve: await storage.reserve(), uptime: os.uptime() }));
+  handle("remote:storage", async () => ({ ...((await storage.space(remoteFolder())) || {}), battery: await storage.hasBattery(), temperature: await storage.temperature(), reserve: await storage.reserve(), uptime: os.uptime(), memory: memoryNow() }));
+  // This computer's memory ({ total, available }, storage.js) and this app's own: what all its
+  // processes hold (app) and the most one of its pages does (page), in bytes.
+  function memoryNow() {
+    const out = { ...(storage.memory() || {}) };
+    try {
+      const all = app.getAppMetrics();
+      const of = (p) => ((p.memory && p.memory.workingSetSize) || 0) * 1024;
+      out.app = all.reduce((sum, p) => sum + of(p), 0);
+      out.page = Math.max(0, ...all.filter((p) => p.type === "Tab").map(of));
+    } catch {
+      // (not told)
+    }
+    return out;
+  }
   handle("remote:power-off", () => {
     if (!simulateSystem) return systemControl.powerOff();
     global.__systemAsked.push("powerOff");
@@ -1798,6 +1837,36 @@ app.whenReady().then(() => {
   });
   if (APP.kind === "full" || APP.kind === "mouse") registerShortcuts(); // (the hand mouse's and its keyboard's)
 });
+
+// The app opened again as this one closes, with what it was opened with (--remote-standby). On
+// Linux inside a systemd service of its own (started with systemd-run), a program it starts is
+// stopped with it, so the new one is started as a service of its own a few seconds on; if that
+// can't be done, and everywhere else, Electron starts it as this one goes.
+let restartApp = () => ({ ok: false, message: "Not ready yet." });
+function relaunchApp() {
+  const execPath = process.env.APPIMAGE || process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  const args = process.argv.slice(1);
+  let started = false;
+  if (process.platform === "linux") {
+    try {
+      const group = fs.readFileSync("/proc/self/cgroup", "utf8");
+      // (a desktop's own app-….service lasts as long as anything in it does)
+      if (/\.service\s*$/m.test(group) && !/\/app-[^/]*\.service\s*$/m.test(group)) {
+        const skip = /^(INVOCATION_ID|JOURNAL_STREAM|SYSTEMD_EXEC_PID|NOTIFY_SOCKET|MANAGERPID|MEMORY_PRESSURE_\w+|LISTEN_\w+)$/;
+        const env = Object.entries(process.env)
+          .filter(([k, v]) => !skip.test(k) && typeof v === "string" && !/[\n\r]/.test(v))
+          .map(([k, v]) => `--setenv=${k}=${v}`);
+        const run = require("child_process").spawnSync("systemd-run", ["--user", "--collect", "--on-active=4", "--timer-property=AccuracySec=100ms", `--unit=${APP.slug}-restart-${Date.now()}`, ...env, execPath, ...args], { timeout: 8000 });
+        started = run.status === 0;
+      }
+    } catch {
+      started = false;
+    }
+  }
+  if (!started) app.relaunch({ execPath, args });
+  setTimeout(() => app.exit(0), 2500).unref(); // (a window that doesn't close: a page that died)
+  app.quit();
+}
 
 app.on("window-all-closed", () => {
   exporter.cancel();

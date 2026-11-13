@@ -1792,10 +1792,11 @@
   // Restarting it, or its cameras (their USB off and on): what it can do, from its state.
   function renderRestart(s) {
     const sys = s.system || null;
-    $("restartPanel").hidden = !sys || (!sys.reboot && !sys.cameraReset);
+    $("restartPanel").hidden = !sys || (!sys.reboot && !sys.cameraReset && !sys.restartApp);
     if ($("restartPanel").hidden) return;
     $("resetCamsRow").hidden = !sys.cameraReset;
     $("rebootRow").hidden = !sys.reboot && !sys.powerOff;
+    $("restartAppRow").hidden = !sys.restartApp; // (a computer whose app says it can)
     $("rebootBtn").hidden = !sys.reboot;
     $("powerOffBtn").hidden = !sys.powerOff;
     const host = hostName();
@@ -1812,6 +1813,7 @@
     $("restartNote").textContent = notes.join(" ");
   }
   $("resetCamsBtn").addEventListener("click", (e) => tapAgain(e.currentTarget, "The cameras stop: tap again", () => command("resetCameras")));
+  $("restartAppBtn").addEventListener("click", (e) => tapAgain(e.currentTarget, state && state.recording ? "Save the take and restart the app? Tap again" : "Restart the app? Tap again", () => command("restartApp")));
   $("rebootBtn").addEventListener("click", (e) => tapAgain(e.currentTarget, `Restart ${hostName()}? Tap again`, () => command("reboot")));
   $("powerOffBtn").addEventListener("click", (e) => tapAgain(e.currentTarget, `Turn off ${hostName()}? Tap again`, () => command("powerOff")));
 
@@ -2203,6 +2205,7 @@
     // temperature, in red when too hot (a rig from before says none of them).
     const room = [s.storage && s.storage.text && [`Space: ${s.storage.text}`, s.storage.low], s.battery && s.battery.text && [s.battery.text, s.battery.low],
       s.temperature && s.temperature.text && [s.temperature.text, s.temperature.hot], s.reserve && s.reserve.on && s.reserve.text && [s.reserve.text, true],
+      s.memory && s.memory.text && [s.memory.text, s.memory.full],
       s.batteryReminder && s.batteryReminder.due && [s.batteryReminder.text, true]].filter(Boolean);
     $("room").hidden = !room.length;
     $("room").innerHTML = room.map(([text, low]) => `<span${low ? ' class="err"' : ""}>${esc(text)}</span>`).join(" · ");

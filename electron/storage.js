@@ -13,6 +13,10 @@
  *     hottest of a PC's processor sensors), Windows from its thermal zones' counters (many PCs
  *     leave them empty: then not looked at again); not a Mac (only with an administrator's
  *     password). null if it can't be told.
+ *   memory() -> { total, available } in bytes: this computer's memory, and how much of it a
+ *     program could still have (Linux: MemAvailable, which counts what its file cache would give
+ *     back; Windows: what's free). null on a Mac (what it calls free leaves out what it would
+ *     give back, so it always looks full).
  *
  *   await reserve() -> { on, level?, volts? }: whether a Raspberry Pi with a PiSugar under it is
  *     running on the PiSugar's own cell (its reserve), the power on the PiSugar's own socket gone
@@ -25,6 +29,7 @@
 const { execFile } = require("child_process");
 const net = require("net");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 async function space(dir) {
@@ -161,6 +166,21 @@ async function reserve(now = Date.now()) {
   return reserved.value;
 }
 
+function memory(file = "/proc/meminfo") {
+  try {
+    if (process.platform === "linux") {
+      const text = fs.readFileSync(file, "utf8");
+      const kb = (name) => Number((text.match(new RegExp("^" + name + ":\\s+(\\d+) kB", "m")) || [])[1]);
+      const total = kb("MemTotal") * 1024, available = kb("MemAvailable") * 1024;
+      return total > 0 && available >= 0 ? { total, available } : null;
+    }
+    if (process.platform === "win32") return { total: os.totalmem(), available: os.freemem() };
+  } catch {
+    // (not told)
+  }
+  return null;
+}
+
 async function temperature() {
   try {
     if (process.platform === "linux") return linuxTemperature();
@@ -171,4 +191,4 @@ async function temperature() {
   return null;
 }
 
-module.exports = { space, hasBattery, linuxBattery, temperature, linuxTemperature, reserve, pisugarReserve };
+module.exports = { space, hasBattery, linuxBattery, temperature, linuxTemperature, reserve, pisugarReserve, memory };

@@ -288,6 +288,15 @@ public class SentryWatchService extends Service {
         } else {
             hot.remove(reserve);
         }
+        // Its memory nearly full (as its state says: restart the app before it runs out), told once
+        // each time it gets so.
+        JSONObject mem = state.optJSONObject("memory");
+        String full = rig + "|memory";
+        if (mem != null && mem.optBoolean("full")) {
+            if (hot.add(full)) device(2500 + Math.floorMod(full.hashCode(), 500), rig, host + ": memory nearly full", mem.optString("text", "Restart the app"), android.R.drawable.ic_dialog_alert);
+        } else {
+            hot.remove(full);
+        }
         JSONObject t = state.optJSONObject("temperature");
         String self = rig + "|device";
         if (t != null && t.optBoolean("hot")) {

@@ -366,6 +366,8 @@ contextBridge.exposeInMainWorld("desktop", {
     // page (electron/system-control.js): system() -> { reboot, powerOff, cameraReset }; turned off.
     system: () => ipcRenderer.invoke("remote:system"),
     reboot: () => ipcRenderer.invoke("remote:reboot"),
+    // This app closed and opened again (as it was opened) -> { ok, message }
+    restartApp: () => ipcRenderer.invoke("remote:restart-app"),
     powerOff: () => ipcRenderer.invoke("remote:power-off"),
     resetCameras: () => ipcRenderer.invoke("remote:reset-cameras"),
     // One camera's USB off and on: { serial, usb, dev } (an OAK camera's id, USB ids, a USB port)

@@ -287,9 +287,11 @@
     battery = batteryNow(r && r.battery === true ? await browserBattery() : r && typeof r.battery === "object" ? r.battery : null);
     temp = cleanTemp(r && r.temperature);
     reserve = r && r.reserve && typeof r.reserve.on === "boolean" ? r.reserve : null;
+    memory = cleanMemory(r && r.memory);
     uptime = r && r.uptime > 0 ? { s: r.uptime, at: Date.now() } : null;
     countOnTime();
     watchHeat();
+    watchMemory();
     watchBatteryReminder();
     showRoom();
   }
@@ -324,6 +326,37 @@
   // (electron/storage.js): { on, level?, volts? }; null where there's none.
   let reserve = null;
   const reserveText = (v) => `On its reserve battery${v.level >= 0 ? ` (${v.level}%)` : ""}: its power has run out or is unplugged`;
+  // Memory: this computer's ({ total, available } bytes, where it can be told) and this app's own
+  // ({ app, page }: all of it, and its biggest page). Too full (in red here and on the page, with
+  // "restart the app"; told of as too hot is) once the computer has under FULL_LEFT of its
+  // memory left for a program to have, or a page of this app holds over PAGE_FULL of it, and
+  // until it's back past FULL_OVER / PAGE_OVER (so it isn't told again and again at the edge).
+  // A computer that runs out stops whatever holds most: this app's page, on pi (2026-11-13: its
+  // page was at 1 GB of pi's 4 after 20 hours, and every camera said "not started yet").
+  const FULL_LEFT = 0.1, FULL_OVER = 0.15, PAGE_FULL = 0.3, PAGE_OVER = 0.25;
+  let memory = null, memoryFull = false;
+  function cleanMemory(v) {
+    if (!v || typeof v !== "object") return null;
+    const n = (x) => (Number.isFinite(x) && x >= 0 ? x : null);
+    const out = { total: n(v.total), available: n(v.available), app: n(v.app), page: n(v.page) };
+    if (!out.total || out.available === null) out.total = out.available = null;
+    return out.total || out.app ? out : null;
+  }
+  const gb = (bytes) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`);
+  function memoryText(v, full) {
+    const used = v.total ? `${Math.round((1 - v.available / v.total) * 100)}% used` : "";
+    const own = v.app ? `${rigApp ? "Remote Recording" : "Hand Tracker"} ${gb(v.app)}` : "";
+    if (full) return `Memory nearly full (${[used, own].filter(Boolean).join(", ")}): restart the app`;
+    return `Memory ${used}${used && own ? ` (${own})` : own}`;
+  }
+  function watchMemory() {
+    if (!memory) return (memoryFull = false);
+    const left = memory.total ? memory.available / memory.total : 1, page = memory.total && memory.page ? memory.page / memory.total : 0;
+    const was = memoryFull;
+    memoryFull = was ? left < FULL_OVER || page > PAGE_OVER : left < FULL_LEFT || page > PAGE_FULL;
+    if (memoryFull && !was && global.Sentry && global.Sentry.tell) global.Sentry.tell("Memory nearly full", memoryText(memory, true)).catch(() => {});
+    return memoryFull;
+  }
   const hot = new Set(); // too hot now: "device", or "chip:" and an OAK camera's name
   function cleanTemp(t) {
     if (t && Number.isFinite(t.c)) return t.of === "battery" ? { c: t.c, of: "battery", overheat: !!t.overheat } : { c: t.c, of: "processor" };
@@ -455,6 +488,7 @@
     if (battery) out.battery = { ...battery, text: batteryText(battery), low: !battery.charging && battery.level < LOW_BATTERY };
     if (temp) out.temperature = { ...temp, hot: hot.has("device"), text: tempText(temp, hot.has("device")) };
     if (reserve) out.reserve = { ...reserve, text: reserve.on ? reserveText(reserve) : "" };
+    if (memory) out.memory = { ...memory, full: memoryFull, text: memoryText(memory, memoryFull) };
     if (uptime && onTime()) out.onTime = { s: Math.round(onFor()), text: `On for ${onForText(onFor())} since the battery was changed` };
     if (uptime && counted("remoteReminderTime")) {
       const s = reminderFor();
@@ -471,7 +505,7 @@
     }
     if ($("remoteReminderCount")) $("remoteReminderCount").textContent = r.batteryReminder ? `(${r.batteryReminder.counted})` : "";
     const parts = [r.storage && ["Space: " + r.storage.text, r.storage.low], r.battery && [r.battery.text, r.battery.low], r.temperature && [r.temperature.text, r.temperature.hot],
-      r.reserve && r.reserve.on && [r.reserve.text, true], r.batteryReminder && r.batteryReminder.due && [r.batteryReminder.text, true]].filter(Boolean);
+      r.reserve && r.reserve.on && [r.reserve.text, true], r.memory && [r.memory.text, r.memory.full], r.batteryReminder && r.batteryReminder.due && [r.batteryReminder.text, true]].filter(Boolean);
     if (!$("remoteRoom") || JSON.stringify(parts) === shownRoom) return;
     shownRoom = JSON.stringify(parts);
     $("remoteRoomRow").hidden = !parts.length;
@@ -1491,6 +1525,14 @@
         } catch (err) {
           $("remoteBtStatus").textContent = errText(err);
         }
+      });
+    }
+    if ($("remoteRestartApp") && remote.restartApp) {
+      $("remoteRestartAppRow").hidden = false;
+      $("remoteRestartApp").addEventListener("click", async () => {
+        if (!confirm(cams().isRecording() ? "Save the take being recorded, then close this app and open it again? The cameras stop." : "Close this app and open it again? The cameras stop.")) return;
+        const r = await remote.restartApp().catch((err) => ({ ok: false, message: errText(err) }));
+        if (r && !r.ok) alert(r.message || "It couldn't be restarted.");
       });
     }
     $("remoteAutostart").addEventListener("change", async (e) => {
