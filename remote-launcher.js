@@ -228,7 +228,36 @@
         if (typeof s.tailnet === "string" && /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s.tailnet)) localStorage.setItem(tailKey, s.tailnet);
       } catch {}
     }
+    // A computer added by its Tailscale address that says its name (and that this is its address): the
+    // same computer as that name, so one row, under its name.
+    if (path === "/api/state" && r.status === 200 && /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(c.host)) {
+      try {
+        const s = JSON.parse(new TextDecoder().decode(r.bytes));
+        if (s.tailnet === c.host && typeof s.host === "string") adopt(c, s.host);
+      } catch {}
+    }
     return r;
+  }
+  // The row for a computer's Tailscale address becomes its name's (where the list has that name already,
+  // the address's row goes): its address remembered for the name, and its code and preview switch carried.
+  function adopt(c, hostname) {
+    const named = parse(`${String(hostname).toLowerCase()}:${c.port}`);
+    if (!named || /^\d/.test(named.host) || /^(localhost|.*\.local)$/.test(named.host)) return;
+    const from = `${c.host}:${c.port}`, to = `${named.host}:${named.port}`;
+    try {
+      localStorage.setItem(`hand-tracker-tailnet:${to}`, c.host);
+      const key = localStorage.getItem(`hand-tracker-remote-key:${from}`);
+      if (key && !localStorage.getItem(`hand-tracker-remote-key:${to}`)) localStorage.setItem(`hand-tracker-remote-key:${to}`, key);
+    } catch {}
+    const list = load();
+    const at = list.findIndex((x) => label(x) === label(c));
+    if (at < 0) return;
+    const has = list.some((x) => label(x) === label(named));
+    const merged = has ? list.filter((_, j) => j !== at) : list.map((x, j) => (j === at ? named : x));
+    save(merged);
+    const p = previewPrefs();
+    if (p.off.includes(label(c))) setPreviewPrefs({ ...p, off: [...p.off.filter((x) => x !== label(c)), ...(has ? [] : [label(named)])] });
+    show();
   }
   // A computer's previews while its row shows (until the list is drawn again).
   async function previewLoop(c, box, gen) {
