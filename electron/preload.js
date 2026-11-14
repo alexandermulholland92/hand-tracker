@@ -396,6 +396,14 @@ contextBridge.exposeInMainWorld("desktop", {
     storage: () => ipcRenderer.invoke("remote:storage"),
     // A take saved without asking where: { baseName, files } -> { dir, results }
     saveTake: ({ baseName, files }) => ipcRenderer.invoke("files:save-remote", { baseName, files }),
+    //   (a file's clipId instead of its data: a clip written as it was recorded, by clip below)
+    // A camera's clip written to disk as it's recorded (camera-video.js): open(ext) -> id; write(id, bytes)
+    // -> bytes so far; discard(id). Saved by saveTake with { clipId: id }.
+    clip: {
+      open: (ext) => ipcRenderer.invoke("clip:open", ext),
+      write: (id, data) => ipcRenderer.invoke("clip:write", id, data),
+      discard: (id) => ipcRenderer.invoke("clip:discard", id),
+    },
     // Sentry mode's photos and videos deleted from it: { names } or { all: true } -> { deleted, failed }
     deleteSentry: ({ names, all } = {}) => ipcRenderer.invoke("files:delete-sentry", { names, all }),
     onStatus: (cb) => {

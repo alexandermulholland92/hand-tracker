@@ -90,10 +90,17 @@ const MIME = {
   ".ico": "image/x-icon",
 };
 
+// On ARM boards (a Raspberry Pi: a rig with 4 GB or so), less memory: sound handled in the app's own
+// process rather than a helper of its own (about 25 MB on pi, 2026-11-14; sound still works: microphones
+// on the videos, videos played), and each page's JavaScript held to 768 MB, so it's cleared up before it
+// grows past that (the page that was killed for memory on 2026-11-13 had reached about 1 GB).
+const SMALL_BOARD = process.platform === "linux" && (process.arch === "arm64" || process.arch === "arm");
+if (SMALL_BOARD) app.commandLine.appendSwitch("js-flags", "--max-old-space-size=768");
 // Windows treats a window that is fully covered by other windows as hidden and
 // stops rendering it, which freezes the camera feed and stops tracking and
 // recording. Keep working when covered (minimizing still pauses).
-app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+// (one disable-features: a second would replace the first)
+app.commandLine.appendSwitch("disable-features", ["CalculateNativeWinOcclusion", ...(SMALL_BOARD ? ["AudioServiceOutOfProcess"] : [])].join(","));
 // On ARM boards (a Raspberry Pi), use the GPU even if Chromium's list doubts its driver:
 // hand tracking runs on WebGL, and without the GPU it crawls.
 if (process.platform === "linux" && process.arch === "arm64") app.commandLine.appendSwitch("ignore-gpu-blocklist");
@@ -1105,6 +1112,78 @@ function remoteFolder() {
   return process.env.HAND_TRACKER_REMOTE_DIR || readSettings().remoteDir || path.join(app.getPath("documents"), "Hand Tracker recordings");
 }
 
+// Clips being recorded, each written to its own file as it comes (clip:open/write/discard; files:save-remote's
+// clipId moves it into place).
+const CLIP_PART = /^\.recording-[\w-]{1,40}\.(mp4|webm)\.part$/;
+const clips = {
+  live: new Map(), // id -> { file, handle, size, writing }
+  next: 0,
+  async open(ext) {
+    if (!["mp4", "webm"].includes(ext)) throw new Error("Unsupported clip type");
+    const dir = remoteFolder();
+    await fs.promises.mkdir(dir, { recursive: true });
+    const id = `${process.pid}-${Date.now().toString(36)}-${++this.next}`;
+    const file = path.join(dir, `.recording-${id}.${ext}.part`);
+    this.live.set(id, { file, handle: await fs.promises.open(file, "w"), size: 0, writing: Promise.resolve() });
+    return id;
+  },
+  async write(id, data) {
+    const c = this.live.get(String(id));
+    if (!c) throw new Error("That clip isn't being recorded.");
+    const buf = Buffer.from(data);
+    c.writing = c.writing.then(() => c.handle.write(buf, 0, buf.length, c.size)).then(() => (c.size += buf.length));
+    await c.writing;
+    return c.size;
+  },
+  async close(id) {
+    const c = this.live.get(String(id));
+    if (!c) throw new Error("That clip isn't being recorded.");
+    this.live.delete(String(id));
+    await c.writing.catch(() => {});
+    await c.handle.close().catch(() => {});
+    return c;
+  },
+  async finish(id, out) {
+    const c = await this.close(id);
+    if (!c.size) {
+      await fs.promises.rm(c.file, { force: true });
+      throw new Error("nothing was recorded");
+    }
+    await fs.promises.rename(c.file, out);
+  },
+  async discard(id) {
+    const c = await this.close(id).catch(() => null);
+    if (c) await fs.promises.rm(c.file, { force: true }).catch(() => {});
+    return true;
+  },
+  // Ones left by a crash (this app closed while a clip recorded): kept as Recovered_<when>-video.<ext>.
+  async recover() {
+    const dir = remoteFolder();
+    let names = [];
+    try {
+      names = await fs.promises.readdir(dir);
+    } catch {
+      return;
+    }
+    for (const name of names.filter((n) => CLIP_PART.test(n))) {
+      const file = path.join(dir, name);
+      if ([...this.live.values()].some((c) => c.file === file)) continue;
+      try {
+        const st = await fs.promises.stat(file);
+        if (!st.size) {
+          await fs.promises.rm(file, { force: true });
+          continue;
+        }
+        const ext = CLIP_PART.exec(name)[1];
+        const t = st.mtime, p = (n) => String(n).padStart(2, "0");
+        const out = exporter.uniquePath(dir, `Recovered_${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}_${p(t.getHours())}-${p(t.getMinutes())}-${p(t.getSeconds())}-video`, ext);
+        await fs.promises.rename(file, out);
+        if (ext === "mp4") await exporter.finishClip(out, "video/mp4").catch(() => {});
+      } catch {}
+    }
+  },
+};
+
 // Opening the app at login, waiting for the phone (--remote-standby): the desktop's autostart
 // entry on Linux, a login item on Windows, a launch agent on a Mac (a login item there can't be
 // given --remote-standby). Only for the installed app. Each app has its own (Remote Recording's
@@ -1598,7 +1677,9 @@ function registerIpc() {
       const suffix = String(file.suffix || "").replace(/[^-\w]/g, "").slice(0, 24);
       const out = exporter.uniquePath(dir, base + suffix, ext);
       try {
-        await fs.promises.writeFile(out, typeof file.data === "string" ? file.data : Buffer.from(file.data));
+        // (a clip written to disk as it was recorded, clip:open: moved into place)
+        if (file.clipId != null) await clips.finish(file.clipId, out);
+        else await fs.promises.writeFile(out, typeof file.data === "string" ? file.data : Buffer.from(file.data));
         // A camera's clip as recorded (mimeType given): a plain MP4 with AAC sound.
         if (ext === "mp4" && typeof file.mimeType === "string") await exporter.finishClip(out, file.mimeType);
         exportedPaths.add(out);
@@ -1615,6 +1696,15 @@ function registerIpc() {
     if (!dir) return { canceled: true, results: [] };
     return { dir, results: await writeFiles(dir, baseName, files) };
   });
+
+  // A camera's clip (remote recording's videos, Sentry's) written to disk a second at a time as it's
+  // recorded, rather than kept in the window's memory until it ends (2026-11-14: Sentry's clips on pi were
+  // 340-480 MB, each held whole in the window, then copied twice more to be saved: the window was killed for
+  // memory at about 1 GB). Into the remote recording folder as .recording-<n>.<ext>.part; saved (files:save-remote's
+  // clipId) by moving it into place; thrown away by discard. One left by a crash is kept as Recovered_….
+  handle("clip:open", async (event, ext) => clips.open(String(ext)));
+  handle("clip:write", async (event, id, data) => clips.write(id, data));
+  handle("clip:discard", async (event, id) => clips.discard(id));
 
   // Remote recording's takes: saved without asking, into its folder (nobody may be at this screen).
   handle("files:save-remote", async (event, { baseName, files }) => {
@@ -1838,6 +1928,7 @@ app.whenReady().then(() => {
   restrictPermissions();
   bluetoothPicker();
   registerIpc();
+  clips.recover().catch(() => {}); // (a clip left by a crash)
   registerPcIpc();
   registerOakIpc();
   registerKinectIpc();

@@ -9,7 +9,11 @@
  *     and so how big the file is: CameraVideo.QUALITIES; standard if not given)
  *   rec.elapsed()                          // seconds so far
  *   const clip = await rec.stop();         // { blob, mimeType, ext: "webm" | "mp4", duration, width, height, sound, bitsPerSecond,
- *                                          //   startedAt (ms since 1970) }
+ *                                          //   startedAt (ms since 1970), size (bytes), fileId }
+ *   CameraVideo.start({ ..., file })       // file: { open(ext) -> id, write(id, bytes), discard(id) } (the desktop app's
+ *                                          //   remote.clip): written there a second at a time as it's recorded, not
+ *                                          //   kept in memory: clip.fileId (saved by saveTake's clipId), clip.blob null.
+ *                                          //   rec.discard() instead of stop() throws one away.
  *   CameraVideo.bitsPerSecond({ width, height, fps, quality, sound })  // what a clip asks its recorder for (the file is
  *                                          //   about that size, often less for a still picture)
  *   CameraVideo.setMicrophone(deviceId)    // which microphone the sound comes from ("" the usual one)
@@ -110,12 +114,14 @@
 
   // Starts recording canvas (it's recorded as it's drawn on). The sound, if any, starts a moment
   // later: the microphone may still be opening.
-  function start({ canvas, fps = 15, audio = false, preferMp4 = false, quality = "standard" }) {
+  function start({ canvas, fps = 15, audio = false, preferMp4 = false, quality = "standard", file = null }) {
     if (!supported()) throw new Error("This browser can't record video.");
     if (!canvas || !canvas.width || !canvas.height) throw new Error("There's no picture to record yet.");
     const stream = canvas.captureStream(fps); // (up to fps: a picture drawn less often is recorded less often)
     const startedAt = performance.now();
     let recorder = null, chunks = [], sound = false, ownTrack = null, stopped = false, mimeType = "", bitsPerSecond = 0;
+    // (written to a file as it comes: fileId once opened; writing, each piece after the one before; size, bytes)
+    let fileId = null, opening = null, writing = Promise.resolve(), size = 0, fileError = null;
     const ready = (async () => {
       if (audio) {
         ownTrack = await micTrack();
@@ -136,12 +142,33 @@
         videoBitsPerSecond: bitsPerSecond,
         ...(sound ? { audioBitsPerSecond: SOUND_BITS } : {}),
       });
-      recorder.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
+      if (file) {
+        const ext = (recorder.mimeType || mimeType).includes("mp4") ? "mp4" : "webm";
+        opening = Promise.resolve(file.open(ext)).then((id) => (fileId = id));
+        opening.catch((err) => (fileError = err));
+      }
+      recorder.ondataavailable = (e) => {
+        if (!e.data || !e.data.size) return;
+        if (!file) return chunks.push(e.data);
+        const piece = e.data;
+        writing = writing
+          .then(() => opening)
+          .then(async () => {
+            if (fileError) return;
+            await file.write(fileId, new Uint8Array(await piece.arrayBuffer()));
+            size += piece.size;
+          })
+          .catch((err) => (fileError = fileError || err));
+      };
       recorder.start(1000); // a chunk a second: a crash loses at most that
     })();
 
     return {
       elapsed: () => (performance.now() - startedAt) / 1000,
+      async discard() {
+        await this.stop().catch(() => null);
+        if (file && fileId !== null) await Promise.resolve(file.discard(fileId)).catch(() => {});
+      },
       async stop() {
         const short = MIN_CLIP_MS - (performance.now() - startedAt);
         if (short > 0) await new Promise((r) => setTimeout(r, short));
@@ -159,8 +186,16 @@
           closeMic();
         }
         const type = (recorder && recorder.mimeType) || mimeType || "video/webm";
+        await writing;
+        if (file && fileError) {
+          if (fileId !== null) await Promise.resolve(file.discard(fileId)).catch(() => {});
+          throw new Error(`The video couldn't be written: ${fileError.message || fileError}`);
+        }
+        const blob = file ? null : new Blob(chunks, { type: type.split(";")[0] });
         return {
-          blob: new Blob(chunks, { type: type.split(";")[0] }),
+          blob,
+          size: blob ? blob.size : size,
+          fileId: file ? fileId : null,
           mimeType: type,
           ext: type.includes("mp4") ? "mp4" : "webm",
           duration: (performance.now() - startedAt) / 1000,

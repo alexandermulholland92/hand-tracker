@@ -965,7 +965,8 @@
       const view = views[src.i];
       try {
         if (view && view.want) view.want(true);
-        const rec = global.CameraVideo.start({ canvas: src.canvas, fps: VIDEO_FPS, audio: remoteSound(), preferMp4: true, quality: remoteQuality() });
+        // (in the desktop app written to disk as it's recorded, not held in memory)
+        const rec = global.CameraVideo.start({ canvas: src.canvas, fps: VIDEO_FPS, audio: remoteSound(), preferMp4: true, quality: remoteQuality(), file: host && host.remote && host.remote.clip ? host.remote.clip : null });
         videos.push({ role: cam.role || cam.name, rec, view });
       } catch (err) {
         if (view && view.want) view.want(false);
@@ -981,8 +982,12 @@
     for (const v of list) {
       if (v.view && v.view.want) v.view.want(false);
       try {
+        if (!keep) {
+          await v.rec.discard();
+          continue;
+        }
         const clip = await v.rec.stop();
-        if (keep) out.push({ role: v.role, clip });
+        out.push({ role: v.role, clip });
       } catch {
         if (keep) out.push({ role: v.role, clip: null });
       }
@@ -994,11 +999,15 @@
   async function saveVideos(baseName, list, into = []) {
     const saved = [];
     for (const { role, clip } of list) {
-      if (!clip || !clip.blob.size || !host) continue;
+      if (!clip || !host) continue;
+      if (!clip.size) {
+        if (clip.fileId !== null && host.remote.clip) await host.remote.clip.discard(clip.fileId).catch(() => {});
+        continue;
+      }
       const slug = String(role).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "camera";
       try {
-        const data = new Uint8Array(await clip.blob.arrayBuffer());
-        const res = await host.remote.saveTake({ baseName, files: [{ format: clip.ext, suffix: `-video-${slug}`.slice(0, 24), ext: clip.ext, data, mimeType: clip.mimeType }] });
+        const body = clip.fileId !== null ? { clipId: clip.fileId } : { data: new Uint8Array(await clip.blob.arrayBuffer()) };
+        const res = await host.remote.saveTake({ baseName, files: [{ format: clip.ext, suffix: `-video-${slug}`.slice(0, 24), ext: clip.ext, ...body, mimeType: clip.mimeType }] });
         const r = (res.results || [])[0];
         if (r && r.ok) {
           saved.push(r.path.split(/[\\/]/).pop());

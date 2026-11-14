@@ -644,7 +644,8 @@
       try {
         const canvas = v.canvas();
         if (v.want) v.want(true);
-        st.session.rec = global.CameraVideo.start({ canvas, fps: videoFps(v.fps ? v.fps() : 0), audio: !!cfg.sound, preferMp4: true });
+        // (in the desktop app written to disk as it's recorded, not held in memory: clips run to hundreds of MB)
+        st.session.rec = global.CameraVideo.start({ canvas, fps: videoFps(v.fps ? v.fps() : 0), audio: !!cfg.sound, preferMp4: true, file: clipFile() });
       } catch (err) {
         st.session.videoError = errText(err);
       }
@@ -708,8 +709,11 @@
     }
     try {
       const clip = await s.rec.stop();
-      if (!clip.blob.size) throw new Error("nothing was recorded");
-      const saved = await saveFile(s.name, "-video", clip.ext, clip.blob, clip.mimeType);
+      if (!clip.size) {
+        if (clip.fileId !== null && clipFile()) await clipFile().discard(clip.fileId).catch(() => {});
+        throw new Error("nothing was recorded");
+      }
+      const saved = await saveFile(s.name, "-video", clip.ext, clip.blob, clip.mimeType, clip.fileId);
       if (s.event) {
         s.event.video = saved;
         s.event.seconds = Math.round(clip.duration);
@@ -754,10 +758,12 @@
   // Saved into the remote recording folder (the desktop app, the phone app), else downloaded.
   // (mimeType: a video's, as recorded; the desktop app makes it a plain MP4 with AAC sound.)
   // -> { name }
-  async function saveFile(baseName, suffix, ext, blob, mimeType) {
-    const data = new Uint8Array(await blob.arrayBuffer());
+  // Where a clip is written as it's recorded (the desktop app's), or null (kept in memory, then saved).
+  const clipFile = () => (host && host.remote && host.remote.clip && host.remote.saveTake ? host.remote.clip : null);
+  async function saveFile(baseName, suffix, ext, blob, mimeType, clipId = null) {
     if (host && host.remote && host.remote.saveTake) {
-      const res = await host.remote.saveTake({ baseName, files: [{ format: ext, suffix, ext, data, ...(mimeType ? { mimeType } : {}) }] });
+      const data = clipId === null ? new Uint8Array(await blob.arrayBuffer()) : undefined;
+      const res = await host.remote.saveTake({ baseName, files: [{ format: ext, suffix, ext, ...(clipId === null ? { data } : { clipId }), ...(mimeType ? { mimeType } : {}) }] });
       const r = (res.results || [])[0];
       if (!r || !r.ok) throw new Error((r && r.error) || "It couldn't be saved.");
       return { name: r.path.split(/[\\/]/).pop(), dir: res.dir };
