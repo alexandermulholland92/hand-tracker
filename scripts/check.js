@@ -3319,8 +3319,10 @@ async function checkRemoteOakSettings(js) {
       Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
       await until(() => /Hand Tracker on/.test($("title").textContent) && document.querySelector('[data-oakopen="${A}"]'));
       const out = { buttons: [...document.querySelectorAll("#camRows [data-oakopen]")].map((b) => b.dataset.oakopen).sort() };
-      // On the page to be seen (not just there: the Cameras box was once left hidden).
-      out.seen = document.querySelector('[data-oakopen="${A}"]').getClientRects().length > 0;
+      // On the page to be seen (not just there: the Cameras box was once left hidden). The box folds away
+      // to one line until its Show is tapped (381eb43): tapped here, as a person would.
+      if ($("camBody").hidden) $("camsShow").click();
+      out.seen = !!(await until(() => document.querySelector('[data-oakopen="${A}"]').getClientRects().length > 0, 3000));
       // (Tapped on a phone, the button has the focus as the row is drawn again: it opened only
       // once something else took it.)
       document.querySelector('[data-oakopen="${A}"]').focus();
@@ -3624,6 +3626,22 @@ async function checkRemoteRecording(js) {
     // The cameras' card is where the main view was (which is hidden meanwhile).
     out.inPlace = await js(`(() => { const card = document.getElementById("multiCamCard"), wrap = document.getElementById("wrap"); return { inPlace: card.classList.contains("in-place"), beforeView: card.nextElementSibling === wrap, viewShown: getComputedStyle(wrap).display !== "none" }; })()`);
     // The first camera to the right wrist's block; the second turned and flipped.
+    // Each OAK camera's posture from its motion sensor (imu-body.js), on the page, and Upright now.
+    out.body = s.cameras.map((c) => (c.body ? c.body.text : null));
+    out.upright = await (await post("upright")).json();
+    // A separate motion sensor (electron/imu-in.js): one sending JSON to the page's POST /api/imu (as this phone's
+    // own would), and a board sending lines of numbers in g and degrees a second over the network (UDP).
+    const now0 = Date.now();
+    const rowsJson = Array.from({ length: 150 }, (_, k) => ({ t: now0 - 3000 + k * 20, ax: 0.2, ay: 9.7, az: 0.4, gx: 0, gy: 0.02, gz: 0 }));
+    out.imuPost = (await fetch(base + "/api/imu?name=check-phone", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify(rowsJson) })).status;
+    const udp = require("dgram").createSocket("udp4");
+    for (let k = 0; k < 6; k++) {
+      const lines = Array.from({ length: 25 }, (_, i) => `${k * 500 + i * 20},0.01,0.99,0.02,0.5,-1,20`).join("\n");
+      await new Promise((r) => udp.send(lines, 47830, "127.0.0.1", () => r()));
+    }
+    udp.close();
+    await sleep(600);
+    out.sensors = ((await state()).sensors || []).map((x) => ({ name: x.name, role: x.role, text: x.text, knowsForward: x.knowsForward }));
     out.moved = await (await post("camera", { camera: { index: 0, role: "wrist_right" } })).json();
     out.turned = await (await post("camera", { camera: { index: 1, rotation: 90, mirror: false } })).json();
     await sleep(600);
@@ -3693,6 +3711,8 @@ async function checkRemoteRecording(js) {
     const saved = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
     out.savedHands = saved ? saved.hands.map((h) => h.handedness) : null;
     out.metadata = saved ? saved.metadata : null;
+    out.takeBody = saved && Array.isArray(saved.body) ? saved.body.map((m) => ({ camera: m.camera, rows: m.samples.length, columns: m.columns.length, level: !!m.samples.some((r) => Number.isFinite(r[10])) })) : null;
+    out.takeImuCal = saved && Array.isArray(saved.imu) ? saved.imu.map((m) => !!m.imu_to_camera) : null;
     // Each camera's video, saved beside the take (named after the role it started with).
     out.videos = ((after.lastTake && after.lastTake.files) || []).filter((f) => /-video-[a-z-]+\.(webm|mp4)$/.test(f)).map((f) => {
       const full = path.join(process.env.HAND_TRACKER_REMOTE_DIR, f);
@@ -3785,7 +3805,7 @@ async function checkRemoteRecording(js) {
       out.photos.map((p) => p.f).sort().join() === "-photo-chest.jpg,-photo-head.jpg" && out.photos.every((p) => p.jpeg && p.kb > 1) && out.photosListed === 2 &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
       /^0:\d\d$/.test(out.metadata.length) && out.metadata.length_s > 1 &&
-      out.savedHands && out.savedHands.length === 2 && out.savedHands.some((h) => /^Head /.test(h)) && out.savedHands.some((h) => /^Chest /.test(h)) &&
+      out.savedHands && out.savedHands.length === 2 && out.body.filter((b) => /still|moving|walking/.test(b || "")).length === 2 && out.upright.ok && out.imuPost === 200 && out.sensors.length === 2 && out.sensors.every((x) => x.role === "chest" && /still|moving|walking/.test(x.text) && !x.knowsForward) && out.takeBody && out.takeBody.length >= 3 && out.takeBody.every((b) => b.rows >= 1 && b.columns === 14) && out.takeBody.filter((b) => b.level).every((b) => b.rows > 10) && out.takeBody.filter((b) => b.level).length === 2 && out.takeImuCal && out.takeImuCal.filter(Boolean).length === 2 && out.savedHands.some((h) => /^Head /.test(h)) && out.savedHands.some((h) => /^Chest /.test(h)) &&
       out.close.ok && out.closed && out.unknown === 400 && out.off && out.refusedWhenOff && out.tailnet.join() === "true,false,false" &&
       out.textPlain === 403 && out.otherSite === 403 && out.ownHost.join() === "true,false",
     JSON.stringify(out));
@@ -5136,6 +5156,22 @@ function checkAnnotateCore() {
     cuts.length === 4 && [5, 10, 30, 50].every((c, i) => Math.abs(cuts[i] - c) <= 0.5) && steps.length === 3 && steps[1].start === cuts[1] && steps[1].end === cuts[2] && steps[2].end === 60 && joined.length === 3 && joined[2].end === 70 &&
       q.dark === 0.143 && q.verdict === "flag" && q.longestBad === 10 && sq.verdict === "reject" && sqOk.verdict === "ok" && segs[1].hands === 1 && u.recorded === 70 && Math.abs(u.useful - 25) < 0.6 && u.handsOut > 0,
     JSON.stringify(out));
+  // The body's posture (a take's motion sensor, imu-body.js): cuts where it starts walking, ends a turn, bends
+  // over and stops, starts moving; joined with the hands' (theirs kept where close); in words for the model.
+  const cols = ["t", "forward", "side", "turn", "activity", "steps_per_min", "qw", "qx", "qy", "qz", "lw", "lx", "ly", "lz"];
+  const rows = [];
+  for (let t = 0; t < 60; t += 0.1) {
+    const act = t < 10 ? 0 : t < 25 ? 2 : t < 45 ? 0 : 1;
+    rows.push([t, t >= 25 && t < 45 ? 42 : 3, 0, (t < 20 ? 0 : t < 23 ? (t - 20) * 30 : 90) + 0.5 * Math.sin(t * 7), act, act === 2 ? 104 : 0, 1, 0, 0, 0, 1, 0, 0, 0]);
+  }
+  const pt = A.postureTrack({ duration: 60, body: [{ camera: "Head", role: "head", columns: cols, samples: [] }, { camera: "Chest", role: "chest", columns: cols, samples: rows }] });
+  const pcuts = A.postureCuts(pt);
+  const merged = A.mergeCuts([9.6, 30], pcuts);
+  const words = A.postureText(pt, 18, 30);
+  check("Annotate's body hints: cuts where the Chest's motion sensor starts walking, ends a turn, bends over and stops, starts moving; joined with the hands' cuts; its posture in words for the model",
+    pt && pt.camera === "Chest" && pcuts.join() === "10,23,25,45" && merged.join() === "9.6,23,25,30,45" && /walking.*bent over \(about 42° forward\).*turned about 90° to the left/.test(words) &&
+      A.postureTrack({ hands: [] }) === null && A.postureCuts(null).length === 0,
+    JSON.stringify({ pcuts, merged, words }));
 }
 
 // Annotating a take in the Recording Converter (electron/annotate.js, annotate-ui.js), with a stand-in

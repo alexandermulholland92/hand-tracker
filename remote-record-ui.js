@@ -1304,6 +1304,15 @@
       if (!recording) return { ok: true, message: "Not recording." };
       return stopAndSave();
     }
+    // Standing straight and facing ahead now: the cameras with a motion sensor count their lean and turn from here.
+    if (action === "upright") {
+      const n = cams().setUpright ? cams().setUpright() : 0;
+      return n ? { ok: true, message: `Upright now: ${n} camera${n === 1 ? "" : "s"} count${n === 1 ? "s" : ""} lean and turn from here.` } : { ok: false, message: "No camera here knows its posture (an OAK camera with a motion sensor does)." };
+    }
+    if (action === "forward") {
+      const n = cams().setForward ? cams().setForward() : 0;
+      return n ? { ok: true, message: `Learned where forward is: ${n} sensor${n === 1 ? "" : "s"}.` } : { ok: false, message: "Lean further forward (about 10° or more) and press again, after Upright now." };
+    }
     if (action === "close") {
       if (recording) return { ok: false, message: "Stop recording first." };
       await stopVideos(false);

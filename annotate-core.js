@@ -7,6 +7,10 @@
  *   AnnotateCore.handTrack(take, camera)        // { step, visible[], motion[] }: each half second of
  *                                               //   a take's hands (from one camera's, or all of them)
  *   AnnotateCore.candidateCuts(track)           // [seconds]: where the hands appear, go, start or stop moving
+ *   AnnotateCore.postureTrack(take)             // the body's posture each half second (a take's motion sensors)
+ *   AnnotateCore.postureCuts(posture)           // [seconds]: where it starts or stops walking, bends, turns
+ *   AnnotateCore.postureText(posture, from, to) // that stretch's posture in words, for the model
+ *   AnnotateCore.mergeCuts(a, b)                // two lists of cuts as one
  *   AnnotateCore.cleanSteps(steps, from, to, cuts)   // one stretch's steps: in order, end to end,
  *                                               //   ends moved to a nearby cut
  *   AnnotateCore.joinSteps(list)                // the stretches' steps as one list (a step running on
@@ -99,6 +103,121 @@
       cuts.push(round(at * track.step, 1));
     }
     return cuts;
+  }
+
+  // ---------- the body's posture (a motion sensor's: imu-body.js, in a take's body) ----------
+  // A take's posture each half second, from the Chest's sensor (or else the first): activity (0 still,
+  // 1 moving, 2 walking), forward lean (degrees; null when its sensor can't tell forward), turn (degrees,
+  // left +). null when the take has none.
+  function postureTrack(take) {
+    const list = ((take && take.body) || []).filter((b) => b && Array.isArray(b.samples) && b.samples.length && Array.isArray(b.columns));
+    const b = list.find((x) => x.role === "chest") || list.find((x) => /^chest\b/i.test(String(x.camera || ""))) || list[0];
+    if (!b) return null;
+    const col = (name) => b.columns.indexOf(name);
+    const it = col("t"), ia = col("activity"), iff = col("forward"), itn = col("turn");
+    if (it < 0 || ia < 0) return null;
+    let end = num(take && take.duration);
+    for (const r of b.samples) end = Math.max(end, num(r[it]));
+    const n = Math.max(1, Math.ceil(end / STEP));
+    const act = new Array(n).fill(null), fwd = new Array(n).fill(null), turn = new Array(n).fill(null);
+    const votes = Array.from({ length: n }, () => [0, 0, 0]), fsum = new Array(n).fill(0), fcount = new Array(n).fill(0);
+    for (const r of b.samples) {
+      const i = Math.min(n - 1, Math.max(0, Math.floor(num(r[it]) / STEP)));
+      const a = num(r[ia], -1);
+      if (a >= 0 && a <= 2) votes[i][a]++;
+      if (iff >= 0 && Number.isFinite(r[iff])) (fsum[i] += r[iff]), fcount[i]++;
+      if (itn >= 0 && Number.isFinite(r[itn])) turn[i] = r[itn];
+    }
+    for (let i = 0; i < n; i++) {
+      const v = votes[i];
+      if (v[0] + v[1] + v[2]) act[i] = v.indexOf(Math.max(...v));
+      if (fcount[i]) fwd[i] = fsum[i] / fcount[i];
+    }
+    // (a half second without a reading: the one before carried on)
+    for (let i = 1; i < n; i++) {
+      if (act[i] === null) act[i] = act[i - 1];
+      if (fwd[i] === null) fwd[i] = fwd[i - 1];
+      if (turn[i] === null) turn[i] = turn[i - 1];
+    }
+    return { step: STEP, duration: end, camera: b.camera || "", activity: act, forward: fwd, turn };
+  }
+
+  // Runs of the same state, those shorter than minRun seconds joined to a longer neighbour (as the hands').
+  function runsOf(states, step, minRun) {
+    const runs = [];
+    for (let i = 0; i < states.length; i++) {
+      if (runs.length && runs[runs.length - 1].s === states[i]) runs[runs.length - 1].n++;
+      else runs.push({ s: states[i], n: 1 });
+    }
+    const min = Math.round(minRun / step);
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (let i = 0; i < runs.length; i++) {
+        if (runs[i].n >= min || runs.length === 1) continue;
+        const into = i === 0 ? 1 : i === runs.length - 1 ? i - 1 : runs[i - 1].n >= runs[i + 1].n ? i - 1 : i + 1;
+        runs[into].n += runs[i].n;
+        runs.splice(i, 1);
+        for (let j = runs.length - 1; j > 0; j--) if (runs[j].s === runs[j - 1].s) (runs[j - 1].n += runs[j].n), runs.splice(j, 1);
+        changed = true;
+        break;
+      }
+    }
+    let at = 0;
+    return runs.map((r) => ({ s: r.s, from: (at += r.n) - r.n, to: at }));
+  }
+
+  // Where the body suggests a step changes: it starts or stops walking (or moving), bends over or straightens
+  // up (forward past bend degrees, back under bend - 10), or has turned turnBy degrees or more within
+  // turnWithin seconds (facing somewhere else), at the end of that turn.
+  const TURN_RATE = 15; // (degrees a second)
+  function postureCuts(pt, { minRun = 2, bend = 35, turnBy = 45, turnWithin = 3 } = {}) {
+    if (!pt || !pt.activity || !pt.activity.length) return [];
+    const at = (i) => round(i * pt.step, 1);
+    const cuts = [];
+    for (const r of runsOf(pt.activity.map((a) => (a === null ? 0 : a)), pt.step, minRun).slice(1)) cuts.push(at(r.from));
+    if (pt.forward.some((f) => f !== null)) {
+      let bent = false;
+      const states = pt.forward.map((f) => (bent = f === null ? bent : bent ? f > bend - 10 : f > bend));
+      for (const r of runsOf(states, pt.step, minRun).slice(1)) cuts.push(at(r.from));
+    }
+    // (turning: at least TURN_RATE degrees a second; a turn of turnBy or more in all, done within
+    // turnWithin seconds, cuts where it ends)
+    const diff = (a, b) => ((((a - b + 180) % 360) + 360) % 360) - 180;
+    const turning = pt.turn.map((t, i) => i > 0 && t !== null && pt.turn[i - 1] !== null && Math.abs(diff(t, pt.turn[i - 1])) / pt.step >= TURN_RATE);
+    for (const r of runsOf(turning, pt.step, 1)) {
+      if (!r.s || (r.to - r.from) * pt.step > turnWithin + 1) continue;
+      const a = pt.turn[Math.max(0, r.from - 1)], b = pt.turn[Math.min(pt.turn.length - 1, r.to)];
+      if (a !== null && b !== null && Math.abs(diff(b, a)) >= turnBy) cuts.push(at(r.to));
+    }
+    return [...new Set(cuts)].filter((t) => t > 0 && t < pt.duration).sort((a, b) => a - b);
+  }
+
+  // Two lists of cuts as one: the second's that fall within `within` seconds of the first's left out.
+  function mergeCuts(first, second, within = 1) {
+    const out = [...first];
+    for (const t of second) if (!out.some((u) => Math.abs(u - t) < within)) out.push(t);
+    return out.sort((a, b) => a - b);
+  }
+
+  // The body's posture over from..to s, in words (for the model that names the steps): each stretch of
+  // walking, moving or standing still, bent over when it was, and where it turned.
+  function postureText(pt, from, to) {
+    if (!pt) return "";
+    const i0 = Math.max(0, Math.floor(from / pt.step)), i1 = Math.min(pt.activity.length, Math.ceil(to / pt.step));
+    if (i1 <= i0) return "";
+    const WORD = ["standing still", "moving about", "walking"];
+    const parts = [];
+    for (const r of runsOf(pt.activity.slice(i0, i1).map((a) => (a === null ? 0 : a)), pt.step, 2)) {
+      const a = (i0 + r.from) * pt.step, b = (i0 + r.to) * pt.step;
+      const f = pt.forward.slice(i0 + r.from, i0 + r.to).filter((x) => x !== null);
+      const lean = f.length ? f.reduce((s, x) => s + x, 0) / f.length : null;
+      const bent = lean !== null && lean > 35 ? `, bent over (about ${Math.round(lean)}° forward)` : lean !== null && lean > 15 ? `, leaning forward about ${Math.round(lean)}°` : "";
+      parts.push(`${a.toFixed(1)}–${b.toFixed(1)} s ${WORD[r.s]}${bent}`);
+    }
+    const t0 = pt.turn[i0], t1 = pt.turn[i1 - 1];
+    const turned = t0 !== null && t1 !== null ? ((((t1 - t0 + 180) % 360) + 360) % 360) - 180 : 0;
+    const turnText = Math.abs(turned) >= 45 ? `; over the stretch the body turned about ${Math.abs(Math.round(turned / 15) * 15)}° to the ${turned > 0 ? "left" : "right"}` : "";
+    return `${parts.join("; ")}${turnText}.`;
   }
 
   // ---------- Claude's steps ----------
@@ -230,7 +349,7 @@
     return rows.join("\n") + "\n";
   }
 
-  const api = { KINDS, handTrack, candidateCuts, cleanSteps, joinSteps, cameraQuality, stepQuality, sharpFloor, handsShare, useful, toCSV };
+  const api = { KINDS, handTrack, candidateCuts, postureTrack, postureCuts, postureText, mergeCuts, cleanSteps, joinSteps, cameraQuality, stepQuality, sharpFloor, handsShare, useful, toCSV };
   if (typeof module === "object" && module.exports) module.exports = api;
   global.AnnotateCore = api;
 })(typeof window !== "undefined" ? window : globalThis);

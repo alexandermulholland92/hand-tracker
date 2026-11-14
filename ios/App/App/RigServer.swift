@@ -57,7 +57,7 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
     static let nextWait: TimeInterval = 0.4 // a preview request waits this long for that camera's next picture
     static let viewerGone: TimeInterval = 10, answerTime: TimeInterval = 30
     static let headBytes = 16 * 1024, bodyBytes = 8192
-    static let actions: Set<String> = ["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry", "timing", "restartApp"]
+    static let actions: Set<String> = ["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry", "timing", "restartApp", "upright", "forward"]
     static let roles: Set<String> = ["", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"]
     static let modes: Set<String> = ["ego", "stereo", "freeform"]
     // A picked camera's id: "cam:" and its name here ("cam:Back Camera"), any printable characters

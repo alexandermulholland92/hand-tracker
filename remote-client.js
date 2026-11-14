@@ -2221,6 +2221,14 @@
     $("modeNote").className = need.ok ? "" : "err";
 
     $("camsBtn").hidden = !!(s.running || s.recording);
+    $("uprightBtn").hidden = !(s.cameras || []).some((c) => c.body) && !(s.sensors || []).length; // (a camera or sensor that knows its posture)
+    $("uprightBtn").disabled = sending;
+    $("forwardBtn").hidden = !(s.sensors || []).some((x) => !x.knowsForward);
+    $("forwardBtn").disabled = sending;
+    // Motion sensors other than the OAK cameras' (a board, a phone app, this phone): each one's posture.
+    const sensors = (s.sensors || []).map((x) => `${esc(x.roleLabel || "Body")} sensor (${esc(x.name)}): ${x.quiet ? '<span class="err">no readings</span>' : esc(x.text || "starting…")}${x.gravityFree ? ' <span class="err">(it sends no gravity, so up can not be told)</span>' : ""}`);
+    $("sensors").hidden = !sensors.length;
+    $("sensors").innerHTML = sensors.join("<br />");
     $("camsBtn").disabled = sending || !!s.pending || !need.ok;
     $("offBtn").hidden = !s.running || !!s.recording;
     $("offBtn").disabled = sending || !!s.pending;
@@ -2326,7 +2334,9 @@
       // (An OAK camera's chip temperature, in red when too hot.)
       const chip = typeof c.chipC === "number" ? ` · <span${c.chipHot ? ' class="err"' : ""}>chip ${Math.round(c.chipC)} °C${c.chipHot ? ", too hot" : ""}</span>` : "";
       const what = c.error ? `<span class="err">${esc(c.error)}</span>` : c.fps > 0 ? `${c.fps} fps${hands ? ` · ${hands}` : ""}${chip}` : '<span class="muted">starting…</span>';
-      box.querySelector(".what").innerHTML = `<span class="muted">${esc(c.label || c.name)}</span><br />${what}`;
+      // (Its posture, from its motion sensor: every OAK camera that has one.)
+      const posture = c.body && c.body.text ? `<br />${esc(c.body.text)}` : "";
+      box.querySelector(".what").innerHTML = `<span class="muted">${esc(c.label || c.name)}</span><br />${what}${posture}`;
       const role = box.querySelector("select");
       if (document.activeElement !== role) role.value = c.roleId || "";
       box.querySelector(".rot").textContent = `⟳ ${c.rotation || 0}°`;
@@ -2649,6 +2659,56 @@
     return res;
   }
   $("camsBtn").addEventListener("click", () => command("cameras"));
+  $("uprightBtn").addEventListener("click", () => command("upright"));
+  $("forwardBtn").addEventListener("click", () => command("forward"));
+
+  // This phone as a motion sensor (worn on the chest): its accelerometer (with gravity, m/s²) and gyroscope
+  // (rad/s) sent to the computer four times a second (POST /api/imu, electron/imu-in.js), while ticked and
+  // the page is in sight. Browsers give them only on a secure page (as in the Hand Tracker app).
+  const IMU_SEND_MS = 250;
+  let phoneImu = null; // { buf, timer, on }
+  const imuName = (() => {
+    try {
+      let n = localStorage.getItem("htPhoneImu");
+      if (!n) localStorage.setItem("htPhoneImu", (n = `phone-${Math.random().toString(36).slice(2, 6)}`));
+      return n;
+    } catch {
+      return "phone";
+    }
+  })();
+  $("phoneImuRow").hidden = !(typeof DeviceMotionEvent !== "undefined" && window.isSecureContext);
+  function onMotion(e) {
+    const a = e.accelerationIncludingGravity, r = e.rotationRate;
+    if (!phoneImu || !a || a.x === null) return;
+    const k = Math.PI / 180;
+    phoneImu.buf.push({ t: Date.now(), ax: a.x, ay: a.y, az: a.z, gx: r ? (r.beta || 0) * k : 0, gy: r ? (r.gamma || 0) * k : 0, gz: r ? (r.alpha || 0) * k : 0 });
+    if (phoneImu.buf.length > 200) phoneImu.buf.shift();
+  }
+  async function sendMotion() {
+    if (!phoneImu || !phoneImu.buf.length || document.hidden) return;
+    const batch = phoneImu.buf.splice(0);
+    try {
+      await api(`/api/imu?name=${encodeURIComponent(imuName)}`, { method: "POST", body: JSON.stringify(batch) });
+    } catch {
+      // (the computer not answering for now: the next batch tries again)
+    }
+  }
+  $("phoneImu").addEventListener("change", async (e) => {
+    if (e.target.checked) {
+      try {
+        if (typeof DeviceMotionEvent.requestPermission === "function" && (await DeviceMotionEvent.requestPermission()) !== "granted") throw new Error("not allowed");
+      } catch {
+        e.target.checked = false;
+        return say("This phone didn't allow its motion sensors.", true);
+      }
+      phoneImu = { buf: [], timer: setInterval(sendMotion, IMU_SEND_MS) };
+      window.addEventListener("devicemotion", onMotion);
+    } else if (phoneImu) {
+      clearInterval(phoneImu.timer);
+      window.removeEventListener("devicemotion", onMotion);
+      phoneImu = null;
+    }
+  });
   // The timing check: this screen flashes (white for the first half of each second) while every
   // camera films it, until the computer has measured them (its results come with its state).
   let beaconRun = null; // { since, frame, stop }

@@ -191,6 +191,8 @@
   <h1 id="title">Hand Tracker</h1>
   <div id="status">Connecting…</div>
   <div id="room" class="muted" hidden></div>
+  <div id="sensors" class="muted" hidden></div>
+  <label id="phoneImuRow" class="muted" hidden><input type="checkbox" id="phoneImu" /> Use this phone's motion sensors (worn on the chest)</label>
 
   <section class="panel" id="btPanel" aria-labelledby="btTitle" hidden>
     <h2 id="btTitle">Over Bluetooth</h2>
@@ -235,6 +237,8 @@
   <div class="controls">
     <button type="button" id="camsBtn" hidden>Start cameras</button>
     <button type="button" id="offBtn" class="stop" hidden>Stop cameras</button>
+    <button type="button" id="forwardBtn" hidden title="Lean forward, then press: a motion sensor not in a camera learns where forward is, so it can tell forward and side lean, not only how far">Leaning forward now</button>
+    <button type="button" id="uprightBtn" hidden title="The cameras with a motion sensor take how they are now as standing straight and facing ahead: their lean and turn are counted from here">Upright now</button>
     <button type="button" id="recBtn" class="record" disabled>Start recording</button>
   </div>
   <div id="message"></div>

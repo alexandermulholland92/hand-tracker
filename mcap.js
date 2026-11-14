@@ -364,6 +364,9 @@
       "std_msgs/ColorRGBA color\nbuiltin_interfaces/Duration lifetime\nbool frame_locked\ngeometry_msgs/Point[] points\nstd_msgs/ColorRGBA[] colors\n" +
       "string texture_resource\nsensor_msgs/CompressedImage texture\nUVCoordinate[] uv_coordinates\nstring text\nstring mesh_resource\n" +
       "MeshFile mesh_file\nbool mesh_use_embedded_materials\n",
+    // A camera's posture from its motion sensor (imu-body.js).
+    "hand_tracker_msgs/Posture":
+      "std_msgs/Header header\nfloat64 forward\nfloat64 side\nfloat64 turn\nstring activity\nfloat64 steps_per_min\ngeometry_msgs/Quaternion level\n",
     // A step of an annotated take (annotate-core.js): its times (s from the take's start), label,
     // description, kind, share of hands in sight, picture verdict and review.
     "hand_tracker_msgs/Step":
@@ -376,6 +379,7 @@
     CameraInfo: withDeps(MSG["sensor_msgs/CameraInfo"], ["std_msgs/Header", "builtin_interfaces/Time", "sensor_msgs/RegionOfInterest"]),
     Imu: withDeps(MSG["sensor_msgs/Imu"], ["std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Quaternion", "geometry_msgs/Vector3"]),
     Step: withDeps(MSG["hand_tracker_msgs/Step"], ["std_msgs/Header", "builtin_interfaces/Time"]),
+    Posture: withDeps(MSG["hand_tracker_msgs/Posture"], ["std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Quaternion"]),
     PoseArray: withDeps("std_msgs/Header header\nPose[] poses\n", ["std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Pose", "geometry_msgs/Point", "geometry_msgs/Quaternion"]),
     MarkerArray: withDeps("Marker[] markers\n", [
       "visualization_msgs/Marker", "std_msgs/Header", "builtin_interfaces/Time", "geometry_msgs/Pose", "geometry_msgs/Point", "geometry_msgs/Quaternion",
@@ -448,20 +452,31 @@
     compressedImage(timeNs, frameId, format, data) {
       return new Cdr().header(timeNs, frameId).string(format).ui32(data.length).raw(data).bytes().slice();
     },
-    // sensor_msgs/msg/Imu without an orientation (its covariance's first value -1, as ROS says
-    // for one that's unknown): angular velocity (rad/s) and acceleration (m/s²), each [x, y, z].
+    // sensor_msgs/msg/Imu: angular velocity (rad/s) and acceleration (m/s²), each [x, y, z], and its
+    // orientation q [w, x, y, z] when it's known (else none: its covariance's first value -1, as ROS
+    // says for one that's unknown).
+    // hand_tracker_msgs/Posture: a camera's posture from its motion sensor (imu-body.js): forward and
+    // side lean, turn (degrees; NaN when not known), activity, steps a minute, and level [w, x, y, z]
+    // (the turn that sets its camera's points upright; none: 0 0 0 1).
+    posture(timeNs, frameId, p) {
+      const n = (v) => (Number.isFinite(v) ? v : NaN);
+      const l = Array.isArray(p.level) && p.level.length === 4 && p.level.every(Number.isFinite) ? p.level : [1, 0, 0, 0];
+      return new Cdr().header(timeNs, frameId).f64(n(p.forward)).f64(n(p.side)).f64(n(p.turn)).string(p.activity || "").f64(n(p.stepsPerMin))
+        .f64(l[1]).f64(l[2]).f64(l[3]).f64(l[0]).bytes().slice();
+    },
     // hand_tracker_msgs/Step: one step of an annotated take.
     step(timeNs, frameId, s) {
       return new Cdr().header(timeNs, frameId).string(s.id || "").string(s.parent || "").f64(Number(s.start) || 0).f64(Number(s.end) || 0).string(s.label || "").string(s.description || "")
         .string(s.kind || "").f64(Number(s.hands) || 0).string((s.quality && s.quality.verdict) || "").string(s.review || "pending").bytes().slice();
     },
-    imu(timeNs, frameId, gyro, accel) {
-      const w = new Cdr().header(timeNs, frameId).f64(0).f64(0).f64(0).f64(1);
+    imu(timeNs, frameId, gyro, accel, q = null) {
+      const known = Array.isArray(q) && q.length === 4 && q.every(Number.isFinite);
+      const w = known ? new Cdr().header(timeNs, frameId).f64(q[1]).f64(q[2]).f64(q[3]).f64(q[0]) : new Cdr().header(timeNs, frameId).f64(0).f64(0).f64(0).f64(1);
       const cov = (first) => {
         w.f64(first);
         for (let i = 1; i < 9; i++) w.f64(0);
       };
-      cov(-1);
+      cov(known ? 0 : -1);
       w.f64(gyro[0]).f64(gyro[1]).f64(gyro[2]);
       cov(0);
       w.f64(accel[0]).f64(accel[1]).f64(accel[2]);

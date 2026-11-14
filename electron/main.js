@@ -31,6 +31,8 @@ const { RemoteRecordServer, RIG_HOST, RIG_PATH, cleanDetails } = require("./remo
 const { RigBluetooth } = require("./bluetooth");
 const systemControl = require("./system-control");
 const storage = require("./storage");
+const { ImuIn } = require("./imu-in");
+const imuIn = new ImuIn(); // (motion sensors other than the OAK cameras': on while remote recording is)
 const { checkPassword: checkBluetoothPassword } = require("./bluetooth-link");
 const { createWifi } = require("./wifi");
 
@@ -711,7 +713,8 @@ class SimulatedOak {
       far: options.far || null, // (the checks see which far-away mode it was started in)
       detect: !!options.detect, picture: ["depth", "blend", "side", "left", "right"].includes(options.picture) ? options.picture : "color", motion: !!options.motion, fps: options.fps || null, hands: options.hands !== false,
       // (an infrared camera, as an OAK-D Pro: night vision as asked, Automatic taken to be light)
-      infrared: true, night: options.night === "on", nightMode: options.night || "off", dots: !!options.dots, lm: options.lm || "lite", twoHands: !!options.twoHands, xyz: !!options.xyz });
+      infrared: true, night: options.night === "on", nightMode: options.night || "off", dots: !!options.dots, lm: options.lm || "lite", twoHands: !!options.twoHands, xyz: !!options.xyz,
+      imu: !!options.imu, imuToCamera: options.imu ? [[1, 0, 0], [0, 1, 0], [0, 0, 1]] : null }); // (its motion sensor on its camera's own axes)
     this.timer = setInterval(() => {
       const t = (Date.now() - t0) / 1000;
       const cx = 0.5 + 0.2 * Math.sin(t), cy = 0.75;
@@ -1163,7 +1166,7 @@ function rigRequest({ rig, path: where, method = "GET", body = null, key = "" } 
   const m = RIG_HOST.exec(String(rig || ""));
   const port = m ? Number(m[5]) : 0;
   if (!m || port < 1 || port > 65535) throw new Error("That isn't a computer's name and port.");
-  if (!RIG_PATH.test(String(where || "")) || (method === "POST") !== (where === "/api/command") || !["GET", "POST"].includes(method)) throw new Error("Not a remote recording request.");
+  if (!RIG_PATH.test(String(where || "")) || (method === "POST") !== (where === "/api/command" || /^\/api\/imu/.test(where)) || !["GET", "POST"].includes(method)) throw new Error("Not a remote recording request.");
   if (body != null && (typeof body !== "string" || body.length > 8192)) throw new Error("Too long.");
   const headers = {};
   if (/^[A-Za-z0-9_-]{8,64}$/.test(String(key || ""))) headers["X-Key"] = key;
@@ -1241,7 +1244,13 @@ function registerRemoteIpc() {
     wifi: createWifi(), // a phone on the hotspot (or over Tailscale) can change the Wi-Fi
     takes: () => remoteFolder(), // its takes: listed, downloaded, and deleted once downloaded
     bluetoothPassword: (text) => checkBluetoothPassword(rigBluetooth.secret(), text), // a phone on the Bluetooth network
+    imu: (id, name, text) => imuIn.ingest(id, name, text), // a motion sensor's readings sent to the page (electron/imu-in.js)
   });
+  // Motion sensors other than the OAK cameras' (electron/imu-in.js): on while remote recording is, their
+  // readings to the window (multi-camera.js), which gives each a posture and records it with the takes.
+  imuIn.on("readings", (r) => toWindow("imu:readings", r));
+  imuIn.on("status", (s) => toWindow("imu:status", s));
+  handle("imu:status", () => imuIn.status());
   remoteRecord.on("status", (s) => toWindow("remote:status", s));
   rigBluetooth.on("status", (s) => toWindow("remote:bluetooth", s));
   const startBluetooth = () => (rigBluetooth.available() && remoteRecord.server ? rigBluetooth.start().catch(() => {}) : null);
@@ -1250,10 +1259,12 @@ function registerRemoteIpc() {
   handle("remote:start", async () => {
     const s = await remoteRecord.start();
     startBluetooth();
+    imuIn.start();
     return s;
   });
   handle("remote:stop", () => {
     rigBluetooth.stop();
+    imuIn.stop();
     return remoteRecord.stop();
   });
   // Bluetooth: how it is ({ available, on, error, address, password: null | "hotspot" | "set" }),
@@ -1887,5 +1898,6 @@ app.on("will-quit", () => {
   if (webLink) webLink.stop();
   if (rigBluetooth) rigBluetooth.stop();
   if (remoteRecord) remoteRecord.stop();
+  imuIn.stop();
   if (mediaDir) fs.rmSync(mediaDir, { recursive: true, force: true });
 });

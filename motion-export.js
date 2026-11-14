@@ -1064,10 +1064,46 @@
         for (let k = 2; topics.has(`${name}/imu`); k++) name = `${rosName(m.camera)}_${k}`;
         topics.add(`${name}/imu`);
         const ch = w.channel(`/hand_tracker/${name}/imu`, "cdr", imuSchema, qos);
-        for (const r of m.samples) if (Array.isArray(r) && r.length >= 7 && r.every(Number.isFinite)) readings.push({ ch, t: at(r[0]), r, frame: `${name}_imu` });
+        // (its orientation, worked out from its readings as the app does: imu-body.js)
+        const body = global.ImuBody ? global.ImuBody.create({ imuToCamera: m.imu_to_camera }) : null;
+        for (const r of m.samples) {
+          if (!(Array.isArray(r) && r.length >= 7 && r.every(Number.isFinite))) continue;
+          let q = null;
+          if (body) {
+            body.add(r[0] * 1000, r[1], r[2], r[3], r[4], r[5], r[6]);
+            const s = body.state();
+            q = s.ready ? s.q : null;
+          }
+          readings.push({ ch, t: at(r[0]), r, q, frame: `${name}_imu` });
+        }
       }
       readings.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
-      for (const x of readings) w.message(x.ch, x.t, M.cdr.imu(x.t, x.frame, [x.r[4], x.r[5], x.r[6]], [x.r[1], x.r[2], x.r[3]]));
+      for (const x of readings) w.message(x.ch, x.t, M.cdr.imu(x.t, x.frame, [x.r[4], x.r[5], x.r[6]], [x.r[1], x.r[2], x.r[3]], x.q));
+    }
+    // Each camera's posture from its motion sensor (data.body), hand_tracker_msgs/Posture on
+    // /hand_tracker/<camera>/posture, ten times a second.
+    const bodies = Array.isArray(data.body) ? data.body.filter((m) => m && Array.isArray(m.samples) && m.samples.length && Array.isArray(m.columns)) : [];
+    if (bodies.length) {
+      const schema = w.schema("hand_tracker_msgs/msg/Posture", "ros2msg", M.ROS2.Posture);
+      const ACT = ["still", "moving", "walking"];
+      const rows = [];
+      for (const m of bodies) {
+        let name = rosName(m.camera);
+        for (let k = 2; topics.has(`${name}/posture`); k++) name = `${rosName(m.camera)}_${k}`;
+        topics.add(`${name}/posture`);
+        const ch = w.channel(`/hand_tracker/${name}/posture`, "cdr", schema, qos);
+        const col = (r, c) => {
+          const i = m.columns.indexOf(c);
+          return i >= 0 ? r[i] : null;
+        };
+        for (const r of m.samples) {
+          if (!Array.isArray(r) || !Number.isFinite(r[0])) continue;
+          const level = ["lw", "lx", "ly", "lz"].map((c) => col(r, c));
+          rows.push({ ch, t: at(r[0]), frame: `${name}_camera`, p: { forward: col(r, "forward"), side: col(r, "side"), turn: col(r, "turn"), activity: ACT[col(r, "activity")] || "", stepsPerMin: col(r, "steps_per_min"), level: level.every(Number.isFinite) ? level : null } });
+        }
+      }
+      rows.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
+      for (const x of rows) w.message(x.ch, x.t, M.cdr.posture(x.t, x.frame, x.p));
     }
     // Its annotations (annotate-core.js), if it has them: each step as a hand_tracker_msgs/Step on
     // /hand_tracker/annotations, at its start.

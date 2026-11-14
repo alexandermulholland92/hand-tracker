@@ -22,7 +22,7 @@ const arg = (name) => (process.argv.includes(name) ? process.argv[process.argv.i
 const OUT = arg("--out") ? path.resolve(arg("--out")) : path.join(ROOT, "www");
 
 const APP_FILES = [
-  "index.html", "favicon.png", "apple-touch-icon.png", "viewer.html", "camera-tile.html", "camera-tile.js", "camera-roles.js", "multi-camera.js",
+  "index.html", "favicon.png", "apple-touch-icon.png", "viewer.html", "camera-tile.html", "camera-tile.js", "camera-roles.js", "imu-body.js", "multi-camera.js",
   "app.js", "viewer.js", "mobile-bridge.js", "export-ui.js", "motion-import.js", "mcap.js",
   "hand-tracker.js", "far-hands.js", "robot-motion.js", "hand-3d.js",
   "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js", "ops-sessions.js", "rig-live.js", "rig-ble.js", "timing-check.js", "motion-video.js",

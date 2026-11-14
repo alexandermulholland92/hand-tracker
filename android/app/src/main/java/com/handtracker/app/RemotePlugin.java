@@ -227,7 +227,7 @@ public class RemotePlugin extends Plugin {
 
     // ---------- remote recording on another computer ----------
     private static final Pattern RIG = Pattern.compile("^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*):(\\d{1,5})$");
-    private static final Pattern RIG_PATH = Pattern.compile("^/api/(state|command|wifi|takes|preview\\?i=[0-3](&full=1)?(&after=\\d{1,12})?|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12})$");
+    private static final Pattern RIG_PATH = Pattern.compile("^/api/(state|command|imu(\\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|preview\\?i=[0-3](&full=1)?(&after=\\d{1,12})?|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12})$");
     private static final Pattern RIG_KEY = Pattern.compile("^[A-Za-z0-9_-]{8,64}$");
     private static final int RIG_TIMEOUT_MS = 10000;
     private static final int RIG_MAX_BYTES = 4 * 1024 * 1024;
@@ -283,7 +283,7 @@ public class RemotePlugin extends Plugin {
         if (port < 1 || port > 65535) throw new IOException("That isn't a computer's name and port.");
         String host = m.group(1).replaceAll("^\\[|\\]$", "");
         boolean post = "POST".equals(method);
-        if (path == null || !RIG_PATH.matcher(path).matches() || !(post || "GET".equals(method)) || post != "/api/command".equals(path)) throw new IOException("Not a remote recording request.");
+        if (path == null || !RIG_PATH.matcher(path).matches() || !(post || "GET".equals(method)) || post != ("/api/command".equals(path) || path.startsWith("/api/imu"))) throw new IOException("Not a remote recording request.");
         if (body == null) body = "";
         if (body.length() > 8192) throw new IOException("Too long.");
         Network via = null;

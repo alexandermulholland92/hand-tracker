@@ -154,7 +154,12 @@ class Annotator {
     const duration = mainCam.info.duration;
     // Where the hands suggest a step changes (from the take's hands, where there's a take).
     const track = job.track && Array.isArray(job.track.visible) ? job.track : job.take && job.take.hands && job.take.hands.length ? AnnotateCore.handTrack(job.take, sameCamera(job.take, main.camera)) : null;
-    const cuts = track ? AnnotateCore.candidateCuts(track) : [];
+    // And where the body does (its motion sensor's posture: starts or stops walking, bends, turns), with the
+    // body's posture in words for each stretch.
+    const posture = job.take && Array.isArray(job.take.body) ? AnnotateCore.postureTrack(job.take) : null;
+    const handCuts = track ? AnnotateCore.candidateCuts(track) : [];
+    const bodyCuts = posture ? AnnotateCore.postureCuts(posture) : [];
+    const cuts = AnnotateCore.mergeCuts(handCuts, bodyCuts);
     // Claude, a minute at a time.
     const client = new (sdk())({ apiKey: key });
     const chunks = [], flags = [];
@@ -172,7 +177,8 @@ class Annotator {
       }
       let answer;
       try {
-        answer = await askClaude(client, { frames, from, to, cuts: cuts.filter((t) => t > from && t < to), task: job.task, previous });
+        answer = await askClaude(client, { frames, from, to, cuts: handCuts.filter((t) => t > from && t < to), bodyCuts: bodyCuts.filter((t) => t > from && t < to),
+                                           posture: posture ? AnnotateCore.postureText(posture, from, to) : "", task: job.task, previous });
       } catch (err) {
         throw plainError(err);
       }
@@ -194,7 +200,7 @@ class Annotator {
     return {
       format: "hand-tracker-annotations",
       version: 1,
-      made: { at: new Date().toISOString(), model: MODEL, task: job.task || "", handsFrom: track ? "take" : "frames", hints: cuts.length },
+      made: { at: new Date().toISOString(), model: MODEL, task: job.task || "", handsFrom: track ? "take" : "frames", hints: cuts.length, bodyHints: bodyCuts.length, postureFrom: posture ? posture.camera : null },
       source: { take: job.takeName || "", videos: cameras.map((c) => ({ camera: c.camera, file: c.file, primary: c.primary, ...c.info })) },
       quality: { cameras: cameras.map((c) => ({ camera: c.camera, primary: c.primary, ...c.quality, spec: c.spec })) },
       segments,
@@ -325,15 +331,18 @@ function frameJpegs(file, from, to) {
 // ---------- Claude ----------
 // One stretch's frames to Claude (Opus 5.5; a refusal falls back to Anthropic's chosen model).
 // -> { steps, hands_visible, note }
-async function askClaude(client, { frames, from, to, cuts, task, previous }) {
+async function askClaude(client, { frames, from, to, cuts, bodyCuts = [], posture = "", task, previous }) {
   const content = [];
   content.push({ type: "text", text: [
     `This stretch runs from ${from.toFixed(1)} s to ${to.toFixed(1)} s.`,
     task ? `The task being recorded: ${task}` : "The task being recorded wasn't given.",
     previous ? `The previous stretch ended with the step "${previous.label}" (${previous.kind}): ${previous.description}` : "This is the start of the video.",
     cuts.length ? `The hands' movement suggests a change at: ${cuts.map((t) => `${t.toFixed(1)} s`).join(", ")}.` : "The hands' movement suggests no change in this stretch.",
+    // (a motion sensor on the body, where the take has one)
+    posture ? `A motion sensor on the person's body says: ${posture}` : null,
+    bodyCuts.length ? `The body's movement (starting or stopping walking, bending over or straightening up, turning to face elsewhere) suggests a change at: ${bodyCuts.map((t) => `${t.toFixed(1)} s`).join(", ")}.` : null,
     `${frames.length} frames follow, one every ${FRAME_EVERY_S} s.`,
-  ].join("\n") });
+  ].filter((l) => l !== null).join("\n") });
   for (const f of frames) {
     content.push({ type: "text", text: `t = ${f.t.toFixed(1)} s` });
     content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: f.data } });

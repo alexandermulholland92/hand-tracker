@@ -93,6 +93,18 @@ def send(header, jpeg=b""):
     OUT.write(MAGIC + struct.pack("<I", len(data)) + data + struct.pack("<I", len(jpeg)) + jpeg)
 
 
+def imu_to_camera(device):
+    """How its motion sensor sits against its colour camera: the 3 x 3 rotation taking the sensor's axes to the
+    camera's (x right, y down, z out of the lens), from its own calibration; None when it can't be told."""
+    try:
+        socket = getattr(dai.CameraBoardSocket, "CAM_A", None) or dai.CameraBoardSocket.RGB
+        m = device.readCalibration().getImuToCameraExtrinsics(socket, True)
+        r = [[round(float(m[i][j]), 5) for j in range(3)] for i in range(3)]
+        return r if all(abs(x) <= 1.0001 for row in r for x in row) else None
+    except Exception:
+        return None
+
+
 def status(state, **extra):
     send({"status": state, **extra})
 
@@ -1083,7 +1095,7 @@ def run(args):
             view = "color"
         status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h,
                depth=bool(getattr(tracker, "xyz", False) or getattr(tracker, "has_depth", False)), depthCameras=stereo, id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
-               detect="det_out" in streams, picture=view, motion="motion_out" in streams or getattr(tracker, "host_motion", False), imu="imu_out" in streams, hands=hands,
+               detect="det_out" in streams, picture=view, motion="motion_out" in streams or getattr(tracker, "host_motion", False), imu="imu_out" in streams, imuToCamera=imu_to_camera(device) if "imu_out" in streams else None, hands=hands,
                night=night, infrared=infrared, warning=" ".join(dict.fromkeys(warnings)) or None)
         change = None
         try:

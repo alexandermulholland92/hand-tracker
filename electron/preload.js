@@ -334,6 +334,22 @@ contextBridge.exposeInMainWorld("desktop", {
       return () => ipcRenderer.removeListener("bluetooth:devices", listener);
     },
   },
+  // Motion sensors other than the OAK cameras' (electron/imu-in.js), while remote recording is on:
+  // readings { id, name, rows: [tMs, ax, ay, az, gx, gy, gz] (m/s², rad/s), gravityFree } and status
+  // { udp: port | null, serial: [paths], sensors: [{ id, name, hz, units, gravityFree }] }.
+  imu: {
+    status: () => ipcRenderer.invoke("imu:status"),
+    onReadings: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("imu:readings", listener);
+      return () => ipcRenderer.removeListener("imu:readings", listener);
+    },
+    onStatus: (cb) => {
+      const listener = (_event, data) => cb(data);
+      ipcRenderer.on("imu:status", listener);
+      return () => ipcRenderer.removeListener("imu:status", listener);
+    },
+  },
   remote: {
     status: () => ipcRenderer.invoke("remote:status"),
     start: () => ipcRenderer.invoke("remote:start"),

@@ -81,7 +81,7 @@ const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it t
 const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIEWER_GONE_MS = 10000;
-const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "takeDetails", "editTake", "sentry", "oak", "kinect", "ps4", "resetCameras", "restartCamera", "reboot", "powerOff", "restartApp", "timing"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "takeDetails", "editTake", "sentry", "oak", "kinect", "ps4", "resetCameras", "restartCamera", "reboot", "powerOff", "restartApp", "upright", "forward", "timing"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
 const ROLES = ["", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"]; // (camera-roles.js's)
@@ -94,7 +94,7 @@ const VIDEO_QUALITIES = ["low", "standard", "high", "best"]; // (camera-video.js
 // networks, the takes and a slice of one). The one list: main.js and the Android checks' stand-in
 // use it, and the checks compare RemotePlugin.java's copy (Java can't load this) with it.
 const RIG_HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*):(\d{1,5})$/i;
-const RIG_PATH = /^\/api\/(state|command|wifi|takes|preview\?i=[0-3](&full=1)?(&after=\d{1,12})?|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/;
+const RIG_PATH = /^\/api\/(state|command|imu(\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|preview\?i=[0-3](&full=1)?(&after=\d{1,12})?|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/;
 
 const PAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
@@ -566,8 +566,11 @@ function tailscaleName() {
 const newKey = () => crypto.randomBytes(16).toString("base64url");
 
 class RemoteRecordServer extends EventEmitter {
-  constructor({ keyStore, page, host = os.hostname(), ask, onWantPreviews = () => {}, hotspot = hotspotAddress, wifi = null, takes = null, bluetoothPassword = null }) {
+  constructor({ keyStore, page, host = os.hostname(), ask, onWantPreviews = () => {}, hotspot = hotspotAddress, wifi = null, takes = null, bluetoothPassword = null, imu = null }) {
     super();
+    // Motion sensors' readings sent to POST /api/imu (a phone's own, from the page; electron/imu-in.js):
+    // (id, name, text) -> how many were understood.
+    this.imu = imu;
     // Bluetooth: requests the link relays (bluetooth.js) carry this, known only in this app;
     // phones on the Bluetooth network give the password (bluetoothPassword(text) -> its check).
     this.relayToken = crypto.randomBytes(24).toString("hex");
@@ -949,6 +952,21 @@ class RemoteRecordServer extends EventEmitter {
       if (!p || Date.now() - p.at > PREVIEW_STALE_MS) return this.send(res, 204, "");
       if (full && i === this.focus) this.lightServed++;
       return this.send(res, 200, p.jpeg, `image/jpeg; seq=${p.seq}`);
+    }
+    // A motion sensor's readings (the page on a phone sending its own; anything else that has the key):
+    // JSON or text lines, as electron/imu-in.js reads them. ?name= names the sensor (else where they came from).
+    if (req.method === "POST" && url.pathname === "/api/imu") {
+      const origin = req.headers.origin;
+      if (origin && origin !== `http://${req.headers.host}`) return this.send(res, 403, { error: "Only Hand Tracker's own page can do that." });
+      if (!this.imu) return this.send(res, 404, { error: "Not here" });
+      let body = "";
+      for await (const chunk of req) {
+        body += chunk;
+        if (body.length > 65536) return this.send(res, 413, { error: "Too long" });
+      }
+      const name = String(url.searchParams.get("name") || "").slice(0, 40) || String(req.socket.remoteAddress || "phone").replace(/^::ffff:/, "");
+      const n = this.imu(`http:${name}`, name, body);
+      return this.send(res, n ? 200 : 400, n ? { ok: true, readings: n } : { error: "No motion sensor readings in that." });
     }
     if (req.method === "POST" && url.pathname === "/api/command") {
       // From the page itself: JSON (another website's form can't send that without asking

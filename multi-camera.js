@@ -942,6 +942,81 @@
     return (typeof header.u === "number" && isFinite(header.u) ? header.u : performance.timeOrigin + performance.now()) - origin;
   }
 
+  // A tile's label: what it is, its chip's temperature, and (a camera with a motion sensor) its posture.
+  function showLabel(t) {
+    const posture = t.posture ? ` · ${t.posture}` : "";
+    t.el.querySelector(".lbl").textContent = t.label + (typeof t.chipC === "number" ? ` · chip ${Math.round(t.chipC)} °C` : "") + posture;
+  }
+
+  // Its motion sensor's readings into its posture; while a take records, its posture ten times a second.
+  const BODY_ROW_MS = 100;
+  function feedBody(t, readings) {
+    for (const r of readings) if (Array.isArray(r) && r.length === 7) t.body.add(r[0], r[1], r[2], r[3], r[4], r[5], r[6]);
+    const last = readings.length ? readings[readings.length - 1][0] : null;
+    if (t.bodyRows && last !== null && (!t.bodyRows.length || last - t.bodyRows[t.bodyRows.length - 1][0] >= BODY_ROW_MS)) {
+      const row = t.body.row(last);
+      if (row) t.bodyRows.push(row);
+    }
+    const now = performance.now();
+    if (!t.postureAt || now - t.postureAt > 500) {
+      t.postureAt = now;
+      const text = global.ImuBody.text(t.body.state());
+      if (text !== t.posture) {
+        t.posture = text;
+        showLabel(t);
+      }
+    }
+  }
+
+  // Standing straight and facing ahead now, for every camera and motion sensor that knows its posture
+  // (remote recording's Upright now).
+  function setUpright() {
+    const with_ = [...tiles.filter((t) => t.body), ...liveSensors()];
+    for (const x of with_) x.body.setUpright();
+    return with_.length;
+  }
+
+  // Leaning forward now: each motion sensor not in a camera learns where forward is (so it can tell
+  // forward and side, not only how far it leans). How many learned it.
+  function setForward() {
+    return liveSensors().filter((s) => s.body.setForward()).length;
+  }
+
+  // ---------- motion sensors other than the OAK cameras' (electron/imu-in.js) ----------
+  // Each: its posture (imu-body.js), its role (where it's worn: the Chest unless said otherwise), and while a
+  // take records, its readings and its posture ten times a second.
+  const sensors = new Map();
+  const SENSOR_GONE_MS = 30000;
+  let sensorsOff = null;
+  function onSensor({ id, name, rows, gravityFree }) {
+    if (!global.ImuBody || !Array.isArray(rows) || !id) return;
+    let s = sensors.get(id);
+    if (!s) {
+      s = { id, name, role: ((prefs && prefs.imuRoles) || {})[id] || "chest", body: global.ImuBody.create({}), raw: recording ? [] : null, bodyRows: recording ? [] : null };
+      sensors.set(id, s);
+    }
+    s.name = name || s.name;
+    s.gravityFree = !!gravityFree;
+    s.at = performance.now();
+    for (const r of rows) if (Array.isArray(r) && r.length === 7) s.body.add(r[0], r[1], r[2], r[3], r[4], r[5], r[6]);
+    if (s.raw) for (const r of rows) if (Array.isArray(r) && r.length === 7) s.raw.push(r);
+    const last = rows.length ? rows[rows.length - 1][0] : null;
+    if (s.bodyRows && last !== null && (!s.bodyRows.length || last - s.bodyRows[s.bodyRows.length - 1][0] >= BODY_ROW_MS)) {
+      const row = s.body.row(last);
+      if (row) s.bodyRows.push(row);
+    }
+  }
+  function liveSensors() {
+    const now = performance.now();
+    for (const [id, s] of sensors) if (now - s.at > SENSOR_GONE_MS && !s.raw) sensors.delete(id);
+    return [...sensors.values()];
+  }
+  function sensorState(s) {
+    const st = s.body.state();
+    return { id: s.id, name: s.name, role: s.role, roleLabel: CameraRoles.label(s.role) || "", text: st.ready ? global.ImuBody.text(st) : "", knowsForward: s.body.knowsForward,
+             gravityFree: s.gravityFree, quiet: performance.now() - s.at > 3000 };
+  }
+
   function onOakFrame({ id, header, jpeg }) {
     const i = tiles.findIndex((x) => x.oak === id);
     const t = tiles[i];
@@ -952,8 +1027,9 @@
     // Its chip's temperature: kept for remote recording (too hot: remote-record-ui.js), and on its tile.
     if (t && typeof header.chipC === "number" && Math.round(header.chipC) !== Math.round(t.chipC)) {
       t.chipC = header.chipC;
-      t.el.querySelector(".lbl").textContent = `${t.label} · chip ${Math.round(t.chipC)} °C`;
+      showLabel(t);
     }
+    if (t && t.body && Array.isArray(header.imu)) feedBody(t, header.imu);
     if (!api || !api.oakHands) return desktop.oak.streamShown(id);
     let hands = null;
     try {
@@ -1187,7 +1263,12 @@
       t.label = `Luxonis ${s.camera || "OAK camera"}${s.depth ? " · depth" : ""}${s.night ? " · night vision" : ""}${s.usb === "HIGH" ? " · USB 2" : ""}`;
       t.night = !!s.night;
       t.infrared = !!s.infrared;
-      t.el.querySelector(".lbl").textContent = t.label + (typeof t.chipC === "number" ? ` · chip ${Math.round(t.chipC)} °C` : "");
+      // Its motion sensor's posture (imu-body.js): which way it leans, turns, and whether it's walking,
+      // against its own camera (its calibration says how the sensor sits in it).
+      t.body = s.imu && global.ImuBody ? global.ImuBody.create({ imuToCamera: s.imuToCamera }) : null;
+      t.imuToCamera = s.imu ? s.imuToCamera || null : null;
+      t.bodyRows = recording && t.body ? [] : null;
+      showLabel(t);
     } else if (s.status === "error" || s.status === "stopped") {
       t.oakState = s.status;
     }
@@ -1336,6 +1417,11 @@
     for (const t of tiles) {
       t.takeHands = tracking(t);
       t.imuReadings = t.oak ? [] : null; // (an OAK camera's motion sensor, while the take records)
+      t.bodyRows = t.body ? [] : null; // (and its posture)
+    }
+    for (const s of liveSensors()) {
+      s.raw = [];
+      s.bodyRows = [];
     }
     for (const a of live) a.startRecording();
     // Each Kinect's depth, infrared, colour and sound, kept as they come (electron/kinect.js).
@@ -1408,8 +1494,43 @@
         samples: t.imuReadings.map((r) => [Math.round(r[0] - origin) / 1000, ...r.slice(1)]).filter((r) => r[0] >= 0),
       }))
       .filter((m) => m.samples.length);
-    for (const t of tiles) t.imuReadings = null;
-    if (imu.length) merged.imu = imu;
+    // Each camera's posture from its motion sensor (imu-body.js), ten times a second: forward and side lean
+    // against where its camera looks, its turn since the start (it drifts), still / moving / walking, its
+    // orientation (sensor to world, z up), and the turn that sets its camera's points upright (its lean
+    // taken out, its facing kept: hand points times it are as if it stood straight).
+    const BODY_UNITS = "t s; forward, side, turn degrees (forward +, right +, turned left +); activity 0 still, 1 moving, 2 walking; steps a minute; q sensor to world (w x y z, z up); level camera to upright (w x y z)";
+    const body = tiles
+      .filter((t) => t.bodyRows && t.bodyRows.length)
+      .map((t) => ({
+        camera: nameOf(t),
+        role: t.role || "",
+        imu_to_camera: t.imuToCamera,
+        units: BODY_UNITS,
+        columns: ["t", "forward", "side", "turn", "activity", "steps_per_min", "qw", "qx", "qy", "qz", "lw", "lx", "ly", "lz"],
+        samples: t.bodyRows.map((r) => [Math.round(r[0] - origin) / 1000, ...r.slice(1)]).filter((r) => r[0] >= 0),
+      }))
+      .filter((m) => m.samples.length);
+    for (const t of tiles) {
+      if (t.imuToCamera) for (const m of imu) if (m.camera === nameOf(t)) m.imu_to_camera = t.imuToCamera;
+      t.imuReadings = null;
+      t.bodyRows = null;
+    }
+    // The motion sensors other than the OAK cameras' (electron/imu-in.js): their readings and posture, alike.
+    for (const s of sensors.values()) {
+      const label = `${CameraRoles.label(s.role) || "Body"} sensor (${s.name})`;
+      if (s.raw && s.raw.length) {
+        imu.push({ camera: label, sensor: s.id, role: s.role, units: "t s, acceleration m/s², angular velocity rad/s, on the sensor's own axes", columns: ["t", "ax", "ay", "az", "gx", "gy", "gz"],
+                   samples: s.raw.map((r) => [Math.round(r[0] - origin) / 1000, ...r.slice(1)]).filter((r) => r[0] >= 0) });
+      }
+      if (s.bodyRows && s.bodyRows.length) {
+        body.push({ camera: label, sensor: s.id, role: s.role, imu_to_camera: null, units: BODY_UNITS, columns: ["t", "forward", "side", "turn", "activity", "steps_per_min", "qw", "qx", "qy", "qz", "lw", "lx", "ly", "lz"],
+                    samples: s.bodyRows.map((r) => [Math.round(r[0] - origin) / 1000, ...r.slice(1)]).filter((r) => r[0] >= 0) });
+      }
+      s.raw = null;
+      s.bodyRows = null;
+    }
+    if (imu.length) merged.imu = imu.filter((x) => x.samples.length);
+    if (body.length) merged.body = body.filter((x) => x.samples.length);
     // Each Kinect's bodies, on the take's clock (t: seconds, as the hands'), as the Kinect gives
     // them: its 25 joints, each [x, y, z, u, v, state], each hand's state and the body's lean.
     const bodies = parts
@@ -1449,6 +1570,13 @@
   }
 
   // ---------- for remote recording (remote-record-ui.js) ----------
+  // Its posture for remote recording's page: { text, forward, side, lean, turn, activity, stepsPerMin, bending, upright }.
+  function bodyState(t) {
+    const s = t.body.state();
+    if (!s.ready) return { text: "" };
+    return { text: global.ImuBody.text(s), forward: s.forward, side: s.side, lean: s.lean, turn: s.turn, activity: s.activity, stepsPerMin: s.stepsPerMin, bending: s.bending, upright: s.upright };
+  }
+
   function remoteState() {
     return {
       running: tiles.length > 0,
@@ -1462,11 +1590,13 @@
           index: i, name: t.name, roleId: t.role || "", role: CameraRoles.label(t.role) || "", label: t.label, rotation: t.view.rotation, mirror: t.view.mirror,
           fps: st ? st.fps : 0, hands: st ? st.hands : [], tracking: st ? st.tracking !== false : tracking(t), error: st ? st.error || "" : "", restarting: !!t.byHand,
           ...(t.oak ? { oak: true, night: !!t.night, chipC: typeof t.chipC === "number" ? t.chipC : null } : {}),
+          ...(t.body ? { body: bodyState(t) } : {}),
           ...(t.kinect ? { kinect: true, night: !!t.night, bodies: st && st.bodies ? st.bodies : 0, sound: t.audio ? { angle: t.audio.angle, level: Math.max(...(t.audio.level || [0])), active: t.audio.active } : null } : {}),
           ...(t.ps4 ? { ps4: true, night: !!t.night } : {}),
         };
       }),
       note: els.note ? els.note.textContent : "",
+      sensors: liveSensors().map(sensorState),
     };
   }
 
@@ -1558,6 +1688,7 @@
   function init(opts) {
     prefs = opts.prefs;
     setPref = opts.setPref;
+    if (global.desktop && desktop.imu && !sensorsOff) sensorsOff = desktop.imu.onReadings(onSensor);
     app = opts.app;
     modelOf = opts.modelOf || modelOf;
     phone = !!opts.phone;
@@ -1620,7 +1751,7 @@
   }
 
   global.MultiCamera = {
-    init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, tracking: ownTracking, setTracking, timingCheck, timingState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
+    init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, setUpright, setForward, tracking: ownTracking, setTracking, timingCheck, timingState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
     oakSettings, setOakSettings, kinectSettings, setKinectSettings, saveKinect, kinectAvailable, ps4Settings, setPs4Settings, restartCamera,
     _restart: RESTART, // (the checks shorten its wait)
     isActive: () => tiles.length > 0, runningIds: () => tiles.map((t) => t.deviceId), isRecording: () => recording, isTracking: () => tiles.some((t) => tracking(t)),
