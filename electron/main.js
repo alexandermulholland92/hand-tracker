@@ -32,7 +32,8 @@ const { RigBluetooth } = require("./bluetooth");
 const systemControl = require("./system-control");
 const storage = require("./storage");
 const { ImuIn } = require("./imu-in");
-const imuIn = new ImuIn(); // (motion sensors other than the OAK cameras': on while remote recording is)
+const imuIn = new ImuIn(); // (motion sensors other than the OAK cameras': on while remote recording is, if they're wanted)
+let imuWanted = false; // (remote recording's Separate motion sensors: the window says, as it starts and when changed)
 const { checkPassword: checkBluetoothPassword } = require("./bluetooth-link");
 const { createWifi } = require("./wifi");
 
@@ -1244,13 +1245,20 @@ function registerRemoteIpc() {
     wifi: createWifi(), // a phone on the hotspot (or over Tailscale) can change the Wi-Fi
     takes: () => remoteFolder(), // its takes: listed, downloaded, and deleted once downloaded
     bluetoothPassword: (text) => checkBluetoothPassword(rigBluetooth.secret(), text), // a phone on the Bluetooth network
-    imu: (id, name, text) => imuIn.ingest(id, name, text), // a motion sensor's readings sent to the page (electron/imu-in.js)
+    imu: (id, name, text) => (imuWanted ? imuIn.ingest(id, name, text) : -1), // a motion sensor's readings sent to the page (electron/imu-in.js); -1: they're off
   });
   // Motion sensors other than the OAK cameras' (electron/imu-in.js): on while remote recording is, their
   // readings to the window (multi-camera.js), which gives each a posture and records it with the takes.
   imuIn.on("readings", (r) => toWindow("imu:readings", r));
   imuIn.on("status", (s) => toWindow("imu:status", s));
   handle("imu:status", () => imuIn.status());
+  handle("imu:enable", (event, on) => {
+    if (!fromApp(event)) return false;
+    imuWanted = !!on;
+    if (imuWanted && remoteRecord.server) imuIn.start();
+    else if (!imuWanted) imuIn.stop();
+    return imuWanted;
+  });
   remoteRecord.on("status", (s) => toWindow("remote:status", s));
   rigBluetooth.on("status", (s) => toWindow("remote:bluetooth", s));
   const startBluetooth = () => (rigBluetooth.available() && remoteRecord.server ? rigBluetooth.start().catch(() => {}) : null);
@@ -1259,7 +1267,7 @@ function registerRemoteIpc() {
   handle("remote:start", async () => {
     const s = await remoteRecord.start();
     startBluetooth();
-    imuIn.start();
+    if (imuWanted) imuIn.start();
     return s;
   });
   handle("remote:stop", () => {

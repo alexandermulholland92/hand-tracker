@@ -129,13 +129,13 @@ function cleanPick(p) {
   return out;
 }
 // One OAK camera's own settings, from a request: which ("oak:<id>"), and any of its hand model,
-// one or two hands, depth, frame rate, finding objects, picture, night vision and infrared dots.
+// one or two hands, depth, frame rate, finding objects, picture, night vision, infrared dots and motion sensor.
 const OAK_CHOICES = { model: ["lite", "full"], hands: [1, 2], fps: [0, 60], picture: ["color", "depth", "blend", "side", "left", "right"], night: ["auto", "on", "off"] };
 function cleanOak(o) {
   if (!o || typeof o !== "object" || typeof o.id !== "string" || !/^oak:[A-Za-z0-9._-]{1,64}$/.test(o.id) || !o.options || typeof o.options !== "object") return null;
   const options = {};
   for (const [k, allowed] of Object.entries(OAK_CHOICES)) if (allowed.includes(o.options[k])) options[k] = o.options[k];
-  for (const k of ["depth", "detect", "dots"]) if (typeof o.options[k] === "boolean") options[k] = o.options[k];
+  for (const k of ["depth", "detect", "dots", "imu"]) if (typeof o.options[k] === "boolean") options[k] = o.options[k];
   return Object.keys(options).length ? { id: o.id, options } : null;
 }
 // A Kinect's own settings (multi-camera.js's KINECT_OWN).
@@ -178,7 +178,7 @@ function cleanWifi(w) {
 function cleanSettings(s) {
   if (!s || typeof s !== "object") return null;
   const out = {};
-  for (const k of ["detailsRequired", "screenPictures", "video", "sound", "photo"]) if (typeof s[k] === "boolean") out[k] = s[k];
+  for (const k of ["detailsRequired", "screenPictures", "video", "sound", "photo", "sensors"]) if (typeof s[k] === "boolean") out[k] = s[k];
   if (VIDEO_QUALITIES.includes(s.videoQuality)) out.videoQuality = s.videoQuality;
   // The battery reminder (on or off, its hours) and the counts' Resets: the time on, the reminder's.
   if (typeof s.batteryReminder === "boolean") out.batteryReminder = s.batteryReminder;
@@ -966,6 +966,7 @@ class RemoteRecordServer extends EventEmitter {
       }
       const name = String(url.searchParams.get("name") || "").slice(0, 40) || String(req.socket.remoteAddress || "phone").replace(/^::ffff:/, "");
       const n = this.imu(`http:${name}`, name, body);
+      if (n < 0) return this.send(res, 409, { error: "Separate motion sensors are off on that computer: turn them on on its remote recording page." });
       return this.send(res, n ? 200 : 400, n ? { ok: true, readings: n } : { error: "No motion sensor readings in that." });
     }
     if (req.method === "POST" && url.pathname === "/api/command") {

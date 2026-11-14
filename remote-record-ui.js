@@ -78,6 +78,11 @@
   let host = null; // desktop or mobile: saving the videos
   const remoteVideo = () => prefs.remoteVideo !== false;
   const remotePhoto = () => prefs.remotePhoto !== false;
+  // Separate motion sensors (electron/imu-in.js: the network, USB, a phone): listened for only when this is on
+  // (off unless turned on). Only where this computer can (the desktop apps).
+  const remoteSensors = () => prefs.remoteSensors === true;
+  const canSensors = () => !!(global.desktop && desktop.imu && desktop.imu.enable);
+  const applySensors = () => canSensors() && desktop.imu.enable(remoteSensors()).catch(() => {});
   const remoteSound = () => prefs.remoteSound !== false;
   const QUALITIES = ["low", "standard", "high", "best"]; // (CameraVideo's)
   const QUALITY_NAMES = { low: "small files", standard: "standard", high: "high", best: "best" };
@@ -129,6 +134,10 @@
       $("remoteQuality").disabled = !remoteVideo();
     }
     if ($("remotePhoto")) $("remotePhoto").checked = remotePhoto();
+    if ($("remoteSensorsRow")) {
+      $("remoteSensorsRow").hidden = !canSensors();
+      $("remoteSensors").checked = remoteSensors();
+    }
     if ($("remoteBatteryReminder")) {
       $("remoteBatteryReminder").checked = batteryReminder();
       showReminderTime($("remoteBatteryH"), $("remoteBatteryM"), reminderHours());
@@ -170,7 +179,7 @@
     const locked = detailsLocked();
     const common = { ...st, pending, saving, lastTake, notice, details: takeDetails || details(), detailsLocked: locked, detailsRequired: detailsRequired() };
     return {
-      ...common, kind: "rig", video: remoteVideo(), sound: remoteSound(), videoQuality: remoteQuality(), photo: remotePhoto(),
+      ...common, kind: "rig", video: remoteVideo(), sound: remoteSound(), videoQuality: remoteQuality(), photo: remotePhoto(), ...(canSensors() ? { sensorsOn: remoteSensors() } : {}),
       sentry: global.Sentry ? global.Sentry.remoteState() : null,
       timing: cams().timingState ? cams().timingState() : undefined,
       // (Pictures on its own screen: OAK cameras only, which a phone doesn't have.)
@@ -1130,6 +1139,14 @@
         showSettings();
         return { ok: true, message: !remoteVideo() ? "Takes are motion capture only." : `Each camera's video is recorded with the take, ${remoteSound() ? "with" : "without"} sound, at ${QUALITY_NAMES[remoteQuality()]} quality.` };
       }
+      // Separate motion sensors listened for, or not (any time).
+      if (typeof st.sensors === "boolean") {
+        if (!canSensors()) return { ok: false, message: "This device can't take separate motion sensors." };
+        setPref("remoteSensors", st.sensors);
+        applySensors();
+        showSettings();
+        return { ok: true, message: st.sensors ? "Separate motion sensors (the network, USB, a phone) are used." : "Separate motion sensors are off." };
+      }
       // A photo from each camera as each take starts (from the next take).
       if (typeof st.photo === "boolean") {
         if (recording) return { ok: false, message: "Stop recording first." };
@@ -1517,6 +1534,14 @@
       $("remoteBatteryH").addEventListener("change", set);
       $("remoteBatteryM").addEventListener("change", set);
     }
+    if ($("remoteSensors")) {
+      $("remoteSensors").addEventListener("change", (e) => {
+        setPref("remoteSensors", e.target.checked);
+        applySensors();
+        push();
+      });
+    }
+    applySensors();
     if ($("remoteOnTimeReset")) $("remoteOnTimeReset").addEventListener("click", () => confirm("Count its time on, and the battery reminder's, from now (a new or charged battery)?") && resetOnTime());
     if ($("remoteReminderReset")) $("remoteReminderReset").addEventListener("click", () => confirm("Count the battery reminder's hours from now?") && resetReminder());
     for (const [id, key] of [["remoteVideo", "remoteVideo"], ["remoteSound", "remoteSound"], ["remotePhoto", "remotePhoto"]]) {

@@ -398,13 +398,15 @@
   const OAK_OWN = {
     model: (v) => ["lite", "full"].includes(v), hands: (v) => [1, 2].includes(v), depth: (v) => typeof v === "boolean", fps: (v) => [0, 60].includes(v),
     detect: (v) => typeof v === "boolean", picture: (v) => OakSource.VIEWS.includes(v), night: (v) => ["auto", "on", "off"].includes(v), dots: (v) => typeof v === "boolean",
+    imu: (v) => typeof v === "boolean",
   };
   const oakOwn = (id) => ((prefs && prefs.oakCameraOptions) || {})[id] || {};
-  // Its settings as they are: { model, hands, depth, fps, detect, picture, night, dots }.
+  // Its settings as they are: { model, hands, depth, fps, detect, picture, night, dots, imu }. imu: its motion
+  // sensor's readings and posture (imu-body.js), off until turned on for that camera.
   function oakSettingsOf(id) {
     const own = oakOwn(id), main = tileOptions.oak || {};
     const o = { model: modelOf() === 1 ? "full" : "lite", hands: 2, depth: true, fps: Number(main.fps) || 0, detect: !!main.chosenDetect, picture: OakSource.VIEWS.includes(main.picture) ? main.picture : "color",
-      night: ["on", "off"].includes(main.night) ? main.night : "auto", dots: !!main.dots };
+      night: ["on", "off"].includes(main.night) ? main.night : "auto", dots: !!main.dots, imu: false };
     for (const k of Object.keys(OAK_OWN)) if (OAK_OWN[k](own[k])) o[k] = own[k];
     return o;
   }
@@ -415,7 +417,7 @@
   function oakStart(t) {
     const hands = tracking(t), o = oakSettingsOf(t.deviceId), main = tileOptions.oak || {};
     const options = OakSource.cameraOptions({ ...main, fps: o.fps, detect: o.detect || !!main.needObjects, picture: o.picture, night: o.night, dots: o.dots });
-    return { lm: o.model, twoHands: o.hands !== 1, xyz: o.depth, ...(hands ? oakFar(tileOptions.far) : { far: null, allHands: false }), ...options, hands, imu: true };
+    return { lm: o.model, twoHands: o.hands !== 1, xyz: o.depth, ...(hands ? oakFar(tileOptions.far) : { far: null, allHands: false }), ...options, hands, imu: !!o.imu };
   }
   // An OAK camera keeps what it was started with: one that's running (or failed) is started
   // again when that changes (the hands, with hand tracking off or on; far-away hands; its

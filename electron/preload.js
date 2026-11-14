@@ -339,6 +339,8 @@ contextBridge.exposeInMainWorld("desktop", {
   // { udp: port | null, serial: [paths], sensors: [{ id, name, hz, units, gravityFree }] }.
   imu: {
     status: () => ipcRenderer.invoke("imu:status"),
+    // Listened for or not (remote recording's Separate motion sensors; off until turned on).
+    enable: (on) => ipcRenderer.invoke("imu:enable", !!on),
     onReadings: (cb) => {
       const listener = (_event, data) => cb(data);
       ipcRenderer.on("imu:readings", listener);

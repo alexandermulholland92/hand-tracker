@@ -3615,6 +3615,12 @@ async function checkRemoteRecording(js) {
     out.refusedStarted = refusedState.running || refusedState.recording || !!refusedState.pending;
     out.details = await (await post("details", { details: { contributor: "Sam Smith", location: "Lab 2", task: "Pick up cup" } })).json();
     out.detailsKept = (await state()).details;
+    // The OAK cameras' motion sensors (off until turned on in each one's settings) and separate motion sensors
+    // (off until turned on): a separate sensor sent while they're off is refused.
+    out.sensorsOffPost = (await fetch(base + "/api/imu?name=too-soon", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: "[[0,0,1,0,0,0]]" })).status;
+    out.imuOn = [];
+    for (const id of ["oak:SIMULATED-OAK-A", "oak:SIMULATED-OAK-B"]) out.imuOn.push((await (await post("oak", { oak: { id, options: { imu: true } } })).json()).ok);
+    out.sensorsOn = (await (await post("settings", { settings: { sensors: true } })).json()).ok && (await state()).sensorsOn;
     out.record = await (await post("record")).json();
     let s = null;
     for (let i = 0; i < 150 && !(s && s.recording); i++) {
@@ -3805,7 +3811,7 @@ async function checkRemoteRecording(js) {
       out.photos.map((p) => p.f).sort().join() === "-photo-chest.jpg,-photo-head.jpg" && out.photos.every((p) => p.jpeg && p.kb > 1) && out.photosListed === 2 &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
       /^0:\d\d$/.test(out.metadata.length) && out.metadata.length_s > 1 &&
-      out.savedHands && out.savedHands.length === 2 && out.body.filter((b) => /still|moving|walking/.test(b || "")).length === 2 && out.upright.ok && out.imuPost === 200 && out.sensors.length === 2 && out.sensors.every((x) => x.role === "chest" && /still|moving|walking/.test(x.text) && !x.knowsForward) && out.takeBody && out.takeBody.length >= 3 && out.takeBody.every((b) => b.rows >= 1 && b.columns === 14) && out.takeBody.filter((b) => b.level).every((b) => b.rows > 10) && out.takeBody.filter((b) => b.level).length === 2 && out.takeImuCal && out.takeImuCal.filter(Boolean).length === 2 && out.savedHands.some((h) => /^Head /.test(h)) && out.savedHands.some((h) => /^Chest /.test(h)) &&
+      out.savedHands && out.savedHands.length === 2 && out.body.filter((b) => /still|moving|walking/.test(b || "")).length === 2 && out.upright.ok && out.sensorsOffPost === 409 && out.imuOn.join() === "true,true" && out.sensorsOn === true && out.imuPost === 200 && out.sensors.length === 2 && out.sensors.every((x) => x.role === "chest" && /still|moving|walking/.test(x.text) && !x.knowsForward) && out.takeBody && out.takeBody.length >= 3 && out.takeBody.every((b) => b.rows >= 1 && b.columns === 14) && out.takeBody.filter((b) => b.level).every((b) => b.rows > 10) && out.takeBody.filter((b) => b.level).length === 2 && out.takeImuCal && out.takeImuCal.filter(Boolean).length === 2 && out.savedHands.some((h) => /^Head /.test(h)) && out.savedHands.some((h) => /^Chest /.test(h)) &&
       out.close.ok && out.closed && out.unknown === 400 && out.off && out.refusedWhenOff && out.tailnet.join() === "true,false,false" &&
       out.textPlain === 403 && out.otherSite === 403 && out.ownHost.join() === "true,false",
     JSON.stringify(out));
@@ -5104,7 +5110,7 @@ function checkCameraSettingsTables() {
   const vm = require("vm");
   const read = (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
   const take = (src, name) => {
-    const m = src.match(new RegExp(`const ${name} = ([\\[{][\\s\\S]*?[\\]}]);\\n`));
+    const m = src.match(new RegExp(`const ${name} = ([\\[{][\\s\\S]*?[\\]}]);\\r?\\n`)); // (Windows' line endings too)
     return m ? vm.runInNewContext(`(${m[1]})`) : null;
   };
   const box = { window: {} };

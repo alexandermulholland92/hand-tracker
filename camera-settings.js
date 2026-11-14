@@ -30,7 +30,8 @@
     picture: ["Picture", [["color", "Colour"], ["depth", "Depth"], ["blend", "Colour + depth"], ["side", "Colour | depth"], ["left", "Left mono"], ["right", "Right mono"]]],
     night: ["Night vision", [["auto", "Automatic"], ["on", "On"], ["off", "Off"]]],
   };
-  const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", dots: "Infrared dots (better depth, day or night; dots on the black-and-white pictures)" };
+  const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", dots: "Infrared dots (better depth, day or night; dots on the black-and-white pictures)",
+    imu: "Motion sensor (posture: lean, turn, walking; recorded with the takes)" };
   const OAK_NUMBERS = new Set(["hands", "fps"]);
   const KINECT_CHOICES = {
     picture: ["Picture", [["color", "Colour (infrared at night)"], ["depth", "Depth"], ["blend", "Colour + depth"], ["side", "Colour | depth"]]],
@@ -81,7 +82,7 @@
       const o = c.oak, depth = o.hasDepth !== false, infrared = o.infrared !== false;
       out += choice("oak", "model", OAK_CHOICES.model, o.model) + choice("oak", "hands", OAK_CHOICES.hands, o.hands) + (depth ? sw("oak", "depth", OAK_SWITCHES.depth, o.depth) : "") +
         choice("oak", "fps", OAK_CHOICES.fps, o.fps) + sw("oak", "detect", OAK_SWITCHES.detect, o.detect) + (depth ? choice("oak", "picture", OAK_CHOICES.picture, o.picture) : "") +
-        (infrared ? choice("oak", "night", OAK_CHOICES.night, o.night) + sw("oak", "dots", OAK_SWITCHES.dots, o.dots) : "");
+        (infrared ? choice("oak", "night", OAK_CHOICES.night, o.night) + sw("oak", "dots", OAK_SWITCHES.dots, o.dots) : "") + sw("oak", "imu", OAK_SWITCHES.imu, o.imu);
       out += `<div class="cs-sub">${infrared ? (o.infrared === null ? "Night vision needs an infrared light (OAK-D Pro); Automatic turns it on when it's dark. " : "Night vision: Automatic turns it on when it's dark. ") : "This camera has no infrared light, so no night vision. "}` +
         "Changed while the camera runs, it starts again with them (a few seconds).</div>";
     } else if (c.kinect && c.kinect.k360) {

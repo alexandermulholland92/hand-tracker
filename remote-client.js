@@ -263,7 +263,8 @@
     picture: ["Picture", [["color", "Colour"], ["depth", "Depth"], ["blend", "Colour + depth"], ["side", "Colour | depth"], ["left", "Left mono"], ["right", "Right mono"]]],
     night: ["Night vision", [["auto", "Automatic"], ["on", "On"], ["off", "Off"]]],
   };
-  const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", dots: "Infrared dots (better depth, day or night; dots on the black-and-white pictures)" };
+  const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", dots: "Infrared dots (better depth, day or night; dots on the black-and-white pictures)",
+    imu: "Motion sensor (posture: lean, turn, walking; recorded with the takes)" };
   // A camera's ⚙: its own settings (settingsHtml), and last, for a camera that doesn't find objects
   // itself, Sentry's second look (an OAK camera's animals always have one).
   function camSettingsHtml(c, disabled) {
@@ -360,7 +361,7 @@
     const sw = (k) => `<div class="row"><span class="grow">${OAK_SWITCHES[k]}</span><button type="button" class="small${o[k] ? " on" : ""}" data-oakid="${id}" data-oakset="${k}" aria-pressed="${!!o[k]}"${dis}>${o[k] ? "On" : "Off"}</button></div>`;
     const depth = o.hasDepth !== false, infrared = o.infrared !== false;
     return `<div class="oakset" id="${setId(c.id)}">` + first + choice("model") + choice("hands") + (depth ? sw("depth") : "") + choice("fps") + sw("detect") + (depth ? choice("picture") : "") +
-      (infrared ? choice("night") + sw("dots") : "") +
+      (infrared ? choice("night") + sw("dots") : "") + sw("imu") +
       `<div class="sub">${infrared ? (o.infrared === null ? "Night vision needs an infrared light (OAK-D Pro); Automatic turns it on when it's dark. " : "Night vision: Automatic turns it on when it's dark. ") : "This camera has no infrared light, so no night vision. "}` +
       (depth ? "Picture: Colour + depth lays the depth over the colour picture; Colour | depth puts them side by side; Left or Right mono is that black-and-white camera, the hands found on it (Night vision On lights it). " : "") +
       "Changed while the camera runs, it starts again with them (a few seconds).</div></div>";
@@ -637,7 +638,8 @@
   $("reminderReset").addEventListener("click", () => confirm("Count the battery reminder's hours from now?") && command("settings", { settings: { resetReminder: true } }));
   $("onTimeReset").addEventListener("click", () => confirm("Count its time on, and the battery reminder's, from now (a new or charged battery)?") && command("settings", { settings: { resetOnTime: true } }));
   // A photo from each camera as the take starts, saved with it too.
-  let photoOn = true;
+  let photoOn = true, sensorsOn = false;
+  $("sensorsBtn").addEventListener("click", () => command("settings", { settings: { sensors: !sensorsOn } }));
   $("photoBtn").addEventListener("click", () => command("settings", { settings: { photo: !photoOn } }));
   const QUALITY_NOTES = {
     low: " Small files: under half the size of Standard, with a softer picture.",
@@ -2289,6 +2291,14 @@
       if (s.onTime) {
         $("onTimeText").textContent = s.onTime.text;
         $("onTimeReset").disabled = sending;
+      }
+      // (Only a computer that can take separate motion sensors says whether they're on.)
+      $("sensorsRow").hidden = typeof s.sensorsOn !== "boolean";
+      if (typeof s.sensorsOn === "boolean") {
+        sensorsOn = s.sensorsOn;
+        $("sensorsBtn").textContent = sensorsOn ? "On" : "Off";
+        $("sensorsBtn").classList.toggle("on", sensorsOn);
+        $("sensorsBtn").setAttribute("aria-pressed", String(sensorsOn));
       }
       // (A rig from before the photo setting doesn't say it.)
       const photos = typeof s.photo === "boolean";
