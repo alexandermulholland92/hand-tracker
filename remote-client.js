@@ -130,6 +130,44 @@
     }
   }
 
+  // A computer reached by its name ("pi:47821") remembers its Tailscale address (its state's tailnet), and
+  // where the name can't be reached (a phone on mobile data without Tailscale's DNS) that address is used
+  // instead, for TAILNET_FOR_MS before the name is tried again.
+  const TAILNET_FOR_MS = 60000;
+  const byName = () => !!rig && !/^(\d{1,3}(\.\d{1,3}){3}|\[[0-9a-f:]+\]):\d+$/i.test(rig);
+  const tailnetKey = () => `hand-tracker-tailnet:${String(rig).toLowerCase()}`;
+  let tailnetUntil = 0;
+  function learnTailnet(s) {
+    if (!byName() || !s || typeof s.tailnet !== "string" || !/^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s.tailnet)) return;
+    try {
+      localStorage.setItem(tailnetKey(), s.tailnet);
+    } catch {
+      // (not kept: found again next time)
+    }
+  }
+  function tailnetRig() {
+    if (!byName()) return null;
+    try {
+      const a = localStorage.getItem(tailnetKey());
+      return a ? `${a}:${String(rig).split(":").pop()}` : null;
+    } catch {
+      return null;
+    }
+  }
+  // The request by name, or by its Tailscale address where the name isn't reached (once, then for a while).
+  async function nameOrTailnet(ask) {
+    const other = tailnetRig();
+    if (other && Date.now() < tailnetUntil) return ask(other);
+    try {
+      return await ask(rig);
+    } catch (err) {
+      if (!other || (err && /^BT_/.test(String(err.code || "")))) throw err;
+      const r = await ask(other);
+      tailnetUntil = Date.now() + TAILNET_FOR_MS;
+      return r;
+    }
+  }
+
   // One request to the computer -> { status, type, bytes, json() }.
   // file: a picture, which the Android app may give as a file of its own to show (fileAnswer).
   async function call(path, { method = "GET", body = null, file = false } = {}) {
@@ -139,7 +177,7 @@
     }
     if (btName !== null) throw Object.assign(new Error("bluetooth"), { bluetooth: true });
     if (desktopRig) {
-      const r = await desktopRig.request({ rig, path, method, body, key });
+      const r = await nameOrTailnet((to) => desktopRig.request({ rig: to, path, method, body, key }));
       return answer(r.status, r.type, r.body instanceof Uint8Array ? r.body : new Uint8Array(r.body || []));
     }
     if (nativeRemote) {
@@ -147,7 +185,7 @@
       if (near) return near;
       let r;
       try {
-        r = await nativeRemote.rigRequest({ rig, path, method, body: body || "", key, toFile: !!file && filesOk });
+        r = await nameOrTailnet((to) => nativeRemote.rigRequest({ rig: to, path, method, body: body || "", key, toFile: !!file && filesOk }));
       } catch (err) {
         if (err && err.code === "BT_NETWORK_OFF") throw Object.assign(new Error("bluetooth network"), { btNetworkOff: true });
         if (err && err.code === "BT_NETWORK_BLOCKED") throw Object.assign(new Error("bluetooth network"), { btNetworkBlocked: true });
@@ -166,6 +204,7 @@
     if (r.status === 401) throw Object.assign(new Error("key"), { auth: true });
     if (path === "/api/state" && r.status === 200) {
       try {
+        learnTailnet(r.json());
         learnDirect(r.json());
       } catch {
         // (not a state: nothing to learn)

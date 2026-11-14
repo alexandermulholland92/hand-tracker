@@ -200,12 +200,35 @@
     try {
       key = localStorage.getItem(`hand-tracker-remote-key:${rig.toLowerCase()}`) || "";
     } catch {}
-    if (inDesktopApp) {
-      const r = await window.desktop.rig.request({ rig, path, method: "GET", body: null, key });
-      return { status: r.status, bytes: r.body instanceof Uint8Array ? r.body : new Uint8Array(r.body || []) };
+    // (A computer reached by name remembers its Tailscale address, and that's used where the name isn't
+    // reached: a phone on mobile data without Tailscale's DNS; as its page does, remote-client.js.)
+    const tailKey = `hand-tracker-tailnet:${rig.toLowerCase()}`;
+    let tail = null;
+    try {
+      tail = /^\d{1,3}(\.\d{1,3}){3}$/.test(c.host) ? null : localStorage.getItem(tailKey);
+    } catch {}
+    const ask = async (to) => {
+      if (inDesktopApp) {
+        const r = await window.desktop.rig.request({ rig: to, path, method: "GET", body: null, key });
+        return { status: r.status, bytes: r.body instanceof Uint8Array ? r.body : new Uint8Array(r.body || []) };
+      }
+      const r = await rigLink.rigRequest({ rig: to, path, method: "GET", body: "", key });
+      return { status: r.status, bytes: Uint8Array.from(atob(r.body || ""), (ch) => ch.charCodeAt(0)) };
+    };
+    let r;
+    try {
+      r = await ask(rig);
+    } catch (err) {
+      if (!tail) throw err;
+      r = await ask(`${tail}:${c.port}`);
     }
-    const r = await rigLink.rigRequest({ rig, path, method: "GET", body: "", key });
-    return { status: r.status, bytes: Uint8Array.from(atob(r.body || ""), (ch) => ch.charCodeAt(0)) };
+    if (path === "/api/state" && r.status === 200 && !/^\d{1,3}(\.\d{1,3}){3}$/.test(c.host)) {
+      try {
+        const s = JSON.parse(new TextDecoder().decode(r.bytes));
+        if (typeof s.tailnet === "string" && /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s.tailnet)) localStorage.setItem(tailKey, s.tailnet);
+      } catch {}
+    }
+    return r;
   }
   // A computer's previews while its row shows (until the list is drawn again).
   async function previewLoop(c, box, gen) {

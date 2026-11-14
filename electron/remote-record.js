@@ -907,7 +907,10 @@ class RemoteRecordServer extends EventEmitter {
       // phone app can come straight over that network when it's on the same one (Tailscale on a
       // phone carries far less: about 0.8 MB/s where the same Wi-Fi carries 2).
       const direct = !this.relayed(req) && tailnetPeer(req.socket.localAddress, req.socket.remoteAddress) ? this.directWay() : null;
-      return this.send(res, 200, { ...this.state, host: this.host, wifi: wifiHere ? { allowed: true, ...this.wifi.status() } : null, ...(direct ? { direct } : {}) });
+      // (tailnet: its own Tailscale address, so a phone that reached it by name can find it again where the
+      // name can't be looked up: on mobile data without Tailscale's DNS)
+      const tailnet = (addresses().find((a) => a.kind === "Tailscale") || {}).address || null;
+      return this.send(res, 200, { ...this.state, host: this.host, wifi: wifiHere ? { allowed: true, ...this.wifi.status() } : null, ...(direct ? { direct } : {}), ...(tailnet ? { tailnet } : {}) });
     }
     if (req.method === "GET" && url.pathname === "/api/wifi") {
       if (!wifiHere) return this.send(res, 403, { error: "The Wi-Fi can be changed only from this computer's hotspot or over Tailscale." });
