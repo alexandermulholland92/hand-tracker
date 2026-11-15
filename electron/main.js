@@ -31,6 +31,8 @@ const { RemoteRecordServer, RIG_HOST, RIG_PATH, cleanDetails } = require("./remo
 const { RigBluetooth } = require("./bluetooth");
 const systemControl = require("./system-control");
 const storage = require("./storage");
+const busyNow = require("./busy").busy;
+const { RoomHistory } = require("./room-history");
 const { ImuIn } = require("./imu-in");
 const imuIn = new ImuIn(); // (motion sensors other than the OAK cameras': on while remote recording is, if they're wanted)
 let imuWanted = false; // (remote recording's Separate motion sensors: the window says, as it starts and when changed)
@@ -1325,7 +1327,26 @@ function registerRemoteIpc() {
     takes: () => remoteFolder(), // its takes: listed, downloaded, and deleted once downloaded
     bluetoothPassword: (text) => checkBluetoothPassword(rigBluetooth.secret(), text), // a phone on the Bluetooth network
     imu: (id, name, text) => (imuWanted ? imuIn.ingest(id, name, text) : -1), // a motion sensor's readings sent to the page (electron/imu-in.js); -1: they're off
+    history: (span, after) => roomHistory.get(span, after), // the device settings page's graphs (room-history.js)
   });
+  // CPU, GPU, memory and space read every second for those graphs (the last hour of seconds, a week of
+  // minutes: kept while the app runs); the Space line's CPU, GPU and memory are the latest reading.
+  let lastRoom = null;
+  const roomHistory = new RoomHistory({
+    file: path.join(app.getPath("userData"), "room-history.jsonl"),
+    sample: async () => {
+      const { memory, busy } = (lastRoom = await roomMetrics());
+      const space = await storage.space(remoteFolder()).catch(() => null);
+      const b = busy || {};
+      return {
+        ...b,
+        mem: memory && memory.total ? (1 - memory.available / memory.total) * 100 : null,
+        appMem: memory && memory.total && memory.app ? (memory.app / memory.total) * 100 : null,
+        disk: space && space.total ? (1 - space.free / space.total) * 100 : null,
+      };
+    },
+  });
+  roomHistory.start();
   // Motion sensors other than the OAK cameras' (electron/imu-in.js): on while remote recording is, their
   // readings to the window (multi-camera.js), which gives each a posture and records it with the takes.
   imuIn.on("readings", (r) => toWindow("imu:readings", r));
@@ -1391,13 +1412,24 @@ function registerRemoteIpc() {
   handle("remote:restart-app", () => restartApp());
   // The room left where takes are saved, whether this computer has a battery, and how hot its
   // processor is (storage.js).
-  handle("remote:storage", async () => ({ ...((await storage.space(remoteFolder())) || {}), battery: await storage.hasBattery(), temperature: await storage.temperature(), reserve: await storage.reserve(), uptime: os.uptime(), memory: memoryNow() }));
+  handle("remote:storage", async () => ({ ...((await storage.space(remoteFolder())) || {}), battery: await storage.hasBattery(), temperature: await storage.temperature(), reserve: await storage.reserve(), uptime: os.uptime(), ...(lastRoom || (await roomMetrics())) }));
   // This computer's memory ({ total, available }, storage.js) and this app's own: what all its
-  // processes hold (app) and the most one of its pages does (page), in bytes.
-  function memoryNow() {
+  // processes hold (app) and the most one of its pages does (page), in bytes; and how busy its CPU
+  // and GPU are, with this app's share (busy.js: { cpu, appCpu, gpu, appGpu } percentages).
+  async function roomMetrics() {
+    let all = [];
+    try {
+      all = app.getAppMetrics();
+    } catch {
+      // (not told)
+    }
+    const cpuOf = Object.fromEntries(all.filter((p) => p.cpu).map((p) => [p.pid, p.cpu.percentCPUUsage]));
+    const busy = await busyNow(all.map((p) => p.pid), cpuOf).catch(() => null);
+    return { memory: memoryNow(all), busy };
+  }
+  function memoryNow(all) {
     const out = { ...(storage.memory() || {}) };
     try {
-      const all = app.getAppMetrics();
       const of = (p) => ((p.memory && p.memory.workingSetSize) || 0) * 1024;
       out.app = all.reduce((sum, p) => sum + of(p), 0);
       out.page = Math.max(0, ...all.filter((p) => p.type === "Tab").map(of));

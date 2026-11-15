@@ -44,6 +44,19 @@
   .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 12px; }
   .panel h2 { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--muted); margin: 0 0 8px; }
   .panel h2 .grow { flex: 1 1 auto; }
+  .modes.spans button { flex: none; padding: 4px 9px; font-size: 13px; white-space: nowrap; }
+  .legend { display: flex; gap: 14px; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .legend .sw { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: 3px; margin-right: 5px; }
+  .sw.all { background: var(--accent); } .sw.app { background: var(--ok); }
+  .graph { margin-top: 8px; }
+  .graph .gh { display: flex; justify-content: space-between; font-size: 13px; }
+  .graph .gh b { font-weight: 600; } .graph .gh span { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .graph .gh span.err { color: var(--err); font-weight: 600; }
+  .graph svg { display: block; width: 100%; height: auto; max-height: 120px; }
+  .graph .grid { stroke: var(--line); stroke-width: 1; }
+  .graph .axis { fill: var(--muted); font-size: 10px; }
+  .graph .all { fill: none; stroke: var(--accent); stroke-width: 1.6; }
+  .graph .app { fill: none; stroke: var(--ok); stroke-width: 1.6; }
   .modes { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
   .modes button { flex: 1 1 0; padding: 10px 6px; font-size: 15px; font-weight: 600; border-radius: 0; background: transparent; color: var(--text); }
   .modes button + button { border-left: 1px solid var(--line); }
@@ -359,6 +372,15 @@
       <input id="wifiAddPw" type="password" maxlength="63" placeholder="Its password" aria-label="Its password" />
       <button type="submit">Save</button>
     </form>
+  </section>
+
+  <!-- CPU, GPU, memory and space over time (room-history.js on the computer; one reading a minute, a week kept). -->
+  <section class="panel" id="graphsPanel" aria-labelledby="graphsTitle" hidden>
+    <h2><span id="graphsTitle" class="grow">How busy</span>
+      <span class="modes spans" role="group" aria-label="Time span"><button type="button" data-span="1h" aria-pressed="true">1 h</button><button type="button" data-span="24h" aria-pressed="false">24 h</button><button type="button" data-span="7d" aria-pressed="false">7 days</button></span></h2>
+    <div class="legend"><span><i class="sw all"></i>All of it</span><span><i class="sw app"></i><span id="graphsApp">The app</span></span></div>
+    <div id="graphs"></div>
+    <div id="graphsNote" class="sub"></div>
   </section>
 
   <section class="panel" id="restartPanel" aria-labelledby="restartTitle" hidden>

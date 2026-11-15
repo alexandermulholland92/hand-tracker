@@ -566,8 +566,10 @@ function tailscaleName() {
 const newKey = () => crypto.randomBytes(16).toString("base64url");
 
 class RemoteRecordServer extends EventEmitter {
-  constructor({ keyStore, page, host = os.hostname(), ask, onWantPreviews = () => {}, hotspot = hotspotAddress, wifi = null, takes = null, bluetoothPassword = null, imu = null }) {
+  constructor({ keyStore, page, host = os.hostname(), ask, onWantPreviews = () => {}, hotspot = hotspotAddress, wifi = null, takes = null, bluetoothPassword = null, imu = null, history = null }) {
     super();
+    // The device settings page's graphs: history(span) -> { span, every, points } (room-history.js).
+    this.history = history;
     // Motion sensors' readings sent to POST /api/imu (a phone's own, from the page; electron/imu-in.js):
     // (id, name, text) -> how many were understood.
     this.imu = imu;
@@ -911,6 +913,12 @@ class RemoteRecordServer extends EventEmitter {
       // name can't be looked up: on mobile data without Tailscale's DNS)
       const tailnet = (addresses().find((a) => a.kind === "Tailscale") || {}).address || null;
       return this.send(res, 200, { ...this.state, host: this.host, wifi: wifiHere ? { allowed: true, ...this.wifi.status() } : null, ...(direct ? { direct } : {}), ...(tailnet ? { tailnet } : {}) });
+    }
+    // A week of CPU, GPU, memory and space readings (room-history.js), for the device settings page's graphs.
+    if (req.method === "GET" && url.pathname === "/api/history") {
+      if (!this.history) return this.send(res, 404, { error: "No history here." });
+      // (after: only the readings since then, ms, for a page that has the rest: the 1 h graph, every second)
+      return this.send(res, 200, this.history(String(url.searchParams.get("span") || "1h"), Number(url.searchParams.get("after")) || 0));
     }
     if (req.method === "GET" && url.pathname === "/api/wifi") {
       if (!wifiHere) return this.send(res, 403, { error: "The Wi-Fi can be changed only from this computer's hotspot or over Tailscale." });

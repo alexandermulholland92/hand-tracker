@@ -1799,7 +1799,94 @@
       if (!$("takesPanel").hidden) loadTakes();
       if (!$("wifiPanel").hidden) loadSaved();
     }
+    loadGraphs();
   }
+
+  // ---------- How busy: CPU, GPU, memory and space over 1 h, 24 h or 7 days ----------
+  // (the computer's room-history.js: [t, cpu, appCpu, gpu, appGpu, mem, appMem, disk] a minute,
+  // averaged for the longer spans). A computer from before has none: the section stays hidden.
+  // Read again every minute while the page is open.
+  let graphSpan = "1h", graphTimer = null;
+  const GRAPHS = [
+    { name: "CPU", all: 1, app: 2 },
+    { name: "GPU", all: 3, app: 4 },
+    { name: "Memory", all: 5, app: 6 },
+    { name: "Space used", all: 7, app: null },
+  ];
+  function graphSvg(points, g, from, to) {
+    const W = 300, H = 84, top = 12, bottom = 70;
+    const x = (t) => ((t - from) / (to - from)) * W;
+    const y = (v) => bottom - (v / 100) * (bottom - top);
+    // A line with a gap wherever a reading is missing (or two readings are far apart).
+    const line = (f, gapMs) => {
+      let d = "", last = null;
+      for (const p of points) {
+        if (p[f] === null || p[f] === undefined) { last = null; continue; }
+        d += `${last === null || p[0] - last > gapMs ? "M" : "L"}${x(p[0]).toFixed(1)},${y(p[f]).toFixed(1)}`;
+        last = p[0];
+      }
+      return d;
+    };
+    const gap = Math.max(3 * 60000, ((to - from) / 360) * 3);
+    const grid = [0, 50, 100].map((v) => `<line class="grid" x1="0" x2="${W}" y1="${y(v)}" y2="${y(v)}"/><text class="axis" x="${W - 2}" y="${y(v) - 2}" text-anchor="end">${v}%</text>`).join("");
+    const app = g.app ? `<path class="app" d="${line(g.app, gap)}"/>` : "";
+    const ago = { "1h": "1 h ago", "24h": "24 h ago", "7d": "7 days ago" }[graphSpan];
+    const when = `<text class="axis" x="0" y="${H - 2}">${ago}</text><text class="axis" x="${W - 2}" y="${H - 2}" text-anchor="end">now</text>`;
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(g.name)} over time">${grid}<path class="all" d="${line(g.all, gap)}"/>${app}${when}</svg>`;
+  }
+  // The 1 h graph is read every second (only what's new: after the last reading the page has), the
+  // others every minute (their points are minutes); not while the page is in the background.
+  let graphHave = { span: "", points: [], every: 60 };
+  async function loadGraphs() {
+    clearTimeout(graphTimer);
+    if (!settingsOpen) return;
+    const span = graphSpan, fast = span === "1h";
+    const kept = graphHave.span === span && fast ? graphHave.points : [];
+    const after = kept.length ? kept[kept.length - 1][0] : 0;
+    let h = null;
+    if (!document.hidden) {
+      try {
+        const r = await api(`/api/history?span=${span}${after ? `&after=${after}` : ""}`);
+        h = r.status === 200 ? await r.json() : null;
+      } catch {
+        h = null;
+      }
+    }
+    graphTimer = setTimeout(loadGraphs, fast ? 1000 : 60000);
+    if (document.hidden || span !== graphSpan) return;
+    if (!h || !Array.isArray(h.points)) {
+      if (!kept.length) $("graphsPanel").hidden = true;
+      return;
+    }
+    $("graphsPanel").hidden = false;
+    const to = Date.now(), from = to - { "1h": 3600e3, "24h": 86400e3, "7d": 7 * 86400e3 }[span];
+    const pts = [...kept, ...h.points].filter((p) => p[0] >= from);
+    graphHave = { span, points: pts, every: h.every };
+    const lastOf = (f) => { for (let i = pts.length - 1; i >= 0; i--) if (pts[i][f] !== null) return pts[i][f]; return null; };
+    const shown = GRAPHS.filter((g) => pts.some((p) => p[g.all] !== null || (g.app && p[g.app] !== null)));
+    // In red once all of it has stayed over 90% for a minute (the last minute's seconds, or the last minute's average).
+    const high = (f) => {
+      const recent = fast ? pts.filter((p) => p[0] >= to - 60000) : pts.slice(-1);
+      return recent.length > 0 && (!fast || recent[0][0] <= to - 55000) && recent.every((p) => p[f] !== null && p[f] > 90);
+    };
+    $("graphs").innerHTML = shown.map((g) => {
+      const all = lastOf(g.all), app = g.app ? lastOf(g.app) : null;
+      const now = [all !== null ? `${all}%` : "", app !== null ? `app ${app}%` : ""].filter(Boolean).join(" · ");
+      return `<div class="graph"><div class="gh"><b>${esc(g.name)}</b><span${high(g.all) ? ' class="err"' : ""}>${esc(now)}</span></div>${graphSvg(pts, g, from, to)}</div>`;
+    }).join("");
+    $("graphsNote").textContent = !pts.length
+      ? "No readings yet: it takes one a second while the app is open."
+      : fast
+        ? "One reading a second. Gaps: the app was closed."
+        : `Each minute's average${h.every > 60 ? `, averaged over ${h.every >= 3600 ? Math.round(h.every / 3600) + " h" : Math.round(h.every / 60) + " min"}` : ""}. Gaps: the app was closed.`;
+  }
+  $("graphsPanel").querySelectorAll("[data-span]").forEach((b) =>
+    b.addEventListener("click", () => {
+      graphSpan = b.dataset.span;
+      $("graphsPanel").querySelectorAll("[data-span]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+      loadGraphs();
+    }),
+  );
   $("settingsOpen").addEventListener("click", () => {
     history.pushState({ settings: true }, "", "#settings");
     showSettingsPage(true);
@@ -2246,7 +2333,7 @@
     // temperature, in red when too hot (a rig from before says none of them).
     const room = [s.storage && s.storage.text && [`Space: ${s.storage.text}`, s.storage.low], s.battery && s.battery.text && [s.battery.text, s.battery.low],
       s.temperature && s.temperature.text && [s.temperature.text, s.temperature.hot], s.reserve && s.reserve.on && s.reserve.text && [s.reserve.text, true],
-      s.memory && s.memory.text && [s.memory.text, s.memory.full],
+      s.memory && s.memory.text && [s.memory.text, s.memory.full], ...(s.busy ? (Array.isArray(s.busy.parts) ? s.busy.parts.filter((x) => Array.isArray(x) && x[0]) : s.busy.text ? [[s.busy.text, false]] : []) : []),
       s.batteryReminder && s.batteryReminder.due && [s.batteryReminder.text, true]].filter(Boolean);
     $("room").hidden = !room.length;
     $("room").innerHTML = room.map(([text, low]) => `<span${low ? ' class="err"' : ""}>${esc(text)}</span>`).join(" · ");

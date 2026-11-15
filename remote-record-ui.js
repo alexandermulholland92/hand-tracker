@@ -215,6 +215,7 @@
   const MCAP_WIDTH = 960, MCAP_PIXEL_BYTES = 0.2;
   const GUESS_SIZE = [1280, 720]; // a camera that isn't running yet
   const ROOM_MS = 15000;
+  const BUSY_MS = 5000; // CPU, GPU and memory: more often than the rest (2026-11-15)
   const LEARN_S = 20; // a take shorter than this is mostly its start (photos, the files' headers): not learnt from
   const LOW_HOURS = 1, LOW_BATTERY = 0.15; // less than this: said in red
   let space = null; // { free, total } where takes are saved
@@ -297,6 +298,17 @@
       return null;
     }
   }
+  // CPU, GPU and memory only (the computer reads them every second: electron/room-history.js).
+  async function lookAtBusy() {
+    if (!remote || !remote.storage) return;
+    const r = await remote.storage().catch(() => null);
+    if (!r) return;
+    memory = cleanMemory(r.memory);
+    busy = cleanBusy(r.busy);
+    watchBusy();
+    watchMemory();
+    showRoom();
+  }
   async function lookAtRoom() {
     if (!remote || !remote.storage) return;
     const r = await remote.storage().catch(() => null);
@@ -305,6 +317,8 @@
     temp = cleanTemp(r && r.temperature);
     reserve = r && r.reserve && typeof r.reserve.on === "boolean" ? r.reserve : null;
     memory = cleanMemory(r && r.memory);
+    busy = cleanBusy(r && r.busy);
+    watchBusy();
     uptime = r && r.uptime > 0 ? { s: r.uptime, at: Date.now() } : null;
     countOnTime();
     watchHeat();
@@ -366,6 +380,33 @@
     if (full) return `Memory nearly full (${[used, own].filter(Boolean).join(", ")}): restart the app`;
     return `Memory ${used}${used && own ? ` (${own})` : own}`;
   }
+  // How busy the CPU and GPU are, with this app's share (electron/busy.js: percentages, each null
+  // where it can't be told): "CPU 45% (Hand Tracker 20%) · GPU 30% (Hand Tracker 12%)". Numbers
+  // only (2026-11-15: no red, no notification; Sentry and the cameras keep them busy).
+  let busy = null;
+  function cleanBusy(v) {
+    if (!v || typeof v !== "object") return null;
+    const n = (x) => (Number.isFinite(x) && x >= 0 && x <= 100 ? Math.round(x) : null);
+    const out = { cpu: n(v.cpu), appCpu: n(v.appCpu), gpu: n(v.gpu), appGpu: n(v.appGpu) };
+    return Object.values(out).some((x) => x !== null) ? out : null;
+  }
+  // Each in red once the whole CPU (or GPU) has stayed over BUSY_HIGH % for BUSY_HIGH_MS (2026-11-15:
+  // red only, no notification).
+  const BUSY_HIGH = 90, BUSY_HIGH_MS = 60000;
+  const busySince = { cpu: null, gpu: null };
+  function watchBusy() {
+    const now = Date.now();
+    for (const k of ["cpu", "gpu"]) busySince[k] = busy && busy[k] !== null && busy[k] > BUSY_HIGH ? busySince[k] || now : null;
+  }
+  const busyHigh = (k) => busySince[k] !== null && Date.now() - busySince[k] >= BUSY_HIGH_MS;
+  // [[text, high], …]: the CPU's, then the GPU's (each only where it's known).
+  function busyParts(v) {
+    const name = rigApp ? "Remote Recording" : "Hand Tracker";
+    const one = (label, all, own) =>
+      all !== null ? `${label} ${all}%${own !== null ? ` (${name} ${own}%)` : ""}` : own !== null ? `${label}: ${name} ${own}%` : "";
+    return [[one("CPU", v.cpu, v.appCpu), busyHigh("cpu")], [one("GPU", v.gpu, v.appGpu), busyHigh("gpu")]].filter(([t]) => t);
+  }
+  const busyText = (v) => busyParts(v).map(([t]) => t).join(" · ");
   function watchMemory() {
     if (!memory) return (memoryFull = false);
     const left = memory.total ? memory.available / memory.total : 1, page = memory.total && memory.page ? memory.page / memory.total : 0;
@@ -506,6 +547,7 @@
     if (temp) out.temperature = { ...temp, hot: hot.has("device"), text: tempText(temp, hot.has("device")) };
     if (reserve) out.reserve = { ...reserve, text: reserve.on ? reserveText(reserve) : "" };
     if (memory) out.memory = { ...memory, full: memoryFull, text: memoryText(memory, memoryFull) };
+    if (busy) out.busy = { ...busy, text: busyText(busy), parts: busyParts(busy) };
     if (uptime && onTime()) out.onTime = { s: Math.round(onFor()), text: `On for ${onForText(onFor())} since the battery was changed` };
     if (uptime && counted("remoteReminderTime")) {
       const s = reminderFor();
@@ -522,7 +564,7 @@
     }
     if ($("remoteReminderCount")) $("remoteReminderCount").textContent = r.batteryReminder ? `(${r.batteryReminder.counted})` : "";
     const parts = [r.storage && ["Space: " + r.storage.text, r.storage.low], r.battery && [r.battery.text, r.battery.low], r.temperature && [r.temperature.text, r.temperature.hot],
-      r.reserve && r.reserve.on && [r.reserve.text, true], r.memory && [r.memory.text, r.memory.full], r.batteryReminder && r.batteryReminder.due && [r.batteryReminder.text, true]].filter(Boolean);
+      r.reserve && r.reserve.on && [r.reserve.text, true], r.memory && [r.memory.text, r.memory.full], ...(r.busy ? r.busy.parts : []), r.batteryReminder && r.batteryReminder.due && [r.batteryReminder.text, true]].filter(Boolean);
     if (!$("remoteRoom") || JSON.stringify(parts) === shownRoom) return;
     shownRoom = JSON.stringify(parts);
     $("remoteRoomRow").hidden = !parts.length;
@@ -1486,6 +1528,7 @@
     setInterval(lookAtSystem, 60000);
     lookAtRoom();
     setInterval(lookAtRoom, ROOM_MS);
+    setInterval(lookAtBusy, BUSY_MS);
     // On a phone takes always go to Documents/Hand Tracker, and it doesn't open by itself.
     if (onPhone) {
       $("remoteFolderBtn").hidden = true;

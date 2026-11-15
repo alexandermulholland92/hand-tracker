@@ -3756,6 +3756,8 @@ async function checkRemoteRecording(js) {
     out.resetCams = await (await post("resetCameras")).json();
     for (let i = 0; i < 60 && (await state()).pending; i++) await sleep(250);
     out.resetNotice = ((await state()).notice || {}).message || "";
+    // How busy its CPU (and, where it can be told, GPU) is, with this app's share, beside memory.
+    out.busy = (await state()).busy || null;
     out.reboot = await (await post("reboot")).json();
     out.powerOff = await (await post("powerOff")).json();
     out.restartApp = await (await post("restartApp")).json();
@@ -3796,6 +3798,7 @@ async function checkRemoteRecording(js) {
       out.refused.ok === false && (out.refused.missing || []).join() === "location,task" && /Fill in Location and Task first/.test(out.refused.message) && out.refusedStarted === false &&
       out.record.ok && out.changedDetails.ok === false && out.changedDetails.locked && out.lockedDetails.locked === true &&
       out.lockedDetails.details.location === "Lab 2" && out.lockedDetails.details.task === "Pick up cup" && out.unlocked.locked === false && out.unlocked.cleared && /^Sam-Smith_Lab-2_Pick-up-cup_/.test(out.nameLocked) &&
+      out.busy && out.busy.cpu >= 0 && /^CPU \d+% \(Hand Tracker \d+%\)( · GPU \d+% \(Hand Tracker \d+%\))?$/.test(out.busy.text) &&
       out.recording.recording && out.recording.cameras.length === 2 && out.recording.cameras.every((c) => c.fps > 0 && !c.error && c.mirror === true && c.rotation === 0) &&
       out.gridBefore.orders.join() === "0,1" && out.gridBefore.missing === "Not connected: Left wrist, Right wrist" && !out.gridBefore.one &&
       out.moved.ok && out.turned.ok && out.changed.map((c) => `${c.role}/${c.rotation}/${c.mirror}`).join() === "wrist_right/0/true,chest/90/false" &&
@@ -4459,7 +4462,11 @@ async function checkRemoteSettingsPage() {
   };
   const page = (name) => fs.readFileSync(path.join(__dirname, "..", name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8");
   const ask = async (action) => (did.push([action]), { ok: true, message: `did ${action}` });
-  const server = new RemoteRecordServer({ keyStore: null, page, ask, wifi, hotspot: () => "127.0.0.1", host: "pi", takes: () => fs.mkdtempSync(path.join(require("os").tmpdir(), "hand-tracker-check-settings-")) });
+  // A day of readings, one a minute (room-history.js), without a GPU's.
+  const { RoomHistory } = require("../electron/room-history.js");
+  const history = new RoomHistory({ file: path.join(require("os").tmpdir(), `hand-tracker-check-history-${process.pid}.jsonl`), sample: async () => null });
+  for (let i = 1440; i > 0; i--) history.points.push([Date.now() - i * 60000, 30 + (i % 50), 5, null, null, 95, 9, 40]);
+  const server = new RemoteRecordServer({ keyStore: null, page, ask, wifi, hotspot: () => "127.0.0.1", host: "pi", takes: () => fs.mkdtempSync(path.join(require("os").tmpdir(), "hand-tracker-check-settings-")), history: (span) => history.get(span) });
   server.setState({ running: false, recording: false, cameras: [], mode: "freeform", requirement: { ok: true }, video: true, sound: true, videoQuality: "high", screenPictures: true,
     system: { reboot: "yes", powerOff: "yes", cameraReset: "power" }, available: { at: 1, scanning: false, note: "", cameras: [] } });
   const out = {};
@@ -4484,6 +4491,14 @@ async function checkRemoteSettingsPage() {
       $("wifiAddSsid").value = "Field 2";
       $("wifiAddPw").value = "long enough";
       $("wifiAdd").querySelector("button[type=submit]").click();
+      // How busy: a graph each for CPU, memory and space (no GPU readings: none), with the latest values; 24 h averages.
+      await until(() => seen("graphsPanel") && $("graphs").children.length);
+      const graphs = () => [...$("graphs").querySelectorAll(".graph")].map((g) => g.querySelector("b").textContent + "=" + g.querySelector(".gh span").textContent + "/" + g.querySelectorAll("path").length);
+      out.graphs = { shown: seen("graphsPanel"), list: graphs(), note: $("graphsNote").textContent, lines: [...$("graphs").querySelectorAll("path.all")].every((p) => (p.getAttribute("d").match(/L/g) || []).length > 30) };
+      $("graphsPanel").querySelector('[data-span="24h"]').click();
+      out.graphs24 = await until(() => /averaged over 4 min/.test($("graphsNote").textContent) && $("graphsNote").textContent);
+      // (memory at 95% all day: its numbers in red; the CPU's, at 31%, not)
+      out.graphsRed = [...$("graphs").querySelectorAll(".graph")].filter((g) => g.querySelector(".gh span.err")).map((g) => g.querySelector("b").textContent);
       await until(() => $("wifiSaved").textContent.includes("Field 2"));
       out.savedSaid = await until(() => /Saved Field 2/.test($("wifiMsg").textContent) && $("wifiMsg").textContent); // (in the Wi-Fi panel itself)
       const forget = () => [...$("wifiSaved").querySelectorAll("button[data-forget]")].find((b) => b.parentElement.textContent.includes("Home"));
@@ -4522,7 +4537,7 @@ async function checkRemoteSettingsPage() {
   }
   out.did = did.map((d) => d.join(" ")).filter((d) => d !== "scan");
   const b = out.before || {}, o = out.open || {};
-  check("The device settings page: the link under Sentry opens it, with Video, Pictures on its screen, Wi-Fi and Restart (gone from the main page); saved networks listed, one saved (not joined) and one forgotten after a second tap; hotspot mode on after a second tap, staying until switched back; Restart cameras, Restart and Turn off asked once more, then asked of the computer; back to the cameras",
+  check("The device settings page: the link under Sentry opens it, with Video, Pictures on its screen, Wi-Fi and Restart (gone from the main page); How busy's graphs (CPU, memory, space; no GPU readings, no GPU graph) over 1 h and 24 h; saved networks listed, one saved (not joined) and one forgotten after a second tap; hotspot mode on after a second tap, staying until switched back; Restart cameras, Restart and Turn off asked once more, then asked of the computer; back to the cameras",
     !out.error && b.link && !b.video && !b.wifi && !b.restart && o.hash === "#settings" && !o.main && o.video && o.screen && o.wifi && o.restart && /pi/.test(o.host) &&
       o.saved.join() === "Home,Lab" && /comes on when it isn't on a network/.test(o.hotspot) && o.hotspotBtn === "Hotspot mode" &&
       out.savedAfter.join() === "Lab,Field 2" && /Saved Field 2/.test(out.savedSaid) && /Tap again/i.test(out.forgetAsks) && /tap again/i.test(out.hotspotAsks) && out.forced === "Back to Wi-Fi" &&
@@ -4531,6 +4546,7 @@ async function checkRemoteSettingsPage() {
       out.back.hash === "" && out.back.main && !out.back.settings && out.back.fits,
     JSON.stringify(out));
 }
+      out.graphs.shown && out.graphs.list.join() === "CPU=31% · app 5%/2,Memory=95% · app 9%/2,Space used=40%/1" && out.graphs.lines && /^One reading a second\./.test(out.graphs.note) && out.graphs24 && (out.graphsRed || []).join() === "Memory" &&
 
 // An OAK camera whose own software crashes: started again by itself while Sentry mode is on (3
 // times in 10 minutes, then left off, saying so); not while it's off (Sentry mode stood in for).
