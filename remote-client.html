@@ -381,6 +381,13 @@
     <div class="legend"><span><i class="sw all"></i>All of it</span><span><i class="sw app"></i><span id="graphsApp">The app</span></span></div>
     <div id="graphs"></div>
     <div id="graphsNote" class="sub"></div>
+    <div id="alertsBox" hidden>
+      <hr />
+      <div class="sub">A notification (sent as Sentry's alerts are) when it stays over 90% for a minute; memory's also when it's nearly full.</div>
+      <div class="row"><span class="grow">CPU busy</span><button type="button" id="alertCpuBtn" class="small" aria-pressed="false">Off</button></div>
+      <div class="row"><span class="grow">GPU busy</span><button type="button" id="alertGpuBtn" class="small" aria-pressed="false">Off</button></div>
+      <div class="row"><span class="grow">Memory full</span><button type="button" id="alertMemoryBtn" class="small" aria-pressed="false">Off</button></div>
+    </div>
   </section>
 
   <section class="panel" id="restartPanel" aria-labelledby="restartTitle" hidden>

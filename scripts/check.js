@@ -3586,6 +3586,11 @@ async function checkRemoteRecording(js) {
     out.photoDefault = (await state()).photo;
     out.photoOff = await (await post("settings", { settings: { photo: false } })).json();
     out.photoOffState = [(await state()).photo, await js(`JSON.parse(localStorage.getItem("hand-tracker:prefs") || "{}").remotePhoto`)];
+    // The high-use notifications: each off until turned on, one at a time; then off again.
+    out.alertsBefore = (await state()).alerts;
+    out.alertCpu = await (await post("settings", { settings: { alerts: { cpu: true } } })).json();
+    out.alertsAfter = (await state()).alerts;
+    out.alertCpuOff = await (await post("settings", { settings: { alerts: { cpu: false } } })).json();
     await post("settings", { settings: { photo: true } });
     // The battery reminder from the page: its hours and On/Off reach the app (they were refused as
     // "Which setting?"), and its own Reset leaves the time on alone.
@@ -3753,11 +3758,11 @@ async function checkRemoteRecording(js) {
     out.system = (await state()).system;
     // Its memory, with its status readings: how full, and this app's own (not nearly full here).
     out.memory = (await state()).memory || null;
+    // How busy its CPU (and, where it can be told, GPU) is, with this app's share, beside memory.
+    out.busy = (await state()).busy || null;
     out.resetCams = await (await post("resetCameras")).json();
     for (let i = 0; i < 60 && (await state()).pending; i++) await sleep(250);
     out.resetNotice = ((await state()).notice || {}).message || "";
-    // How busy its CPU (and, where it can be told, GPU) is, with this app's share, beside memory.
-    out.busy = (await state()).busy || null;
     out.reboot = await (await post("reboot")).json();
     out.powerOff = await (await post("powerOff")).json();
     out.restartApp = await (await post("restartApp")).json();
@@ -3795,10 +3800,10 @@ async function checkRemoteRecording(js) {
       out.inPlace.inPlace && out.inPlace.beforeView && !out.inPlace.viewShown && out.backAfterClose &&
       out.system && out.system.reboot === "yes" && out.system.cameraReset === "power" && out.resetCams.ok && /simulated/.test(out.resetNotice) &&
       out.reboot.ok && out.powerOff.ok && out.systemAsked.join() === "restartApp after saving,resetCameras,reboot,powerOff,restartApp" && out.restartRecording.ok && /^Saving the take/.test(out.restartRecording.message) && out.restartApp.ok && out.system.restartApp === "yes" && out.memory && out.memory.app > 0 && out.memory.full === false && /^Memory \d+% used \(Hand Tracker [\d.]+ (GB|MB)\)$/.test(out.memory.text) &&
+      out.busy && out.busy.cpu >= 0 && /^CPU \d+% \(Hand Tracker \d+%\)( · GPU \d+% \(Hand Tracker \d+%\))?$/.test(out.busy.text) &&
       out.refused.ok === false && (out.refused.missing || []).join() === "location,task" && /Fill in Location and Task first/.test(out.refused.message) && out.refusedStarted === false &&
       out.record.ok && out.changedDetails.ok === false && out.changedDetails.locked && out.lockedDetails.locked === true &&
       out.lockedDetails.details.location === "Lab 2" && out.lockedDetails.details.task === "Pick up cup" && out.unlocked.locked === false && out.unlocked.cleared && /^Sam-Smith_Lab-2_Pick-up-cup_/.test(out.nameLocked) &&
-      out.busy && out.busy.cpu >= 0 && /^CPU \d+% \(Hand Tracker \d+%\)( · GPU \d+% \(Hand Tracker \d+%\))?$/.test(out.busy.text) &&
       out.recording.recording && out.recording.cameras.length === 2 && out.recording.cameras.every((c) => c.fps > 0 && !c.error && c.mirror === true && c.rotation === 0) &&
       out.gridBefore.orders.join() === "0,1" && out.gridBefore.missing === "Not connected: Left wrist, Right wrist" && !out.gridBefore.one &&
       out.moved.ok && out.turned.ok && out.changed.map((c) => `${c.role}/${c.rotation}/${c.mirror}`).join() === "wrist_right/0/true,chest/90/false" &&
@@ -3810,6 +3815,8 @@ async function checkRemoteRecording(js) {
       out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_\d+s\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
       out.videos.map((v) => v.f).sort().join() === "-video-chest.mp4,-video-head.mp4" && out.videos.every((v) => v.plain && v.video === "h264" && ["aac", "none"].includes(v.sound) && v.kb > 5 && v.fps > 16) &&
       out.photoDefault === true && out.photoOff.ok && out.photoOffState.join() === "false,false" &&
+      JSON.stringify(out.alertsBefore) === '{"cpu":false,"gpu":false,"memory":false}' && out.alertCpu.ok && /CPU stays over 90% for a minute/.test(out.alertCpu.message) &&
+      JSON.stringify(out.alertsAfter) === '{"cpu":true,"gpu":false,"memory":false}' && out.alertCpuOff.ok &&
       out.hours.ok && out.reminderOn.ok && out.reminderState.join() === "6,true" && out.reminderReset.ok && out.onTimeKept && out.onTimeReset.ok && out.reminderToo && out.minutes.message === "A reminder to change or charge the battery once it has been on for 1 h 25 min." && out.hoursBad === 400 &&
       out.photos.map((p) => p.f).sort().join() === "-photo-chest.jpg,-photo-head.jpg" && out.photos.every((p) => p.jpeg && p.kb > 1) && out.photosListed === 2 &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
@@ -4488,9 +4495,6 @@ async function checkRemoteSettingsPage() {
       await until(() => seen("settingsPage") && $("wifiSaved").textContent.includes("Lab"));
       out.open = { hash: location.hash, main: seen("mainPage"), video: seen("videoPanel"), screen: seen("screenPanel"), wifi: seen("wifiPanel"), restart: seen("restartPanel"),
         host: $("settingsHost").textContent, saved: [...$("wifiSaved").querySelectorAll(".row span")].map((e) => e.textContent), hotspot: $("hotspotText").textContent, hotspotBtn: $("hotspotBtn").textContent };
-      $("wifiAddSsid").value = "Field 2";
-      $("wifiAddPw").value = "long enough";
-      $("wifiAdd").querySelector("button[type=submit]").click();
       // How busy: a graph each for CPU, memory and space (no GPU readings: none), with the latest values; 24 h averages.
       await until(() => seen("graphsPanel") && $("graphs").children.length);
       const graphs = () => [...$("graphs").querySelectorAll(".graph")].map((g) => g.querySelector("b").textContent + "=" + g.querySelector(".gh span").textContent + "/" + g.querySelectorAll("path").length);
@@ -4499,6 +4503,9 @@ async function checkRemoteSettingsPage() {
       out.graphs24 = await until(() => /averaged over 4 min/.test($("graphsNote").textContent) && $("graphsNote").textContent);
       // (memory at 95% all day: its numbers in red; the CPU's, at 31%, not)
       out.graphsRed = [...$("graphs").querySelectorAll(".graph")].filter((g) => g.querySelector(".gh span.err")).map((g) => g.querySelector("b").textContent);
+      $("wifiAddSsid").value = "Field 2";
+      $("wifiAddPw").value = "long enough";
+      $("wifiAdd").querySelector("button[type=submit]").click();
       await until(() => $("wifiSaved").textContent.includes("Field 2"));
       out.savedSaid = await until(() => /Saved Field 2/.test($("wifiMsg").textContent) && $("wifiMsg").textContent); // (in the Wi-Fi panel itself)
       const forget = () => [...$("wifiSaved").querySelectorAll("button[data-forget]")].find((b) => b.parentElement.textContent.includes("Home"));
@@ -4543,10 +4550,10 @@ async function checkRemoteSettingsPage() {
       out.savedAfter.join() === "Lab,Field 2" && /Saved Field 2/.test(out.savedSaid) && /Tap again/i.test(out.forgetAsks) && /tap again/i.test(out.hotspotAsks) && out.forced === "Back to Wi-Fi" &&
       /tap again/i.test(out.resetAsks) && out.resetSaid && /Restart pi\? Tap again/.test(out.rebootAsks) && out.rebootSaid && /Turn off pi\? Tap again/.test(out.offAsks) && out.offSaid &&
       out.did.join("|") === "save Field 2 long enough|forget Home|hotspot true|resetCameras|reboot|powerOff" &&
+      out.graphs.shown && out.graphs.list.join() === "CPU=31% · app 5%/2,Memory=95% · app 9%/2,Space used=40%/1" && out.graphs.lines && /^One reading a second\./.test(out.graphs.note) && out.graphs24 && (out.graphsRed || []).join() === "Memory" &&
       out.back.hash === "" && out.back.main && !out.back.settings && out.back.fits,
     JSON.stringify(out));
 }
-      out.graphs.shown && out.graphs.list.join() === "CPU=31% · app 5%/2,Memory=95% · app 9%/2,Space used=40%/1" && out.graphs.lines && /^One reading a second\./.test(out.graphs.note) && out.graphs24 && (out.graphsRed || []).join() === "Memory" &&
 
 // An OAK camera whose own software crashes: started again by itself while Sentry mode is on (3
 // times in 10 minutes, then left off, saying so); not while it's off (Sentry mode stood in for).

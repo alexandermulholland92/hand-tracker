@@ -679,6 +679,10 @@
   // A photo from each camera as the take starts, saved with it too.
   let photoOn = true, sensorsOn = false;
   $("sensorsBtn").addEventListener("click", () => command("settings", { settings: { sensors: !sensorsOn } }));
+  // A notification when the CPU, GPU or memory stays high: each its own switch (a rig from before has none).
+  let alertsOn = {};
+  for (const k of ["cpu", "gpu", "memory"])
+    $(`alert${k[0].toUpperCase()}${k.slice(1)}Btn`).addEventListener("click", () => command("settings", { settings: { alerts: { [k]: !alertsOn[k] } } }));
   $("photoBtn").addEventListener("click", () => command("settings", { settings: { photo: !photoOn } }));
   const QUALITY_NOTES = {
     low: " Small files: under half the size of Standard, with a softer picture.",
@@ -2425,6 +2429,17 @@
         $("sensorsBtn").textContent = sensorsOn ? "On" : "Off";
         $("sensorsBtn").classList.toggle("on", sensorsOn);
         $("sensorsBtn").setAttribute("aria-pressed", String(sensorsOn));
+      }
+      // The high-use notifications' switches (a rig from before doesn't say them).
+      $("alertsBox").hidden = !s.alerts || typeof s.alerts !== "object";
+      if (s.alerts && typeof s.alerts === "object") {
+        alertsOn = s.alerts;
+        for (const k of ["cpu", "gpu", "memory"]) {
+          const b = $(`alert${k[0].toUpperCase()}${k.slice(1)}Btn`), on = s.alerts[k] === true;
+          b.textContent = on ? "On" : "Off";
+          b.classList.toggle("on", on);
+          b.setAttribute("aria-pressed", String(on));
+        }
       }
       // (A rig from before the photo setting doesn't say it.)
       const photos = typeof s.photo === "boolean";

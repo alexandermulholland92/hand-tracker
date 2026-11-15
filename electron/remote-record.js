@@ -180,6 +180,12 @@ function cleanSettings(s) {
   const out = {};
   for (const k of ["detailsRequired", "screenPictures", "video", "sound", "photo", "sensors"]) if (typeof s[k] === "boolean") out[k] = s[k];
   if (VIDEO_QUALITIES.includes(s.videoQuality)) out.videoQuality = s.videoQuality;
+  // A notification when the CPU, GPU or memory stays high: each on or off.
+  if (s.alerts && typeof s.alerts === "object") {
+    const a = {};
+    for (const k of ["cpu", "gpu", "memory"]) if (typeof s.alerts[k] === "boolean") a[k] = s.alerts[k];
+    if (Object.keys(a).length) out.alerts = a;
+  }
   // The battery reminder (on or off, its hours) and the counts' Resets: the time on, the reminder's.
   if (typeof s.batteryReminder === "boolean") out.batteryReminder = s.batteryReminder;
   if (Number.isFinite(s.batteryHours) && s.batteryHours >= 1 / 60 - 1e-9 && s.batteryHours <= 99 + 59 / 60 + 1e-9) out.batteryHours = s.batteryHours;

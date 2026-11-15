@@ -81,6 +81,11 @@
   // Separate motion sensors (electron/imu-in.js: the network, USB, a phone): listened for only when this is on
   // (off unless turned on). Only where this computer can (the desktop apps).
   const remoteSensors = () => prefs.remoteSensors === true;
+  // A notification when the CPU, GPU or memory has been high for a minute (each its own switch on the
+  // device settings page, off until turned on; 2026-11-15). Memory's switch covers its "nearly full" one too.
+  const ALERT_KINDS = ["cpu", "gpu", "memory"];
+  const ALERT_PREF = { cpu: "remoteAlertCpu", gpu: "remoteAlertGpu", memory: "remoteAlertMemory" };
+  const alertOn = (k) => prefs[ALERT_PREF[k]] === true;
   const canSensors = () => !!(global.desktop && desktop.imu && desktop.imu.enable);
   const applySensors = () => canSensors() && desktop.imu.enable(remoteSensors()).catch(() => {});
   const remoteSound = () => prefs.remoteSound !== false;
@@ -180,6 +185,8 @@
     const common = { ...st, pending, saving, lastTake, notice, details: takeDetails || details(), detailsLocked: locked, detailsRequired: detailsRequired() };
     return {
       ...common, kind: "rig", video: remoteVideo(), sound: remoteSound(), videoQuality: remoteQuality(), photo: remotePhoto(), ...(canSensors() ? { sensorsOn: remoteSensors() } : {}),
+      // (a computer's only: a phone doesn't read its CPU, GPU or memory)
+      ...(onPhone ? {} : { alerts: Object.fromEntries(ALERT_KINDS.map((k) => [k, alertOn(k)])) }),
       sentry: global.Sentry ? global.Sentry.remoteState() : null,
       timing: cams().timingState ? cams().timingState() : undefined,
       // (Pictures on its own screen: OAK cameras only, which a phone doesn't have.)
@@ -393,10 +400,23 @@
   // Each in red once the whole CPU (or GPU) has stayed over BUSY_HIGH % for BUSY_HIGH_MS (2026-11-15:
   // red only, no notification).
   const BUSY_HIGH = 90, BUSY_HIGH_MS = 60000;
-  const busySince = { cpu: null, gpu: null };
+  // (memory: the share of the computer's memory used, for the notification; told once until it's back under BUSY_CALM)
+  const BUSY_CALM = 80;
+  const busySince = { cpu: null, gpu: null, memory: null }, busyTold = { cpu: false, gpu: false, memory: false };
   function watchBusy() {
     const now = Date.now();
-    for (const k of ["cpu", "gpu"]) busySince[k] = busy && busy[k] !== null && busy[k] > BUSY_HIGH ? busySince[k] || now : null;
+    const used = memory && memory.total ? Math.round((1 - memory.available / memory.total) * 100) : null;
+    const value = { cpu: busy ? busy.cpu : null, gpu: busy ? busy.gpu : null, memory: used };
+    for (const k of ALERT_KINDS) {
+      const v = value[k];
+      busySince[k] = v !== null && v > BUSY_HIGH ? busySince[k] || now : null;
+      if (v === null || v <= BUSY_CALM) busyTold[k] = false;
+      if (busyHigh(k) && !busyTold[k]) {
+        busyTold[k] = true;
+        const name = { cpu: "CPU", gpu: "GPU", memory: "Memory" }[k];
+        if (alertOn(k) && global.Sentry && global.Sentry.tell) global.Sentry.tell(`${name} busy`, `${name} at ${v}%, over ${BUSY_HIGH}% for a minute`).catch(() => {});
+      }
+    }
   }
   const busyHigh = (k) => busySince[k] !== null && Date.now() - busySince[k] >= BUSY_HIGH_MS;
   // [[text, high], …]: the CPU's, then the GPU's (each only where it's known).
@@ -412,7 +432,7 @@
     const left = memory.total ? memory.available / memory.total : 1, page = memory.total && memory.page ? memory.page / memory.total : 0;
     const was = memoryFull;
     memoryFull = was ? left < FULL_OVER || page > PAGE_OVER : left < FULL_LEFT || page > PAGE_FULL;
-    if (memoryFull && !was && global.Sentry && global.Sentry.tell) global.Sentry.tell("Memory nearly full", memoryText(memory, true)).catch(() => {});
+    if (memoryFull && !was && alertOn("memory") && global.Sentry && global.Sentry.tell) global.Sentry.tell("Memory nearly full", memoryText(memory, true)).catch(() => {});
     return memoryFull;
   }
   const hot = new Set(); // too hot now: "device", or "chip:" and an OAK camera's name
@@ -1197,6 +1217,15 @@
         applySensors();
         showSettings();
         return { ok: true, message: st.sensors ? "Separate motion sensors (the network, USB, a phone) are used." : "Separate motion sensors are off." };
+      }
+      // A notification when the CPU, GPU or memory stays high ({ alerts: { cpu?, gpu?, memory? } }, any time).
+      if (st.alerts && typeof st.alerts === "object") {
+        const changed = ALERT_KINDS.filter((k) => typeof st.alerts[k] === "boolean");
+        if (!changed.length) return { ok: false, message: "Which notification?" };
+        for (const k of changed) setPref(ALERT_PREF[k], st.alerts[k]);
+        showSettings();
+        const k = changed[0], name = { cpu: "the CPU", gpu: "the GPU", memory: "memory" }[k];
+        return { ok: true, message: st.alerts[k] ? `A notification when ${name} stays over ${BUSY_HIGH}% for a minute (sent as Sentry's alerts are).` : `No notification when ${name} is busy.` };
       }
       // A photo from each camera as each take starts (from the next take).
       if (typeof st.photo === "boolean") {
