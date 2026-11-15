@@ -135,7 +135,7 @@ function cleanOak(o) {
   if (!o || typeof o !== "object" || typeof o.id !== "string" || !/^oak:[A-Za-z0-9._-]{1,64}$/.test(o.id) || !o.options || typeof o.options !== "object") return null;
   const options = {};
   for (const [k, allowed] of Object.entries(OAK_CHOICES)) if (allowed.includes(o.options[k])) options[k] = o.options[k];
-  for (const k of ["depth", "detect", "dots", "imu"]) if (typeof o.options[k] === "boolean") options[k] = o.options[k];
+  for (const k of ["depth", "detect", "dots", "imu", "showObjects"]) if (typeof o.options[k] === "boolean") options[k] = o.options[k];
   return Object.keys(options).length ? { id: o.id, options } : null;
 }
 // A Kinect's own settings (multi-camera.js's KINECT_OWN).

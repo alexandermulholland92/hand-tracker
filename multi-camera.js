@@ -398,7 +398,7 @@
   const OAK_OWN = {
     model: (v) => ["lite", "full"].includes(v), hands: (v) => [1, 2].includes(v), depth: (v) => typeof v === "boolean", fps: (v) => [0, 60].includes(v),
     detect: (v) => typeof v === "boolean", picture: (v) => OakSource.VIEWS.includes(v), night: (v) => ["auto", "on", "off"].includes(v), dots: (v) => typeof v === "boolean",
-    imu: (v) => typeof v === "boolean",
+    imu: (v) => typeof v === "boolean", showObjects: (v) => typeof v === "boolean",
   };
   const oakOwn = (id) => ((prefs && prefs.oakCameraOptions) || {})[id] || {};
   // Its settings as they are: { model, hands, depth, fps, detect, picture, night, dots, imu }. imu: its motion
@@ -406,7 +406,8 @@
   function oakSettingsOf(id) {
     const own = oakOwn(id), main = tileOptions.oak || {};
     const o = { model: modelOf() === 1 ? "full" : "lite", hands: 2, depth: true, fps: Number(main.fps) || 0, detect: !!main.chosenDetect, picture: OakSource.VIEWS.includes(main.picture) ? main.picture : "color",
-      night: ["on", "off"].includes(main.night) ? main.night : "auto", dots: !!main.dots, imu: false };
+      night: ["on", "off"].includes(main.night) ? main.night : "auto", dots: !!main.dots, imu: false,
+      showObjects: true }; // (Show objects: the objects it finds drawn on its picture, here and in remote recording's previews; 2026-11-15)
     for (const k of Object.keys(OAK_OWN)) if (OAK_OWN[k](own[k])) o[k] = own[k];
     return o;
   }
@@ -1035,10 +1036,10 @@
     if (!api || !api.oakHands) return desktop.oak.streamShown(id);
     let hands = null;
     try {
-      // Its objects are drawn only while its own Find objects is on (Sentry mode's pet filter has
-      // them found too, without drawing them).
+      // Its objects are drawn while its own Show objects is on (on unless turned off): those Find objects
+      // finds, and those Sentry mode's Ignore or Track animals has it find. Show objects only draws them.
       const results = OakSource.toResults(header);
-      if (!oakSettingsOf(t.deviceId).detect) results.objects = null;
+      if (!oakSettingsOf(t.deviceId).showObjects) results.objects = null;
       hands = api.oakHands(header.w, header.h, results, tileTime(t, header));
     } catch {
       // its page going away meanwhile

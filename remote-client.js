@@ -302,7 +302,7 @@
     picture: ["Picture", [["color", "Colour"], ["depth", "Depth"], ["blend", "Colour + depth"], ["side", "Colour | depth"], ["left", "Left mono"], ["right", "Right mono"]]],
     night: ["Night vision", [["auto", "Automatic"], ["on", "On"], ["off", "Off"]]],
   };
-  const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", dots: "Infrared dots (better depth, day or night; dots on the black-and-white pictures)",
+  const OAK_SWITCHES = { depth: "Depth (each hand's distance)", detect: "Find objects", showObjects: "Show objects", dots: "Infrared dots (better depth, day or night; dots on the black-and-white pictures)",
     imu: "Motion sensor (posture: lean, turn, walking; recorded with the takes)" };
   // A camera's ⚙: its own settings (settingsHtml), and last, for a camera that doesn't find objects
   // itself, Sentry's second look (an OAK camera's animals always have one).
@@ -399,7 +399,7 @@
       OAK_CHOICES[k][1].map(([v, t]) => `<option value="${v}"${String(o[k]) === String(v) ? " selected" : ""}>${t}</option>`).join("") + "</select></div>";
     const sw = (k) => `<div class="row"><span class="grow">${OAK_SWITCHES[k]}</span><button type="button" class="small${o[k] ? " on" : ""}" data-oakid="${id}" data-oakset="${k}" aria-pressed="${!!o[k]}"${dis}>${o[k] ? "On" : "Off"}</button></div>`;
     const depth = o.hasDepth !== false, infrared = o.infrared !== false;
-    return `<div class="oakset" id="${setId(c.id)}">` + first + choice("model") + choice("hands") + (depth ? sw("depth") : "") + choice("fps") + sw("detect") + (depth ? choice("picture") : "") +
+    return `<div class="oakset" id="${setId(c.id)}">` + first + choice("model") + choice("hands") + (depth ? sw("depth") : "") + choice("fps") + sw("detect") + sw("showObjects") + (depth ? choice("picture") : "") +
       (infrared ? choice("night") + sw("dots") : "") + sw("imu") +
       `<div class="sub">${infrared ? (o.infrared === null ? "Night vision needs an infrared light (OAK-D Pro); Automatic turns it on when it's dark. " : "Night vision: Automatic turns it on when it's dark. ") : "This camera has no infrared light, so no night vision. "}` +
       (depth ? "Picture: Colour + depth lays the depth over the colour picture; Colour | depth puts them side by side; Left or Right mono is that black-and-white camera, the hands found on it (Night vision On lights it). " : "") +

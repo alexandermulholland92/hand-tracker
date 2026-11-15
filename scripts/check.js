@@ -3334,13 +3334,14 @@ async function checkRemoteOakSettings(js) {
       await choose("${A}", "hands", 1);
       await flip("${A}", "depth");
       await choose("${A}", "model", "full");
+      await flip("${A}", "showObjects");
       out.message = $("message").textContent;
       return out;
     })()`));
     for (let i = 0; i < 30; i++) {
       st = await state();
       const o = oakOf(st, A).oak;
-      if (o.night === "on" && o.dots && o.hands === 1 && o.depth === false && o.model === "full") break;
+      if (o.night === "on" && o.dots && o.hands === 1 && o.depth === false && o.model === "full" && o.showObjects === false) break;
       await sleep(200);
     }
     out.set = { a: oakOf(st, A).oak, b: oakOf(st, B).oak };
@@ -3460,8 +3461,9 @@ async function checkRemoteOakSettings(js) {
   const sd = out.side || {};
   check("Remote recording's page: an OAK camera's Picture can be Colour | depth (side by side): it starts so, and its tile's picture is twice as wide",
     sd.found && sd.w > 0 && sd.h > 0 && sd.w / sd.h > 3 && sd.fps > 0, JSON.stringify(sd));
-  check("Remote recording's page: each OAK camera has its own settings (a Settings button on its row: hand model, hands, depth, frame rate, objects, picture, night vision and infrared dots); set there, it starts with them and the other with the usual ones; changed while they run, only that one starts again; not while recording; anything else is refused",
-    !out.error && out.buttons && out.buttons.filter((b) => b.startsWith("oak:")).join() === [A, B].join() && out.buttons.length > 2 && out.seen && out.opened && ["model", "hands", "depth", "fps", "detect", "picture", "night", "dots"].every((k) => out.rows.includes(k)) &&
+  check("Remote recording's page: each OAK camera has its own settings (a Settings button on its row: hand model, hands, depth, frame rate, objects, Show objects (on unless turned off; only drawing them, not how the camera starts), picture, night vision and infrared dots); set there, it starts with them and the other with the usual ones; changed while they run, only that one starts again; not while recording; anything else is refused",
+    !out.error && out.buttons && out.buttons.filter((b) => b.startsWith("oak:")).join() === [A, B].join() && out.buttons.length > 2 && out.seen && out.opened && ["model", "hands", "depth", "fps", "detect", "showObjects", "picture", "night", "dots"].every((k) => out.rows.includes(k)) &&
+      out.before.a.showObjects === true && out.set.a.showObjects === false && out.set.b.showObjects === true && !("showObjects" in sa) &&
       out.before.a && out.before.a.night === "auto" && out.before.a.hands === 2 && out.before.a.depth === true && out.before.webcam === undefined &&
       out.refused.join() === "400,400,400" &&
       out.set.a.night === "on" && out.set.a.dots === true && out.set.a.hands === 1 && out.set.a.depth === false && out.set.a.model === "full" &&
