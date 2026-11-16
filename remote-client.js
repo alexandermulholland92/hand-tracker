@@ -1850,7 +1850,9 @@
     let h = null;
     if (!document.hidden) {
       try {
-        const r = await api(`/api/history?span=${span}${after ? `&after=${after}` : ""}`);
+        // (each written out whole: check-android.js checks every request the page makes is one the apps allow)
+        const asked = { "1h": "/api/history?span=1h", "24h": "/api/history?span=24h", "7d": "/api/history?span=7d" }[span];
+        const r = await api(asked + (after ? "&after=" + after : ""));
         h = r.status === 200 ? await r.json() : null;
       } catch {
         h = null;

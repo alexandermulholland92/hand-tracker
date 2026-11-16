@@ -376,7 +376,14 @@
       }
     });
     $("phoneOverlay").addEventListener("click", () => mobile.phoneControl.openOverlaySettings());
+    // Accessibility opens only after the notice above it is agreed to (each time: Google Play's prominent disclosure).
     $("phoneAccess").addEventListener("click", () => {
+      $("accessNotice").hidden = false;
+      $("accessNotice").scrollIntoView({ block: "nearest" });
+    });
+    $("accessNo").addEventListener("click", () => ($("accessNotice").hidden = true));
+    $("accessAgree").addEventListener("click", () => {
+      $("accessNotice").hidden = true;
       phone.askedAccessibility = true;
       mobile.phoneControl.openAccessibilitySettings();
     });

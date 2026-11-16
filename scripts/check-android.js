@@ -227,7 +227,8 @@ function checkRigRulesMatch() {
   // let through, or the page asks and the apps refuse it (as full screen's &after= once was).
   const asked = [];
   for (const file of ["remote-client.js", "remote-launcher.js"]) {
-    const src = fs.readFileSync(path.join(ROOT, file), "utf8");
+    // (a part added only sometimes, ${x ? `&after=${n}` : ""}, taken as added: its own `…` would end the match)
+    const src = fs.readFileSync(path.join(ROOT, file), "utf8").replace(/\$\{[^`{}]*\?\s*`([^`]*)`\s*:\s*""\}/g, "$1");
     for (const m of src.matchAll(/["`](\/api\/[^"`]*)["`]/g)) asked.push(m[1].replace(/\$\{[^}]*\}/g, "0"));
   }
   const refused = asked.filter((p) => !RIG_PATH.test(p));
@@ -934,6 +935,17 @@ async function checkOwnApps() {
       const started = await until(() => window.__fakeCapacitor.calls.find((c) => c[0] === "phoneControl.start"));
       r.phone = { part: seen("phonePart"), actions: seen("actionsToggle") || seen("addAction") || seen("actionList"), hand: seen("mouseHand"),
         actionsRun: !!(started && JSON.parse(started[1]).actionsOn === true && Array.isArray(JSON.parse(started[1]).rules)) };
+      // Accessibility opens only after its notice is agreed to (Google Play's prominent disclosure): "Not now" closes
+      // the notice without opening it.
+      const opens = () => window.__fakeCapacitor.calls.filter((c) => c[0] === "phoneControl.openAccessibilitySettings").length;
+      const before = opens();
+      $("phoneAccess").click();
+      r.notice = { shown: !$("accessNotice").hidden, text: $("accessNotice").textContent.replace(/\\s+/g, " "), openedFirst: opens() - before };
+      $("accessNo").click();
+      r.notice.closed = $("accessNotice").hidden && opens() - before === 0;
+      $("phoneAccess").click();
+      $("accessAgree").click();
+      r.notice.openedAfterAgree = opens() - before;
       history.back();
       await until(() => !HandMouse.mode());
       if (turnOn) $("actionsToggle").click(); // (as it was)
@@ -1041,6 +1053,9 @@ async function checkOwnApps() {
     !ma.error && ma.platform === "android" && ma.choices === "phone,pc,bluetooth,gestures" && ma.noApp && ma.camera && ma.shown && ma.released && ma.chooser, JSON.stringify(ma));
   check("Hand Mouse (Android): This phone's page has no gesture actions (A PC's has), and those set up there still run while it controls the phone; its hand mouse settings stay",
     !ma.error && ma.pcActions && ma.phone && ma.phone.part && !ma.phone.actions && ma.phone.hand && ma.phone.actionsRun, JSON.stringify(ma.phone || ma));
+  check("Hand Mouse (Android): Accessibility opens only after its notice (what hand control does, nothing leaves the phone) is agreed to; Not now closes it",
+    !ma.error && ma.notice && ma.notice.shown && ma.notice.openedFirst === 0 && ma.notice.closed && ma.notice.openedAfterAgree === 1 && /reads the text box/.test(ma.notice.text) && /Nothing it does or reads leaves this phone/.test(ma.notice.text),
+    JSON.stringify(ma.notice || ma));
   check("Hand Mouse (iPhone): the hand browser and My gestures, and its self-test (the hand browser full screen, the small window moving off) passes, with no remote recording in it",
     !mi.error && mi.platform === "ios" && mi.choices === "browser,gestures" && mi.selfTest && mi.selfTest.ok === true && mi.selfTest.rig && !!mi.selfTest.rig.skipped, JSON.stringify(mi));
   const rp = ra.rigPage || {};

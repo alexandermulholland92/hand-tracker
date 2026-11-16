@@ -60,6 +60,8 @@
   button.primary { background: #1f4f7a; border-color: #4dabf7; color: #d0ebff; }
   kbd { display: none; }
   .note { font-size: 12px; opacity: 0.6; margin-top: 10px; line-height: 1.5; }
+  .notice { margin-top: 10px; padding: 12px 14px; border: 1px solid #4dabf7; border-radius: 8px; background: #14202c; font-size: 13px; line-height: 1.5; }
+  .notice p, .notice ul { margin: 8px 0; } .notice ul { padding-left: 18px; }
   #linkCodeInput { flex: 1; min-width: 180px; }
   .link-pair { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px; }
   .link-pair canvas { width: 180px; height: 180px; image-rendering: pixelated; border-radius: 6px; }
@@ -132,6 +134,18 @@
       <div class="toolbar steps">
         <button id="phoneOverlay">1. Allow display over other apps</button>
         <button id="phoneAccess">2. Turn on hand control in Accessibility</button>
+      </div>
+      <!-- Before Android's Accessibility settings open: what hand control does with that access, and a choice. -->
+      <div id="accessNotice" class="notice" role="dialog" aria-labelledby="accessNoticeTitle" hidden>
+        <b id="accessNoticeTitle">Hand control uses Android's Accessibility service</b>
+        <p>Turning it on lets Hand Mouse control this phone for you while you use your hand in front of the camera instead of touching the screen:</p>
+        <ul>
+          <li>It taps, long-presses and swipes where the pointer is, and presses Back, Home, Recents, volume and media keys.</li>
+          <li>It reads the text box you're typing in, and only that, so it can type into it. It doesn't read anything else on the screen.</li>
+          <li>It only acts while you've started "This phone" here. Nothing it does or reads leaves this phone, and nothing is collected or shared.</li>
+        </ul>
+        <p>You can turn it off at any time in Settings → Accessibility.</p>
+        <div class="toolbar"><button id="accessAgree" class="primary">Agree and open Accessibility</button><button id="accessNo">Not now</button></div>
       </div>
       <div id="phoneRestricted" class="note" hidden>
         <b>"Restricted setting"?</b> Android 13 and later block this for apps installed from a downloaded file. Tap <b>Open App info</b>, then <b>⋮</b> (top right) → <b>Allow restricted settings</b>, and confirm with your PIN or fingerprint. Then tap <b>2. Turn on hand control in Accessibility</b> again.
