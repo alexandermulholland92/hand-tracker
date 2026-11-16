@@ -399,7 +399,7 @@
       OAK_CHOICES[k][1].map(([v, t]) => `<option value="${v}"${String(o[k]) === String(v) ? " selected" : ""}>${t}</option>`).join("") + "</select></div>";
     const sw = (k) => `<div class="row"><span class="grow">${OAK_SWITCHES[k]}</span><button type="button" class="small${o[k] ? " on" : ""}" data-oakid="${id}" data-oakset="${k}" aria-pressed="${!!o[k]}"${dis}>${o[k] ? "On" : "Off"}</button></div>`;
     const depth = o.hasDepth !== false, infrared = o.infrared !== false;
-    return `<div class="oakset" id="${setId(c.id)}">` + first + choice("model") + choice("hands") + (depth ? sw("depth") : "") + choice("fps") + sw("detect") + sw("showObjects") + (depth ? choice("picture") : "") +
+    return `<div class="oakset" id="${setId(c.id)}">` + first + choice("model") + choice("hands") + (depth ? sw("depth") : "") + choice("fps") + sw("detect") + (typeof o.showObjects === "boolean" ? sw("showObjects") : "") + (depth ? choice("picture") : "") +
       (infrared ? choice("night") + sw("dots") : "") + sw("imu") +
       `<div class="sub">${infrared ? (o.infrared === null ? "Night vision needs an infrared light (OAK-D Pro); Automatic turns it on when it's dark. " : "Night vision: Automatic turns it on when it's dark. ") : "This camera has no infrared light, so no night vision. "}` +
       (depth ? "Picture: Colour + depth lays the depth over the colour picture; Colour | depth puts them side by side; Left or Right mono is that black-and-white camera, the hands found on it (Night vision On lights it). " : "") +
@@ -1859,7 +1859,12 @@
     graphTimer = setTimeout(loadGraphs, fast ? 1000 : 60000);
     if (document.hidden || span !== graphSpan) return;
     if (!h || !Array.isArray(h.points)) {
-      if (!kept.length) $("graphsPanel").hidden = true;
+      if (!kept.length) {
+        // (the notification switches in it still shown, where the computer has them)
+        $("graphsPanel").hidden = $("alertsBox").hidden;
+        $("graphs").innerHTML = "";
+        $("graphsNote").textContent = $("alertsBox").hidden ? "" : "Its graphs can't be read from here.";
+      }
       return;
     }
     $("graphsPanel").hidden = false;
@@ -2432,6 +2437,7 @@
       }
       // The high-use notifications' switches (a rig from before doesn't say them).
       $("alertsBox").hidden = !s.alerts || typeof s.alerts !== "object";
+      if (!$("alertsBox").hidden) $("graphsPanel").hidden = false;
       if (s.alerts && typeof s.alerts === "object") {
         alertsOn = s.alerts;
         for (const k of ["cpu", "gpu", "memory"]) {

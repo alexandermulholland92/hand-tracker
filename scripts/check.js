@@ -3058,9 +3058,22 @@ async function checkOakOptions(js) {
     for (let i = 0; i < 100 && !(MultiCamera._tiles()[0] && MultiCamera._tiles()[0].status && MultiCamera._tiles()[0].status.hands.length); i++) await sleep(200);
     await sleep(400);
     const tile = document.querySelector("#multiCamGrid iframe").contentWindow.Tile;
-    out.tile = { started: seen, objects: (tile.objects() || []).map((o) => o.label), label: document.querySelector("#multiCamGrid .lbl").textContent };
-    // Its own Find objects off while Sentry mode's pet filter needs objects: found (for Sentry),
-    // not drawn on its picture.
+    // (yellow: a person's box drawn on the tile's picture, which remote recording's previews are)
+    const tileYellow = () => {
+      const c = document.querySelector("#multiCamGrid iframe").contentDocument.getElementById("stage");
+      const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i] > 230 && d[i + 1] > 180 && d[i + 1] < 215 && d[i + 2] < 60) n++;
+      return n;
+    };
+    out.tile = { started: seen, objects: (tile.objects() || []).map((o) => o.label), label: document.querySelector("#multiCamGrid .lbl").textContent, yellow: tileYellow() };
+    // The main window's Show → Objects off (the one camera's view's): the tile's still drawn, by its own Show objects.
+    document.querySelector('[data-show="objects"]').click();
+    await sleep(1500);
+    out.mainObjectsOff = tileYellow();
+    document.querySelector('[data-show="objects"]').click();
+    // Its own Find objects off while Sentry mode's pet filter needs objects: found (for Sentry), and
+    // drawn on its picture (its Show objects is on); with Show objects off, found but not drawn.
     const main = MultiCamera.options().oak || {};
     MultiCamera.setOakSettings("oak:SIMULATED-OAK-A", { detect: false });
     MultiCamera.setOptions({ oak: { ...main, needObjects: true } });
@@ -3068,7 +3081,16 @@ async function checkOakOptions(js) {
     const forSentry = () => (MultiCamera.sentryViews()[0].objects() || []).map((o) => o.label);
     for (let i = 0; i < 60 && !forSentry().length; i++) await sleep(200);
     await sleep(400);
-    out.sentryOnly = { found: forSentry(), drawn: (tile.objects() || []).map((o) => o.label) };
+    out.sentryOnly = { found: forSentry(), drawn: (tile.objects() || []).map((o) => o.label), yellow: tileYellow() };
+    // With hand tracking off for it (as Sentry mode watches on pi): its objects drawn all the same.
+    MultiCamera.setTracking("oak:SIMULATED-OAK-A", false);
+    await sleep(4000);
+    out.noHands = { drawn: (tile.objects() || []).map((o) => o.label), yellow: tileYellow() };
+    MultiCamera.setTracking("oak:SIMULATED-OAK-A", true);
+    await sleep(3000);
+    MultiCamera.setOakSettings("oak:SIMULATED-OAK-A", { detect: false, showObjects: false });
+    await sleep(1500);
+    out.notShown = { found: forSentry(), drawn: (tile.objects() || []).map((o) => o.label), yellow: tileYellow() };
     MultiCamera.setOakSettings("oak:SIMULATED-OAK-A", null);
     MultiCamera.setOptions({ oak: main });
     off();
@@ -3091,11 +3113,13 @@ async function checkOakOptions(js) {
       r.stage.centre[0] > 150 && r.stage.centre[1] < 90 && /objects found on the camera/.test(r.note) && /depth picture/.test(r.note),
     JSON.stringify({ ...r, tile: undefined }));
   check("OAK camera options reach OAK cameras in tiles (started with them, night vision too, which the tile says; their objects found)",
-    r.tile && r.tile.started.includes("SIMULATED-OAK-A:true:depth:on:true") && r.tile.objects.includes("person") && /night vision/.test(r.tile.label),
-    JSON.stringify(r.tile || r));
-  check("A camera's objects are drawn only while its own Find objects is on: with it off and Sentry mode's pet filter needing them, they're found for Sentry but not drawn",
-    r.sentryOnly && r.sentryOnly.found.includes("person") && r.sentryOnly.drawn.length === 0,
-    JSON.stringify(r.sentryOnly || r));
+    r.tile && r.tile.started.includes("SIMULATED-OAK-A:true:depth:on:true") && r.tile.objects.includes("person") && r.tile.yellow > 100 && r.mainObjectsOff > 100 && /night vision/.test(r.tile.label),
+    JSON.stringify({ ...(r.tile || r), mainObjectsOff: r.mainObjectsOff }));
+  check("A camera's objects are drawn while its own Show objects is on: with Find objects off and Sentry mode's pet filter needing them, found and drawn; with Show objects off, found for Sentry but not drawn",
+    r.sentryOnly && r.sentryOnly.found.includes("person") && r.sentryOnly.drawn.includes("person") && r.sentryOnly.yellow > 100 &&
+      r.notShown && r.notShown.found.includes("person") && r.notShown.drawn.length === 0 && r.notShown.yellow < 20 &&
+      r.noHands && r.noHands.drawn.includes("person") && r.noHands.yellow > 100,
+    JSON.stringify({ sentryOnly: r.sentryOnly, noHands: r.noHands, notShown: r.notShown } || r));
 }
 
 // Several cameras with Luxonis OAK cameras among them, against two stand-in OAK cameras

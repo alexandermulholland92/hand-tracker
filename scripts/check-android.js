@@ -189,7 +189,7 @@ function checkRigRulesMatch() {
   if (!out.host || !out.path) return check("The Android app's rules for reaching a computer match the desktop app's", false, JSON.stringify(out));
   const javaHost = new RegExp(out.host), javaPath = new RegExp(out.path);
   const hosts = ["pi:47821", "PI.tail1234.ts.net:47821", "100.101.2.3:47821", "[fd7a::1]:47821", "[FD7A::1]:1", "pi", "pi:", "pi:123456", "-pi:1", "pi-:1", "a..b:1", "pi :1", "pi:1/x"];
-  const paths = ["/api/state", "/api/command", "/api/wifi", "/api/takes", "/api/preview?i=0", "/api/preview?i=3&full=1", "/api/preview?i=4", "/api/preview?i=0&full=2",
+  const paths = ["/api/state", "/api/command", "/api/wifi", "/api/takes", "/api/history?span=1h", "/api/history?span=24h&after=1794772981575", "/api/history?span=2h", "/api/history?span=7d&after=x", "/api/preview?i=0", "/api/preview?i=3&full=1", "/api/preview?i=4", "/api/preview?i=0&full=2",
     "/api/preview?i=0&full=1&after=0", "/api/preview?i=3&full=1&after=123456789012", "/api/preview?i=0&full=1&after=1234567890123", "/api/preview?i=0&after=5",
     "/api/preview?i=0&full=1&after=-1", "/api/preview?i=0&full=1&after=", "/api/preview?i=0&full=1&after=1&x=1",
     "/api/take?f=Sam-Smith_2s.json&at=0", "/api/take?f=a%20b%2Fc.mcap&at=2097152", "/api/take?f=a/b.json&at=0", "/api/take?f=a.json", "/api/take?f=a.json&at=-1", "/api/take?f=&at=0",

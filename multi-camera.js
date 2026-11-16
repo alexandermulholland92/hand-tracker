@@ -380,13 +380,17 @@
     await api.ready.catch(() => {});
     if (!tiles.includes(t)) return;
     const { paused, ...rest } = tileOptions;
-    api.setOptions({ ...(paused ? tileOptions : rest), tracking: tracking(t) });
+    api.setOptions(forTile(t, { ...(paused ? tileOptions : rest), tracking: tracking(t) }));
   }
+  // An OAK camera's objects are drawn by its own Show objects (its found objects are left out where
+  // that's off), not the main window's Show → Objects, which is the one camera's view's (2026-11-15:
+  // pi's was off, so no camera there drew any).
+  const forTile = (t, o) => (t.oak && o.display ? { ...o, display: { ...o.display, objects: true } } : o);
   function setOptions(o = {}) {
     tileOptions = { ...tileOptions, ...o };
     for (const t of tiles) {
       const api = tileApi(t);
-      if (api && api.setOptions) api.setOptions({ ...o, tracking: tracking(t) });
+      if (api && api.setOptions) api.setOptions(forTile(t, { ...o, tracking: tracking(t) }));
     }
     syncOak();
   }
