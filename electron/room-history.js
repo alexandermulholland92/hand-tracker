@@ -20,6 +20,7 @@
  */
 
 const fs = require("fs");
+const { leftOut } = require("./busy"); // (the network adapters left out of the graphs)
 
 const EVERY_MS = 1000;
 const MINUTE_MS = 60 * 1000;
@@ -39,9 +40,16 @@ function netOf(list) {
   const out = {};
   for (const a of list.slice(0, MAX_ADAPTERS)) {
     const name = a && typeof a.name === "string" ? a.name.slice(0, 40) : "";
-    if (name && rate(a.down) !== null && rate(a.up) !== null) out[name] = [rate(a.down), rate(a.up)];
+    if (name && !leftOut(name) && rate(a.down) !== null && rate(a.up) !== null) out[name] = [rate(a.down), rate(a.up)];
   }
   return Object.keys(out).length ? out : null;
+}
+// A kept point without the adapters left out (busy.js's leftOut: minutes kept before they were).
+function withoutLeftOut(p) {
+  const net = p[NET];
+  if (!net || typeof net !== "object") return p;
+  const kept = Object.fromEntries(Object.entries(net).filter(([name]) => !leftOut(name)));
+  return [...p.slice(0, NET), Object.keys(kept).length ? kept : null];
 }
 // The average of each field over some readings ([t, …fields, net]), a field none had left null; each
 // adapter's over the readings that have it.
@@ -92,7 +100,7 @@ class RoomHistory {
         const p = JSON.parse(line);
         // (a minute from before the network's: no traffic told)
         if (Array.isArray(p) && p.length === FIELDS + 1 && p[0] >= since) this.points.push([...p, null]);
-        else if (Array.isArray(p) && p.length === FIELDS + 2 && p[0] >= since) this.points.push(p);
+        else if (Array.isArray(p) && p.length === FIELDS + 2 && p[0] >= since) this.points.push(withoutLeftOut(p));
       } catch {
         // (a line cut short by a crash)
       }

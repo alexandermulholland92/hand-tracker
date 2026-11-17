@@ -151,11 +151,16 @@ function windowsGpu(pids) {
 
 // ---- Network: each adapter's bytes received and sent so far, and from two of those, a second's.
 // "NET|Wi-Fi|123|456" lines (Windows' ask above), or /proc/net/dev (Linux).
+// Adapters left out (2026-11-16, the user: "remove docker, ethernet and htbt0"): the loopback, Docker's
+// (docker0, its containers' veth… and its br-… networks), the app's own Bluetooth network to phones (htbt0)
+// and Ethernet (Linux's eth0/en…, Windows' "Ethernet", "Ethernet 2"); by the Linux name or the name shown.
+const leftOutDev = (dev) => /^(lo|docker|veth|br-|htbt|eth|enp|eno|ens|end)/.test(dev);
+const leftOut = (name) => /^(Ethernet\b|docker|veth|br-|htbt)/.test(name);
 function netCountersOf(text) {
   const out = {};
   for (const line of text.split(/\r?\n/)) {
     const m = line.trim().match(/^NET\|(.{1,60})\|(\d+)\|(\d+)$/);
-    if (m) out[m[1]] = { rx: Number(m[2]), tx: Number(m[3]) };
+    if (m && !leftOut(m[1])) out[m[1]] = { rx: Number(m[2]), tx: Number(m[3]) };
   }
   return Object.keys(out).length ? out : null;
 }
@@ -171,7 +176,7 @@ function linuxNetCounters(text) {
   const out = {}, raw = [];
   for (const line of text.split("\n").slice(2)) {
     const m = line.match(/^\s*([^:\s]+):\s*(\d+)(?:\s+\d+){7}\s+(\d+)/);
-    if (!m || m[1] === "lo") continue;
+    if (!m || leftOutDev(m[1])) continue;
     raw.push([m[1], Number(m[2]), Number(m[3])]);
   }
   // (two adapters of one kind, wlan0 and wlan1: each with its own name after)
@@ -245,4 +250,4 @@ async function busy(pids = [], cpuOf = {}) {
   };
 }
 
-module.exports = { busy, windowsGpuOf, netCountersOf, linuxNetCounters, netRates, _reset: () => ((lastCpu = null), (lastPi = null), (first = true), (v3dFile = undefined), (lastNetCounters = null), (winNet = null)) };
+module.exports = { busy, windowsGpuOf, netCountersOf, linuxNetCounters, netRates, leftOut, _reset: () => ((lastCpu = null), (lastPi = null), (first = true), (v3dFile = undefined), (lastNetCounters = null), (winNet = null)) };
