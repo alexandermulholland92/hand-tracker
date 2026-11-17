@@ -681,7 +681,7 @@
   $("sensorsBtn").addEventListener("click", () => command("settings", { settings: { sensors: !sensorsOn } }));
   // A notification when the CPU, GPU or memory stays high: each its own switch (a rig from before has none).
   let alertsOn = {};
-  for (const k of ["cpu", "gpu", "memory"])
+  for (const k of ["cpu", "gpu", "memory", "net"])
     $(`alert${k[0].toUpperCase()}${k.slice(1)}Btn`).addEventListener("click", () => command("settings", { settings: { alerts: { [k]: !alertsOn[k] } } }));
   $("photoBtn").addEventListener("click", () => command("settings", { settings: { photo: !photoOn } }));
   const QUALITY_NOTES = {
@@ -1807,32 +1807,51 @@
   }
 
   // ---------- How busy: CPU, GPU, memory and space over 1 h, 24 h or 7 days ----------
-  // (the computer's room-history.js: [t, cpu, appCpu, gpu, appGpu, mem, appMem, disk] a minute,
-  // averaged for the longer spans). A computer from before has none: the section stays hidden.
+  // (the computer's room-history.js: [t, cpu, appCpu, gpu, appGpu, mem, appMem, disk, net] a minute,
+  // averaged for the longer spans; net: { adapter: [down, up] } bytes a second, 2026-11-16: a graph
+  // for each adapter, received and sent). A computer from before has none: the section stays hidden.
   // Read again every minute while the page is open.
   let graphSpan = "1h", graphTimer = null;
+  const field = (f) => (p) => p[f];
   const GRAPHS = [
-    { name: "CPU", all: 1, app: 2 },
-    { name: "GPU", all: 3, app: 4 },
-    { name: "Memory", all: 5, app: 6 },
-    { name: "Space used", all: 7, app: null },
+    { name: "CPU", all: field(1), app: field(2) },
+    { name: "GPU", all: field(3), app: field(4) },
+    { name: "Memory", all: field(5), app: field(6) },
+    { name: "Space used", all: field(7), app: null },
   ];
+  const NET = 8, NET_HIGH = 5e6; // (the computer's notification level: 5 MB/s, remote-record-ui.js)
+  // Bytes a second as people read them: "350 KB/s", "1.2 MB/s".
+  const rateText = (b) => (b >= 1e6 ? `${(b / 1e6).toFixed(b >= 1e7 ? 0 : 1)} MB/s` : `${Math.round(b / 1e3)} KB/s`);
+  // A network adapter's graph: received (all's line) and sent (app's), scaled to the most in view.
+  const netGraph = (name) => {
+    const way = (i) => (p) => (p[NET] && p[NET][name] ? p[NET][name][i] : null);
+    return { name: `Network: ${name}`, all: way(0), app: way(1), net: true };
+  };
   function graphSvg(points, g, from, to) {
     const W = 300, H = 84, top = 12, bottom = 70;
+    // (a percentage's out of 100; the network's out of a round number over its most: 100 KB/s at the least)
+    let max = 100;
+    if (g.net) {
+      const most = Math.max(1e5, ...points.map((p) => Math.max(g.all(p) || 0, g.app(p) || 0)));
+      const step = 10 ** Math.floor(Math.log10(most));
+      max = [1, 2, 5, 10].map((m) => m * step).find((m) => m >= most);
+    }
     const x = (t) => ((t - from) / (to - from)) * W;
-    const y = (v) => bottom - (v / 100) * (bottom - top);
+    const y = (v) => bottom - (Math.min(v, max) / max) * (bottom - top);
     // A line with a gap wherever a reading is missing (or two readings are far apart).
-    const line = (f, gapMs) => {
+    const line = (get, gapMs) => {
       let d = "", last = null;
       for (const p of points) {
-        if (p[f] === null || p[f] === undefined) { last = null; continue; }
-        d += `${last === null || p[0] - last > gapMs ? "M" : "L"}${x(p[0]).toFixed(1)},${y(p[f]).toFixed(1)}`;
+        const v = get(p);
+        if (v === null || v === undefined) { last = null; continue; }
+        d += `${last === null || p[0] - last > gapMs ? "M" : "L"}${x(p[0]).toFixed(1)},${y(v).toFixed(1)}`;
         last = p[0];
       }
       return d;
     };
     const gap = Math.max(3 * 60000, ((to - from) / 360) * 3);
-    const grid = [0, 50, 100].map((v) => `<line class="grid" x1="0" x2="${W}" y1="${y(v)}" y2="${y(v)}"/><text class="axis" x="${W - 2}" y="${y(v) - 2}" text-anchor="end">${v}%</text>`).join("");
+    const label = (v) => (g.net ? (v ? rateText(v) : "0") : `${v}%`);
+    const grid = [0, max / 2, max].map((v) => `<line class="grid" x1="0" x2="${W}" y1="${y(v)}" y2="${y(v)}"/><text class="axis" x="${W - 2}" y="${y(v) - 2}" text-anchor="end">${label(v)}</text>`).join("");
     const app = g.app ? `<path class="app" d="${line(g.app, gap)}"/>` : "";
     const ago = { "1h": "1 h ago", "24h": "24 h ago", "7d": "7 days ago" }[graphSpan];
     const when = `<text class="axis" x="0" y="${H - 2}">${ago}</text><text class="axis" x="${W - 2}" y="${H - 2}" text-anchor="end">now</text>`;
@@ -1873,17 +1892,25 @@
     const to = Date.now(), from = to - { "1h": 3600e3, "24h": 86400e3, "7d": 7 * 86400e3 }[span];
     const pts = [...kept, ...h.points].filter((p) => p[0] >= from);
     graphHave = { span, points: pts, every: h.every };
-    const lastOf = (f) => { for (let i = pts.length - 1; i >= 0; i--) if (pts[i][f] !== null) return pts[i][f]; return null; };
-    const shown = GRAPHS.filter((g) => pts.some((p) => p[g.all] !== null || (g.app && p[g.app] !== null)));
-    // In red once all of it has stayed over 90% for a minute (the last minute's seconds, or the last minute's average).
-    const high = (f) => {
+    const has = (v) => v !== null && v !== undefined;
+    const lastOf = (get) => { for (let i = pts.length - 1; i >= 0; i--) if (has(get(pts[i]))) return get(pts[i]); return null; };
+    // (each network adapter seen in the span, by name)
+    const adapters = [...new Set(pts.flatMap((p) => (p[NET] && typeof p[NET] === "object" ? Object.keys(p[NET]) : [])))].sort();
+    const shown = [...GRAPHS, ...adapters.map(netGraph)].filter((g) => pts.some((p) => has(g.all(p)) || (g.app && has(g.app(p)))));
+    // In red once all of it has stayed over 90% for a minute (the last minute's seconds, or the last minute's
+    // average); a network adapter's once its received or sent has stayed over 5 MB/s.
+    const high = (g) => {
       const recent = fast ? pts.filter((p) => p[0] >= to - 60000) : pts.slice(-1);
-      return recent.length > 0 && (!fast || recent[0][0] <= to - 55000) && recent.every((p) => p[f] !== null && p[f] > 90);
+      const over = g.net ? (p) => Math.max(g.all(p) || 0, g.app(p) || 0) > NET_HIGH : (p) => has(g.all(p)) && g.all(p) > 90;
+      return recent.length > 0 && (!fast || recent[0][0] <= to - 55000) && recent.every(over);
     };
     $("graphs").innerHTML = shown.map((g) => {
       const all = lastOf(g.all), app = g.app ? lastOf(g.app) : null;
-      const now = [all !== null ? `${all}%` : "", app !== null ? `app ${app}%` : ""].filter(Boolean).join(" · ");
-      return `<div class="graph"><div class="gh"><b>${esc(g.name)}</b><span${high(g.all) ? ' class="err"' : ""}>${esc(now)}</span></div>${graphSvg(pts, g, from, to)}</div>`;
+      const now = g.net
+        ? [all !== null ? `↓${rateText(all)}` : "", app !== null ? `↑${rateText(app)}` : ""].filter(Boolean).join(" ")
+        : [all !== null ? `${all}%` : "", app !== null ? `app ${app}%` : ""].filter(Boolean).join(" · ");
+      const key = g.net ? '<div class="legend"><span><i class="sw all"></i>Received ↓</span><span><i class="sw app"></i>Sent ↑</span></div>' : "";
+      return `<div class="graph"><div class="gh"><b>${esc(g.name)}</b><span${high(g) ? ' class="err"' : ""}>${esc(now)}</span></div>${graphSvg(pts, g, from, to)}${key}</div>`;
     }).join("");
     $("graphsNote").textContent = !pts.length
       ? "No readings yet: it takes one a second while the app is open."
@@ -2442,7 +2469,9 @@
       if (!$("alertsBox").hidden) $("graphsPanel").hidden = false;
       if (s.alerts && typeof s.alerts === "object") {
         alertsOn = s.alerts;
-        for (const k of ["cpu", "gpu", "memory"]) {
+        // (the network's only from a computer that has it, 2026-11-16)
+        $("alertNetRow").hidden = typeof s.alerts.net !== "boolean";
+        for (const k of ["cpu", "gpu", "memory", "net"]) {
           const b = $(`alert${k[0].toUpperCase()}${k.slice(1)}Btn`), on = s.alerts[k] === true;
           b.textContent = on ? "On" : "Off";
           b.classList.toggle("on", on);

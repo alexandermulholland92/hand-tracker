@@ -374,7 +374,7 @@
     </form>
   </section>
 
-  <!-- CPU, GPU, memory and space over time (room-history.js on the computer; one reading a minute, a week kept). -->
+  <!-- CPU, GPU, memory, space and each network adapter's traffic over time (room-history.js on the computer; one reading a minute, a week kept). -->
   <section class="panel" id="graphsPanel" aria-labelledby="graphsTitle" hidden>
     <h2><span id="graphsTitle" class="grow">How busy</span>
       <span class="modes spans" role="group" aria-label="Time span"><button type="button" data-span="1h" aria-pressed="true">1 h</button><button type="button" data-span="24h" aria-pressed="false">24 h</button><button type="button" data-span="7d" aria-pressed="false">7 days</button></span></h2>
@@ -383,10 +383,11 @@
     <div id="graphsNote" class="sub"></div>
     <div id="alertsBox" hidden>
       <hr />
-      <div class="sub">A notification (sent as Sentry's alerts are) when it stays over 90% for a minute; memory's also when it's nearly full.</div>
+      <div class="sub">A notification (sent as Sentry's alerts are) when it stays over 90% for a minute (the network: any adapter over 5 MB/s, received or sent); memory's also when it's nearly full.</div>
       <div class="row"><span class="grow">CPU busy</span><button type="button" id="alertCpuBtn" class="small" aria-pressed="false">Off</button></div>
       <div class="row"><span class="grow">GPU busy</span><button type="button" id="alertGpuBtn" class="small" aria-pressed="false">Off</button></div>
       <div class="row"><span class="grow">Memory full</span><button type="button" id="alertMemoryBtn" class="small" aria-pressed="false">Off</button></div>
+      <div class="row" id="alertNetRow" hidden><span class="grow">Network busy</span><button type="button" id="alertNetBtn" class="small" aria-pressed="false">Off</button></div>
     </div>
   </section>
 

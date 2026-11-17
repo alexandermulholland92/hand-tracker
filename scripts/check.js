@@ -3617,6 +3617,9 @@ async function checkRemoteRecording(js) {
     out.alertCpu = await (await post("settings", { settings: { alerts: { cpu: true } } })).json();
     out.alertsAfter = (await state()).alerts;
     out.alertCpuOff = await (await post("settings", { settings: { alerts: { cpu: false } } })).json();
+    out.alertNet = await (await post("settings", { settings: { alerts: { net: true } } })).json();
+    out.alertsNet = (await state()).alerts;
+    await post("settings", { settings: { alerts: { net: false } } });
     await post("settings", { settings: { photo: true } });
     // The battery reminder from the page: its hours and On/Off reach the app (they were refused as
     // "Which setting?"), and its own Reset leaves the time on alone.
@@ -3826,7 +3829,7 @@ async function checkRemoteRecording(js) {
       out.inPlace.inPlace && out.inPlace.beforeView && !out.inPlace.viewShown && out.backAfterClose &&
       out.system && out.system.reboot === "yes" && out.system.cameraReset === "power" && out.resetCams.ok && /simulated/.test(out.resetNotice) &&
       out.reboot.ok && out.powerOff.ok && out.systemAsked.join() === "restartApp after saving,resetCameras,reboot,powerOff,restartApp" && out.restartRecording.ok && /^Saving the take/.test(out.restartRecording.message) && out.restartApp.ok && out.system.restartApp === "yes" && out.memory && out.memory.app > 0 && out.memory.full === false && /^Memory \d+% used \(Hand Tracker [\d.]+ (GB|MB)\)$/.test(out.memory.text) &&
-      out.busy && out.busy.cpu >= 0 && /^CPU \d+% \(Hand Tracker \d+%\)( · GPU \d+% \(Hand Tracker \d+%\))?$/.test(out.busy.text) &&
+      out.busy && out.busy.cpu >= 0 && /^CPU \d+% \(Hand Tracker \d+%\)( · GPU \d+% \(Hand Tracker \d+%\))?( · [^·]+ ↓\d+(\.\d)? [KM]B\/s ↑\d+(\.\d)? [KM]B\/s)*$/.test(out.busy.text) && (out.busy.net === null || (Array.isArray(out.busy.net) && out.busy.net.every((a) => a.name && a.down >= 0 && a.up >= 0))) &&
       out.refused.ok === false && (out.refused.missing || []).join() === "location,task" && /Fill in Location and Task first/.test(out.refused.message) && out.refusedStarted === false &&
       out.record.ok && out.changedDetails.ok === false && out.changedDetails.locked && out.lockedDetails.locked === true &&
       out.lockedDetails.details.location === "Lab 2" && out.lockedDetails.details.task === "Pick up cup" && out.unlocked.locked === false && out.unlocked.cleared && /^Sam-Smith_Lab-2_Pick-up-cup_/.test(out.nameLocked) &&
@@ -3841,8 +3844,9 @@ async function checkRemoteRecording(js) {
       out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_\d+s\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
       out.videos.map((v) => v.f).sort().join() === "-video-chest.mp4,-video-head.mp4" && out.videos.every((v) => v.plain && v.video === "h264" && ["aac", "none"].includes(v.sound) && v.kb > 5 && v.fps > 16) &&
       out.photoDefault === true && out.photoOff.ok && out.photoOffState.join() === "false,false" &&
-      JSON.stringify(out.alertsBefore) === '{"cpu":false,"gpu":false,"memory":false}' && out.alertCpu.ok && /CPU stays over 90% for a minute/.test(out.alertCpu.message) &&
-      JSON.stringify(out.alertsAfter) === '{"cpu":true,"gpu":false,"memory":false}' && out.alertCpuOff.ok &&
+      JSON.stringify(out.alertsBefore) === '{"cpu":false,"gpu":false,"memory":false,"net":false}' && out.alertCpu.ok && /CPU stays over 90% for a minute/.test(out.alertCpu.message) &&
+      JSON.stringify(out.alertsAfter) === '{"cpu":true,"gpu":false,"memory":false,"net":false}' && out.alertCpuOff.ok &&
+      out.alertNet.ok && /network stays over 5\.0 MB\/s for a minute/.test(out.alertNet.message) && JSON.stringify(out.alertsNet) === '{"cpu":false,"gpu":false,"memory":false,"net":true}' &&
       out.hours.ok && out.reminderOn.ok && out.reminderState.join() === "6,true" && out.reminderReset.ok && out.onTimeKept && out.onTimeReset.ok && out.reminderToo && out.minutes.message === "A reminder to change or charge the battery once it has been on for 1 h 25 min." && out.hoursBad === 400 &&
       out.photos.map((p) => p.f).sort().join() === "-photo-chest.jpg,-photo-head.jpg" && out.photos.every((p) => p.jpeg && p.kb > 1) && out.photosListed === 2 &&
       out.metadata && out.metadata.contributor === "Sam Smith" && out.metadata.location === "Lab 2" && out.metadata.task === "Pick up cup" &&
@@ -4498,7 +4502,7 @@ async function checkRemoteSettingsPage() {
   // A day of readings, one a minute (room-history.js), without a GPU's.
   const { RoomHistory } = require("../electron/room-history.js");
   const history = new RoomHistory({ file: path.join(require("os").tmpdir(), `hand-tracker-check-history-${process.pid}.jsonl`), sample: async () => null });
-  for (let i = 1440; i > 0; i--) history.points.push([Date.now() - i * 60000, 30 + (i % 50), 5, null, null, 95, 9, 40]);
+  for (let i = 1440; i > 0; i--) history.points.push([Date.now() - i * 60000, 30 + (i % 50), 5, null, null, 95, 9, 40, { "Wi-Fi": [1200000, 30000], Tailscale: [6000000, 6000000] }]);
   const server = new RemoteRecordServer({ keyStore: null, page, ask, wifi, hotspot: () => "127.0.0.1", host: "pi", takes: () => fs.mkdtempSync(path.join(require("os").tmpdir(), "hand-tracker-check-settings-")), history: (span) => history.get(span) });
   server.setState({ running: false, recording: false, cameras: [], mode: "freeform", requirement: { ok: true }, video: true, sound: true, videoQuality: "high", screenPictures: true,
     system: { reboot: "yes", powerOff: "yes", cameraReset: "power" }, available: { at: 1, scanning: false, note: "", cameras: [] } });
@@ -4570,13 +4574,13 @@ async function checkRemoteSettingsPage() {
   }
   out.did = did.map((d) => d.join(" ")).filter((d) => d !== "scan");
   const b = out.before || {}, o = out.open || {};
-  check("The device settings page: the link under Sentry opens it, with Video, Pictures on its screen, Wi-Fi and Restart (gone from the main page); How busy's graphs (CPU, memory, space; no GPU readings, no GPU graph) over 1 h and 24 h; saved networks listed, one saved (not joined) and one forgotten after a second tap; hotspot mode on after a second tap, staying until switched back; Restart cameras, Restart and Turn off asked once more, then asked of the computer; back to the cameras",
+  check("The device settings page: the link under Sentry opens it, with Video, Pictures on its screen, Wi-Fi and Restart (gone from the main page); How busy's graphs (CPU, memory, space and each network adapter's received and sent; no GPU readings, no GPU graph) over 1 h and 24 h; saved networks listed, one saved (not joined) and one forgotten after a second tap; hotspot mode on after a second tap, staying until switched back; Restart cameras, Restart and Turn off asked once more, then asked of the computer; back to the cameras",
     !out.error && b.link && !b.video && !b.wifi && !b.restart && o.hash === "#settings" && !o.main && o.video && o.screen && o.wifi && o.restart && /pi/.test(o.host) &&
       o.saved.join() === "Home,Lab" && /comes on when it isn't on a network/.test(o.hotspot) && o.hotspotBtn === "Hotspot mode" &&
       out.savedAfter.join() === "Lab,Field 2" && /Saved Field 2/.test(out.savedSaid) && /Tap again/i.test(out.forgetAsks) && /tap again/i.test(out.hotspotAsks) && out.forced === "Back to Wi-Fi" &&
       /tap again/i.test(out.resetAsks) && out.resetSaid && /Restart pi\? Tap again/.test(out.rebootAsks) && out.rebootSaid && /Turn off pi\? Tap again/.test(out.offAsks) && out.offSaid &&
       out.did.join("|") === "save Field 2 long enough|forget Home|hotspot true|resetCameras|reboot|powerOff" &&
-      out.graphs.shown && out.graphs.list.join() === "CPU=31% · app 5%/2,Memory=95% · app 9%/2,Space used=40%/1" && out.graphs.lines && /^One reading a second\./.test(out.graphs.note) && out.graphs24 && (out.graphsRed || []).join() === "Memory" &&
+      out.graphs.shown && out.graphs.list.join() === "CPU=31% · app 5%/2,Memory=95% · app 9%/2,Space used=40%/1,Network: Tailscale=↓6.0 MB/s ↑6.0 MB/s/2,Network: Wi-Fi=↓1.2 MB/s ↑30 KB/s/2" && out.graphs.lines && /^One reading a second\./.test(out.graphs.note) && out.graphs24 && (out.graphsRed || []).join() === "Memory,Network: Tailscale" &&
       out.back.hash === "" && out.back.main && !out.back.settings && out.back.fits,
     JSON.stringify(out));
 }

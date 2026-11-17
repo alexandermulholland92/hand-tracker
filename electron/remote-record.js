@@ -183,7 +183,7 @@ function cleanSettings(s) {
   // A notification when the CPU, GPU or memory stays high: each on or off.
   if (s.alerts && typeof s.alerts === "object") {
     const a = {};
-    for (const k of ["cpu", "gpu", "memory"]) if (typeof s.alerts[k] === "boolean") a[k] = s.alerts[k];
+    for (const k of ["cpu", "gpu", "memory", "net"]) if (typeof s.alerts[k] === "boolean") a[k] = s.alerts[k]; // (net: the network's, 2026-11-16)
     if (Object.keys(a).length) out.alerts = a;
   }
   // The battery reminder (on or off, its hours) and the counts' Resets: the time on, the reminder's.

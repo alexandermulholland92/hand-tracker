@@ -1,13 +1,15 @@
 /**
  * room-history.js — this computer's readings for the graphs on remote recording's device settings
  * page (2026-11-15): CPU and GPU use (all of it and this app's), memory used (all of it and this
- * app's) and the space used where takes are saved. One reading a second: the last hour of them
+ * app's), the space used where takes are saved, and (2026-11-16) each network adapter's traffic,
+ * received and sent in bytes a second. One reading a second: the last hour of them
  * kept as they are (in memory only), and a week of minutes (each minute's average) kept in a file.
  *
- *   const h = new RoomHistory({ file, sample: async () => ({ cpu, appCpu, gpu, appGpu, mem, appMem, disk }) });
- *     (each a percentage 0-100, or null where it can't be told)
+ *   const h = new RoomHistory({ file, sample: async () => ({ cpu, appCpu, gpu, appGpu, mem, appMem, disk, net }) });
+ *     (each a percentage 0-100, or null where it can't be told; net: [{ name, down, up }] bytes a second, or null)
  *   h.start(); h.stop();
- *   h.get("1h" | "24h" | "7d", since?) -> { span, every (s), points: [[t (ms), cpu, appCpu, gpu, appGpu, mem, appMem, disk], …] }
+ *   h.get("1h" | "24h" | "7d", since?) -> { span, every (s), points: [[t (ms), cpu, appCpu, gpu, appGpu, mem, appMem, disk, net], …] }
+ *     (net: { adapter's name: [down, up] } bytes a second, or null; a minute kept before 2026-11-16 has none)
  *     1h: every second's reading (since: only those after that time, ms, for a page that has the
  *     rest); 24h and 7d: the minutes, averaged over equal stretches (at most MAX_POINTS of them)
  *
@@ -26,15 +28,40 @@ const KEEP_MS = 7 * 24 * 3600 * 1000;
 const MAX_POINTS = 360;
 const SPANS = { "1h": HOUR_MS, "24h": 24 * HOUR_MS, "7d": KEEP_MS };
 const FIELDS = 7; // cpu, appCpu, gpu, appGpu, mem, appMem, disk
+const NET = FIELDS + 1; // then the network's: { name: [down, up] } bytes a second, or null
+const MAX_ADAPTERS = 8;
 
 const pct = (v) => (Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : null);
-// The average of each field over some readings ([t, …fields]), a field none had left null.
+const rate = (v) => (Number.isFinite(v) && v >= 0 ? Math.round(v) : null);
+// [{ name, down, up }] -> { name: [down, up] } (or null: none told)
+function netOf(list) {
+  if (!Array.isArray(list)) return null;
+  const out = {};
+  for (const a of list.slice(0, MAX_ADAPTERS)) {
+    const name = a && typeof a.name === "string" ? a.name.slice(0, 40) : "";
+    if (name && rate(a.down) !== null && rate(a.up) !== null) out[name] = [rate(a.down), rate(a.up)];
+  }
+  return Object.keys(out).length ? out : null;
+}
+// The average of each field over some readings ([t, …fields, net]), a field none had left null; each
+// adapter's over the readings that have it.
 function average(t, ps) {
   const out = [t];
   for (let f = 1; f <= FIELDS; f++) {
     const vs = ps.map((p) => p[f]).filter((v) => v !== null);
     out.push(vs.length ? Math.round(vs.reduce((a, b) => a + b, 0) / vs.length) : null);
   }
+  const sums = {};
+  for (const p of ps) {
+    for (const [name, [down, up]] of Object.entries(p[NET] || {})) {
+      const s = (sums[name] = sums[name] || [0, 0, 0]);
+      s[0] += down;
+      s[1] += up;
+      s[2]++;
+    }
+  }
+  const names = Object.keys(sums);
+  out.push(names.length ? Object.fromEntries(names.map((n) => [n, [Math.round(sums[n][0] / sums[n][2]), Math.round(sums[n][1] / sums[n][2])]])) : null);
   return out;
 }
 
@@ -63,7 +90,9 @@ class RoomHistory {
       if (line) this.fileLines++;
       try {
         const p = JSON.parse(line);
-        if (Array.isArray(p) && p.length === FIELDS + 1 && p[0] >= since) this.points.push(p);
+        // (a minute from before the network's: no traffic told)
+        if (Array.isArray(p) && p.length === FIELDS + 1 && p[0] >= since) this.points.push([...p, null]);
+        else if (Array.isArray(p) && p.length === FIELDS + 2 && p[0] >= since) this.points.push(p);
       } catch {
         // (a line cut short by a crash)
       }
@@ -87,7 +116,7 @@ class RoomHistory {
   async take() {
     const s = (await this.sample()) || {};
     const now = this.now();
-    const p = [now, pct(s.cpu), pct(s.appCpu), pct(s.gpu), pct(s.appGpu), pct(s.mem), pct(s.appMem), pct(s.disk)];
+    const p = [now, pct(s.cpu), pct(s.appCpu), pct(s.gpu), pct(s.appGpu), pct(s.mem), pct(s.appMem), pct(s.disk), netOf(s.net)];
     if (p.slice(1).every((v) => v === null)) return;
     // A minute that has ended becomes one of the week's points (its average), kept in the file.
     const minute = Math.floor(now / MINUTE_MS) * MINUTE_MS;
@@ -141,4 +170,4 @@ class RoomHistory {
   }
 }
 
-module.exports = { RoomHistory, SPANS, EVERY_MS };
+module.exports = { RoomHistory, SPANS, EVERY_MS, NET };

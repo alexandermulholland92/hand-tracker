@@ -83,8 +83,9 @@
   const remoteSensors = () => prefs.remoteSensors === true;
   // A notification when the CPU, GPU or memory has been high for a minute (each its own switch on the
   // device settings page, off until turned on; 2026-11-15). Memory's switch covers its "nearly full" one too.
-  const ALERT_KINDS = ["cpu", "gpu", "memory"];
-  const ALERT_PREF = { cpu: "remoteAlertCpu", gpu: "remoteAlertGpu", memory: "remoteAlertMemory" };
+  // The network's (2026-11-16): any adapter's traffic, either way, over NET_HIGH for a minute.
+  const ALERT_KINDS = ["cpu", "gpu", "memory", "net"];
+  const ALERT_PREF = { cpu: "remoteAlertCpu", gpu: "remoteAlertGpu", memory: "remoteAlertMemory", net: "remoteAlertNet" };
   const alertOn = (k) => prefs[ALERT_PREF[k]] === true;
   const canSensors = () => !!(global.desktop && desktop.imu && desktop.imu.enable);
   const applySensors = () => canSensors() && desktop.imu.enable(remoteSensors()).catch(() => {});
@@ -394,7 +395,16 @@
   function cleanBusy(v) {
     if (!v || typeof v !== "object") return null;
     const n = (x) => (Number.isFinite(x) && x >= 0 && x <= 100 ? Math.round(x) : null);
-    const out = { cpu: n(v.cpu), appCpu: n(v.appCpu), gpu: n(v.gpu), appGpu: n(v.appGpu) };
+    const out = { cpu: n(v.cpu), appCpu: n(v.appCpu), gpu: n(v.gpu), appGpu: n(v.appGpu), net: null };
+    // (each network adapter's traffic, bytes a second: [{ name, down, up }])
+    const rate = (x) => (Number.isFinite(x) && x >= 0 ? Math.round(x) : null);
+    if (Array.isArray(v.net)) {
+      const net = v.net
+        .slice(0, 8)
+        .filter((a) => a && typeof a.name === "string" && a.name && rate(a.down) !== null && rate(a.up) !== null)
+        .map((a) => ({ name: a.name.slice(0, 40), down: rate(a.down), up: rate(a.up) }));
+      if (net.length) out.net = net;
+    }
     return Object.values(out).some((x) => x !== null) ? out : null;
   }
   // Each in red once the whole CPU (or GPU) has stayed over BUSY_HIGH % for BUSY_HIGH_MS (2026-11-15:
@@ -402,29 +412,51 @@
   const BUSY_HIGH = 90, BUSY_HIGH_MS = 60000;
   // (memory: the share of the computer's memory used, for the notification; told once until it's back under BUSY_CALM)
   const BUSY_CALM = 80;
-  const busySince = { cpu: null, gpu: null, memory: null }, busyTold = { cpu: false, gpu: false, memory: false };
+  // The network: busy over NET_HIGH bytes a second (any adapter, received or sent; 2026-11-16: 5 MB/s), calm under 80% of it.
+  const NET_HIGH = 5e6;
+  const HIGH = { cpu: BUSY_HIGH, gpu: BUSY_HIGH, memory: BUSY_HIGH, net: NET_HIGH };
+  const CALM = { cpu: BUSY_CALM, gpu: BUSY_CALM, memory: BUSY_CALM, net: NET_HIGH * 0.8 };
+  const busySince = { cpu: null, gpu: null, memory: null, net: null }, busyTold = { cpu: false, gpu: false, memory: false, net: false };
+  // The busiest adapter now: { name, v (bytes a second), way ("down" or "up") }, or null.
+  function busiestAdapter() {
+    let top = null;
+    for (const a of (busy && busy.net) || []) for (const way of ["down", "up"]) if (!top || a[way] > top.v) top = { name: a.name, v: a[way], way };
+    return top;
+  }
   function watchBusy() {
     const now = Date.now();
     const used = memory && memory.total ? Math.round((1 - memory.available / memory.total) * 100) : null;
-    const value = { cpu: busy ? busy.cpu : null, gpu: busy ? busy.gpu : null, memory: used };
+    const top = busiestAdapter();
+    const value = { cpu: busy ? busy.cpu : null, gpu: busy ? busy.gpu : null, memory: used, net: top ? top.v : null };
     for (const k of ALERT_KINDS) {
       const v = value[k];
-      busySince[k] = v !== null && v > BUSY_HIGH ? busySince[k] || now : null;
-      if (v === null || v <= BUSY_CALM) busyTold[k] = false;
+      busySince[k] = v !== null && v > HIGH[k] ? busySince[k] || now : null;
+      if (v === null || v <= CALM[k]) busyTold[k] = false;
       if (busyHigh(k) && !busyTold[k]) {
         busyTold[k] = true;
-        const name = { cpu: "CPU", gpu: "GPU", memory: "Memory" }[k];
-        if (alertOn(k) && global.Sentry && global.Sentry.tell) global.Sentry.tell(`${name} busy`, `${name} at ${v}%, over ${BUSY_HIGH}% for a minute`).catch(() => {});
+        if (!alertOn(k) || !global.Sentry || !global.Sentry.tell) continue;
+        if (k === "net") global.Sentry.tell("Network busy", `${top.name} at ${rateText(top.v)} ${top.way === "down" ? "received" : "sent"}, over ${rateText(NET_HIGH)} for a minute`).catch(() => {});
+        else {
+          const name = { cpu: "CPU", gpu: "GPU", memory: "Memory" }[k];
+          global.Sentry.tell(`${name} busy`, `${name} at ${v}%, over ${BUSY_HIGH}% for a minute`).catch(() => {});
+        }
       }
     }
   }
+  // Bytes a second as people read them: "350 KB/s", "1.2 MB/s".
+  const rateText = (b) => (b >= 1e6 ? `${(b / 1e6).toFixed(b >= 1e7 ? 0 : 1)} MB/s` : `${Math.round(b / 1e3)} KB/s`);
   const busyHigh = (k) => busySince[k] !== null && Date.now() - busySince[k] >= BUSY_HIGH_MS;
   // [[text, high], …]: the CPU's, then the GPU's (each only where it's known).
   function busyParts(v) {
     const name = rigApp ? "Remote Recording" : "Hand Tracker";
     const one = (label, all, own) =>
       all !== null ? `${label} ${all}%${own !== null ? ` (${name} ${own}%)` : ""}` : own !== null ? `${label}: ${name} ${own}%` : "";
-    return [[one("CPU", v.cpu, v.appCpu), busyHigh("cpu")], [one("GPU", v.gpu, v.appGpu), busyHigh("gpu")]].filter(([t]) => t);
+    // Then each network adapter with traffic (at least 1 KB/s either way): "Wi-Fi ↓1.2 MB/s ↑35 KB/s", in red
+    // (the busy one) once one has stayed over NET_HIGH for a minute.
+    const net = (v.net || [])
+      .filter((a) => a.down + a.up >= 1000)
+      .map((a) => [`${a.name} ↓${rateText(a.down)} ↑${rateText(a.up)}`, busyHigh("net") && Math.max(a.down, a.up) > NET_HIGH]);
+    return [[one("CPU", v.cpu, v.appCpu), busyHigh("cpu")], [one("GPU", v.gpu, v.appGpu), busyHigh("gpu")], ...net].filter(([t]) => t);
   }
   const busyText = (v) => busyParts(v).map(([t]) => t).join(" · ");
   function watchMemory() {
@@ -1218,14 +1250,15 @@
         showSettings();
         return { ok: true, message: st.sensors ? "Separate motion sensors (the network, USB, a phone) are used." : "Separate motion sensors are off." };
       }
-      // A notification when the CPU, GPU or memory stays high ({ alerts: { cpu?, gpu?, memory? } }, any time).
+      // A notification when the CPU, GPU, memory or network stays high ({ alerts: { cpu?, gpu?, memory?, net? } }, any time).
       if (st.alerts && typeof st.alerts === "object") {
         const changed = ALERT_KINDS.filter((k) => typeof st.alerts[k] === "boolean");
         if (!changed.length) return { ok: false, message: "Which notification?" };
         for (const k of changed) setPref(ALERT_PREF[k], st.alerts[k]);
         showSettings();
-        const k = changed[0], name = { cpu: "the CPU", gpu: "the GPU", memory: "memory" }[k];
-        return { ok: true, message: st.alerts[k] ? `A notification when ${name} stays over ${BUSY_HIGH}% for a minute (sent as Sentry's alerts are).` : `No notification when ${name} is busy.` };
+        const k = changed[0], name = { cpu: "the CPU", gpu: "the GPU", memory: "memory", net: "the network" }[k];
+        const level = k === "net" ? rateText(NET_HIGH) : `${BUSY_HIGH}%`;
+        return { ok: true, message: st.alerts[k] ? `A notification when ${name} stays over ${level} for a minute (sent as Sentry's alerts are).` : `No notification when ${name} is busy.` };
       }
       // A photo from each camera as each take starts (from the next take).
       if (typeof st.photo === "boolean") {
