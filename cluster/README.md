@@ -1,9 +1,16 @@
 # Pi Cluster
 
-Your Raspberry Pis in one place, over Tailscale: how each one is doing, its camera rig, and its
-updates. Each Pi runs Pi Cluster's service (`node/`). The **Pi Cluster** app shows them all: it's
-an app of its own for Windows, Mac and Linux, built from Hand Tracker's code (`scripts/dist.js
---app cluster`, page `pi-cluster.html`).
+Your Raspberry Pis in one place, over Tailscale: how each one is doing, its camera rig, its updates
+and its jobs. Each Pi runs Pi Cluster's service (`node/`). The **Pi Cluster** app shows them all.
+It's an app of its own, built from Hand Tracker's code, on page `pi-cluster.html`:
+- **Windows, Mac and Linux:** `scripts/dist.js --app cluster`.
+- **Android:** the `cluster` flavor.
+- **iPhone:** `scripts/ios-variant.js … cluster`.
+
+The phones reach the Pis through the app's own Cluster plugin, `ClusterPlugin.java` on Android and
+`RemoteLink.swift` on the iPhone (Tailscale has to be on). A phone finds the Pis by asking the
+ones it knows; the first time, it asks the one called `pi`, or one named under **Add a Pi**. On a
+phone, a job's results come as one zip in Downloads (the Files app on an iPhone).
 
 ## Putting a Pi in
 

@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Pi Cluster (the "cluster" flavor): its own names, over src/main's. -->
+<resources>
+    <string name="app_name">Pi Cluster</string>
+    <string name="title_activity_main">Pi Cluster</string>
+    <string name="package_name">com.handtracker.cluster</string>
+    <string name="custom_url_scheme">com.handtracker.cluster</string>
+</resources>

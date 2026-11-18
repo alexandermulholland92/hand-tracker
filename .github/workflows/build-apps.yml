@@ -311,9 +311,11 @@ jobs:
           grep -q '"ok":true' selftest.txt || { tail -n 80 sim.log >> ios-build.log; cat site.log >> ios-build.log; exit 1; }
           echo "The hand browser opened a page and the hand mouse clicked its link"
           # Hand Mouse (its hand browser, the same check), Remote Recording (its rig: the same
-          # check, remote recording's part included) and Recording Converter (its own: a recording
-          # converted to every motion format and read back, viewer.js).
-          for kind in mouse remote converter; do
+          # check, remote recording's part included), Recording Converter (its own: a recording
+          # converted to every motion format and read back, viewer.js) and Pi Cluster (a Pi
+          # simulated here, cluster/node, reached through the app's Cluster plugin: pi-cluster.js).
+          python3 cluster/node/ht_cluster.py --simulate --port 47830 > cluster-sim.log 2>&1 &
+          for kind in mouse remote converter cluster; do
             node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app "$kind" "build/ios-sim-$kind"
             xcrun simctl install "$udid" "build/ios-sim-$kind/App.app"
             xcrun simctl launch --console-pty "$udid" "com.handtracker.$kind" -HTSelfTest http://127.0.0.1:8765/ > "sim-$kind.log" 2>&1 &
@@ -338,8 +340,8 @@ jobs:
           mkdir -p Payload dist
           cp -R "$app" Payload/
           zip -qr "dist/HandTracker-$version-ios-unsigned.ipa" Payload
-          # Hand Mouse, Remote Recording and Recording Converter, made from it.
-          for both in mouse:HandMouse remote:RemoteRecording converter:RecordingConverter; do
+          # Hand Mouse, Remote Recording, Recording Converter and Pi Cluster, made from it.
+          for both in mouse:HandMouse remote:RemoteRecording converter:RecordingConverter cluster:PiCluster; do
             node scripts/ios-variant.js "$app" "${both%%:*}" "build/ios-${both%%:*}"
             rm -rf Payload && mkdir Payload && cp -R "build/ios-${both%%:*}/App.app" Payload/
             zip -qr "dist/${both##*:}-$version-ios-unsigned.ipa" Payload
@@ -467,4 +469,4 @@ jobs:
         run: |
           gh release delete latest-build --yes --cleanup-tag || true
           gh release create latest-build dist/* --target "$GITHUB_SHA" --prerelease --title "Latest build" \
-            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID). Chrome (the hand mouse for web pages): HandTracker-*-chrome-extension.zip, unzipped and loaded in chrome://extensions with Developer mode on (Load unpacked). Apps of their own, for each of these the same way: Hand Mouse (the hand mouse alone): HandMouse-*; Remote Recording (controlling camera rigs, or being one): RemoteRecording-*; Recording Converter (opening and converting recordings and videos): RecordingConverter-*; Pi Cluster (your Raspberry Pis in one place: health, camera rigs, updates; each Pi joins with cluster/setup.sh): PiCluster-* (Windows, Mac, Linux); on Linux hand-mouse_*.deb, remote-recording_*.deb, recording-converter_*.deb and pi-cluster_*.deb."
+            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID). Chrome (the hand mouse for web pages): HandTracker-*-chrome-extension.zip, unzipped and loaded in chrome://extensions with Developer mode on (Load unpacked). Apps of their own, for each of these the same way: Hand Mouse (the hand mouse alone): HandMouse-*; Remote Recording (controlling camera rigs, or being one): RemoteRecording-*; Recording Converter (opening and converting recordings and videos): RecordingConverter-*; Pi Cluster (your Raspberry Pis in one place: health, camera rigs, updates; each Pi joins with cluster/setup.sh): PiCluster-* (Windows, Mac, Linux, Android, iPhone); on Linux hand-mouse_*.deb, remote-recording_*.deb, recording-converter_*.deb and pi-cluster_*.deb."

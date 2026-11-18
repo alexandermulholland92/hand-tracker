@@ -190,6 +190,20 @@ def main():
         check("...its results on pi", names == ["Sentry_Head_2026-11-17_12-00-00-small.mp4", "walk-small.mp4"], res)
         code, data = ask(pi_port, "GET", "/api/jobs/result-file?job=%s&path=%s&at=0" % (jid, urllib.parse.quote(names[0] if names else "x")))
         check("A result downloads from pi", code == 200 and isinstance(data, bytes) and data[4:8] == b"ftyp", (code, data[:16] if isinstance(data, bytes) else data))
+        code, z = act(pi_port, "zip", {"job": jid})
+        got = b""
+        while code == 200 and len(got) < z.get("size", 0):
+            c, piece = ask(pi_port, "GET", "/api/jobs/zip-file?job=%s&at=%d" % (jid, len(got)))
+            if c != 200 or not isinstance(piece, bytes) or not piece:
+                break
+            got += piece
+        import io
+        import zipfile
+        try:
+            inside_zip = sorted(zipfile.ZipFile(io.BytesIO(got)).namelist())
+        except zipfile.BadZipFile:
+            inside_zip = []
+        check("Its results as one zip (for a phone)", z.get("name") == "Smaller MP4s.zip" and inside_zip == names, (z, inside_zip))
 
         # A command over a file sent from a computer
         payload = b"hello from a computer\n" * 1000

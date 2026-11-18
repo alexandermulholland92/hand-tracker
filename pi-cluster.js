@@ -9,11 +9,172 @@
  *     Restart, and updating it.
  * A Pi that's away (unplugged, out of battery, off the Wi-Fi) stays listed, faded, with when it
  * was last seen and what it said then, until it's back or forgotten.
+ *
+ * On a phone (Pi Cluster's Android and iPhone apps: the "cluster" flavor, ios-variant.js cluster)
+ * the same page goes through the app's own Cluster plugin (ClusterPlugin.java, RemoteLink.swift)
+ * instead: phoneCluster() below, the same calls. A phone has no Tailscale command to list the
+ * Pis, so it asks the Pis it knows (the first time: "pi", by its Tailscale name, or one named on
+ * Add a Pi) which others there are; and a job's results come as one zip, into Downloads (iPhone:
+ * the Files app).
  */
 (() => {
   const $ = (id) => document.getElementById(id);
-  const api = window.desktop && window.desktop.cluster;
+  const api = (window.desktop && window.desktop.cluster) || phoneCluster();
   const REFRESH_MS = 4000;
+
+  // ---------- on a phone: the same calls as electron/cluster.js, through the app's Cluster plugin ----------
+  function phoneCluster() {
+    const cap = window.Capacitor;
+    const P = cap && cap.Plugins && cap.Plugins.Cluster;
+    if (!P) return null;
+    const KEY = "piClusterPis";
+    const PIECE = 2 << 20; // (a file's piece going to a Pi, through the app's bridge as base64)
+    const ASK_MS = 6000;
+    let known = {};
+    try {
+      known = JSON.parse(localStorage.getItem(KEY) || "{}") || {};
+    } catch {}
+    const keep = () => {
+      try {
+        localStorage.setItem(KEY, JSON.stringify(known));
+      } catch {}
+    };
+    const files = new Map(); // picked here: id -> File
+    let peers = { at: 0, list: [] };
+    const listeners = new Set();
+
+    async function ask(target, method, path, { body, data, timeoutMs = ASK_MS } = {}) {
+      try {
+        const a = await P.request({ target, method, path, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), ...(data ? { data } : {}), timeoutMs });
+        if (String(a.type || "").startsWith("application/json")) {
+          let j = {};
+          try {
+            j = JSON.parse(a.body || "{}");
+          } catch {
+            j = { error: "Its answer wasn't readable." };
+          }
+          return { status: a.status, ...(j && typeof j === "object" ? j : {}) };
+        }
+        return { status: a.status, data: a.data || "" };
+      } catch (e) {
+        return { status: 0, error: (e && e.message) || String(e) };
+      }
+    }
+
+    async function list() {
+      const now = Date.now();
+      const targets = new Set(Object.values(known).map((k) => k.target));
+      if (!targets.size) targets.add("pi"); // (the first time: the Pi called pi, by its Tailscale name)
+      // The Pis the known ones see on Tailscale (asked once a minute).
+      if (now - peers.at > 60000) {
+        for (const t of targets) {
+          const a = await ask(t, "GET", "/api/peers");
+          if (a.status === 200 && Array.isArray(a.peers)) {
+            peers = { at: now, list: a.peers.filter((p) => p.online).map((p) => p.ip) };
+            break;
+          }
+        }
+      }
+      for (const ip of peers.list) targets.add(ip);
+      const answers = await Promise.all([...targets].map((t) => ask(t, "GET", "/api/node").then((a) => [t, a])));
+      const nodes = new Map();
+      for (const [target, a] of answers) {
+        if (a.status === 200 && a.name && Array.isArray(a.modules)) {
+          // (a Pi reached by name the first time is kept by its name: it's the same either way)
+          const was = known[a.name];
+          known[a.name] = { target: was && was.target !== target && /^\d/.test(target) && !/^\d/.test(was.target) ? was.target : target, seen: now, node: a };
+          nodes.set(a.name, { name: a.name, target: known[a.name].target, online: true, answering: true, seen: now, node: a, error: null });
+        }
+      }
+      for (const [name, k] of Object.entries(known)) {
+        if (nodes.has(name)) continue;
+        if (now - (k.seen || 0) > 30 * 86400000) {
+          delete known[name];
+          continue;
+        }
+        nodes.set(name, { name, target: k.target, online: false, answering: false, seen: k.seen, node: k.node, error: null });
+      }
+      keep();
+      return { nodes: [...nodes.values()].sort((a, b) => a.name.localeCompare(b.name)), tailscale: true, phone: true, at: now };
+    }
+
+    async function addPi(name) {
+      const target = String(name || "").trim();
+      const a = await ask(target, "GET", "/api/node");
+      if (a.status !== 200 || !a.name) return { ok: false, error: a.error || `${target} didn't answer as a Pi of the cluster (${a.status || "no answer"}).` };
+      known[a.name] = { target, seen: Date.now(), node: a };
+      keep();
+      return { ok: true, name: a.name };
+    }
+
+    const post = (target, path, body) => ask(target, "POST", path, { body, timeoutMs: 30000 });
+    // (one picked on this phone, through a file box: the page reads it a piece at a time)
+    const pick = (accept) => new Promise((resolve) => {
+      const input = Object.assign(document.createElement("input"), { type: "file", multiple: !accept, accept: accept || "" });
+      input.onchange = () => {
+        resolve([...(input.files || [])].map((f) => {
+          const id = `phone:${files.size}:${f.name}`;
+          files.set(id, f);
+          return { path: id, name: f.name, size: f.size };
+        }));
+      };
+      input.click();
+    });
+    const base64 = (buf) => {
+      let s = "";
+      const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      return btoa(s);
+    };
+    const tell = (p) => listeners.forEach((cb) => cb(p));
+
+    return {
+      phone: true,
+      list,
+      addPi,
+      settings: ({ target, module, on, key, value }) => post(target, "/api/settings", { module, ...(typeof on === "boolean" ? { on } : {}), ...(key !== undefined ? { key, value } : {}) }),
+      action: ({ target, module, action, args }) => post(target, "/api/action", { module, action, args: args || {} }),
+      forget: async (name) => {
+        delete known[name];
+        keep();
+        return { ok: true };
+      },
+      pickFiles: () => pick(""),
+      pickModel: () => pick(".onnx"),
+      pickFolder: async () => "Downloads", // (a phone saves a job's results as one zip, there)
+      async upload({ target, job, files: list }) {
+        for (const f of list || []) {
+          const file = files.get(f.path);
+          if (!file) throw new Error(`${f.name} isn't one picked on this phone.`);
+          let at = 0;
+          do {
+            const piece = await file.slice(at, Math.min(file.size, at + PIECE)).arrayBuffer();
+            const last = at + piece.byteLength >= file.size ? 1 : 0;
+            const a = await ask(target, "PUT", `/api/jobs/upload?job=${encodeURIComponent(job)}&name=${encodeURIComponent(f.name)}&at=${at}&last=${last}`, { data: base64(piece), timeoutMs: 120000 });
+            if (a.status !== 200) throw new Error(`${f.name}: ${a.error || `it answered ${a.status}`}`);
+            at += piece.byteLength;
+            tell({ name: f.name, sent: at, size: file.size });
+          } while (at < file.size);
+        }
+        return { ok: true };
+      },
+      async download({ target, job }) {
+        const z = await post(target, "/api/action", { module: "jobs", action: "zip", args: { job } });
+        if (z.status !== 200 || !z.ok) throw new Error(z.error || "Its results couldn't be packed.");
+        const handle = await P.addListener("progress", (p) => tell({ name: p.name, got: p.got, size: p.size, zip: true }));
+        try {
+          const got = await P.save({ target, path: `/api/jobs/zip-file?job=${encodeURIComponent(job)}`, name: z.name, size: z.size });
+          return { ok: true, message: `Saved ${z.name} (${(z.size / 1e6).toFixed(1)} MB) in ${got.saved}` };
+        } finally {
+          if (handle && handle.remove) handle.remove();
+        }
+      },
+      onProgress: (cb) => {
+        listeners.add(cb);
+        return () => listeners.delete(cb);
+      },
+    };
+  }
   const open = new Set(); // Pis whose ⚙ is open
   let data = null;
   let tab = "pis";
@@ -220,7 +381,7 @@
     const pis = $("pis");
     const rigs = $("rigs");
     if (!nodes.length) {
-      const why = data && !data.tailscale ? " Tailscale isn't running on this computer (or isn't installed), so no Pis can be found yet." : "";
+      const why = data && data.phone ? " Is Tailscale on? Add a Pi can look for one by its name (pi is tried first)." : data && !data.tailscale ? " Tailscale isn't running on this computer (or isn't installed), so no Pis can be found yet." : "";
       pis.replaceChildren(el("div", { className: "empty" }, `No Pis yet. Press Add a Pi to put one in the cluster.${why}`));
       rigs.replaceChildren(el("div", { className: "empty" }, "No Pis yet."));
     } else {
@@ -357,7 +518,7 @@
     say(`Saving ${j.title}'s results…`);
     try {
       const got = await api.download({ target: home.target, job: j.id, dir });
-      say(`Saved ${got.files} file${got.files === 1 ? "" : "s"} in ${got.folder}`);
+      say(got.message || `Saved ${got.files} file${got.files === 1 ? "" : "s"} in ${got.folder}`);
     } catch (e) {
       say(`Couldn't save them: ${e.message}`, true);
     }
@@ -375,7 +536,7 @@
     const n = pickedJobs.recordings.size + pickedJobs.files.length;
     const bits = [];
     if (pickedJobs.recordings.size) bits.push(`${pickedJobs.recordings.size} recording${pickedJobs.recordings.size === 1 ? "" : "s"} on the Pis`);
-    if (pickedJobs.files.length) bits.push(`${pickedJobs.files.length} file${pickedJobs.files.length === 1 ? "" : "s"} from this computer`);
+    if (pickedJobs.files.length) bits.push(`${pickedJobs.files.length} file${pickedJobs.files.length === 1 ? "" : "s"} from this ${api && api.phone ? "phone" : "computer"}`);
     if (pickedJobs.folder) bits.push(`the folder ${pickedJobs.folder}`);
     $("chosen").textContent = bits.length ? "Chosen: " + bits.join(", ") + "." : "No files chosen yet.";
     $("startJob").disabled = !(n || pickedJobs.folder);
@@ -508,7 +669,8 @@
 
   if (api && api.onProgress) {
     api.onProgress((p) => {
-      if (p.size !== undefined) say(`Sending ${p.name}: ${Math.round((100 * p.sent) / Math.max(1, p.size))}%`);
+      if (p.zip) say(`Saving ${p.name}: ${Math.round((100 * p.got) / Math.max(1, p.size))}%`);
+      else if (p.sent !== undefined) say(`Sending ${p.name}: ${Math.round((100 * p.sent) / Math.max(1, p.size))}%`);
       else if (p.files !== undefined) say(`Saving results: ${p.got} of ${p.files}`);
     });
   }
@@ -569,6 +731,28 @@
   if (!api) {
     $("note").textContent = "Pi Cluster runs in its own app (Pi Cluster), not in a browser.";
     return;
+  }
+  // On a phone: a Pi set up already, by its Tailscale name (Add a Pi).
+  if (api.phone) {
+    $("pickFiles").textContent = "Files from this phone…";
+    $("phoneAdd").hidden = false;
+    $("findPi").onclick = async () => {
+      $("findPiNote").textContent = "Looking…";
+      const a = await api.addPi($("piName").value);
+      $("findPiNote").textContent = a.ok ? `Found ${a.name}.` : a.error;
+      if (a.ok) refresh();
+    };
+  }
+  // The iPhone build's simulator check (-HTSelfTest): a simulated Pi on the build computer, reached
+  // through the app's own Cluster plugin (a reading, then a change).
+  if (window.__htSelfTest && api.phone) {
+    (async () => {
+      const target = "127.0.0.1:47830";
+      const found = await api.addPi(target);
+      const set = found.ok ? await api.settings({ target, module: "health", key: "power", value: "wall" }) : {};
+      const out = { ok: !!(found.ok && set.status === 200 && set.ok), found, set: set.status };
+      console.log("HT-SELFTEST " + JSON.stringify(out));
+    })();
   }
   refresh();
   setInterval(() => {

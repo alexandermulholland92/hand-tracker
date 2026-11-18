@@ -76,6 +76,14 @@
   .bar > div { height: 100%; background: #2f5fd0; }
   .items { font-size: 12px; margin-top: 8px; line-height: 1.6; opacity: 0.85; }
   .items .bad { color: #ff8a7a; }
+  /* (a phone) */
+  @media (max-width: 600px) {
+    body { padding: 10px; }
+    .top { flex-wrap: wrap; }
+    .top .sub { flex-basis: 100%; order: 3; }
+    dialog { max-width: 94vw; padding: 14px; }
+    .card { padding: 10px 11px; }
+  }
 </style>
 </head>
 <body>
@@ -139,6 +147,11 @@
     </li>
     <li>It shows up here within a minute. From then on it keeps itself up to date (each part has a switch under ⚙).</li>
   </ol>
+  <div id="phoneAdd" hidden style="margin:10px 0">
+    <b style="font-size:13px">Set up already? Its Tailscale name:</b>
+    <div class="buttons"><input id="piName" type="text" value="pi" autocapitalize="off" autocorrect="off" spellcheck="false" /> <button id="findPi">Look for it</button></div>
+    <div id="findPiNote" class="hint"></div>
+  </div>
   <p style="font-size:12px;opacity:0.6;line-height:1.5">Taking a Pi out: unplug it and press Forget here, or remove the service from it with
     <code>curl -fsSL https://raw.githubusercontent.com/alexandermulholland92/hand-tracker/main/cluster/setup.sh | sudo bash -s -- --remove</code></p>
   <button id="closeAdd">Close</button>

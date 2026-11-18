@@ -2,12 +2,15 @@
  * ios-variant.js — the iPhone and iPad apps of their own, made from the built iPhone app (on a
  * Mac: GitHub's iPhone job, .github/workflows/build-apps.yml): the same app, with its own pages,
  * ID and name, so each installs beside Hand Tracker.
- *   node scripts/ios-variant.js <App.app> mouse|remote|converter <out folder>
+ *   node scripts/ios-variant.js <App.app> mouse|remote|converter|cluster <out folder>
  *     mouse:     Hand Mouse — only the hand mouse's files (build-web.js --hand-mouse), its page first
  *     remote:    Remote Recording — all of Hand Tracker's files (its rig is Hand Tracker's page),
  *                opening on remote-recording.html (Capacitor's server.appStartPath)
  *     converter: Recording Converter — all of Hand Tracker's files, opening on
  *                recording-converter.html (the Recording Converter, viewer.html, on its own)
+ *     cluster:   Pi Cluster — only its own few files (build-web.js --cluster: pi-cluster.html as its
+ *                page), for the Raspberry Pis running Pi Cluster's service (RemoteLink.swift's
+ *                ClusterPlugin reaches them)
  * Writes <out folder>/App.app. The app isn't signed (nor is Hand Tracker's): Sideloadly or
  * AltStore sign it with the user's own Apple ID when they install it.
  */
@@ -21,11 +24,12 @@ const APPS = {
   mouse: { id: "com.handtracker.mouse", name: "Hand Mouse", camera: "Hand Mouse follows your hand with the camera." },
   remote: { id: "com.handtracker.remote", name: "Remote Recording", camera: "Remote Recording records hand motion with the cameras when a phone or browser starts it.", start: "remote-recording.html" },
   converter: { id: "com.handtracker.converter", name: "Recording Converter", camera: "Recording Converter doesn't use the camera.", start: "recording-converter.html" },
+  cluster: { id: "com.handtracker.cluster", name: "Pi Cluster", camera: "Pi Cluster doesn't use the camera." },
 };
 const [from, kind, outDir] = process.argv.slice(2);
 const own = APPS[kind];
 if (!from || !own || !outDir) {
-  console.error("node scripts/ios-variant.js <App.app> mouse|remote|converter <out folder>");
+  console.error("node scripts/ios-variant.js <App.app> mouse|remote|converter|cluster <out folder>");
   process.exit(1);
 }
 
@@ -36,10 +40,10 @@ fs.mkdirSync(path.dirname(app), { recursive: true });
 execFileSync("ditto", [path.resolve(from), app]); // (keeps the bundle as it is: links, permissions)
 
 const pub = path.join(app, "public");
-if (kind === "mouse") {
-  // Only Hand Mouse's files, with Capacitor's own scripts the built app has (cordova*.js).
+if (kind === "mouse" || kind === "cluster") {
+  // Only Hand Mouse's (or Pi Cluster's) files, with Capacitor's own scripts the built app has (cordova*.js).
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hand-mouse-www-"));
-  execFileSync(process.execPath, [path.join(ROOT, "scripts", "build-web.js"), "--hand-mouse", "--out", tmp], { stdio: "inherit" });
+  execFileSync(process.execPath, [path.join(ROOT, "scripts", "build-web.js"), kind === "mouse" ? "--hand-mouse" : "--cluster", "--out", tmp], { stdio: "inherit" });
   for (const f of fs.readdirSync(pub)) if (/^cordova.*\.js$/.test(f)) fs.copyFileSync(path.join(pub, f), path.join(tmp, f));
   fs.rmSync(pub, { recursive: true, force: true });
   execFileSync("ditto", [tmp, pub]);

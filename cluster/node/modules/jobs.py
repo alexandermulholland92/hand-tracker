@@ -343,6 +343,10 @@ def act_remove(node, args):
         save(node)
     for sub in ("inputs", "results"):
         shutil.rmtree(os.path.join(data_dir(node), sub, job["id"]), ignore_errors=True)
+    try:
+        os.remove(os.path.join(data_dir(node), "zips", job["id"] + ".zip"))
+    except OSError:
+        pass
     node.event("jobs", "Removed the job %s and its files." % job["title"])
     return {"ok": True, "message": "Removed %s." % job["title"]}
 
@@ -382,6 +386,40 @@ def act_results(node, args):
             p = os.path.join(d, n)
             files.append({"path": os.path.relpath(p, root).replace(os.sep, "/"), "size": os.path.getsize(p)})
     return {"ok": True, "files": sorted(files, key=lambda f: f["path"]), "title": job["title"]}
+
+
+def act_zip(node, args):
+    """A job's results as one zip (for a phone: saved whole in its Downloads), made again only if
+    they've changed since: {name, size}; then GET /api/jobs/zip-file?job=&at= a piece at a time."""
+    job = job_of(node, args.get("job"))
+    if not job:
+        return {"ok": False, "error": "No such job."}
+    root = os.path.join(data_dir(node), "results", job["id"])
+    files = []
+    for d, _, names in os.walk(root):
+        for n in names:
+            if not n.endswith(".part"):
+                files.append(os.path.join(d, n))
+    if not files:
+        return {"ok": False, "error": "It has no results yet."}
+    zips = os.path.join(data_dir(node), "zips")
+    os.makedirs(zips, exist_ok=True)
+    path = os.path.join(zips, job["id"] + ".zip")
+    newest = max(os.path.getmtime(f) for f in files)
+    if not os.path.exists(path) or os.path.getmtime(path) < newest:
+        import zipfile
+        with zipfile.ZipFile(path + ".part", "w", zipfile.ZIP_STORED, allowZip64=True) as z:  # (pictures and videos don't shrink)
+            for f in sorted(files):
+                z.write(f, os.path.relpath(f, root).replace(os.sep, "/"))
+        os.replace(path + ".part", path)
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", job["title"]).strip() or job["id"]
+    return {"ok": True, "name": name + ".zip", "size": os.path.getsize(path)}
+
+
+def route_zip_file(node, h, q):
+    job = job_of(node, q.get("job")) if is_home(node) else None
+    path = os.path.join(data_dir(node), "zips", job["id"] + ".zip") if job else None
+    return read_piece(node, h, path, q)
 
 
 def act_browse(node, args):
@@ -493,6 +531,7 @@ ACTIONS = {
     "list": {"run": act_list, "hidden": True},
     "items": {"run": act_items, "hidden": True},
     "results": {"run": act_results, "hidden": True},
+    "zip": {"run": act_zip, "hidden": True},
     "browse": {"run": act_browse, "hidden": True},
     "recordings": {"run": act_recordings, "hidden": True},
     "lease": {"run": act_lease, "hidden": True},
@@ -590,6 +629,7 @@ ROUTES = {
     "PUT /api/jobs/result": route_result,
     "GET /api/jobs/file": route_file,
     "GET /api/jobs/result-file": route_result_file,
+    "GET /api/jobs/zip-file": route_zip_file,
 }
 
 

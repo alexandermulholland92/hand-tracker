@@ -38,6 +38,11 @@ android {
             dimension "app"
             applicationId "com.handtracker.converter"
         }
+        // Pi Cluster (cluster: pi-cluster.html first): the Raspberry Pis running Pi Cluster's service.
+        cluster {
+            dimension "app"
+            applicationId "com.handtracker.cluster"
+        }
     }
     sourceSets {
         main.assets.srcDirs = []
@@ -45,6 +50,7 @@ android {
         mouse.assets.srcDirs = ["src/mouse/assets"]
         remote.assets.srcDirs = ["src/remote/assets"]
         converter.assets.srcDirs = ["src/converter/assets"]
+        cluster.assets.srcDirs = ["src/cluster/assets"]
     }
     buildTypes {
         release {

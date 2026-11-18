@@ -32,6 +32,8 @@ class HandTrackerViewController: CAPBridgeViewController {
         // Remote recording on another computer (RemoteLink.swift): over the network, and over Bluetooth.
         bridge?.registerPluginInstance(RigLinkPlugin())
         bridge?.registerPluginInstance(BtLinkPlugin())
+        // The Pis running Pi Cluster's service (RemoteLink.swift), for Pi Cluster's own app.
+        bridge?.registerPluginInstance(ClusterPlugin())
         // Remote recording on this device itself (RigServer.swift, RigBluetooth.swift).
         bridge?.registerPluginInstance(RigServerPlugin())
         let args = ProcessInfo.processInfo.arguments

@@ -6,4 +6,6 @@
     <bool name="remote_recording">false</bool>
     <!-- Recording Converter (the "converter" flavor, src/converter) is the Recording Converter alone. -->
     <bool name="recording_converter">false</bool>
+    <!-- Pi Cluster (the "cluster" flavor, src/cluster) is the app for the Raspberry Pis running Pi Cluster's service. -->
+    <bool name="pi_cluster">false</bool>
 </resources>

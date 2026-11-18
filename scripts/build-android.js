@@ -15,7 +15,9 @@
  * 4. runs Gradle (assembleFullDebug, assembleMouseDebug, assembleRemoteDebug,
  *    assembleConverterDebug) with Android Studio's bundled JDK and your Android SDK
  * 5. copies the results to dist/HandTracker-<version>.apk, dist/HandMouse-<version>.apk,
- *    dist/RemoteRecording-<version>.apk and dist/RecordingConverter-<version>.apk
+ *    dist/RemoteRecording-<version>.apk, dist/RecordingConverter-<version>.apk and
+ *    dist/PiCluster-<version>.apk (Pi Cluster: the "cluster" flavor, only its own few files with
+ *    pi-cluster.html as index.html, build-web.js --cluster, made as Hand Mouse is)
  *
  * Needs Android Studio (or JAVA_HOME + ANDROID_HOME pointing at a JDK 17+ and an Android SDK).
  */
@@ -62,6 +64,11 @@ run(`node scripts/build-web.js --hand-mouse --out "${path.join(MOUSE_ASSETS, "pu
 for (const f of ["capacitor.config.json", "capacitor.plugins.json"]) fs.copyFileSync(path.join(MAIN_ASSETS, f), path.join(MOUSE_ASSETS, f));
 // Remote Recording (its rig is Hand Tracker's page) and Recording Converter: all of Hand Tracker's
 // files, each opening on its own page (Capacitor's server.appStartPath).
+// Pi Cluster: its page as index.html and the few files it loads (build-web.js --cluster).
+const CLUSTER_ASSETS = path.join(ANDROID, "app", "src", "cluster", "assets");
+fs.rmSync(CLUSTER_ASSETS, { recursive: true, force: true });
+run(`node scripts/build-web.js --cluster --out "${path.join(CLUSTER_ASSETS, "public")}"`);
+for (const f of ["capacitor.config.json", "capacitor.plugins.json"]) fs.copyFileSync(path.join(MAIN_ASSETS, f), path.join(CLUSTER_ASSETS, f));
 for (const [flavor, page] of [["remote", "/remote-recording.html"], ["converter", "/recording-converter.html"]]) {
   const assets = path.join(ANDROID, "app", "src", flavor, "assets");
   fs.rmSync(assets, { recursive: true, force: true });
@@ -72,11 +79,11 @@ for (const [flavor, page] of [["remote", "/remote-recording.html"], ["converter"
   fs.writeFileSync(path.join(assets, "capacitor.config.json"), JSON.stringify(capConfig, null, "\t"));
 }
 // Full path: some shells don't look in the current folder for commands.
-run(`"${path.join(ANDROID, isWin ? "gradlew.bat" : "gradlew")}" assembleFullDebug assembleMouseDebug assembleRemoteDebug assembleConverterDebug`, ANDROID);
+run(`"${path.join(ANDROID, isWin ? "gradlew.bat" : "gradlew")}" assembleFullDebug assembleMouseDebug assembleRemoteDebug assembleConverterDebug assembleClusterDebug`, ANDROID);
 
 const version = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
 fs.mkdirSync(path.join(ROOT, "dist"), { recursive: true });
-for (const [flavor, name] of [["full", "HandTracker"], ["mouse", "HandMouse"], ["remote", "RemoteRecording"], ["converter", "RecordingConverter"]]) {
+for (const [flavor, name] of [["full", "HandTracker"], ["mouse", "HandMouse"], ["remote", "RemoteRecording"], ["converter", "RecordingConverter"], ["cluster", "PiCluster"]]) {
   const apk = path.join(ANDROID, "app", "build", "outputs", "apk", flavor, "debug", `app-${flavor}-debug.apk`);
   const out = path.join(ROOT, "dist", `${name}-${version}.apk`);
   fs.copyFileSync(apk, out);

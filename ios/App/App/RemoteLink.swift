@@ -13,6 +13,7 @@
 //       write({ id, characteristic, value }) (with a response); notify({ id, characteristic })
 //       disconnect({ id }); events "notification" { id, characteristic, value }, "disconnected" { id }
 //     One device at a time; each step waits for the one before.
+//   Cluster: Pi Cluster's own app reaching the Pis running Pi Cluster's service (ClusterPlugin, below).
 
 import Foundation
 import Network
@@ -96,11 +97,16 @@ final class RigExchange {
     private var received = Data()
     private var connected = false
     private var done: ((Result<RigAnswer, RigError>) -> Void)?
+    private let maxBytes: Int
+    private let seconds: Int
 
-    init(host: String, port: UInt16, request: Data, queue: DispatchQueue) {
+    // (maxBytes and seconds: remote recording’s 4 MB and 10 s unless said; Pi Cluster’s pieces are bigger and slower)
+    init(host: String, port: UInt16, request: Data, queue: DispatchQueue, maxBytes: Int = RigLinkPlugin.maxBytes, seconds: Int = 10) {
         conn = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port) ?? 47821, using: .tcp)
         self.request = request
         self.queue = queue
+        self.maxBytes = maxBytes
+        self.seconds = seconds
     }
 
     func run(connectMs: Int = 10000, _ finish: @escaping (Result<RigAnswer, RigError>) -> Void) {
@@ -124,13 +130,13 @@ final class RigExchange {
                 if !connected { end(.failure(RigError(message: "Can't reach it."))) }
             }
         }
-        queue.asyncAfter(deadline: .now() + 10) { [self] in end(.failure(RigError(message: "No answer."))) }
+        queue.asyncAfter(deadline: .now() + .seconds(seconds)) { [self] in end(.failure(RigError(message: "No answer."))) }
     }
 
     private func receive() {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] chunk, _, complete, err in
             if let chunk = chunk { received.append(chunk) }
-            if received.count > RigLinkPlugin.maxBytes { return end(.failure(RigError(message: "The answer was too big"))) }
+            if received.count > maxBytes { return end(.failure(RigError(message: "The answer was too big"))) }
             if complete || err != nil { end(parse()) } else { receive() }
         }
     }
@@ -182,6 +188,125 @@ final class RigExchange {
             out.append(data[start..<end])
             at = data.index(end, offsetBy: 2, limitedBy: data.endIndex) ?? data.endIndex
         }
+    }
+}
+
+// ---------- Pi Cluster: the Pis running Pi Cluster's service ----------
+// ClusterPlugin, for Pi Cluster's own app (pi-cluster.js; the same as ClusterPlugin.java on Android):
+//   request({ target: "pi" | "100.x.y.z" | "host:port", method, path, body?, data? (base64), timeoutMs? })
+//     -> { status, type, body (text, for JSON), data (base64, for anything else) }
+//     plain HTTP over TCP to the service (port 47830), with its own header, only to its /api/ paths
+//   save({ target, path, name, size }) -> { saved }
+//     a file from a Pi (a job's results as one zip) fetched a piece at a time (path&at=…) into the
+//     app's Documents (the Files app: On My iPhone › Pi Cluster); "progress" { name, got, size }
+@objc(ClusterPlugin)
+public class ClusterPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "ClusterPlugin"
+    public let jsName = "Cluster"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "request", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "save", returnType: CAPPluginReturnPromise),
+    ]
+
+    static let PORT = 47830
+    static let TARGET = "^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*)(:(\\d{1,5}))?$"
+    static let PATH = "^/api/[A-Za-z0-9/_.-]{1,80}(\\?[A-Za-z0-9%._~!*'()=&+-]{0,4000})?$"
+    static let NAME = "^[^/\\\\\\x00-\\x1f]{1,200}\\.zip$"
+    private let queue = DispatchQueue(label: "hand-tracker.cluster")
+
+    // One request to a Pi's service: its answer, or why not.
+    func exchange(_ target: String, _ method: String, _ path: String, _ payload: Data?, _ type: String?, seconds: Int,
+                  _ finish: @escaping (Result<RigAnswer, RigError>) -> Void) {
+        guard let g = RigLinkPlugin.groups(Self.TARGET, target) else { return finish(.failure(RigError(message: "That isn't a Pi's name."))) }
+        let port = Int(g[6]) ?? Self.PORT
+        guard port >= 1, port <= 65535, ["GET", "POST", "PUT"].contains(method), RigLinkPlugin.groups(Self.PATH, path) != nil else {
+            return finish(.failure(RigError(message: "Not one of the service's requests.")))
+        }
+        var head = "\(method) \(path) HTTP/1.1\r\nHost: \(g[1]):\(port)\r\nX-HT-Cluster: 1\r\nConnection: close\r\n"
+        if let p = payload, let t = type {
+            head += "Content-Type: \(t)\r\nContent-Length: \(p.count)\r\n"
+        } else if method != "GET" {
+            head += "Content-Length: 0\r\n"
+        }
+        head += "\r\n"
+        var request = Data(head.utf8)
+        if let p = payload { request.append(p) }
+        let host = g[1].trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        RigExchange(host: host, port: UInt16(port), request: request, queue: queue, maxBytes: 8 * 1024 * 1024, seconds: seconds).run(connectMs: 10000, finish)
+    }
+
+    @objc func request(_ call: CAPPluginCall) {
+        let method = call.getString("method") ?? "GET"
+        var payload: Data? = nil
+        var type: String? = nil
+        if let d = call.getString("data") {
+            guard let decoded = Data(base64Encoded: d) else { return call.reject("Not base64.") }
+            payload = decoded
+            type = "application/octet-stream"
+        } else if let b = call.getString("body") {
+            payload = Data(b.utf8)
+            type = "application/json"
+        }
+        let seconds = max(2, min(180, (call.getInt("timeoutMs") ?? 20000) / 1000))
+        exchange(call.getString("target") ?? "", method, call.getString("path") ?? "", payload, type, seconds: seconds) { result in
+            switch result {
+            case .success(let a):
+                if a.type.hasPrefix("application/json") {
+                    call.resolve(["status": a.status, "type": a.type, "body": String(decoding: a.body, as: UTF8.self)])
+                } else {
+                    call.resolve(["status": a.status, "type": a.type, "data": a.body.base64EncodedString()])
+                }
+            case .failure(let e):
+                call.reject(e.message)
+            }
+        }
+    }
+
+    @objc func save(_ call: CAPPluginCall) {
+        let target = call.getString("target") ?? "", path = call.getString("path") ?? "", name = call.getString("name") ?? ""
+        let size = call.getInt("size") ?? -1
+        guard RigLinkPlugin.groups(Self.NAME, name) != nil,
+              let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return call.reject("Not a name it can save.")
+        }
+        let file = docs.appendingPathComponent(name)
+        let part = docs.appendingPathComponent(name + ".part")
+        FileManager.default.createFile(atPath: part.path, contents: nil)
+        guard let out = try? FileHandle(forWritingTo: part) else { return call.reject("Can't write it.") }
+        var got = 0
+        func fail(_ message: String) {
+            try? out.close()
+            try? FileManager.default.removeItem(at: part)
+            call.reject(message)
+        }
+        func next() {
+            exchange(target, "GET", path + (path.contains("?") ? "&" : "?") + "at=\(got)", nil, nil, seconds: 120) { [self] result in
+                switch result {
+                case .failure(let e):
+                    fail(e.message)
+                case .success(let a):
+                    if a.status != 200 { return fail("The Pi answered \(a.status).") }
+                    if a.type.hasPrefix("application/json") { return fail(String(decoding: a.body, as: UTF8.self)) }
+                    out.write(a.body)
+                    got += a.body.count
+                    notifyListeners("progress", data: ["name": name, "got": got, "size": size])
+                    if a.body.isEmpty || (size >= 0 && got >= size) {
+                        try? out.close()
+                        if size >= 0 && got != size { return fail("It came out \(got) bytes, not \(size).") }
+                        try? FileManager.default.removeItem(at: file)
+                        do {
+                            try FileManager.default.moveItem(at: part, to: file)
+                            call.resolve(["saved": "Files › On My iPhone › Pi Cluster › " + name])
+                        } catch {
+                            fail("Can't keep it: \(error.localizedDescription)")
+                        }
+                    } else {
+                        next()
+                    }
+                }
+            }
+        }
+        next()
     }
 }
 

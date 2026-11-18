@@ -233,6 +233,39 @@ app.whenReady().then(async () => {
     const saved = await until(() => fs.existsSync(path.join(saveIn, "A command for each file", "letter.txt")) && fs.existsSync(path.join(saveIn, "A command for each file", "log.txt")), 30000);
     check("...and its results saved on this computer", !!saved && fs.readFileSync(path.join(saveIn, "A command for each file", "letter.txt"), "utf8").startsWith("hello"), fs.existsSync(saveIn) && fs.readdirSync(saveIn));
 
+    // On a phone: the same page through the app's Cluster plugin (here fake-cluster-plugin.js): the
+    // Pi found by its Tailscale name, a command job over a file picked on the phone, its results as one zip
+    const downloads = path.join(tmp, "phone-downloads");
+    fs.mkdirSync(downloads);
+    Object.assign(process.env, { FAKE_CLUSTER_NAMES: JSON.stringify({ pi: `127.0.0.1:${port}` }), FAKE_CLUSTER_DOWNLOADS: downloads, FAKE_CLUSTER_PICK: letter });
+    const phone = new BrowserWindow({ show: false, width: 400, height: 860, webPreferences: { preload: path.join(__dirname, "fake-cluster-plugin.js"), contextIsolation: false, sandbox: false } });
+    await phone.loadURL("app://hand-tracker/pi-cluster.html");
+    const pjs = (code) => phone.webContents.executeJavaScript(code, true);
+    await pjs("window.confirm = () => true; null");
+    const phoneText = () => pjs("document.getElementById('pis').innerText");
+    const onPhone = await until(async () => /CPU/.test(await phoneText()) && /Hand Tracker running/.test(await phoneText()), 30000);
+    check("On a phone: the Pi found by its Tailscale name (pi) and listed", !!onPhone, await phoneText());
+    const calls = await pjs("window.__clusterCalls.map((c) => c.join(' '))");
+    check("...through the app's Cluster plugin", calls.includes("GET pi /api/node"), calls.slice(0, 6));
+    check("...and Add a Pi offers to look for one by its name", (await pjs("document.getElementById('phoneAdd').hidden")) === false);
+    await pjs("document.getElementById('tabJobs').click(); null");
+    await until(() => pjs("/keeps the job list/.test(document.getElementById('jobsHome').textContent)"));
+    const pclick = (sel, text) => pjs(`[...document.querySelectorAll(${JSON.stringify(sel)})].find((b) => b.textContent.startsWith(${JSON.stringify(text)})).click(); null`);
+    await pclick("#jobs button", "New job");
+    await pjs("document.querySelector('input[name=kind][value=command]').click(); null");
+    await pjs(`document.getElementById('command').value = ${JSON.stringify(`${py[0]} ${py[1].join(" ")} -c "import shutil,sys; shutil.copy(sys.argv[1], sys.argv[2])" {in} {out}`)}; document.getElementById('jobTitle').value = 'From the phone'; null`);
+    await pclick("#newJob button", "Files from this phone");
+    const picked = await until(async () => /1 file from this phone/.test(await pjs("document.getElementById('chosen').textContent")));
+    check("A file picked on the phone is chosen", !!picked, await pjs("document.getElementById('chosen').textContent"));
+    await pclick("#newJob button", "Start the job");
+    const phoneDone = await until(async () => /From the phone[\s\S]*1 of 1 done/.test(await pjs("document.getElementById('jobList').innerText")), 90000);
+    check("...sent to the Pi a piece at a time, and the job done", !!phoneDone, (await pjs("document.getElementById('jobList').innerText")) + " | " + (await pjs("document.getElementById('message').textContent")));
+    await pjs("[...document.querySelectorAll('#jobList .card')].find((c) => c.textContent.startsWith('From the phone')).querySelector('button').click(); null");
+    const zipped = await until(async () => /Saved From the phone.zip/.test(await pjs("document.getElementById('message').textContent")) && fs.existsSync(path.join(downloads, "From the phone.zip")), 30000);
+    const zipBytes = zipped ? fs.readFileSync(path.join(downloads, "From the phone.zip")) : Buffer.alloc(0);
+    check("...its results saved on the phone as one zip in Downloads", !!zipped && zipBytes.includes(Buffer.from("letter.txt")) && zipBytes.includes(Buffer.from("hello from this computer")), await pjs("document.getElementById('message').textContent"));
+    phone.destroy();
+
     // The Pi goes away
     service.kill();
     await js("document.getElementById('tabPis').click(); null");
