@@ -300,15 +300,17 @@ class Node:
             return None
         return getattr(m.mod, fn)(self, *args)
 
-    def root(self, action, timeout=1800):
-        """One of the root helper's jobs (cluster/node/ht-cluster-root): its JSON answer."""
+    def root(self, action, *words, timeout=1800):
+        """One of the root helper's jobs (cluster/node/ht-cluster-root), with its words if it takes
+        any (it checks them itself): its JSON answer."""
+        words = [str(w) for w in words]
         if self.simulate:
             helper = os.environ.get("HT_CLUSTER_ROOT_HELPER")
             if not helper:
                 return {"ok": False, "error": "No root helper while simulated."}
-            cmd = [sys.executable, helper, action]
+            cmd = [sys.executable, helper, action] + words
         else:
-            cmd = ["sudo", "-n", ROOT_HELPER, action]
+            cmd = ["sudo", "-n", ROOT_HELPER, action] + words
         code, out, err = run(cmd, timeout=timeout)
         lines = [l for l in out.strip().splitlines() if l.strip().startswith("{")]
         try:

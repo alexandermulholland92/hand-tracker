@@ -230,10 +230,11 @@
 
   async function set(pi, module, change) {
     // (one Pi keeps the job list: choosing one takes it off the others)
-    if (module === "jobs" && change.key === "home" && change.value === true) {
+    // (one Pi keeps the job list, and one Transmission's files: choosing one takes it off the others)
+    if ((module === "jobs" || module === "apps") && change.key === "home" && change.value === true) {
       for (const other of ((data && data.nodes) || []).filter((p) => p.answering && p.name !== pi.name)) {
-        const j = mod(other.node, "jobs");
-        if (j && j.status && j.status.home) await api.settings({ target: other.target, module: "jobs", key: "home", value: false }).catch(() => {});
+        const j = mod(other.node, module);
+        if (j && j.status && j.status.home) await api.settings({ target: other.target, module, key: "home", value: false }).catch(() => {});
       }
     }
     const answer = await api.settings({ target: pi.target, module, ...change }).catch((e) => ({ error: e.message }));
@@ -389,6 +390,7 @@
       rigs.replaceChildren(...nodes.filter((p) => p.node).map(rigCard));
     }
     renderJobs();
+    renderTransmission();
     const live = nodes.filter((p) => p.answering).length;
     $("note").textContent = data
       ? `${live} of ${nodes.length} Pi${nodes.length === 1 ? "" : "s"} answering${data.tailscale ? "" : " · Tailscale isn't running on this computer"} · updated ${new Date(data.at).toLocaleTimeString()}`
@@ -409,9 +411,157 @@
     render();
   }
 
+  // ---------- Transmission: the cluster's (apps.py), run on whichever Pi is free ----------
+  const STATUS = ["paused", "waiting to check", "checking", "waiting to download", "downloading", "waiting to seed", "seeding"];
+  let torrents = { at: 0, list: [], error: null };
+  const add = { folder: null, file: null, browsing: null };
+
+  function trHome() {
+    const nodes = (data && data.nodes) || [];
+    return nodes.find((p) => p.node && mod(p.node, "apps") && mod(p.node, "apps").on && (mod(p.node, "apps").status || {}).home) || null;
+  }
+
+  const rate = (b) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB/s` : `${Math.round((b || 0) / 1e3)} KB/s`);
+  const homeRel = (p, home) => (home && p && p.startsWith(home) ? "~" + p.slice(home.length) : p || "");
+
+  async function loadTorrents(now = false) {
+    const home = trHome();
+    if (!home || !home.answering || (!now && Date.now() - torrents.at < 8000)) return;
+    torrents.at = Date.now();
+    const a = await api.action({ target: home.target, module: "apps", action: "torrents", args: {} }).catch((e) => ({ error: e.message }));
+    torrents = { at: Date.now(), list: a.torrents || [], error: a.ok ? null : a.error };
+    if (tab === "transmission") renderTransmission();
+  }
+
+  function renderTransmission() {
+    if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#transmission .card")) return;
+    const home = trHome();
+    const line = $("trHome");
+    if (!home) {
+      const live = ((data && data.nodes) || []).filter((p) => p.answering && mod(p.node, "apps"));
+      $("trMain").hidden = true;
+      if (!live.length) return line.replaceChildren("Transmission comes with the next update of the Pis' service.");
+      const sel = el("select", {}, live.map((p) => el("option", { value: p.name, textContent: p.name, selected: /^pi$/i.test(p.name) })));
+      const use = el("button", { textContent: "Keep them there" });
+      use.onclick = () => {
+        const p = live.find((x) => x.name === sel.value);
+        if (p) set(p, "apps", { key: "home", value: true });
+      };
+      return line.replaceChildren("Which Pi keeps Transmission's torrents, settings and files? ", sel, " ", use);
+    }
+    const st = mod(home.node, "apps").status || {};
+    if (!st.migrated) {
+      $("trMain").hidden = true;
+      const go = el("button", { textContent: `Move ${home.name}'s Transmission torrents in`, className: "main" });
+      go.onclick = async () => {
+        if (!confirm(`Move the Transmission window app's torrents on ${home.name} into the cluster's Transmission? Each keeps its own folder and its progress; the window app closes, and opens empty from then on (Give them back undoes it).`)) return;
+        say("Moving them in…");
+        const a = await api.action({ target: home.target, module: "apps", action: "migrate", args: {} }).catch((e) => ({ error: e.message }));
+        say(a.message || a.error, !a.ok);
+        setTimeout(refresh, 800);
+      };
+      return line.replaceChildren(`${home.name} keeps Transmission's files. Its window app's torrents aren't in the cluster's Transmission yet. `, go);
+    }
+    line.textContent = `${home.name} keeps Transmission's files${(st.shared || []).length ? ` (shared with the Pis running it: ${st.shared.map((n) => "~/" + n).join(", ")})` : ""}.`;
+    $("trMain").hidden = false;
+    $("trLine").textContent = (mod(home.node, "apps").status || {}).summary || "";
+    $("trWarn").textContent = (st.warnings || []).map((w) => "⚠ " + w).join("  ");
+    $("trTurtle").textContent = st.turtle ? "Turtle off" : "Turtle on";
+    $("trTurtle").onclick = () => act(home, "apps", "turtle", { on: !st.turtle });
+    const runners = ((data && data.nodes) || []).filter((p) => p.answering && mod(p.node, "apps") && mod(p.node, "apps").on);
+    $("trWhere").replaceChildren(el("option", { value: "", textContent: "wherever's free", selected: !st.prefer }),
+      ...runners.map((p) => el("option", { value: p.name, textContent: p.name + ((mod(p.node, "apps").status || {}).canRun ? "" : " (its switch is off)"), selected: st.prefer === p.name })));
+    $("trWhere").onchange = () => act(home, "apps", "move", { to: $("trWhere").value || null });
+    $("trWeb").onclick = () => window.open(`http://${home.target.split(":")[0]}:9092/transmission/web/`, "_blank");
+    $("trFolder").textContent = add.folder ? homeRel(add.folder, add.browsing && add.browsing.home) : "its usual folder (~/Downloads)";
+    const list = torrents.list.slice().sort((a, b) => (b.status === 4) - (a.status === 4) || a.name.localeCompare(b.name));
+    $("trList").replaceChildren(torrents.error ? el("div", { className: "warn-line" }, "⚠ " + torrents.error) : "", ...list.map((t) => {
+      const b = el("button", { textContent: t.status === 0 ? "Resume" : "Pause" });
+      b.onclick = () => act(home, "apps", "torrent", { do: t.status === 0 ? "start" : "stop", ids: [t.id] }).then(() => loadTorrents(true));
+      const bits = [`${Math.round((t.percentDone || 0) * 100)}%`, STATUS[t.status] || "", t.rateDownload ? "↓ " + rate(t.rateDownload) : "", t.rateUpload ? "↑ " + rate(t.rateUpload) : "", homeRel(t.downloadDir, add.browsing && add.browsing.home)];
+      return el("div", { className: "card" }, el("div", { className: "top" }, el("span", { className: "summary", style: "flex:1;word-break:break-word" }, t.name), b),
+        el("div", { className: "cams" }, bits.filter(Boolean).join(" · ")), t.errorString ? el("div", { className: "warn-line" }, "⚠ " + t.errorString) : "");
+    }));
+    $("trGiveBack").onclick = async () => {
+      if (!confirm(`Give the torrents back to the Transmission window app on ${home.name}? The cluster's Transmission stops and its folders stop being shared; open the window app to go on.`)) return;
+      const a = await api.action({ target: home.target, module: "apps", action: "giveBack", args: {} }).catch((e) => ({ error: e.message }));
+      say(a.message || a.error, !a.ok);
+      setTimeout(refresh, 800);
+    };
+    loadTorrents();
+  }
+
+  async function browseFolders(where) {
+    const home = trHome();
+    if (!home) return;
+    const a = await api.action({ target: home.target, module: "apps", action: "folders", args: { path: where || "" } }).catch((e) => ({ error: e.message }));
+    const box = $("trFolders");
+    box.hidden = false;
+    if (!a.ok) return box.replaceChildren(el("div", { className: "warn-line" }, a.error || "Couldn't look."));
+    add.browsing = a;
+    const use = el("button", { textContent: `Save it in ${homeRel(a.path, a.home) || "~"}` });
+    use.onclick = () => {
+      add.folder = a.path;
+      box.hidden = true;
+      renderTransmission();
+    };
+    const newName = el("input", { type: "text", placeholder: "or a new folder in it", style: "width:12em" });
+    const make = el("button", { textContent: "Use the new folder" });
+    make.onclick = () => {
+      const n = newName.value.trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9 _.+()'-]{0,59}$/.test(n)) return say("A folder name: letters, numbers, spaces, - _ . + ( )", true);
+      add.folder = a.path.replace(/\/$/, "") + "/" + n;
+      box.hidden = true;
+      renderTransmission();
+    };
+    const rows = [];
+    if (a.parent) {
+      const up = el("div", { className: "folder" }, "↑ " + (homeRel(a.parent, a.home) || "~"));
+      up.onclick = () => browseFolders(a.parent);
+      rows.push(up);
+    }
+    for (const f of a.folders) {
+      const d = el("div", { className: "folder" }, "📁 " + f);
+      d.onclick = () => browseFolders(a.path.replace(/\/$/, "") + "/" + f);
+      rows.push(d);
+    }
+    box.replaceChildren(el("div", { className: "hint" }, `${home.name}: ${homeRel(a.path, a.home) || "~"}`), el("div", { className: "buttons" }, use, newName, make), ...rows);
+  }
+
+  $("trBrowse").onclick = () => browseFolders(add.folder || (add.browsing && add.browsing.path) || "");
+  $("trTorrentFile").onclick = () => {
+    const input = Object.assign(document.createElement("input"), { type: "file", accept: ".torrent,application/x-bittorrent" });
+    input.onchange = async () => {
+      const f = input.files && input.files[0];
+      if (!f) return;
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      let s = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      add.file = { name: f.name, data: btoa(s) };
+      $("trFileName").textContent = f.name;
+      $("trMagnet").value = "";
+    };
+    input.click();
+  };
+  $("trAdd").onclick = async () => {
+    const home = trHome();
+    const magnet = $("trMagnet").value.trim();
+    if (!home || (!magnet && !add.file)) return say("A magnet link or a .torrent file first.", true);
+    say("Adding it…");
+    const args = { ...(magnet ? { magnet } : { torrent: add.file.data }), ...(add.folder ? { folder: add.folder } : {}) };
+    const a = await api.action({ target: home.target, module: "apps", action: "add", args }).catch((e) => ({ error: e.message }));
+    say(a.message || a.error, !a.ok);
+    if (a.ok) {
+      $("trMagnet").value = "";
+      add.file = null;
+      $("trFileName").textContent = "";
+      loadTorrents(true);
+    }
+  };
+
   function showTab(which) {
     tab = which;
-    for (const t of ["pis", "rigs", "jobs"]) {
+    for (const t of ["pis", "rigs", "jobs", "transmission"]) {
       $("tab" + t[0].toUpperCase() + t.slice(1)).setAttribute("aria-selected", String(tab === t));
       $(t).hidden = tab !== t;
     }
@@ -707,6 +857,10 @@
   $("tabPis").onclick = () => showTab("pis");
   $("tabRigs").onclick = () => showTab("rigs");
   $("tabJobs").onclick = () => showTab("jobs");
+  $("tabTransmission").onclick = () => {
+    showTab("transmission");
+    loadTorrents(true);
+  };
   $("addPi").onclick = () => $("addDialog").showModal();
   $("closeAdd").onclick = () => $("addDialog").close();
   $("copyCmd").onclick = async () => {

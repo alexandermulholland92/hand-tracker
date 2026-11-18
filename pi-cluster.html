@@ -98,6 +98,7 @@
     <button role="tab" id="tabPis" aria-selected="true">Pis</button>
     <button role="tab" id="tabRigs" aria-selected="false">Camera rigs</button>
     <button role="tab" id="tabJobs" aria-selected="false">Jobs</button>
+    <button role="tab" id="tabTransmission" aria-selected="false">Transmission</button>
   </div>
   <p id="note">Looking for Pis over Tailscale…</p>
   <p id="message" hidden></p>
@@ -134,6 +135,33 @@
       <div class="buttons"><button id="startJob" class="main">Start the job</button> <button id="cancelJob">Cancel</button></div>
     </div>
     <div id="jobList"></div>
+  </section>
+  <section id="transmission" hidden>
+    <div id="trHome" class="hint" style="margin-bottom:10px"></div>
+    <div id="trMain" hidden>
+      <div class="card">
+        <div class="mod summary" id="trLine"></div>
+        <div class="warn-line" id="trWarn"></div>
+        <div class="buttons">
+          <button id="trTurtle">Turtle on</button>
+          <label class="hint" style="display:flex;align-items:center;gap:6px;margin:0">Runs on <select id="trWhere"></select></label>
+          <button id="trWeb">Its web page</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2 style="font-size:15px;margin:0 0 8px">Add a download</h2>
+        <input id="trMagnet" type="text" placeholder="magnet:?xt=…" style="width:100%" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        <div class="buttons"><button id="trTorrentFile">Or a .torrent file…</button> <span id="trFileName" class="hint"></span></div>
+        <div class="field"><b>Save to</b>
+          <div id="trFolder" class="summary"></div>
+          <div class="buttons"><button id="trBrowse">Choose a folder…</button></div>
+          <div id="trFolders" class="pick-list" hidden></div>
+        </div>
+        <div class="buttons"><button id="trAdd" class="main">Add it</button></div>
+      </div>
+      <div id="trList"></div>
+      <div class="buttons" style="margin-top:10px"><button id="trGiveBack">Give the torrents back to the window app</button></div>
+    </div>
   </section>
 </main>
 

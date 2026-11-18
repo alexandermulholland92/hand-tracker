@@ -11,6 +11,16 @@ from this project's GitHub "Latest build" release and checks first.
   ht-cluster-root os-upgrade             those updates (no package removed); whether a restart is needed
   ht-cluster-root reboot                 restarts this Pi
   ht-cluster-root renice-jobs            the jobs running at high priority (Pi Cluster's) ahead of everything
+  ht-cluster-root install-transmission   Debian's transmission-daemon (its own background service off) and NFS's tools
+  ht-cluster-root nfs-share FOLDER...    those folders of your home, and Transmission's settings, shared over NFS
+                                         to Tailscale's addresses only (on the Pi that keeps Transmission's files)
+  ht-cluster-root nfs-unshare            not shared any more
+  ht-cluster-root transmission-start local|ADDRESS FOLDER...
+                                         the cluster's Transmission started here as your account; from another
+                                         Pi (its Tailscale address), its shared folders mounted and put at their
+                                         own paths for Transmission alone
+  ht-cluster-root transmission-stop      stopped, and those folders unmounted
+  ht-cluster-root transmission-cap DOWN UP   its speeds (kB/s, or none) kept on the Wi-Fi by Linux
 
 Each prints one line of JSON: {"ok": true, ...} or {"ok": false, "error": "..."}. One job at a time.
 Run as another user than root (the checks), HT_CLUSTER_GITHUB_API, HT_CLUSTER_GITHUB_RAW and
@@ -74,6 +84,30 @@ def run(cmd, timeout=600, env=None):
 def last_lines(text, n=3):
     lines = [l.strip() for l in (text or "").strip().splitlines() if l.strip()]
     return " / ".join(lines[-n:])[:400]
+
+
+def apt_why(out, err):
+    """What apt said went wrong, in a line: its first error (E:), else its last lines."""
+    errors = [l.strip() for l in ((err or "") + "\n" + (out or "")).splitlines() if l.strip().startswith("E:")]
+    if errors:
+        first = errors[0][2:].strip()
+        if "Failed to fetch" in first or "Unable to fetch" in first:
+            m = re.search(r"(Temporary failure resolving '[^']+'|Could not connect to [^ ]+|Connection timed out|Network is unreachable|Connection failed|\d{3} [A-Za-z ]+)", " ".join(errors))
+            return "couldn't download some packages" + (" (%s)" % m.group(1).strip() if m else "")
+        return first[:200]
+    return last_lines(err or out, 1)[:200]
+
+
+# apt's downloads: tried 3 times each; and when they fail, once more over IPv4 only (a Pi whose IPv6
+# route is there but goes nowhere gets "Ign" for every package).
+APT_NET = ["-o", "Acquire::Retries=3"]
+
+
+def apt(args, timeout, env=None, prefix=()):
+    code, out, err = run(list(prefix) + ["apt-get"] + APT_NET + args, timeout, env)
+    if code != 0 and re.search(r"(Failed to fetch|Unable to fetch|Temporary failure resolving|Could not connect)", (out or "") + (err or "")):
+        code, out, err = run(list(prefix) + ["apt-get"] + APT_NET + ["-o", "Acquire::ForceIPv4=true"] + args, timeout, env)
+    return code, out, err
 
 
 def fetch(url, timeout=60):
@@ -146,11 +180,11 @@ def install_hand_tracker():
         if code != 0 or out.strip() != "hand-tracker":
             raise Failed("That download isn't Hand Tracker's package.")
         run(["dpkg", "--configure", "-a"], 1800, {"DEBIAN_FRONTEND": "noninteractive"})  # (one left half done before, finished first)
-        code, out, err = run(["apt-get", "install", "-y", "-q", "--reinstall",
+        code, out, err = apt(["install", "-y", "-q", "--reinstall",
                               "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold", path],
                              1800, {"DEBIAN_FRONTEND": "noninteractive"})
         if code != 0:
-            raise Failed("apt-get couldn't put it in: %s" % last_lines(err or out))
+            raise Failed("It didn't go in: %s" % apt_why(out, err))
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -232,12 +266,12 @@ def update_cluster():
 
 
 def os_check():
-    code, out, err = run(["apt-get", "update", "-q"], 900, {"DEBIAN_FRONTEND": "noninteractive"})
+    code, out, err = apt(["update", "-q"], 900, {"DEBIAN_FRONTEND": "noninteractive"})
     if code != 0:
-        raise Failed("apt-get update failed: %s" % last_lines(err or out))
+        raise Failed("Couldn't look for updates: %s" % apt_why(out, err))
     code, out, err = run(["apt-get", "-s", "-q", "upgrade", "--with-new-pkgs"], 300)
     if code != 0:
-        raise Failed("apt-get couldn't work out the updates: %s" % last_lines(err or out))
+        raise Failed("Couldn't work out the updates: %s" % apt_why(out, err))
     names = [l.split()[1] for l in out.splitlines() if l.startswith("Inst ") and len(l.split()) > 1]
     return {"upgradable": len(names), "packages": names[:30]}
 
@@ -264,11 +298,10 @@ def os_upgrade():
     before = kernel_marks()
     env = {"DEBIAN_FRONTEND": "noninteractive", "NEEDRESTART_MODE": "l"}
     run(["dpkg", "--configure", "-a"], 1800, env)  # (one left half done before, finished first)
-    code, out, err = run(["nice", "-n", "10", "ionice", "-c3", "apt-get", "-y", "-q",
-                          "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
-                          "upgrade", "--with-new-pkgs"], 3600, env)
+    code, out, err = apt(["-y", "-q", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
+                          "upgrade", "--with-new-pkgs"], 3600, env, prefix=("nice", "-n", "10", "ionice", "-c3"))
     if code != 0:
-        raise Failed("apt-get upgrade failed: %s" % last_lines(err or out))
+        raise Failed(apt_why(out, err))
     m = re.search(r"(\d+) upgraded, (\d+) newly installed", out)
     upgraded = (int(m.group(1)) + int(m.group(2))) if m else None
     reboot = kernel_marks() != before or os.path.exists("/run/reboot-required")
@@ -304,15 +337,186 @@ def renice_jobs():
     return {"reniced": done}
 
 
-JOBS = {"install-hand-tracker": install_hand_tracker, "update-cluster": update_cluster,
-        "os-check": os_check, "os-upgrade": os_upgrade, "reboot": reboot, "renice-jobs": renice_jobs}
+
+# ----- Transmission, run by the cluster (modules/apps.py) -----
+# Its settings and torrents live on the Pi that keeps its files (TR_CONFIG, under the account's home);
+# the folders its torrents save into are shared from there over NFS, only to Tailscale's addresses,
+# and on another Pi running it they're mounted under TR_MNT and put back at their own paths for
+# Transmission alone (its service's BindPaths), so every torrent keeps its folder.
+TR_CONFIG = ".local/share/ht-cluster/transmission"
+TR_MNT = "/mnt/ht-cluster/transmission"
+TR_UNIT = "ht-cluster-transmission"
+TR_GROUP = "ht-capped"  # (pi/download-cap.sh's group: its connections are what the caps below count)
+TR_EXPORTS = "/etc/exports.d/ht-cluster.exports"
+TR_TABLE = "inet ht_cluster_cap"
+FOLDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.+-]{0,59}$")
+TAILSCALE_V4 = re.compile(r"^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$")
+
+
+def account():
+    """The account the cluster's service runs as (the one sudo was asked by): (name, uid, gid, home)."""
+    import pwd
+    name = os.environ.get("SUDO_USER") or ""
+    if not AS_ROOT or not name or name == "root":
+        raise Failed("Only through sudo, from the service's account.")
+    p = pwd.getpwnam(name)
+    return name, p.pw_uid, p.pw_gid, p.pw_dir
+
+
+def installed(package):
+    code, out, _ = run(["dpkg-query", "-W", "-f", "${db:Status-Status}", package], 30)
+    return code == 0 and out.strip() == "installed"
+
+
+def folders(names):
+    """Folder names in the account's home (as given by the service), checked: plain names of folders there."""
+    _, _, _, home = account()
+    out = []
+    for n in names:
+        if not FOLDER.match(n) or not os.path.isdir(os.path.join(home, n)) or os.path.islink(os.path.join(home, n)):
+            raise Failed("%s isn't a folder in your home that can be shared." % n)
+        out.append(n)
+    return sorted(set(out))
+
+
+def install_transmission():
+    name, _, _, _ = account()
+    had = installed("transmission-daemon")
+    wanted = [p for p in ("transmission-daemon", "nfs-common", "nftables") if not installed(p)]
+    if wanted:
+        code, out, err = apt(["install", "-y", "-q"] + wanted, 1800, {"DEBIAN_FRONTEND": "noninteractive"})
+        if code != 0:
+            raise Failed("Transmission didn't go in: %s" % apt_why(out, err))
+    if not had:  # (Debian's own background Transmission, which comes with it: off, unless it was there before)
+        run(["systemctl", "disable", "--now", "transmission-daemon"], 120)
+    if run(["getent", "group", TR_GROUP], 10)[0] != 0:
+        run(["groupadd", "--system", TR_GROUP], 30)
+    run(["usermod", "-aG", TR_GROUP, name], 30)
+    return {"installed": wanted}
+
+
+def nfs_share(*names):
+    name, uid, gid, home = account()
+    shared = folders(names)
+    os.makedirs(os.path.join(home, TR_CONFIG), exist_ok=True)
+    if not installed("nfs-kernel-server"):
+        code, out, err = apt(["install", "-y", "-q", "nfs-kernel-server"], 1800, {"DEBIAN_FRONTEND": "noninteractive"})
+        if code != 0:
+            raise Failed("The share didn't go in: %s" % apt_why(out, err))
+    opts = "rw,sync,no_subtree_check,all_squash,anonuid=%d,anongid=%d" % (uid, gid)
+    lines = ["# Pi Cluster: Transmission's folders, to Tailscale's addresses only (ht-cluster-root nfs-share)"]
+    for p in [os.path.join(home, n) for n in shared] + [os.path.join(home, TR_CONFIG)]:
+        lines.append('"%s" 100.64.0.0/10(%s)' % (p, opts))
+    os.makedirs(os.path.dirname(TR_EXPORTS), exist_ok=True)
+    with open(TR_EXPORTS + ".new", "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(TR_EXPORTS + ".new", TR_EXPORTS)
+    run(["systemctl", "enable", "--now", "nfs-server"], 120)
+    code, out, err = run(["exportfs", "-ra"], 120)
+    if code != 0:
+        raise Failed("The share didn't take: %s" % last_lines(err or out, 1))
+    return {"shared": shared}
+
+
+def nfs_unshare():
+    if os.path.exists(TR_EXPORTS):
+        os.remove(TR_EXPORTS)
+        run(["exportfs", "-ra"], 120)
+    return {}
+
+
+def transmission_stop():
+    run(["systemctl", "stop", TR_UNIT], 120)
+    if os.path.isdir(TR_MNT):
+        for n in os.listdir(TR_MNT):
+            run(["umount", "-l", os.path.join(TR_MNT, n)], 60)
+    return {}
+
+
+def transmission_start(where, *names):
+    """where: "local" (this Pi has the files) or the Tailscale address of the Pi that has them."""
+    name, uid, gid, home = account()
+    if where != "local" and not TAILSCALE_V4.match(where):
+        raise Failed("Not a Tailscale address: %s" % where)
+    shared = folders(names) if where == "local" else [n for n in names if FOLDER.match(n)]
+    transmission_stop()
+    binds = []
+    if where != "local":
+        os.makedirs(TR_MNT, exist_ok=True)
+        for key, rel in [(n, n) for n in shared] + [("_settings", TR_CONFIG)]:
+            mnt = os.path.join(TR_MNT, key)
+            os.makedirs(mnt, exist_ok=True)
+            code, out, err = run(["mount", "-t", "nfs4", "-o", "soft,timeo=150,retrans=3,nosuid,nodev,noexec",
+                                  "%s:%s" % (where, os.path.join(home, rel)), mnt], 120)
+            if code != 0:
+                transmission_stop()
+                raise Failed("Couldn't reach %s's %s: %s" % (where, rel, last_lines(err or out, 1)))
+            dest = os.path.join(home, rel)
+            if not os.path.isdir(dest):
+                os.makedirs(dest, exist_ok=True)
+                os.chown(dest, uid, gid)
+            binds.append("%s:%s" % (mnt, dest))
+    group = TR_GROUP if run(["getent", "group", TR_GROUP], 10)[0] == 0 else str(gid)
+    cmd = ["systemd-run", "--unit=" + TR_UNIT, "--collect", "-p", "User=" + name, "-p", "Group=" + group,
+           "-p", "UMask=0022", "-p", "Restart=on-failure", "-p", "RestartSec=10", "-p", "Nice=5",
+           "-p", "Description=Pi Cluster's Transmission"]
+    for b in binds:
+        cmd += ["-p", "BindPaths=" + b]
+    cmd += ["/usr/bin/transmission-daemon", "-f", "--log-level=error", "-g", os.path.join(home, TR_CONFIG)]
+    code, out, err = run(cmd, 60)
+    if code != 0:
+        transmission_stop()
+        raise Failed("Transmission didn't start: %s" % last_lines(err or out, 1))
+    return {"started": where}
+
+
+def transmission_cap(down, up):
+    """Transmission's own limits (kB/s, "none" for no limit), kept by Linux on the Wi-Fi for its group's
+    connections, as pi/download-cap.sh does on pi: this Transmission goes over its own limits."""
+    def rate(v):
+        if v == "none":
+            return None
+        if not v.isdigit() or not 1 <= int(v) <= 1000000:
+            raise Failed("Not a speed: %s" % v)
+        return int(v) * 1000
+    d, u = rate(down), rate(up)
+    code, out, _ = run(["getent", "group", TR_GROUP], 10)
+    if code != 0:
+        raise Failed("No %s group here (install-transmission makes it)." % TR_GROUP)
+    gid = out.split(":")[2]
+    over = lambda r: "limit rate over %d bytes/second burst %d bytes drop" % (r, max(r // 2, 30000))
+    rules = ["table %s" % TR_TABLE, "delete table %s" % TR_TABLE, "table %s {" % TR_TABLE,
+             "  chain out {", "    type filter hook output priority mangle; policy accept;",
+             "    meta skgid %s ct mark set ct mark or 0x02000000" % gid]
+    if u is not None:
+        rules.append('    oifname "wlan0" ct mark and 0x02000000 == 0x02000000 %s' % over(u))
+    rules += ["  }", "  chain in {", "    type filter hook prerouting priority mangle; policy accept;"]
+    if d is not None:
+        rules.append('    iifname "wlan0" ct mark and 0x02000000 == 0x02000000 %s' % over(d))
+    rules += ["  }", "}"]
+    p = subprocess.run(["nft", "-f", "-"], input="\n".join(rules) + "\n", text=True, capture_output=True, timeout=60)
+    if p.returncode != 0:
+        raise Failed("nft: %s" % last_lines(p.stderr, 1))
+    return {"down": down, "up": up}
+
+
+# name: (what it does, how many words after it: 0, or None for "as many as it checks itself", which lock).
+# (Transmission's jobs have a lock of their own: they don't wait behind a long system update.)
+JOBS = {"install-hand-tracker": (install_hand_tracker, 0, "updates"), "update-cluster": (update_cluster, 0, "updates"),
+        "os-check": (os_check, 0, "updates"), "os-upgrade": (os_upgrade, 0, "updates"), "reboot": (reboot, 0, "updates"),
+        "renice-jobs": (renice_jobs, 0, None),
+        "install-transmission": (install_transmission, 0, "updates"), "nfs-share": (nfs_share, None, "transmission"),
+        "nfs-unshare": (nfs_unshare, 0, "transmission"), "transmission-start": (transmission_start, None, "transmission"),
+        "transmission-stop": (transmission_stop, 0, "transmission"), "transmission-cap": (transmission_cap, 2, None)}
 
 
 def main():
-    job = sys.argv[1] if len(sys.argv) == 2 else ""
-    if job not in JOBS:
+    job = sys.argv[1] if len(sys.argv) >= 2 else ""
+    words = sys.argv[2:]
+    if job not in JOBS or (JOBS[job][1] is not None and len(words) != JOBS[job][1]) or len(words) > 40:
         print(json.dumps({"ok": False, "error": "Jobs: " + ", ".join(JOBS)}))
         return 2
+    fn, _, lock_name = JOBS[job]
     if AS_ROOT:
         os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         os.umask(0o022)
@@ -323,9 +527,9 @@ def main():
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), signal.SIG_IGN)
     lock = None
-    if fcntl:
+    if fcntl and lock_name:
         os.makedirs(os.path.dirname(LOCK), exist_ok=True)
-        lock = open(LOCK, "w")
+        lock = open(LOCK if lock_name == "updates" else LOCK + "." + lock_name, "w")
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -333,7 +537,7 @@ def main():
             return 1
     started = time.time()
     try:
-        answer = dict(JOBS[job](), ok=True)
+        answer = dict(fn(*words), ok=True)
     except Missing as e:
         answer = {"ok": False, "missing": True, "error": str(e)}
     except Failed as e:

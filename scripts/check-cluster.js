@@ -233,6 +233,16 @@ app.whenReady().then(async () => {
     const saved = await until(() => fs.existsSync(path.join(saveIn, "A command for each file", "letter.txt")) && fs.existsSync(path.join(saveIn, "A command for each file", "log.txt")), 30000);
     check("...and its results saved on this computer", !!saved && fs.readFileSync(path.join(saveIn, "A command for each file", "letter.txt"), "utf8").startsWith("hello"), fs.existsSync(saveIn) && fs.readdirSync(saveIn));
 
+    // Transmission: which Pi keeps its files, then the offer to move the window app's torrents in
+    await js("document.getElementById('tabTransmission').click(); null");
+    const trAsk = await until(() => js("[...document.querySelectorAll('#trHome button')].some((b) => b.textContent === 'Keep them there')"));
+    check("Transmission asks which Pi keeps its files", !!trAsk, await js("document.getElementById('trHome').innerText"));
+    await js("[...document.querySelectorAll('#trHome button')].find((b) => b.textContent === 'Keep them there').click(); null");
+    const offer = await until(async () => /Move .* Transmission torrents in/.test(await js("document.getElementById('trHome').innerText")));
+    check("...then offers to move the window app's torrents in", !!offer, await js("document.getElementById('trHome').innerText"));
+    const homeOn = await until(async () => (await ask(port, "GET", "/api/node")).modules.find((m) => m.name === "apps").status.home === true);
+    check("...that Pi now keeps them", !!homeOn);
+
     // On a phone: the same page through the app's Cluster plugin (here fake-cluster-plugin.js): the
     // Pi found by its Tailscale name, a command job over a file picked on the phone, its results as one zip
     const downloads = path.join(tmp, "phone-downloads");

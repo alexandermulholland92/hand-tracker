@@ -89,6 +89,25 @@ for that Pi.
     mustn't) pauses its job. If it's still paused after 5 minutes, it hands the job back for
     another Pi.
 
+- **Apps** (`modules/apps.py`): apps the cluster runs on whichever Pi is free, shown on the app's
+  **Transmission** tab. The first is Transmission.
+  - **Where its files live:** one Pi keeps its torrents, settings and files (its "Transmission's
+    files and settings are here" switch; the app asks which).
+  - **Where it runs:** on any Pi with "Can run Transmission" on that's free, that home first. A Pi
+    isn't free while it records, gets too hot, runs short of memory or its battery runs low. When
+    its Pi stops being free, or goes quiet, it moves on; it can also be moved by hand.
+  - **On another Pi:** the home's folders are shared over NFS (only to Tailscale's addresses) and
+    mounted there at their own paths, for Transmission alone, so every torrent keeps its folder.
+  - **Its old address:** the home still answers there (port 9092, the window app's, from Tailscale
+    and the home network) and passes it on.
+  - **Its speeds:** its speed limits (the turtle's when on) are kept on that Pi's Wi-Fi by Linux.
+  - **Moving in:** "Move the torrents in" copies the Transmission window app's torrents (their
+    folders and progress) and settings into it; "Give them back" undoes it.
+  - **New downloads:** they go into a folder you choose in your home, and a folder not shared yet
+    is shared then.
+  - **On the Pis:** Debian's `transmission-daemon` runs as your account (`ht-cluster-transmission`,
+    started by the root helper), with its settings in `~/.local/share/ht-cluster/transmission`.
+
 A new module is a new file in `node/modules/` (what it needs is described in `node/ht_cluster.py`).
 It reaches every Pi with the service's own updates. The app shows a module it doesn't know yet
 too: its summary, its warnings, its buttons and its settings.
@@ -129,6 +148,13 @@ python3 cluster/test_jobs.py
 This checks the jobs with two Pis simulated on this computer. The animal model's part also needs
 `HT_TEST_ANIMALS_PY`, a Python with ONNX Runtime, NumPy and Pillow, and `HT_TEST_MODEL`, the app's
 `animals8.onnx`.
+
+```bash
+python3 cluster/test_apps.py
+```
+
+This checks Transmission moving in, moving between two simulated Pis, its old address, new
+downloads and giving the torrents back, with a stand-in Transmission and root helper.
 
 ```bash
 npm run check:cluster
