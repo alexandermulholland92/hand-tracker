@@ -151,6 +151,15 @@ def busy(node):
     return bool(st.get("recording") or st.get("saving"))
 
 
+def cameras_running(node, fresh=True):
+    """Its cameras on (Sentry watching through them, say), recording or saving (jobs.py: a Pi whose
+    "Take jobs while its cameras run" is off waits)."""
+    if fresh or time.time() - _now["at"] > 10:
+        tick(node)
+    st = _now["state"] or {}
+    return bool(st.get("recording") or st.get("saving") or st.get("running") or (st.get("cameras") or []))
+
+
 def sentry_on(st):
     return bool(st and isinstance(st.get("sentry"), dict) and st["sentry"].get("armed"))
 

@@ -215,6 +215,7 @@ def update_cluster(node, asked=None):
     node.event("updates", "Pi Cluster service updated to %s; restarting it." % short(answer.get("commit")))
     _state["cluster"] = "Restarting with %s…" % short(answer.get("commit"))
     node.restart_soon()
+    return True  # (nothing more in this tick: the new service does the rest, not one about to end)
 
 
 def check_os(node):
@@ -282,7 +283,8 @@ def tick(node):
                 check_os(node)
             if node.setting("updates", "cluster") or "cluster" in asked:
                 _doing["what"] = "cluster"
-                update_cluster(node, asked.get("cluster"))
+                if update_cluster(node, asked.get("cluster")):
+                    return
             if node.setting("updates", "handTracker") or "handTracker" in asked:
                 _doing["what"] = "handTracker"
                 update_hand_tracker(node, asked.get("handTracker"))

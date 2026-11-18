@@ -106,7 +106,9 @@ jobs:
       # Pi Cluster's service (cluster/node), on Linux: everything its checks cover, its own update's
       # folder switch included (a symbolic link).
       - name: Pi Cluster's service checks
-        run: python3 cluster/test_cluster.py
+        run: |
+          python3 cluster/test_cluster.py
+          python3 cluster/test_jobs.py
 
       - run: npm run dist:deb
       # Hand Mouse, Remote Recording, Recording Converter and Pi Cluster (scripts/dist.js --app):

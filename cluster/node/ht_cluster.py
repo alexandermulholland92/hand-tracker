@@ -29,10 +29,17 @@ A module (modules/<name>.py) has:
   status(node) -> {}  its readings now, quickly (from what tick() found): "summary" (one line),
                       "warnings" (a list), and anything else the app knows how to show
   ACTIONS = {name: {"title", "run": fn(node, args) -> {"message"}, "confirm"?, "hidden"?}}
+  ROUTES = {"GET /api/<module>/<what>": fn(node, h, query)}   requests of its own (files going to or
+                      from another Pi, say), each under /api/<its name>/, answered by fn itself
+                      (node.send for JSON, node.send_bytes for anything else): the same checks first
+
+Pis ask each other the same way the app asks them (node.ask), and find each other with node.cluster()
+(the other Linux computers on Tailscale whose service answers).
 """
 
 import argparse
 import collections
+import http.client
 import http.server
 import importlib.util
 import ipaddress
@@ -44,12 +51,13 @@ import sys
 import threading
 import time
 import traceback
+import urllib.parse
 
 PORT = 47830
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODULES_DIR = os.path.join(HERE, "modules")
 ROOT_HELPER = "/usr/local/sbin/ht-cluster-root"
-MAX_BODY = 65536
+MAX_BODY = 1 << 20  # (a job's list of files can be long)
 KEEP_EVENTS = 60
 TS_V4 = ipaddress.ip_network("100.64.0.0/10")
 TS_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
@@ -198,14 +206,21 @@ class Module:
         self.every = max(1.0, float(getattr(mod, "EVERY", 10)))
         self.settings = [s for s in getattr(mod, "SETTINGS", []) if isinstance(s, dict) and s.get("key")]
         self.actions = dict(getattr(mod, "ACTIONS", {}))
+        # (its own requests: only under /api/<its name>/)
+        self.routes = {k: f for k, f in dict(getattr(mod, "ROUTES", {})).items()
+                       if isinstance(k, str) and k.split(" ")[0] in ("GET", "POST", "PUT") and k.split(" ", 1)[-1].startswith("/api/%s/" % name)}
         self.error = None
         self.wake = threading.Event()
 
 
 class Node:
-    def __init__(self, simulate=False, state_dir=None):
+    def __init__(self, simulate=False, state_dir=None, port=PORT):
         self.simulate = simulate
+        self.port = port
         self.name = socket.gethostname().split(".")[0]
+        if simulate and os.environ.get("HT_CLUSTER_SIM_NAME"):
+            self.name = os.environ["HT_CLUSTER_SIM_NAME"]
+        self.peers_cache = {"at": 0, "list": []}
         self.started = time.time()
         self.state_dir = state_dir or os.environ.get("HT_CLUSTER_STATE") or os.path.join(os.path.expanduser("~"), ".local", "state", "ht-cluster")
         os.makedirs(self.state_dir, exist_ok=True)
@@ -304,6 +319,71 @@ class Node:
             why = (err or out or "no answer").strip().splitlines()
             return {"ok": False, "error": (why[-1] if why else "no answer")[:300]}
         return answer
+
+    def target(self):
+        """How the other Pis reach this one: its Tailscale address (simulated: 127.0.0.1:port)."""
+        if self.simulate:
+            return "127.0.0.1:%d" % self.port
+        me = self.tailscale.me() or {}
+        ip = next((a for a in me.get("ips", []) if ":" not in a), None)
+        return ip if not ip or self.port == PORT else "%s:%d" % (ip, self.port)
+
+    def ask(self, target, method, path, body=None, data=None, timeout=30):
+        """A request to another Pi's service (as the app makes them): -> (status, JSON or bytes), or
+        (None, why). body: JSON; data: bytes as they are (a file's piece)."""
+        host, _, port = str(target).partition(":")
+        port = int(port or PORT)
+        headers = {"X-HT-Cluster": "1", "Host": "%s:%d" % (host, port)}
+        payload = None
+        if body is not None:
+            payload = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        elif data is not None:
+            payload = data
+            headers["Content-Type"] = "application/octet-stream"
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        try:
+            conn.request(method, path, body=payload, headers=headers)
+            res = conn.getresponse()
+            raw = res.read()
+            if (res.getheader("Content-Type") or "").startswith("application/json"):
+                try:
+                    return res.status, json.loads(raw.decode("utf-8") or "{}")
+                except ValueError:
+                    return res.status, {"error": "Its answer wasn't readable."}
+            return res.status, raw
+        except (OSError, http.client.HTTPException) as e:
+            return None, str(e)
+        finally:
+            conn.close()
+
+    def cluster(self, fresh=False):
+        """The other Pis running this service: [{name, target, node: what /api/node said}], looked
+        for at most once a minute among the Linux computers on Tailscale (simulated: HT_CLUSTER_SIM_PEERS)."""
+        with self.lock:
+            if not fresh and time.time() - self.peers_cache["at"] < 60:
+                return list(self.peers_cache["list"])
+        if self.simulate:
+            targets = [t.strip() for t in os.environ.get("HT_CLUSTER_SIM_PEERS", "").split(",") if t.strip()]
+        else:
+            # (on the port this one is on: a copy run on another port to try it finds its own kind)
+            targets = [p["ip"] if self.port == PORT else "%s:%d" % (p["ip"], self.port) for p in self.tailscale.peers() if p["online"]]
+        found = []
+        lock = threading.Lock()
+
+        def probe(t):
+            code, d = self.ask(t, "GET", "/api/node", timeout=6)
+            if code == 200 and isinstance(d, dict) and d.get("name") and d.get("name") != self.name:
+                with lock:
+                    found.append({"name": d["name"], "target": t, "node": d})
+        threads = [threading.Thread(target=probe, args=(t,), daemon=True) for t in targets]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(10)
+        with self.lock:
+            self.peers_cache = {"at": time.time(), "list": found}
+        return list(found)
 
     def restart_soon(self):
         """This service ends; systemd starts it again (with what's now in its folder)."""
@@ -443,6 +523,14 @@ class Node:
                     return self.send(h, 403, {"error": "From this Pi itself: readings only."})
             elif not self.allowed(addr):
                 return self.send(h, 403, {"error": "Only your own Tailscale account can use this Pi's cluster service."})
+            # A module's own request (it reads the body itself: a file's piece can be megabytes).
+            key = "%s %s" % (method, path)
+            for m in self.modules.values():
+                if key in m.routes:
+                    if not self.is_on(m.name):
+                        return self.send(h, 409, {"error": "%s is off on %s." % (m.title, self.name)})
+                    query = {k: v[-1] for k, v in urllib.parse.parse_qs(urllib.parse.urlsplit(h.path).query).items()}
+                    return m.routes[key](self, h, query)
             body = {}
             if method == "POST":
                 if not str(h.headers.get("Content-Type") or "").startswith("application/json"):
@@ -470,10 +558,12 @@ class Node:
             return self.send(h, 500, {"error": str(e)[:300]})
 
     def send(self, h, code, body):
-        data = json.dumps(body).encode("utf-8")
+        self.send_bytes(h, code, json.dumps(body).encode("utf-8"), "application/json; charset=utf-8")
+
+    def send_bytes(self, h, code, data, ctype="application/octet-stream"):
         try:
             h.send_response(code)
-            h.send_header("Content-Type", "application/json; charset=utf-8")
+            h.send_header("Content-Type", ctype)
             h.send_header("Content-Length", str(len(data)))
             h.send_header("Cache-Control", "no-store")
             h.send_header("X-Content-Type-Options", "nosniff")
@@ -481,6 +571,13 @@ class Node:
             h.wfile.write(data)
         except OSError:
             pass
+
+    def body_bytes(self, h, limit):
+        """A request's body as it is (at most limit bytes), or None if it's longer."""
+        n = int(h.headers.get("Content-Length") or 0)
+        if n < 0 or n > limit:
+            return None
+        return h.rfile.read(n) if n else b""
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -497,9 +594,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         self.node.serve(self, "POST")
 
+    def do_PUT(self):
+        self.node.serve(self, "PUT")
+
 
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
+    request_queue_size = 64  # (the app, the other Pis and this Pi's own jobs at once: none turned away)
     address_family = socket.AF_INET6
 
     def server_bind(self):
@@ -516,7 +617,7 @@ def main():
     p.add_argument("--port", type=int, default=PORT)
     p.add_argument("--simulate", action="store_true")
     args = p.parse_args()
-    node = Node(simulate=args.simulate)
+    node = Node(simulate=args.simulate, port=args.port)
     Handler.node = node
     if args.simulate:
         Server.address_family = socket.AF_INET

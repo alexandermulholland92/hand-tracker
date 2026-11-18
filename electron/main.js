@@ -395,6 +395,28 @@ if (APP.kind === "cluster") {
   handle("cluster:settings", (_e, change) => theCluster().settings(change));
   handle("cluster:action", (_e, what) => theCluster().action(what));
   handle("cluster:forget", (_e, name) => theCluster().forget(name));
+  // Jobs: files from this computer (only ones picked here are sent), and a job's results saved here.
+  const picked = new Set();
+  const pick = async (event, options) => {
+    const got = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), options);
+    if (got.canceled) return [];
+    return Promise.all(got.filePaths.map(async (p) => {
+      picked.add(p);
+      return { path: p, name: path.basename(p), size: (await fs.promises.stat(p)).size };
+    }));
+  };
+  handle("cluster:pick-files", (event) => pick(event, { title: "Files for the job", properties: ["openFile", "multiSelections"] }));
+  handle("cluster:pick-model", (event) => pick(event, { title: "A model for the job (ONNX)", properties: ["openFile"], filters: [{ name: "ONNX model", extensions: ["onnx"] }] }));
+  handle("cluster:pick-folder", async (event) => {
+    const got = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), { title: "Save the results in", properties: ["openDirectory", "createDirectory"] });
+    return got.canceled ? null : got.filePaths[0];
+  });
+  const report = (event) => (p) => !event.sender.isDestroyed() && event.sender.send("cluster:progress", p);
+  handle("cluster:upload", (event, what) => {
+    const files = ((what && what.files) || []).filter((f) => f && picked.has(f.path)).map((f) => ({ path: f.path, name: String(f.name || path.basename(f.path)) }));
+    return theCluster().upload({ ...what, files }, report(event));
+  });
+  handle("cluster:download", (event, what) => theCluster().download(what, report(event)));
 }
 
 // ---------- OptiTrack Motive: live NatNet data ----------

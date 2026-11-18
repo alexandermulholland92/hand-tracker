@@ -59,6 +59,23 @@
   dialog h2 { font-size: 16px; margin: 0 0 10px; }
   dialog ol { padding-left: 20px; line-height: 1.6; }
   code.cmd { display: block; background: #0e0f12; border: 1px solid #2c2e36; border-radius: 8px; padding: 10px; font-size: 12px; word-break: break-all; margin: 6px 0; user-select: all; }
+  #newJob h2 { font-size: 15px; margin: 0 0 8px; }
+  .field { margin: 10px 0; }
+  .field > b { display: block; font-size: 12px; opacity: 0.7; margin-bottom: 4px; }
+  .field label { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 13px; flex-wrap: wrap; }
+  input[type="text"], input[type="number"] {
+    font: inherit; font-size: 13px; color: #e8e8ea; background: #0e0f12; border: 1px solid #343743; border-radius: 6px; padding: 5px 8px;
+  }
+  input[type="number"] { width: 70px; }
+  .hint { font-size: 12px; opacity: 0.6; line-height: 1.5; margin-top: 4px; }
+  .pick-list { max-height: 260px; overflow: auto; border: 1px solid #2c2e36; border-radius: 8px; padding: 6px 10px; margin-top: 8px; }
+  .pick-list h4 { font-size: 12px; margin: 8px 0 2px; opacity: 0.8; }
+  .pick-list label { margin: 2px 0; font-size: 12px; }
+  .pick-list .folder { cursor: pointer; color: #8fb4ff; font-size: 13px; padding: 2px 0; }
+  .bar { height: 6px; border-radius: 3px; background: #2c2e36; overflow: hidden; margin-top: 6px; }
+  .bar > div { height: 100%; background: #2f5fd0; }
+  .items { font-size: 12px; margin-top: 8px; line-height: 1.6; opacity: 0.85; }
+  .items .bad { color: #ff8a7a; }
 </style>
 </head>
 <body>
@@ -72,11 +89,44 @@
   <div class="tabs" role="tablist">
     <button role="tab" id="tabPis" aria-selected="true">Pis</button>
     <button role="tab" id="tabRigs" aria-selected="false">Camera rigs</button>
+    <button role="tab" id="tabJobs" aria-selected="false">Jobs</button>
   </div>
   <p id="note">Looking for Pis over Tailscale…</p>
   <p id="message" hidden></p>
   <section id="pis"></section>
   <section id="rigs" hidden></section>
+  <section id="jobs" hidden>
+    <div id="jobsHome" class="hint" style="margin-bottom:10px"></div>
+    <div class="buttons" style="margin-bottom:10px"><button id="newJobBtn" class="main">New job</button></div>
+    <div id="newJob" class="card" hidden>
+      <h2>New job</h2>
+      <div class="field"><b>What</b>
+        <label><input type="radio" name="kind" value="animals" checked /> Find animals in clips: label check proposals (a picture a second with the model's boxes), and a list of the animals in each clip</label>
+        <label><input type="radio" name="kind" value="convert" /> Convert videos to <select id="format"></select></label>
+        <label><input type="radio" name="kind" value="command" /> A command for each file</label>
+      </div>
+      <div id="animalsOpts" class="field">
+        <label>A picture every <input id="every" type="number" min="0.2" max="60" step="0.1" value="1" /> seconds</label>
+        <label>Model: <span id="modelName"></span> <button id="pickModel">Use a model file…</button> <button id="appModel" hidden>Use the app's</button></label>
+      </div>
+      <div id="commandOpts" class="field" hidden>
+        <input id="command" type="text" style="width:100%" placeholder="ffmpeg -i {in} -vf scale=640:-1 {out}/{name}.mp4" />
+        <div class="hint">{in}: the file · {out}: the folder for what it makes (what's in it comes back) · {name}: the file's name without its ending · {file}: with it. It runs on whichever Pi takes the file, as your account.</div>
+      </div>
+      <div class="field"><b>Files</b>
+        <div class="buttons"><button id="showRecordings">Recordings on the Pis…</button> <button id="pickFiles">Files from this computer…</button> <button id="browseHome">A folder on <span class="homeName">the Pi that keeps the jobs</span>…</button></div>
+        <div id="recordingsBox" class="pick-list" hidden></div>
+        <div id="browseBox" class="pick-list" hidden></div>
+        <div id="chosen" class="hint"></div>
+      </div>
+      <div class="field">
+        <label><input id="jobHigh" type="checkbox" /> High priority: all cores, ahead of everything (the cameras may stutter)</label>
+        <label>Name <input id="jobTitle" type="text" placeholder="(from what it is)" /></label>
+      </div>
+      <div class="buttons"><button id="startJob" class="main">Start the job</button> <button id="cancelJob">Cancel</button></div>
+    </div>
+    <div id="jobList"></div>
+  </section>
 </main>
 
 <dialog id="addDialog">
@@ -94,6 +144,9 @@
   <button id="closeAdd">Close</button>
 </dialog>
 
+<script src="video-formats.js"></script>
+<script src="sentry-models.js"></script>
+<script src="models/kinds.js"></script>
 <script src="pi-cluster.js"></script>
 </body>
 </html>

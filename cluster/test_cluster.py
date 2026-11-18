@@ -284,12 +284,16 @@ def main():
         node.terminate()
         node.wait(10)
 
-    # The service updating itself
+    # The service updating itself (with Hand Tracker out of date too: that's left to the new one)
+    with open(os.path.join(tmp, "installed.json"), "w") as f:
+        json.dump({"commit": OLD, "installedAt": time.time() - 86400}, f)
+    open(os.path.join(tmp, "helper.log"), "w").close()
     node2, port2 = start_node(tmp, gh, ht, version=OLD)
     try:
         code = node2.wait(30)
         out = node2.stdout.read()
         check("An old service updates itself, then ends for systemd to restart it", code == 0 and "update-cluster" in helper_log(tmp), (code, out[-500:]))
+        check("...without starting Hand Tracker's update as it ends", "install-hand-tracker" not in helper_log(tmp), helper_log(tmp))
     except subprocess.TimeoutExpired:
         node2.terminate()
         check("An old service updates itself, then ends for systemd to restart it", False, "still running")

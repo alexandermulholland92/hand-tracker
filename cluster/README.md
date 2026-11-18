@@ -51,6 +51,37 @@ for that Pi.
     wait while Hand Tracker records. If they need a restart, the app says so with **Restart this
     Pi**; the Pi is never restarted by itself.
 
+- **Jobs** (`modules/jobs.py`): work shared out across the Pis, managed on the app's **Jobs** tab.
+  - **Where the list lives:** one Pi keeps the job list and the jobs' files (`~/ht-cluster-jobs/`;
+    the app asks which Pi). Each Pi that takes jobs asks it for work, one file at a time, and sends
+    back what it made.
+  - **Kinds of job:**
+    - **Find animals in clips:** each clip is cut to a picture every few seconds (1 by default),
+      with the app's model's boxes on it (or a model file sent with the job). The result is laid
+      out the way the label check pages read it (`images/train`, `labels-proposed/train`). There is
+      also a list of the kinds in each clip and when (`clips/<clip>.json`; `finds.json` and
+      `animals.json` for the whole job). It runs in a Python the Pi makes for it the first time
+      (`~/.local/share/ht-cluster/jobs-env`: ONNX Runtime, NumPy, Pillow), through
+      `node/jobs_animals.py`.
+    - **Convert videos:** to any of the Recording Converter's formats, with its own ffmpeg settings.
+    - **A command for each file:** `{in}` is the file, `{out}` the folder whose contents come back,
+      and `{name}` / `{file}` its name without and with its ending.
+  - **Files for a job:** recordings on any Pi (a Pi works on its own recordings first, so they
+    don't cross the Wi-Fi; another takes them if it isn't taking jobs), files sent from the
+    computer, or a folder on the Pi that keeps the list. The results stay on that Pi, and the app
+    saves them to the computer.
+  - **Each Pi's switches:**
+    - **Take jobs**
+    - **while its cameras run** (off by default)
+    - **on battery** (off by default; never under 25 %)
+    - **high priority**
+    - **Keep the job list here**
+  - **Priority:** a job runs at low priority on two of the four cores. At high priority (the Pi's
+    switch, or the job's own) it uses all the cores, ahead of everything else, so the cameras may
+    stutter. A Pi that gets too hot (80 °C), short of memory, or whose cameras start (when they
+    mustn't) pauses its job. If it's still paused after 5 minutes, it hands the job back for
+    another Pi.
+
 A new module is a new file in `node/modules/` (what it needs is described in `node/ht_cluster.py`).
 It reaches every Pi with the service's own updates. The app shows a module it doesn't know yet
 too: its summary, its warnings, its buttons and its settings.
@@ -83,6 +114,14 @@ python3 cluster/test_cluster.py
 ```
 
 This checks the service against stand-ins for Hand Tracker, GitHub and the root helper.
+
+```bash
+python3 cluster/test_jobs.py
+```
+
+This checks the jobs with two Pis simulated on this computer. The animal model's part also needs
+`HT_TEST_ANIMALS_PY`, a Python with ONNX Runtime, NumPy and Pillow, and `HT_TEST_MODEL`, the app's
+`animals8.onnx`.
 
 ```bash
 npm run check:cluster

@@ -463,5 +463,18 @@ contextBridge.exposeInMainWorld("desktop", {
     settings: (change) => ipcRenderer.invoke("cluster:settings", change),
     action: (what) => ipcRenderer.invoke("cluster:action", what),
     forget: (name) => ipcRenderer.invoke("cluster:forget", name),
+    // Jobs: files (or a model) picked on this computer -> [{ path, name, size }]; a folder to save
+    // results in; upload({ target, job, files }) and download({ target, job, dir }), each telling
+    // onProgress(cb) how it's going.
+    pickFiles: () => ipcRenderer.invoke("cluster:pick-files"),
+    pickModel: () => ipcRenderer.invoke("cluster:pick-model"),
+    pickFolder: () => ipcRenderer.invoke("cluster:pick-folder"),
+    upload: (what) => ipcRenderer.invoke("cluster:upload", what),
+    download: (what) => ipcRenderer.invoke("cluster:download", what),
+    onProgress: (cb) => {
+      const listener = (_event, p) => cb(p);
+      ipcRenderer.on("cluster:progress", listener);
+      return () => ipcRenderer.removeListener("cluster:progress", listener);
+    },
   },
 });

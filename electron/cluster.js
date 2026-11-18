@@ -12,8 +12,11 @@
  *   await c.settings({ target, module, on } | { target, module, key, value }) -> { status, ...answer }
  *   await c.action({ target, module, action, args })                         -> { status, ...answer }
  *   c.forget(name)
+ *   await c.upload({ target, job, files: [{ path, name }] }, onProgress)  files for a job, to the Pi that keeps the list
+ *   await c.download({ target, job, dir }, onProgress)                     a job's results, into dir/<its title>/
  *
- * HT_CLUSTER_NODES=host:port,… are asked as well (the checks: a simulated Pi on this computer).
+ * HT_CLUSTER_NODES=host:port,… are asked as well (the checks: a simulated Pi on this computer; with
+ * HT_CLUSTER_ONLY=1, only those).
  */
 const fs = require("fs");
 const http = require("http");
@@ -24,6 +27,8 @@ const PORT = 47830;
 const ASK_MS = 5000;
 const NOT_ONE_MS = 60000; // a computer whose port didn't answer (no service there): asked again after this
 const KEEP_DAYS = 30; // a Pi not seen for this long is no longer listed
+const UPLOAD_PIECE = 8 << 20; // (the service takes up to 16 MB a piece)
+const DOWNLOAD_PIECE = 4 << 20; // (as the service gives them)
 
 function tailscaleCli() {
   if (process.platform === "win32") return path.join(process.env.ProgramFiles || "C:\\Program Files", "Tailscale", "tailscale.exe");
@@ -53,23 +58,28 @@ function tailscalePeers() {
 }
 
 // One request to a Pi's service: target is "100.x.y.z" (its port is the service's) or "host:port".
-function ask(target, method, urlPath, body) {
+// body: JSON; raw: bytes as they are (a piece of a file). An answer that isn't JSON comes back as
+// { status, bytes }.
+function ask(target, method, urlPath, body, { raw = null, timeout = ASK_MS } = {}) {
   const [host, port] = target.includes(":") ? [target.split(":")[0], Number(target.split(":")[1])] : [target, PORT];
-  const data = body === undefined ? null : Buffer.from(JSON.stringify(body));
+  const data = raw || (body === undefined ? null : Buffer.from(JSON.stringify(body)));
+  const type = raw ? "application/octet-stream" : "application/json";
   return new Promise((resolve) => {
     const req = http.request(
       {
         host, port, path: urlPath, method,
-        headers: { "X-HT-Cluster": "1", Host: `${host}:${port}`, ...(data ? { "Content-Type": "application/json", "Content-Length": data.length } : {}) },
-        timeout: ASK_MS,
+        headers: { "X-HT-Cluster": "1", Host: `${host}:${port}`, ...(data ? { "Content-Type": type, "Content-Length": data.length } : {}) },
+        timeout,
       },
       (res) => {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
         res.on("end", () => {
+          const all = Buffer.concat(chunks);
+          if (!String(res.headers["content-type"] || "").startsWith("application/json")) return resolve({ status: res.statusCode, bytes: all });
           let json = {};
           try {
-            json = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+            json = JSON.parse(all.toString("utf8") || "{}");
           } catch {
             json = { error: "Its answer wasn't readable." };
           }
@@ -104,7 +114,7 @@ class Cluster {
   }
 
   async list() {
-    const peers = await tailscalePeers();
+    const peers = process.env.HT_CLUSTER_ONLY ? [] : await tailscalePeers(); // (the checks: only HT_CLUSTER_NODES)
     const now = Date.now();
     const online = new Map(); // target -> Tailscale's name for it
     const offline = new Set();
@@ -164,6 +174,63 @@ class Cluster {
     delete this.known[String(name)];
     this.save();
     return { ok: true };
+  }
+
+  // Files from this computer for a job, to the Pi that keeps the job list, a piece at a time:
+  // files [{ path, name }] (paths this computer's own file picker gave). onProgress({ name, sent, size }).
+  async upload({ target, job, files } = {}, onProgress = () => {}) {
+    const t = this.target(target);
+    for (const f of files || []) {
+      const size = (await fs.promises.stat(f.path)).size;
+      const fh = await fs.promises.open(f.path, "r");
+      try {
+        let at = 0;
+        do {
+          const buf = Buffer.alloc(Math.min(UPLOAD_PIECE, size - at));
+          const { bytesRead } = await fh.read(buf, 0, buf.length, at);
+          const last = at + bytesRead >= size ? 1 : 0;
+          const q = `job=${encodeURIComponent(job)}&name=${encodeURIComponent(f.name)}&at=${at}&last=${last}`;
+          const a = await ask(t, "PUT", `/api/jobs/upload?${q}`, undefined, { raw: buf.subarray(0, bytesRead), timeout: 120000 });
+          if (a.status !== 200) throw new Error(`${f.name}: ${a.error || `it answered ${a.status}`}`);
+          at += bytesRead;
+          onProgress({ name: f.name, sent: at, size });
+        } while (at < size);
+      } finally {
+        await fh.close();
+      }
+    }
+    return { ok: true };
+  }
+
+  // A job's results, from the Pi that keeps the job list, into dir/<the job's title>/.
+  // onProgress({ name, got, files, done }).
+  async download({ target, job, dir } = {}, onProgress = () => {}) {
+    const t = this.target(target);
+    const list = await ask(t, "POST", "/api/action", { module: "jobs", action: "results", args: { job } });
+    if (list.status !== 200) throw new Error(list.error || "Couldn't list its results.");
+    const folder = path.join(dir, String(list.title || job).replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || job);
+    let done = 0;
+    for (const f of list.files || []) {
+      const out = path.join(folder, ...f.path.split("/"));
+      if (!out.startsWith(folder + path.sep)) continue; // (nothing outside its folder)
+      await fs.promises.mkdir(path.dirname(out), { recursive: true });
+      const fh = await fs.promises.open(out + ".part", "w");
+      try {
+        let at = 0;
+        for (;;) {
+          const a = await ask(t, "GET", `/api/jobs/result-file?job=${encodeURIComponent(job)}&path=${encodeURIComponent(f.path)}&at=${at}`, undefined, { timeout: 120000 });
+          if (a.status !== 200 || !a.bytes) throw new Error(`${f.path}: ${a.error || `it answered ${a.status}`}`);
+          await fh.write(a.bytes, 0, a.bytes.length, at);
+          at += a.bytes.length;
+          if (a.bytes.length < DOWNLOAD_PIECE || at >= f.size) break;
+        }
+      } finally {
+        await fh.close();
+      }
+      await fs.promises.rename(out + ".part", out);
+      onProgress({ name: f.path, got: ++done, files: list.files.length });
+    }
+    return { ok: true, folder, files: done };
   }
 }
 
