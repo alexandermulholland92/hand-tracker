@@ -35,11 +35,12 @@ jobs:
 
       - run: npm run dist
 
-      # Hand Mouse, Remote Recording and Recording Converter: the same app, each with its own
-      # name, ID and page (scripts/dist.js --app).
+      # Hand Mouse, Remote Recording, Recording Converter and Pi Cluster: the same app, each with
+      # its own name, ID and page (scripts/dist.js --app).
       - run: node scripts/dist.js portable --app mouse
       - run: node scripts/dist.js portable --app remote
       - run: node scripts/dist.js portable --app converter
+      - run: node scripts/dist.js portable --app cluster
 
       - uses: actions/upload-artifact@v4
         with:
@@ -102,12 +103,18 @@ jobs:
           path: kinect/bin/linux-arm64
       - run: chmod +x kinect/bin/linux-*/kinect2-helper kinect/bin/linux-*/kinect360-helper
 
+      # Pi Cluster's service (cluster/node), on Linux: everything its checks cover, its own update's
+      # folder switch included (a symbolic link).
+      - name: Pi Cluster's service checks
+        run: python3 cluster/test_cluster.py
+
       - run: npm run dist:deb
-      # Hand Mouse, Remote Recording and Recording Converter (scripts/dist.js --app): packages of
-      # their own.
+      # Hand Mouse, Remote Recording, Recording Converter and Pi Cluster (scripts/dist.js --app):
+      # packages of their own.
       - run: node scripts/dist.js deb --app mouse
       - run: node scripts/dist.js deb --app remote
       - run: node scripts/dist.js deb --app converter
+      - run: node scripts/dist.js deb --app cluster
 
       # The same for 64-bit ARM (Raspberry Pi 4 and 5): ARM Electron, and ARM ffmpeg swapped
       # in for this build (see scripts/dist.js).
@@ -115,6 +122,7 @@ jobs:
       - run: node scripts/dist.js deb --arm64 --app mouse
       - run: node scripts/dist.js deb --arm64 --app remote
       - run: node scripts/dist.js deb --arm64 --app converter
+      - run: node scripts/dist.js deb --arm64 --app cluster
 
       # The packages install and remove cleanly, side by side: Hand Tracker with the USB rules OAK
       # cameras and the Kinect need (build/linux/*-oak.sh, *-kinect.sh), the OAK helper where Python
@@ -124,7 +132,11 @@ jobs:
       - name: Install and remove the packages
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q ./dist/hand-tracker_*_amd64.deb ./dist/hand-mouse_*_amd64.deb ./dist/remote-recording_*_amd64.deb ./dist/recording-converter_*_amd64.deb
+          sudo apt-get install -y -q ./dist/hand-tracker_*_amd64.deb ./dist/hand-mouse_*_amd64.deb ./dist/remote-recording_*_amd64.deb ./dist/recording-converter_*_amd64.deb ./dist/pi-cluster_*_amd64.deb
+          test -L /usr/bin/pi-cluster
+          test -z "$(ls /lib/udev/rules.d | grep pi-cluster)"
+          sudo apt-get remove -y -q pi-cluster
+          test ! -e "/opt/Pi Cluster/resources"
           grep -q 'idVendor}=="03e7"' /lib/udev/rules.d/80-hand-tracker-oak.rules
           test -L /usr/bin/hand-tracker
           test -f "/opt/Hand Tracker/resources/app.asar.unpacked/oak/oak_bridge.py"
@@ -217,7 +229,7 @@ jobs:
           : > mac-build.log
           for cpu in "arm64:mac-arm64:arm64" "x64:mac:x86_64"; do
             flag="--${cpu%%:*}"; rest="${cpu#*:}"; dir="${rest%%:*}"; arch="${rest##*:}"
-            for app in ":Hand Tracker:com.handtracker.app" "mouse:Hand Mouse:com.handtracker.mouse" "remote:Remote Recording:com.handtracker.remote" "converter:Recording Converter:com.handtracker.converter"; do
+            for app in ":Hand Tracker:com.handtracker.app" "mouse:Hand Mouse:com.handtracker.mouse" "remote:Remote Recording:com.handtracker.remote" "converter:Recording Converter:com.handtracker.converter" "cluster:Pi Cluster:com.handtracker.cluster"; do
               kind="${app%%:*}"; rest="${app#*:}"; name="${rest%%:*}"; id="${rest##*:}"
               node scripts/dist.js mac "$flag" ${kind:+--app "$kind"} 2>&1 | tee -a mac-build.log
               check "$dir" "$name" "$arch" "$id" "${cpu%%:*}"
@@ -453,4 +465,4 @@ jobs:
         run: |
           gh release delete latest-build --yes --cleanup-tag || true
           gh release create latest-build dist/* --target "$GITHUB_SHA" --prerelease --title "Latest build" \
-            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID). Chrome (the hand mouse for web pages): HandTracker-*-chrome-extension.zip, unzipped and loaded in chrome://extensions with Developer mode on (Load unpacked). Apps of their own, for each of these the same way: Hand Mouse (the hand mouse alone): HandMouse-*; Remote Recording (controlling camera rigs, or being one): RemoteRecording-*; Recording Converter (opening and converting recordings and videos): RecordingConverter-*; on Linux hand-mouse_*.deb, remote-recording_*.deb and recording-converter_*.deb."
+            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID). Chrome (the hand mouse for web pages): HandTracker-*-chrome-extension.zip, unzipped and loaded in chrome://extensions with Developer mode on (Load unpacked). Apps of their own, for each of these the same way: Hand Mouse (the hand mouse alone): HandMouse-*; Remote Recording (controlling camera rigs, or being one): RemoteRecording-*; Recording Converter (opening and converting recordings and videos): RecordingConverter-*; Pi Cluster (your Raspberry Pis in one place: health, camera rigs, updates; each Pi joins with cluster/setup.sh): PiCluster-* (Windows, Mac, Linux); on Linux hand-mouse_*.deb, remote-recording_*.deb, recording-converter_*.deb and pi-cluster_*.deb."

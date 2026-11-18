@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<link rel="icon" type="image/png" href="favicon.png" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Pi Cluster (an app of its own: the computer apps' "cluster" builds, scripts/dist.js --app
+     cluster): the Raspberry Pis running Pi Cluster's service (cluster/node), found over Tailscale.
+     Each Pi's health, its camera rig, its updates, and its modules' switches and settings.
+     pi-cluster.js; the requests go through electron/cluster.js. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'" />
+<title>Pi Cluster</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: #0e0f12; color: #e8e8ea;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px;
+  }
+  [hidden] { display: none !important; }
+  main { max-width: 980px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0; }
+  #buildInfo { font-size: 11px; opacity: 0.45; white-space: nowrap; flex: 1; }
+  button, select {
+    font: inherit; font-size: 13px; color: #e8e8ea; background: #22242b; border: 1px solid #343743;
+    border-radius: 8px; padding: 6px 11px; cursor: pointer;
+  }
+  button:hover { background: #2a2d36; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button.main { background: #2f5fd0; border-color: #3b6ce0; }
+  button.warn { background: #6a3a1c; border-color: #8a4c25; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .tabs button[aria-selected="true"] { background: #2f5fd0; border-color: #3b6ce0; }
+  #note { font-size: 12px; opacity: 0.6; margin: 0 0 10px; min-height: 16px; }
+  #message { font-size: 13px; margin: 0 0 10px; padding: 8px 11px; border-radius: 8px; background: #1b2a1d; }
+  #message.err { background: #3a1d1d; }
+  .card { border: 1px solid #2c2e36; background: #17181c; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
+  .card.away { opacity: 0.55; }
+  .top { display: flex; align-items: center; gap: 10px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #666; flex: none; }
+  .dot.on { background: #3fbf6a; }
+  .dot.part { background: #d9a03a; }
+  .name { font-size: 16px; font-weight: 600; }
+  .sub { font-size: 12px; opacity: 0.6; flex: 1; }
+  .mod { margin-top: 9px; }
+  .mod-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin-bottom: 2px; }
+  .summary { line-height: 1.45; }
+  .warn-line { color: #ff8a7a; font-size: 13px; line-height: 1.45; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .settings { margin-top: 10px; padding-top: 8px; border-top: 1px solid #2c2e36; }
+  .settings h3 { font-size: 12px; font-weight: 600; margin: 8px 0 4px; opacity: 0.8; }
+  .settings label { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 13px; }
+  .events { margin-top: 8px; font-size: 12px; opacity: 0.7; line-height: 1.5; }
+  .events .bad { color: #ff8a7a; }
+  .cams { font-size: 12px; opacity: 0.75; margin-top: 4px; line-height: 1.5; }
+  .empty { opacity: 0.6; padding: 24px 4px; line-height: 1.6; }
+  dialog { background: #17181c; color: #e8e8ea; border: 1px solid #343743; border-radius: 12px; max-width: 620px; padding: 18px; }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+  dialog h2 { font-size: 16px; margin: 0 0 10px; }
+  dialog ol { padding-left: 20px; line-height: 1.6; }
+  code.cmd { display: block; background: #0e0f12; border: 1px solid #2c2e36; border-radius: 8px; padding: 10px; font-size: 12px; word-break: break-all; margin: 6px 0; user-select: all; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Pi Cluster</h1>
+    <span id="buildInfo"></span>
+    <button id="updateAll" title="Every Pi that's on updates Hand Tracker (a Pi that's recording waits until it stops)">Update all Pis</button>
+    <button id="addPi" class="main">Add a Pi</button>
+  </header>
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tabPis" aria-selected="true">Pis</button>
+    <button role="tab" id="tabRigs" aria-selected="false">Camera rigs</button>
+  </div>
+  <p id="note">Looking for Pis over Tailscale…</p>
+  <p id="message" hidden></p>
+  <section id="pis"></section>
+  <section id="rigs" hidden></section>
+</main>
+
+<dialog id="addDialog">
+  <h2>Add a Pi to the cluster</h2>
+  <ol>
+    <li>Raspberry Pi OS (64-bit) on the Pi, with <b>Tailscale</b> installed and logged in to your account.</li>
+    <li>On the Pi, from your own account (not root), run this. It asks for your password once:
+      <code class="cmd" id="setupCmd">curl -fsSL https://raw.githubusercontent.com/alexandermulholland92/hand-tracker/main/cluster/setup.sh | sudo bash</code>
+      <button id="copyCmd">Copy</button> <span id="copied" hidden>Copied.</span>
+    </li>
+    <li>It shows up here within a minute. From then on it keeps itself up to date (each part has a switch under ⚙).</li>
+  </ol>
+  <p style="font-size:12px;opacity:0.6;line-height:1.5">Taking a Pi out: unplug it and press Forget here, or remove the service from it with
+    <code>curl -fsSL https://raw.githubusercontent.com/alexandermulholland92/hand-tracker/main/cluster/setup.sh | sudo bash -s -- --remove</code></p>
+  <button id="closeAdd">Close</button>
+</dialog>
+
+<script src="pi-cluster.js"></script>
+</body>
+</html>

@@ -52,6 +52,8 @@ const APPS = {
   mouse: { name: "Hand Mouse", page: "hand-mouse.html", id: "com.handtracker.mouse", slug: "hand-mouse", size: { width: 600, height: 900 } },
   remote: { name: "Remote Recording", page: "remote-recording.html", id: "com.handtracker.remote", slug: "remote-recording", size: { width: 1320, height: 940 } },
   converter: { name: "Recording Converter", page: "viewer.html", id: "com.handtracker.converter", slug: "recording-converter", size: { width: 920, height: 960 } },
+  // (Pi Cluster: the Raspberry Pis running Pi Cluster's service, cluster/node: pi-cluster.html)
+  cluster: { name: "Pi Cluster", page: "pi-cluster.html", id: "com.handtracker.cluster", slug: "pi-cluster", size: { width: 1080, height: 920 } },
 };
 const APP = (() => {
   const arg = process.argv.find((a) => a.startsWith("--app="));
@@ -330,7 +332,7 @@ function buildMenu() {
       submenu: [
         {
           label: "Open Recording Converter",
-          visible: APP.kind !== "mouse" && APP.kind !== "converter", // (the converter's own app is it)
+          visible: !["mouse", "converter", "cluster"].includes(APP.kind), // (the converter's own app is it)
           accelerator: "CmdOrCtrl+Shift+O",
           click: () => createWindow("viewer.html", { width: 920, height: 960 }),
         },
@@ -382,6 +384,17 @@ function handle(channel, fn) {
     if (!event.senderFrame || !isAppUrl(event.senderFrame.url)) throw new Error("Blocked: untrusted sender");
     return fn(event, ...args);
   });
+}
+
+// ---------- Pi Cluster (its own app): the Pis running Pi Cluster's service (cluster.js) ----------
+if (APP.kind === "cluster") {
+  const { Cluster } = require("./cluster");
+  let cluster = null;
+  const theCluster = () => cluster || (cluster = new Cluster({ file: path.join(app.getPath("userData"), "cluster-pis.json") }));
+  handle("cluster:list", () => theCluster().list());
+  handle("cluster:settings", (_e, change) => theCluster().settings(change));
+  handle("cluster:action", (_e, what) => theCluster().action(what));
+  handle("cluster:forget", (_e, name) => theCluster().forget(name));
 }
 
 // ---------- OptiTrack Motive: live NatNet data ----------

@@ -1,0 +1,13 @@
+# Pi Cluster's service (cluster/README.md): a service of the account that set it up (systemd --user,
+# kept running from boot by lingering), so it can start Hand Tracker on that account's desktop.
+# cluster/setup.sh puts this in /etc/systemd/user/ and turns it on for that account only.
+[Unit]
+Description=Pi Cluster service (Hand Tracker)
+
+[Service]
+ExecStart=/usr/bin/python3 -I /opt/ht-cluster/current/ht_cluster.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

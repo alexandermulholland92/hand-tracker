@@ -453,4 +453,15 @@ contextBridge.exposeInMainWorld("desktop", {
     ntfy: (req) => ipcRenderer.invoke("sentry:ntfy", req),
     model: (which) => ipcRenderer.invoke("sentry:model", which),
   },
+
+  // Pi Cluster's own app (electron/cluster.js): the Pis running Pi Cluster's service.
+  // list() -> { nodes: [{ name, target, online, answering, seen, node, error }], tailscale, at };
+  // settings({ target, module, on } | { target, module, key, value }), action({ target, module,
+  // action, args }) -> the Pi's answer ({ status, ok?, message?, error? }); forget(name).
+  cluster: {
+    list: () => ipcRenderer.invoke("cluster:list"),
+    settings: (change) => ipcRenderer.invoke("cluster:settings", change),
+    action: (what) => ipcRenderer.invoke("cluster:action", what),
+    forget: (name) => ipcRenderer.invoke("cluster:forget", name),
+  },
 });
