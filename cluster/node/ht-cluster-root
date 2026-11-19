@@ -21,6 +21,11 @@ from this project's GitHub "Latest build" release and checks first.
                                          own paths for Transmission alone
   ht-cluster-root transmission-stop      stopped, and those folders unmounted
   ht-cluster-root transmission-cap DOWN UP   its speeds (kB/s, or none) kept on the Wi-Fi by Linux
+  ht-cluster-root fix-install FIX        one of the Pi fixes (pi/FIX.sh: wifi-watchdog, tailscale-watchdog,
+                                         network-tuning, freeze-restart) set up, as the service's own update
+                                         brought it (/opt/ht-cluster/current/fixes, checked against GitHub's list)
+  ht-cluster-root fix-remove FIX         that fix taken away (its --remove)
+  ht-cluster-root wifi-test              the Wi-Fi recovery's test: the Wi-Fi driver reloaded once, 20 s later
 
 Each prints one line of JSON: {"ok": true, ...} or {"ok": false, "error": "..."}. One job at a time.
 Run as another user than root (the checks), HT_CLUSTER_GITHUB_API, HT_CLUSTER_GITHUB_RAW and
@@ -62,6 +67,9 @@ HELPER = at("/usr/local/sbin/ht-cluster-root")
 LOCK = at("/run/ht-cluster-root.lock")
 LOG = at("/var/log/ht-cluster-root.log")
 SAFE_PATH = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
+# The Pi fixes (modules/fixes.py): pi/<name>.sh in the repository, brought with the service's own update
+# into its fixes/ folder.
+FIXES = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart")
 
 
 class Failed(Exception):
@@ -211,13 +219,19 @@ def update_cluster():
     except (OSError, ValueError) as e:
         raise Failed("Couldn't list the latest build's files: %s" % e)
     prefix = "cluster/node/"
+    fixes = {"pi/%s.sh" % f: "fixes/%s.sh" % f for f in FIXES}
     files = []
     for e in tree.get("tree") or []:
         path = str(e.get("path") or "")
-        if e.get("type") != "blob" or not path.startswith(prefix):
+        if e.get("type") != "blob":
+            continue
+        if path in fixes:  # (the Pi fixes, with the service: modules/fixes.py puts them in)
+            files.append((fixes[path], path, str(e.get("sha") or "")))
+            continue
+        if not path.startswith(prefix):
             continue
         rel_path = path[len(prefix):]
-        if not SAFE_PATH.match(rel_path) or ".." in rel_path.split("/") or "__pycache__" in rel_path:
+        if not SAFE_PATH.match(rel_path) or ".." in rel_path.split("/") or "__pycache__" in rel_path or rel_path.startswith("fixes/"):
             continue
         files.append((rel_path, path, str(e.get("sha") or "")))
     if not any(f[0] == "ht_cluster.py" for f in files):
@@ -500,6 +514,95 @@ def transmission_cap(down, up):
     return {"down": down, "up": up}
 
 
+# ----- The Pi fixes (modules/fixes.py) -----
+# Each is one of the repository's pi/ scripts, as the service's own update brought it (update-cluster:
+# checked against GitHub's list of the build's files, into a folder only root can change), run with
+# bash: set up, or --remove.
+
+def fetch_fixes():
+    """The fixes of the version of the service that's here, when its update didn't bring them (the first
+    update to a version with fixes is done by the root helper from before): from GitHub, for that version's
+    commit, checked against GitHub's list of its files, into its fixes/ folder."""
+    current = os.path.join(INSTALL, "current")
+    try:
+        with open(os.path.join(current, "VERSION"), "r", encoding="utf-8") as f:
+            commit = f.read().strip()
+    except OSError:
+        commit = ""
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise Missing("This Pi's version of the service (%s) hasn't got the fixes." % (commit or "?"))
+    try:
+        tree = json.loads(fetch(API + "/repos/%s/git/trees/%s?recursive=1" % (REPO, commit)).decode("utf-8"))
+    except (OSError, ValueError) as e:
+        raise Failed("Couldn't list this version's files: %s" % e)
+    want = {"pi/%s.sh" % f: f for f in FIXES}
+    folder = os.path.join(current, "fixes")
+    os.makedirs(folder, exist_ok=True)
+    os.chmod(folder, 0o755)
+    for e in tree.get("tree") or []:
+        path = str(e.get("path") or "")
+        if e.get("type") != "blob" or path not in want:
+            continue
+        try:
+            data = fetch("%s/%s/%s/%s" % (RAW, REPO, commit, path))
+        except OSError as err:
+            raise Failed("Couldn't download %s: %s" % (path, err))
+        if git_blob_sha(data) != str(e.get("sha") or ""):
+            raise Failed("%s didn't come out as GitHub lists it." % path)
+        target = os.path.join(folder, want[path] + ".sh")
+        with open(target + ".new", "wb") as f:
+            f.write(data)
+        os.chmod(target + ".new", 0o644)
+        os.replace(target + ".new", target)
+
+
+def fix_script(name):
+    if name not in FIXES:
+        raise Failed("No fix called %s (%s)." % (name, ", ".join(FIXES)))
+    path = os.path.join(INSTALL, "current", "fixes", name + ".sh")
+    if not os.path.exists(path):
+        fetch_fixes()
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        raise Missing("This Pi's version of the service hasn't got %s yet." % name)
+    return path, hashlib.sha256(data).hexdigest()
+
+
+def fix_install(name):
+    path, sha = fix_script(name)
+    if name == "network-tuning" and not shutil.which("nft"):  # (what it needs, as it says itself)
+        code, out, err = apt(["install", "-y", "-q", "nftables"], 1800, {"DEBIAN_FRONTEND": "noninteractive"})
+        if code != 0:
+            raise Failed("nftables (which it needs) didn't go in: %s" % apt_why(out, err))
+    code, out, err = run(["bash", path], 600)
+    if code != 0:
+        raise Failed(last_lines(err or out, 2) or "it stopped (%s)" % code)
+    return {"fix": name, "sha256": sha, "said": last_lines(out, 2)}
+
+
+def fix_remove(name):
+    path, _ = fix_script(name)
+    code, out, err = run(["bash", path, "--remove"], 600)
+    if code != 0:
+        raise Failed(last_lines(err or out, 2) or "it stopped (%s)" % code)
+    return {"fix": name, "said": last_lines(out, 2)}
+
+
+def wifi_test():
+    """As pi/wifi-watchdog.sh --test: the driver reloaded once, 20 s from now (time for this answer to get
+    back before the Wi-Fi goes); the watchdog writes how it went to the journal."""
+    check = at("/usr/local/sbin/hand-tracker-wifi-watchdog")
+    if not os.path.exists(check):
+        raise Failed("The Wi-Fi recovery isn't on this Pi.")
+    code, out, err = run(["systemd-run", "--quiet", "--unit=hand-tracker-wifi-watchdog-test-%d" % int(time.time()),
+                          "--on-active=20s", "--timer-property=AccuracySec=1s", check, "reload-now"], 60)
+    if code != 0:
+        raise Failed("The test didn't start: %s" % last_lines(err or out, 1))
+    return {"in": 20}
+
+
 # name: (what it does, how many words after it: 0, or None for "as many as it checks itself", which lock).
 # (Transmission's jobs have a lock of their own: they don't wait behind a long system update.)
 JOBS = {"install-hand-tracker": (install_hand_tracker, 0, "updates"), "update-cluster": (update_cluster, 0, "updates"),
@@ -507,7 +610,8 @@ JOBS = {"install-hand-tracker": (install_hand_tracker, 0, "updates"), "update-cl
         "renice-jobs": (renice_jobs, 0, None),
         "install-transmission": (install_transmission, 0, "updates"), "nfs-share": (nfs_share, None, "transmission"),
         "nfs-unshare": (nfs_unshare, 0, "transmission"), "transmission-start": (transmission_start, None, "transmission"),
-        "transmission-stop": (transmission_stop, 0, "transmission"), "transmission-cap": (transmission_cap, 2, None)}
+        "transmission-stop": (transmission_stop, 0, "transmission"), "transmission-cap": (transmission_cap, 2, None),
+        "fix-install": (fix_install, 1, "updates"), "fix-remove": (fix_remove, 1, "updates"), "wifi-test": (wifi_test, 0, None)}
 
 
 def main():

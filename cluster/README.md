@@ -58,6 +58,26 @@ for that Pi.
     wait while Hand Tracker records. If they need a restart, the app says so with **Restart this
     Pi**; the Pi is never restarted by itself.
 
+- **Fixes** (`modules/fixes.py`): the Raspberry Pi fixes in `pi/`, put on a Pi from the app. Each
+  has its own switch for each Pi (under ⚙). They're all off on a Pi until switched on there; one
+  that's already on a Pi (put in by hand) shows on, and isn't run again until a newer build changes
+  its script.
+  - **Wi-Fi recovery** (`pi/wifi-watchdog.sh`): the Wi-Fi chip's driver reloaded when the chip
+    locks up, and the Pi restarted if that doesn't bring it back.
+  - **Tailscale recovery** (`pi/tailscale-watchdog.sh`): Tailscale started again when it stays
+    offline although the Pi has a network.
+  - **Network tuning** (`pi/network-tuning.sh`): the Wi-Fi rejoin fix (no IPv6 in the saved Wi-Fi
+    networks), BBR, and Tailscale's packets first on Wi-Fi.
+  - **Freeze restart + kept logs** (`pi/freeze-restart.sh`): the Pi restarted when it freezes for
+    30 seconds, or 10 seconds after a kernel panic, and its log kept on its drive.
+  - **On** puts the fix in, and puts it in again when a newer build changes its script. **Off**
+    takes it away. Neither happens while Hand Tracker records or saves a take. A fix that didn't go
+    in is tried again an hour later, or at once with **Try the fixes again**.
+  - **Test the Wi-Fi recovery** (where it's on): the Wi-Fi driver reloaded once, 20 seconds later
+    (the Pi is off the Wi-Fi for about half a minute), and how it went.
+  - The scripts come with the service's own update (into its `fixes/` folder, checked against
+    GitHub's list of the build's files), and the root helper runs them.
+
 - **Jobs** (`modules/jobs.py`): work shared out across the Pis, managed on the app's **Jobs** tab.
   - **Where the list lives:** one Pi keeps the job list and the jobs' files (`~/ht-cluster-jobs/`;
     the app asks which Pi). Each Pi that takes jobs asks it for work, one file at a time, and sends
@@ -123,12 +143,13 @@ too: its summary, its warnings, its buttons and its settings.
   - What each Pi was set to, and what happened lately: `~/.local/state/ht-cluster/`.
 - **The root helper** (`node/ht-cluster-root`, installed as `/usr/local/sbin/ht-cluster-root`): the
   few jobs that need root. Those are installing Hand Tracker, the system's updates and the
-  service's own update, and restarting the Pi.
+  service's own update, restarting the Pi, Transmission's jobs, and putting the Pi fixes in or
+  taking them away.
   - sudo lets your account run it, and nothing else, without a password
     (`/etc/sudoers.d/ht-cluster`).
   - It takes no file or address from the service. It downloads what it installs itself and checks
-    it against GitHub: the size and SHA-256 of the `.deb`, and the service's files against the
-    commit's file list.
+    it against GitHub: the size and SHA-256 of the `.deb`, and the service's files (with the Pi
+    fixes) against the commit's file list.
   - Its log: `/var/log/ht-cluster-root.log`.
 - **The app** (`electron/cluster.js`): finds the Pis among the Linux computers on this computer's
   Tailscale network, and asks each one's service.
