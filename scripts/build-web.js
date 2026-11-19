@@ -119,6 +119,12 @@ const pages = HAND_MOUSE ? [["hand-mouse.html", "index.html"], ...HAND_MOUSE_FIL
   : CLUSTER ? [["pi-cluster.html", "index.html"], ...CLUSTER_FILES.map((f) => [f, f])]
   : APP_FILES.map((f) => [f, f]);
 for (const [from, rel] of pages) {
+  // Pictures byte for byte: read as text, every byte over 127 became three (U+FFFD), which broke the
+  // site's icon, its home-screen icon and its link-preview picture (seen 2026-11-18).
+  if (!/\.(html|js)$/.test(from)) {
+    write(rel, read(from));
+    continue;
+  }
   // Library paths in the page and scripts: "node_modules/... -> "vendor/...
   let text = read(from).toString("utf8").split('"node_modules/').join('"vendor/');
   if (rel === "index.html" || rel === "remote-recording.html") {
