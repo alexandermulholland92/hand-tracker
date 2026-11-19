@@ -193,9 +193,9 @@ if job in ("fix-install", "fix-remove"):
     if job == "fix-install":
         with open(script, "rb") as f:
             sha = hashlib.sha256(f.read()).hexdigest()
-        print(json.dumps({"ok": True, "fix": name, "sha256": sha, "said": "Set up."}))
+        print(json.dumps({"ok": True, "fix": name, "sha256": sha, "said": "Set up." + (" Restart this Pi for it to take effect." if name == "usb-current" else "")}))
     else:
-        print(json.dumps({"ok": True, "fix": name, "said": "Removed."}))
+        print(json.dumps({"ok": True, "fix": name, "said": "Removed." + (" Restart this Pi for it to take effect." if name == "usb-current" else "")}))
 elif job == "wifi-test":
     print(json.dumps({"ok": True, "in": 0}))
 elif job == "install-hand-tracker":
@@ -366,25 +366,30 @@ def check_fixes(tmp, gh, ht):
         poke()
         m = wait_for(lambda: state(mod(), "network-tuning") == "On" and mod(), 30) or mod()
         check("...until that button is pressed", there("network-tuning") and hidden(m, "retry") is True, (m.get("status"), m.get("actions")))
-        # USB power: config.txt's setting, taking effect at the next restart (the firmware's word standing in)
-        supply = os.path.join(sim_root, "proc", "device-tree", "chosen", "power", "max_current")
-        os.makedirs(os.path.dirname(supply), exist_ok=True)
-        with open(supply, "wb") as f:
-            f.write((3000).to_bytes(4, "big"))
+        # USB power: in effect at the Pi's next restart (this start's boot ID, the supply the Pi takes it has and the
+        # firmware's word standing in)
+        sim = lambda rel, data: (os.makedirs(os.path.dirname(os.path.join(sim_root, rel)), exist_ok=True),
+                                 open(os.path.join(sim_root, rel), "wb").write(data))
+        sim("proc/sys/kernel/random/boot_id", b"boot-1\n")
+        sim("proc/device-tree/chosen/power/max_current", (3000).to_bytes(4, "big"))
         ask(port, "POST", "/api/settings", {"module": "fixes", "key": "usbCurrent", "value": True})
         m = wait_for(lambda: state(mod(), "usb-current") == "On" and mod(), 30) or mod()
         warns = (m.get("status") or {}).get("warnings") or []
         check("USB power put in: until the Pi restarts, it says to restart it", "fix-install usb-current" in helper_lines(tmp) and
               any(w.startswith("USB power: restart this Pi") for w in warns), (m.get("status"), helper_lines(tmp)))
-        check("...and shows the supply the Pi found, and the USB ports' limit now", "the supply found: 3 A, USB limited to 0.6 A" in (m.get("status") or {}).get("summary", ""),
+        check("...and shows the supply the Pi takes it has, and the USB ports' limit now", "the Pi takes its supply as 3 A, USB limited to 0.6 A" in (m.get("status") or {}).get("summary", ""),
               (m.get("status") or {}).get("summary"))
-        os.makedirs(os.path.join(sim_root, "run"), exist_ok=True)
-        with open(os.path.join(sim_root, "run", "ht-sim-usb-current"), "w") as f:  # (restarted: the firmware has it now)
-            f.write("1")
-        m = mod()
-        warns = (m.get("status") or {}).get("warnings") or []
-        check("...restarted: no more warning, the ports up to 1.6 A", not any(w.startswith("USB power") for w in warns) and
-              "USB up to 1.6 A" in (m.get("status") or {}).get("summary", ""), (warns, (m.get("status") or {}).get("summary")))
+        sim("proc/sys/kernel/random/boot_id", b"boot-2\n")  # (restarted: the bootloader takes the supply as 5 A, the ports have 1.6 A)
+        sim("proc/device-tree/chosen/power/max_current", (5000).to_bytes(4, "big"))
+        sim("run/ht-sim-usb-current", b"1")
+        poke()
+        m = wait_for(lambda: not any(w.startswith("USB power") for w in (mod().get("status") or {}).get("warnings") or []) and mod(), 30) or mod()
+        check("...restarted: no more warning, the supply taken as 5 A, the ports up to 1.6 A", not any(w.startswith("USB power") for w in (m.get("status") or {}).get("warnings") or []) and
+              "the Pi takes its supply as 5 A, USB up to 1.6 A" in (m.get("status") or {}).get("summary", ""), m.get("status"))
+        ask(port, "POST", "/api/settings", {"module": "fixes", "key": "usbCurrent", "value": False})
+        m = wait_for(lambda: state(mod(), "usb-current") == "Off" and mod(), 30) or mod()
+        check("...switched off: taken away, and a restart asked for again", "fix-remove usb-current" in helper_lines(tmp) and
+              any(w.startswith("USB power: restart this Pi") for w in (m.get("status") or {}).get("warnings") or []), m.get("status"))
 
         _, d = ask(port)
         texts = " | ".join(e["text"] for e in d.get("events", []))
