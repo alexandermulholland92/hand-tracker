@@ -547,7 +547,8 @@
     $("trPeerAll").value = ses.peerLimit ?? "";
     $("trPeerOne").value = ses.peerLimitPerTorrent ?? "";
     const send = async (args) => {
-      trSent = { args, until: Date.now() + 15000 };
+      // (with any sent just before, so a second change doesn't show the first one's old value meanwhile)
+      trSent = { args: { ...(trSent && Date.now() < trSent.until ? trSent.args : {}), ...args }, until: Date.now() + 15000 };
       const a = await api.action({ target: home.target, module: "apps", action: "limits", args }).catch((e) => ({ error: e.message }));
       say(`${home.name}: ${a.message || a.error || "Done."}`, !a.ok);
       if (!a.ok) trSent = null;
