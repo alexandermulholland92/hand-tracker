@@ -117,7 +117,7 @@ def node_files():
     return out
 
 
-FIX_SCRIPTS = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart")
+FIX_SCRIPTS = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current")
 
 
 def repo_files():
@@ -181,6 +181,11 @@ if job in ("fix-install", "fix-remove"):
             open(full, "w").close()
         elif os.path.exists(full):
             os.remove(full)
+    if name == "usb-current":  # (its setting in config.txt, as pi/usb-current.sh puts it)
+        conf = os.path.join(os.environ["HT_CLUSTER_SIM_ROOT"], "boot", "firmware", "config.txt")
+        os.makedirs(os.path.dirname(conf), exist_ok=True)
+        with open(conf, "w") as f:
+            f.write("dtparam=audio=on\n" + ("[all]\nusb_max_current_enable=1\n" if job == "fix-install" else ""))
     script = os.path.join(os.environ["HT_CLUSTER_SIM_FIXES"], name + ".sh")
     if not os.path.exists(script):  # (the real one fetches it for its version, from GitHub)
         with open(script, "w") as f:
@@ -361,10 +366,31 @@ def check_fixes(tmp, gh, ht):
         poke()
         m = wait_for(lambda: state(mod(), "network-tuning") == "On" and mod(), 30) or mod()
         check("...until that button is pressed", there("network-tuning") and hidden(m, "retry") is True, (m.get("status"), m.get("actions")))
+        # USB power: config.txt's setting, taking effect at the next restart (the firmware's word standing in)
+        supply = os.path.join(sim_root, "proc", "device-tree", "chosen", "power", "max_current")
+        os.makedirs(os.path.dirname(supply), exist_ok=True)
+        with open(supply, "wb") as f:
+            f.write((3000).to_bytes(4, "big"))
+        ask(port, "POST", "/api/settings", {"module": "fixes", "key": "usbCurrent", "value": True})
+        m = wait_for(lambda: state(mod(), "usb-current") == "On" and mod(), 30) or mod()
+        warns = (m.get("status") or {}).get("warnings") or []
+        check("USB power put in: until the Pi restarts, it says to restart it", "fix-install usb-current" in helper_lines(tmp) and
+              any(w.startswith("USB power: restart this Pi") for w in warns), (m.get("status"), helper_lines(tmp)))
+        check("...and shows the supply the Pi found, and the USB ports' limit now", "the supply found: 3 A, USB limited to 0.6 A" in (m.get("status") or {}).get("summary", ""),
+              (m.get("status") or {}).get("summary"))
+        os.makedirs(os.path.join(sim_root, "run"), exist_ok=True)
+        with open(os.path.join(sim_root, "run", "ht-sim-usb-current"), "w") as f:  # (restarted: the firmware has it now)
+            f.write("1")
+        m = mod()
+        warns = (m.get("status") or {}).get("warnings") or []
+        check("...restarted: no more warning, the ports up to 1.6 A", not any(w.startswith("USB power") for w in warns) and
+              "USB up to 1.6 A" in (m.get("status") or {}).get("summary", ""), (warns, (m.get("status") or {}).get("summary")))
+
         _, d = ask(port)
         texts = " | ".join(e["text"] for e in d.get("events", []))
         check("Its events say what happened", all(t in texts for t in ("Freeze restart was on this Pi already", "Wi-Fi recovery put in", "Wi-Fi recovery taken off",
-                                                                         "Tailscale recovery updated", "Network tuning didn't go in", "Wi-Fi recovery test: Back on TestNet")), texts)
+                                                                         "Tailscale recovery updated", "Network tuning didn't go in", "Wi-Fi recovery test: Back on TestNet",
+                                                                         "USB power put in")), texts)
     finally:
         node.terminate()
         node.wait(10)

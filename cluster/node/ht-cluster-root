@@ -22,7 +22,7 @@ from this project's GitHub "Latest build" release and checks first.
   ht-cluster-root transmission-stop      stopped, and those folders unmounted
   ht-cluster-root transmission-cap DOWN UP   its speeds (kB/s, or none) kept on the Wi-Fi by Linux
   ht-cluster-root fix-install FIX        one of the Pi fixes (pi/FIX.sh: wifi-watchdog, tailscale-watchdog,
-                                         network-tuning, freeze-restart) set up, as the service's own update
+                                         network-tuning, freeze-restart, usb-current) set up, as the service's own update
                                          brought it (/opt/ht-cluster/current/fixes, checked against GitHub's list)
   ht-cluster-root fix-remove FIX         that fix taken away (its --remove)
   ht-cluster-root wifi-test              the Wi-Fi recovery's test: the Wi-Fi driver reloaded once, 20 s later
@@ -69,7 +69,7 @@ LOG = at("/var/log/ht-cluster-root.log")
 SAFE_PATH = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 # The Pi fixes (modules/fixes.py): pi/<name>.sh in the repository, brought with the service's own update
 # into its fixes/ folder.
-FIXES = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart")
+FIXES = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current")
 
 
 class Failed(Exception):

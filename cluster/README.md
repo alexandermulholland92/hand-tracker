@@ -70,6 +70,12 @@ for that Pi.
     networks), BBR, and Tailscale's packets first on Wi-Fi.
   - **Freeze restart + kept logs** (`pi/freeze-restart.sh`): the Pi restarted when it freezes for
     30 seconds, or 10 seconds after a kernel panic, and its log kept on its drive.
+  - **USB power** (`pi/usb-current.sh`): a Raspberry Pi 5's USB ports given their full 1.6 A
+    although it didn't find a 5 A supply (its "power to peripherals will be restricted": 0.6 A then).
+    This is Raspberry Pi's own setting for it, `usb_max_current_enable=1` in config.txt, and it takes
+    effect when the Pi restarts; until then, a warning says so. Use it only with a supply that can give
+    that much: on a weaker one, USB devices drawing more can make the Pi lose power. The Pi's line
+    also shows the supply the Pi found.
   - **On** puts the fix in, and puts it in again when a newer build changes its script. **Off**
     takes it away. Neither happens while Hand Tracker records or saves a take. A fix that didn't go
     in is tried again an hour later, or at once with **Try the fixes again**.

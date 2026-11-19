@@ -10,6 +10,9 @@ already on the Pi (put in by hand) is taken as it is and shows on.
     and Tailscale's packets first on Wi-Fi.
   Freeze restart + kept logs (pi/freeze-restart.sh): the Pi restarted when it freezes for 30 s, or 10 s
     after a kernel panic, and its log kept on its drive.
+  USB power (pi/usb-current.sh): a Raspberry Pi 5's USB ports given their full 1.6 A though it didn't find
+    a 5 A supply ("power to peripherals will be restricted"), from its next restart: only for a supply that
+    can give it. Until the Pi is restarted, a warning says so (Updates: Restart this Pi).
 On: put in, and put in again when a newer build of this service brings a changed script. Off: taken
 away. Neither while Hand Tracker records or saves a take. A fix that didn't go in is tried again an
 hour later, or at once with "Try the fixes again". "Test the Wi-Fi recovery" reloads the Wi-Fi driver
@@ -20,6 +23,7 @@ ht-cluster-root does the putting in and taking away, with the scripts this servi
 
 import hashlib
 import os
+import re
 import threading
 import time
 
@@ -43,6 +47,9 @@ FIXES = [
      "Freeze restart + kept logs: restarted after 30 s frozen or a kernel panic, the log kept on the drive",
      ["/etc/systemd/system.conf.d/50-watchdog.conf", "/etc/sysctl.d/90-panic-reboot.conf",
       "/etc/systemd/journald.conf.d/50-persistent.conf"]),
+    ("usbCurrent", "usb-current", "USB power",
+     "USB power: the USB ports' full 1.6 A without a 5 A supply (a Pi 5; only if its supply can give it; after a restart)",
+     ["/etc/hand-tracker/usb-current"]),
 ]
 SETTINGS = [{"key": key, "title": switch, "default": False} for key, _, _, switch, _ in FIXES]
 WIFI = FIXES[0][4]
@@ -50,6 +57,7 @@ BY_HAND = "by hand"  # (put in before this module, with no script of this servic
 RETRY_AFTER = 3600
 NOT_HERE = "Not in this Pi's version of the service yet"
 TEST_SAYS = ("Back on", "Not back", "Reloading the Wi-Fi driver didn't")
+USB_SET = re.compile(r"^\s*usb_max_current_enable\s*=\s*1\s*$", re.M)  # (a line of its own in config.txt, not a comment)
 
 _lock = threading.Lock()  # (one tick at a time)
 _state = {}  # script -> what's happening with it now
@@ -85,6 +93,26 @@ def script_sha(node, name):
             return hashlib.sha256(f.read()).hexdigest()
     except OSError:
         return None
+
+
+def usb_power(node):
+    """The USB ports' limit: whether config.txt lifts it (from the next restart), whether it's lifted now (the
+    firmware's own word), and the supply the Pi found (mA): {"set", "now", "supply"}, None where unknown."""
+    conf = node.read(at(node, "/boot/firmware/config.txt")) or node.read(at(node, "/boot/config.txt"))
+    out = {"set": bool(USB_SET.search(conf)) if conf is not None else None, "now": None, "supply": None}
+    if node.simulate:
+        now = node.read(at(node, "/run/ht-sim-usb-current"))  # (the checks: the firmware's word, standing in)
+        out["now"] = (now or "0").strip() == "1"
+    else:
+        code, said, _ = node.run(["vcgencmd", "get_config", "usb_max_current_enable"], 5)
+        m = re.search(r"usb_max_current_enable=(\d+)", said or "")
+        out["now"] = m.group(1) == "1" if code == 0 and m else None
+    try:
+        with open(at(node, "/proc/device-tree/chosen/power/max_current"), "rb") as f:
+            out["supply"] = int.from_bytes(f.read()[:4], "big") or None
+    except (OSError, ValueError):
+        pass
+    return out
 
 
 def recording(node):
@@ -223,11 +251,17 @@ def status(node):
         parts.append("%s: %s" % (short, state[:1].lower() + state[1:]))
         if state.startswith(("Didn't", "Still on")):
             warn.append("%s: %s" % (short, state))
+    usb = usb_power(node) if node.setting("fixes", "usbCurrent") or is_in(node, FIXES[4][4]) else None
+    if usb and usb["set"] is not None and usb["now"] is not None and usb["set"] != usb["now"]:
+        warn.append("USB power: restart this Pi for it to take effect (Updates: Restart this Pi)")
     t = mem.get("test")
     if _asked.get("test"):
         t = {"at": _asked["test"], "result": None}
-    out = {"fixes": fixes, "doing": _doing["what"], "test": t}
+    out = {"fixes": fixes, "doing": _doing["what"], "test": t, "usb": usb}
     summary = " · ".join(parts)
+    if usb and usb.get("supply"):
+        summary += " · the supply found: %s A%s" % (("%.1f" % (usb["supply"] / 1000)).rstrip("0").rstrip("."),
+                                                   "" if usb["supply"] >= 5000 else (", USB up to 1.6 A" if usb["now"] else ", USB limited to 0.6 A"))
     if t:
         summary += " · Wi-Fi test %s: %s" % (time.strftime("%H:%M", time.localtime(t["at"])), t.get("result") or "going on")
     out["summary"] = summary
