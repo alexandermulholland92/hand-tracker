@@ -76,6 +76,26 @@
   .bar > div { height: 100%; background: #2f5fd0; }
   .items { font-size: 12px; margin-top: 8px; line-height: 1.6; opacity: 0.85; }
   .items .bad { color: #ff8a7a; }
+  /* (Transmission: how many at once, and each torrent's traffic) */
+  .tr-limits { margin-top: 10px; padding-top: 8px; border-top: 1px solid #2c2e36; }
+  .tr-limits label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; font-size: 13px; }
+  details.traffic { margin-top: 6px; }
+  details.traffic > summary { cursor: pointer; font-size: 12px; opacity: 0.85; font-variant-numeric: tabular-nums; padding: 2px 0; }
+  details.traffic[open] > summary { opacity: 1; }
+  .graph-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; max-width: 560px; }
+  .graph { max-width: 560px; }
+  .spans { display: inline-flex; gap: 4px; }
+  .spans button { padding: 3px 8px; font-size: 12px; }
+  .spans button[aria-pressed="true"] { background: #2f5fd0; border-color: #3b6ce0; }
+  .graph svg { display: block; width: 100%; height: auto; margin-top: 4px; }
+  .graph .grid { stroke: #2c2e36; stroke-width: 1; }
+  .graph .axis { fill: #8b8d98; font-size: 10px; }
+  .graph .down { fill: none; stroke: #5b8cff; stroke-width: 1.6; }
+  .graph .up { fill: none; stroke: #3fbf6a; stroke-width: 1.6; }
+  .legend { display: flex; gap: 14px; font-size: 12px; opacity: 0.75; margin-top: 2px; }
+  .legend .sw { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: 3px; margin-right: 5px; }
+  .sw.down { background: #5b8cff; }
+  .sw.up { background: #3fbf6a; }
   /* (a phone) */
   @media (max-width: 600px) {
     body { padding: 10px; }
@@ -146,6 +166,13 @@
           <button id="trTurtle">Turtle on</button>
           <label class="hint" style="display:flex;align-items:center;gap:6px;margin:0">Runs on <select id="trWhere"></select></label>
           <button id="trWeb">Its web page</button>
+          <button id="trPeersAll">Ask for more peers (every torrent)</button>
+        </div>
+        <div class="tr-limits" id="trLimits" hidden>
+          <label><input type="checkbox" id="trDlQueue" /> Download at most <input type="number" id="trDlSize" min="1" max="50" /> at once <span class="hint">(off: all at once)</span></label>
+          <label><input type="checkbox" id="trSeedQueue" /> Seed at most <input type="number" id="trSeedSize" min="1" max="100" /> at once <span class="hint">(off: every finished torrent seeds)</span></label>
+          <label>Peers: at most <input type="number" id="trPeerAll" min="10" max="1000" /> in all, <input type="number" id="trPeerOne" min="2" max="300" /> for each torrent</label>
+          <div class="hint">More peers can make torrents faster, but too many can make the home router hang (it did at 200 in all and 50 for each torrent).</div>
         </div>
       </div>
       <div class="card">

@@ -9,6 +9,9 @@ root helper. Checked:
 - the window app's torrents moved in, each keeping its folder, and their folders shared;
 - Transmission started on pi (its home, free) and reachable on its old address;
 - the turtle;
+- each torrent's totals, peers and place in the queue, and its speeds over time (the last hour's
+  readings, and the minutes kept on the home's disk); asking for more peers, moving a waiting torrent
+  in the queue, and how many download, seed and connect at once;
 - moved to pie while pi records, and back to pi when asked to and free again;
 - a new download into a folder of your choice (shared then);
 - pie stopping it by itself when it can't reach pi;
@@ -47,10 +50,11 @@ def free_port():
 
 
 FAKE_TRANSMISSION = r'''
-import http.server, json, os, sys, threading
+import hashlib, http.server, json, os, sys, threading
 port, config, who = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 STATE = os.path.join(config, "fake-state.json")
 lock = threading.Lock()
+LIMIT_KEYS = ("download-queue-enabled", "download-queue-size", "seed-queue-enabled", "seed-queue-size", "peer-limit-global", "peer-limit-per-torrent")
 def load():
     try:
         return json.load(open(STATE))
@@ -67,10 +71,20 @@ def torrents():
         rest = data[k + 14:]
         ln = int(rest.split(b":")[0])
         dest = rest[len(str(ln)) + 1:len(str(ln)) + 1 + ln].decode()
-        out.append({"id": i + 1, "name": n[:-7], "downloadDir": dest, "percentDone": 1, "status": 6})
-    for j, a in enumerate(load()["added"]):
-        out.append({"id": 100 + j, "name": a["name"], "downloadDir": a["dir"], "percentDone": 0, "status": 4})
+        # (the first seeds, at 1.5 KB/s; the others wait to download)
+        out.append({"id": i + 1, "name": n[:-7], "downloadDir": dest, "percentDone": 1 if i == 0 else 0.5, "status": 6 if i == 0 else 3,
+                    "rateDownload": 0, "rateUpload": 1500 if i == 0 else 0})
+    s = load()
+    for j, a in enumerate(s["added"]):
+        out.append({"id": 100 + j, "name": a["name"], "downloadDir": a["dir"], "percentDone": 0, "status": 4, "rateDownload": 3000, "rateUpload": 100})
+    order = queue(s, [t["id"] for t in out])
+    for t in out:
+        t.update(hashString=hashlib.sha1(t["name"].encode()).hexdigest(), downloadedEver=1000000 * t["id"], uploadedEver=500000 * t["id"],
+                 peersConnected=3, queuePosition=order.index(t["id"]))
     return out
+def queue(s, ids):
+    kept = [i for i in s.get("order") or [] if i in ids]
+    return kept + [i for i in ids if i not in kept]
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_POST(self):
@@ -83,8 +97,24 @@ class H(http.server.BaseHTTPRequestHandler):
             if m == "session-get":
                 st = json.load(open(os.path.join(config, "settings.json")))
                 res = dict(st, **{"alt-speed-enabled": s["alt"], "who": who})
+                res.update(s.get("limits") or {})
             elif m == "session-set":
-                if "alt-speed-enabled" in a: s["alt"] = bool(a["alt-speed-enabled"]); save(s)
+                if "alt-speed-enabled" in a: s["alt"] = bool(a["alt-speed-enabled"])
+                for k in LIMIT_KEYS:
+                    if k in a: s.setdefault("limits", {})[k] = a[k]
+                save(s)
+                res = {}
+            elif m == "torrent-reannounce":
+                s.setdefault("reannounced", []).append(a.get("ids") or "all"); save(s)
+                res = {}
+            elif m.startswith("queue-move-") or (m == "torrent-set" and "queuePosition" in a):
+                order = queue(s, [t["id"] for t in torrents()])
+                for i in a.get("ids") or []:
+                    k = order.index(i)
+                    order.remove(i)
+                    where = {"queue-move-top": 0, "queue-move-bottom": len(order), "queue-move-up": max(0, k - 1), "queue-move-down": k + 1}.get(m, a.get("queuePosition"))
+                    order.insert(where, i)
+                s["order"] = order; save(s)
                 res = {}
             elif m == "session-stats":
                 res = {"torrentCount": len(torrents()), "downloadSpeed": 1000, "uploadSpeed": 500, "who": who}
@@ -271,6 +301,56 @@ def main():
         tur = wait_for(lambda: apps(pi_port).get("turtle") is True, 20)
         check("The turtle goes on", code == 200 and tur, (a, apps(pi_port)))
 
+        # Each torrent: its totals, peers and place in the queue; its traffic over time
+        code, a = act(pi_port, "torrents")
+        ts = {t["id"]: t for t in a.get("torrents", [])}
+        check("The torrents come with their totals, peers and place in the queue",
+              code == 200 and len(ts) == 3 and all(len(t.get("hashString", "")) == 40 and t.get("downloadedEver") and t.get("uploadedEver") and "queuePosition" in t and "peersConnected" in t
+                                                   for t in ts.values()), a)
+        seed = ts.get(1) or {}
+        traffic = lambda span: act(pi_port, "traffic", {"hash": seed.get("hashString", ""), "span": span})[1]
+        hour = wait_for(lambda: [p for p in traffic("1h").get("points", []) if p[2] == 1500], 20)
+        check("Its speeds are read every few seconds: the last hour's", bool(hour), traffic("1h"))
+        day = wait_for(lambda: [p for p in traffic("24h").get("points", []) if p[2] == 1500 and p[1] == 0], 20)
+        check("...a reading a minute (the minute's average) for 24 hours", bool(day), traffic("24h"))
+        week = traffic("7d")
+        check("...and for 7 days, in fewer points", week.get("ok") and week.get("points") and len(week["points"]) <= len(traffic("24h")["points"]), week)
+        kept = os.path.join(tmp, "pi-state", "transmission-traffic.jsonl")
+        lines = wait_for(lambda: os.path.exists(kept) and len(open(kept).read().splitlines()) >= 2 and open(kept).read().splitlines(), 20) or []
+        check("...kept on the home's disk, a line a minute, only the torrents that moved", lines and all(json.loads(l)["r"].keys() <= {seed["hashString"][:12]} for l in lines), lines[-3:])
+        code, other = act(pi_port, "traffic", {"hash": ts[2]["hashString"], "span": "1h"})
+        check("A torrent that doesn't move reads 0, not nothing", code == 200 and other["points"] and all(p[1] == 0 and p[2] == 0 for p in other["points"]), other)
+        code, bad = act(pi_port, "traffic", {"hash": "nope", "span": "1h"})
+        code2, bad2 = act(pi_port, "traffic", {"hash": seed["hashString"], "span": "1y"})
+        check("...and a torrent or span it doesn't know is refused", code != 200 and code2 != 200, (bad, bad2))
+
+        fake = lambda: json.load(open(os.path.join(config, "fake-state.json")))
+        code, a = act(pi_port, "reannounce", {"ids": [2]})
+        code2, a2 = act(pi_port, "reannounce", {})
+        check("Asking for more peers: one torrent's trackers, or every torrent's", code == 200 and code2 == 200 and fake().get("reannounced") == [[2], "all"], (a, a2, fake()))
+
+        order = lambda: [t["id"] for t in sorted(act(pi_port, "torrents")[1]["torrents"], key=lambda t: t["queuePosition"])]
+        before = order()
+        code, a = act(pi_port, "queue", {"id": 3, "move": "up"})
+        after = order()
+        check("A waiting torrent moved up: past the one waiting before it", code == 200 and after.index(3) < after.index(2) and before.index(3) > before.index(2), (before, after, a))
+        act(pi_port, "queue", {"id": 3, "move": "bottom"})
+        act(pi_port, "queue", {"id": 2, "move": "top"})
+        check("...to the bottom, and to the top", order()[-1] == 3 and order()[0] == 2, order())
+        code, a = act(pi_port, "queue", {"id": 2, "move": "sideways"})
+        check("...but not anywhere else", code != 200, a)
+
+        code, a = act(pi_port, "limits", {"downloadQueue": True, "downloadQueueSize": 2, "seedQueue": True, "seedQueueSize": 5, "peerLimit": 80, "peerLimitPerTorrent": 25})
+        session = wait_for(lambda: apps(pi_port).get("session", {}).get("downloadQueueSize") == 2 and apps(pi_port)["session"], 20)
+        check("How many download, seed and connect at once: set, and read back", code == 200 and session and session.get("seedQueue") is True and session.get("seedQueueSize") == 5 and
+              session.get("peerLimit") == 80 and session.get("peerLimitPerTorrent") == 25, (a, session))
+        saved = json.load(open(os.path.join(config, "settings.json")))
+        check("...and kept in its settings, for wherever it runs next", saved.get("download-queue-size") == 2 and saved.get("peer-limit-global") == 80, saved)
+        check("...said in words", "at most 2 at once" in a.get("message", "") and "80 peers" in a.get("message", ""), a)
+        code, a = act(pi_port, "limits", {"peerLimit": 5000})
+        code2, a2 = act(pi_port, "limits", {"downloadQueueSize": "lots"})
+        check("...but not beyond what makes sense", code != 200 and code2 != 200, (a, a2))
+
         pi_ht["recording"] = True
         time.sleep(6)
         check("pi recording keeps it on pi (its files are there either way)", apps(pi_port).get("runner") == "pi", apps(pi_port))
@@ -283,6 +363,9 @@ def main():
         check("...its speed limits kept on pie's Wi-Fi (the turtle's now)", caps and caps[-1].endswith("transmission-cap 50 50") or caps and "transmission-cap" in caps[-1], caps)
         start_line = [l for l in open(log).read().splitlines() if l.startswith("pie transmission-start")]
         check("...with pi's shared folders", start_line and start_line[-1].endswith("Downloads Videos") and " 127.0.0.1 " in start_line[-1], start_line)
+        since = time.time() * 1000
+        read = wait_for(lambda: [p for p in traffic("1h").get("points", []) if p[0] > since + 1000 and p[2] == 1500], 20)
+        check("...and pi, its home, still reads each torrent's speeds (from pie)", bool(read), traffic("1h")["points"][-3:])
 
         code, a = act(pi_port, "move", {"to": "pi"})
         time.sleep(4)

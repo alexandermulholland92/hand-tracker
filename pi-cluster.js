@@ -422,7 +422,147 @@
   }
 
   const rate = (b) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB/s` : `${Math.round((b || 0) / 1e3)} KB/s`);
+  const bytes = (b) => (!b ? "0 B" : b >= 1e12 ? `${(b / 1e12).toFixed(2)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${Math.round(b / 1e6)} MB` : `${Math.round(b / 1e3)} KB`);
   const homeRel = (p, home) => (home && p && p.startsWith(home) ? "~" + p.slice(home.length) : p || "");
+
+  // Each torrent's traffic: its drop-down (open ones by the torrent's hash, with their graph's span) and the
+  // readings its graph is drawn from (the home keeps them: apps.py's traffic).
+  const trOpen = new Map();
+  const trGraph = new Map();
+  const trAsking = new Set();
+  let trSent = null; // (limits just sent: shown until the Pi's word catches up)
+  const SPAN_MS = { "1h": 3600e3, "24h": 86400e3, "7d": 7 * 86400e3 };
+  const SPAN_AGO = { "1h": "1 h ago", "24h": "24 h ago", "7d": "7 days ago" };
+
+  // Received and sent over the span, scaled to a round number over the most in view (10 KB/s at least); a
+  // gap where readings are missing (the Pi off, or Transmission moving).
+  function trafficSvg(points, span) {
+    const W = 300, H = 84, top = 12, bottom = 70;
+    const to = Date.now(), from = to - SPAN_MS[span];
+    const pts = points.filter((p) => p[0] >= from);
+    const most = Math.max(1e4, ...pts.map((p) => Math.max(p[1] || 0, p[2] || 0)));
+    const step = 10 ** Math.floor(Math.log10(most));
+    const max = [1, 2, 5, 10].map((m) => m * step).find((m) => m >= most);
+    const x = (t) => (((t - from) / (to - from)) * W).toFixed(1);
+    const y = (v) => (bottom - (Math.min(v, max) / max) * (bottom - top)).toFixed(1);
+    const gap = Math.max(3 * 60000, (SPAN_MS[span] / 360) * 3);
+    const line = (i) => {
+      let d = "", last = null;
+      for (const p of pts) {
+        d += `${last === null || p[0] - last > gap ? "M" : "L"}${x(p[0])},${y(p[i] || 0)}`;
+        last = p[0];
+      }
+      return d;
+    };
+    const grid = [0, max / 2, max].map((v) => `<line class="grid" x1="0" x2="${W}" y1="${y(v)}" y2="${y(v)}"/><text class="axis" x="${W - 2}" y="${y(v) - 2}" text-anchor="end">${v ? rate(v) : "0"}</text>`).join("");
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Received and sent since ${SPAN_AGO[span]}">${grid}<path class="down" d="${line(1)}"/><path class="up" d="${line(2)}"/>` +
+      `<text class="axis" x="0" y="${H - 2}">${SPAN_AGO[span]}</text><text class="axis" x="${W - 2}" y="${H - 2}" text-anchor="end">now</text></svg>`;
+  }
+
+  function drawTraffic(graph, key) {
+    const have = trGraph.get(key), span = trOpen.get(key) || "1h";
+    if (!have || have.span !== span) return graph.replaceChildren(el("div", { className: "hint" }, "Reading…"));
+    if (have.error) return graph.replaceChildren(el("div", { className: "warn-line" }, "⚠ " + have.error));
+    if (!have.points.length) return graph.replaceChildren(el("div", { className: "hint" }, "No readings yet: the Pi keeping Transmission's files reads them every 10 seconds."));
+    graph.innerHTML = trafficSvg(have.points, span) + '<div class="legend"><span><i class="sw down"></i>Received ↓</span><span><i class="sw up"></i>Sent ↑</span></div>';
+  }
+
+  // A torrent's readings for its graph's span, from the home: the last hour's every 10 s, the others' a minute.
+  async function loadTraffic(home, key, now = false) {
+    const span = trOpen.get(key);
+    if (!span || !home || !home.answering || trAsking.has(key)) return;
+    const have = trGraph.get(key);
+    if (!now && have && have.span === span && Date.now() - have.at < (span === "1h" ? 10000 : 60000)) return;
+    trAsking.add(key);
+    const a = await api.action({ target: home.target, module: "apps", action: "traffic", args: { hash: key, span } }).catch((e) => ({ error: e.message }));
+    trAsking.delete(key);
+    if (trOpen.get(key) !== span) return; // (closed, or another span asked for meanwhile)
+    trGraph.set(key, { span, at: Date.now(), points: a.ok ? a.points || [] : [], error: a.ok ? null : a.error || "Couldn't read it." });
+    const g = document.querySelector(`#trList [data-traffic="${key}"]`); // (a hash: letters and digits)
+    if (g) drawTraffic(g, key);
+  }
+
+  // A torrent's drop-down: its speeds now on it (0 too); inside, what it has received and sent in all, its
+  // peers, asking for more, its place in the queue while it waits, and its traffic over 1 h, 24 h or 7 days.
+  function trafficBox(home, t, key, waiting) {
+    const box = el("details", { className: "traffic" });
+    box.open = trOpen.has(key);
+    const summary = el("summary", {}, `Traffic  ↓ ${rate(t.rateDownload)}  ↑ ${rate(t.rateUpload)}`);
+    summary.dataset.fkey = "sum:" + key;
+    box.append(summary);
+    const peers = typeof t.peersConnected === "number" ? ` · ${t.peersConnected} peer${t.peersConnected === 1 ? "" : "s"} connected` : "";
+    box.append(el("div", { className: "cams" }, `In all: ↓ ${bytes(t.downloadedEver)}  ↑ ${bytes(t.uploadedEver)}${peers}`));
+    const button = (label, fkey, run, disabled = false) => {
+      const b = el("button", { textContent: label, disabled });
+      b.dataset.fkey = fkey + ":" + key;
+      b.onclick = run;
+      return b;
+    };
+    const buttons = el("div", { className: "buttons" }, button("Ask for more peers", "peers", () => act(home, "apps", "reannounce", { ids: [t.id] }).then(() => loadTorrents(true))));
+    if (t.status === 3 || t.status === 5) {
+      const line = waiting(t.status);
+      const i = line.findIndex((x) => x.id === t.id);
+      buttons.append(el("span", { className: "hint", style: "align-self:center" }, `${i + 1} of ${line.length} waiting to ${t.status === 3 ? "download" : "seed"}`));
+      for (const [move, label] of [["top", "Top"], ["up", "Up"], ["down", "Down"], ["bottom", "Bottom"]]) {
+        const first = move === "top" || move === "up";
+        buttons.append(button(label, "q-" + move, () => act(home, "apps", "queue", { id: t.id, move }).then(() => loadTorrents(true)), first ? i <= 0 : i >= line.length - 1));
+      }
+    }
+    box.append(buttons);
+    const span = trOpen.get(key) || "1h";
+    const spans = el("span", { className: "spans" }, ...[["1h", "1 h"], ["24h", "24 h"], ["7d", "7 days"]].map(([s, label]) => {
+      const b = button(label, "span-" + s, () => {
+        trOpen.set(key, s);
+        loadTraffic(home, key, true);
+        renderTransmission();
+      });
+      b.setAttribute("aria-pressed", String(s === span));
+      return b;
+    }));
+    spans.setAttribute("role", "group");
+    spans.setAttribute("aria-label", "Time span");
+    const graph = el("div", { className: "graph" });
+    graph.dataset.traffic = key;
+    box.append(el("div", { className: "graph-head" }, el("span", {}, "Over time"), spans), graph);
+    drawTraffic(graph, key);
+    box.ontoggle = () => {
+      if (box.open) {
+        if (!trOpen.has(key)) trOpen.set(key, "1h");
+        loadTraffic(home, key);
+      } else trOpen.delete(key);
+    };
+    return box;
+  }
+
+  // How many download and seed at once, and how many peers: set from the Transmission tab's first card.
+  function renderLimits(home, st) {
+    const ses = { ...(st.session || {}), ...(trSent && Date.now() < trSent.until ? trSent.args : {}) };
+    $("trLimits").hidden = !Object.keys(st.session || {}).length;
+    $("trDlQueue").checked = !!ses.downloadQueue;
+    $("trDlSize").value = ses.downloadQueueSize ?? "";
+    $("trDlSize").disabled = !ses.downloadQueue;
+    $("trSeedQueue").checked = !!ses.seedQueue;
+    $("trSeedSize").value = ses.seedQueueSize ?? "";
+    $("trSeedSize").disabled = !ses.seedQueue;
+    $("trPeerAll").value = ses.peerLimit ?? "";
+    $("trPeerOne").value = ses.peerLimitPerTorrent ?? "";
+    const send = async (args) => {
+      trSent = { args, until: Date.now() + 15000 };
+      const a = await api.action({ target: home.target, module: "apps", action: "limits", args }).catch((e) => ({ error: e.message }));
+      say(`${home.name}: ${a.message || a.error || "Done."}`, !a.ok);
+      if (!a.ok) trSent = null;
+      renderTransmission();
+      setTimeout(refresh, 600);
+    };
+    const n = (id) => Number($(id).value);
+    $("trDlQueue").onchange = () => send({ downloadQueue: $("trDlQueue").checked });
+    $("trDlSize").onchange = () => send({ downloadQueue: true, downloadQueueSize: n("trDlSize") });
+    $("trSeedQueue").onchange = () => send({ seedQueue: $("trSeedQueue").checked });
+    $("trSeedSize").onchange = () => send({ seedQueue: true, seedQueueSize: n("trSeedSize") });
+    $("trPeerAll").onchange = () => send({ peerLimit: n("trPeerAll") });
+    $("trPeerOne").onchange = () => send({ peerLimitPerTorrent: n("trPeerOne") });
+    $("trPeersAll").onclick = () => act(home, "apps", "reannounce", {}).then(() => loadTorrents(true));
+  }
 
   async function loadTorrents(now = false) {
     const home = trHome();
@@ -434,7 +574,9 @@
   }
 
   function renderTransmission() {
-    if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#transmission .card")) return;
+    // (not while something's being typed or chosen there: it would be put back under the pointer)
+    const f = document.activeElement;
+    if (f && f.closest && f.closest("#transmission") && /^(INPUT|SELECT|TEXTAREA)$/.test(f.tagName) && f.type !== "checkbox") return;
     const home = trHome();
     const line = $("trHome");
     if (!home) {
@@ -474,14 +616,29 @@
     $("trWhere").onchange = () => act(home, "apps", "move", { to: $("trWhere").value || null });
     $("trWeb").onclick = () => window.open(`http://${home.target.split(":")[0]}:9092/transmission/web/`, "_blank");
     $("trFolder").textContent = add.folder ? homeRel(add.folder, add.browsing && add.browsing.home) : "its usual folder (~/Downloads)";
-    const list = torrents.list.slice().sort((a, b) => (b.status === 4) - (a.status === 4) || a.name.localeCompare(b.name));
+    renderLimits(home, st);
+    // (downloading first, then those waiting to download in the queue's order, then the rest by name)
+    const rank = (t) => (t.status === 4 ? 0 : t.status === 3 ? 1 : 2);
+    const byQueue = (a, b) => (a.queuePosition || 0) - (b.queuePosition || 0);
+    const list = torrents.list.slice().sort((a, b) => rank(a) - rank(b) || (rank(a) === 1 ? byQueue(a, b) : 0) || a.name.localeCompare(b.name));
+    const waiting = (status) => list.filter((x) => x.status === status).sort(byQueue);
+    const was = document.activeElement && document.activeElement.closest && document.activeElement.closest("#trList") ? document.activeElement.dataset.fkey : null;
     $("trList").replaceChildren(torrents.error ? el("div", { className: "warn-line" }, "⚠ " + torrents.error) : "", ...list.map((t) => {
       const b = el("button", { textContent: t.status === 0 ? "Resume" : "Pause" });
       b.onclick = () => act(home, "apps", "torrent", { do: t.status === 0 ? "start" : "stop", ids: [t.id] }).then(() => loadTorrents(true));
-      const bits = [`${Math.round((t.percentDone || 0) * 100)}%`, STATUS[t.status] || "", t.rateDownload ? "↓ " + rate(t.rateDownload) : "", t.rateUpload ? "↑ " + rate(t.rateUpload) : "", homeRel(t.downloadDir, add.browsing && add.browsing.home)];
+      const bits = [`${Math.round((t.percentDone || 0) * 100)}%`, STATUS[t.status] || "", homeRel(t.downloadDir, add.browsing && add.browsing.home)];
+      const key = /^[0-9a-f]{40}$/i.test(t.hashString || "") ? t.hashString.toLowerCase() : null;
       return el("div", { className: "card" }, el("div", { className: "top" }, el("span", { className: "summary", style: "flex:1;word-break:break-word" }, t.name), b),
-        el("div", { className: "cams" }, bits.filter(Boolean).join(" · ")), t.errorString ? el("div", { className: "warn-line" }, "⚠ " + t.errorString) : "");
+        el("div", { className: "cams" }, bits.filter(Boolean).join(" · ")), t.errorString ? el("div", { className: "warn-line" }, "⚠ " + t.errorString) : "",
+        key ? trafficBox(home, t, key, waiting) : el("div", { className: "cams" }, `↓ ${rate(t.rateDownload)}  ↑ ${rate(t.rateUpload)}`));
     }));
+    // (the keyboard's place kept, on a list drawn again)
+    const back = was && [...$("trList").querySelectorAll("[data-fkey]")].find((e) => e.dataset.fkey === was);
+    if (back) back.focus({ preventScroll: true });
+    // (drop-downs of torrents gone are forgotten; open ones' graphs read again when due)
+    const keys = new Set(list.map((t) => (t.hashString || "").toLowerCase()));
+    for (const k of [...trOpen.keys()]) if (!keys.has(k) && torrents.list.length) trOpen.delete(k);
+    for (const k of trOpen.keys()) loadTraffic(home, k);
     $("trGiveBack").onclick = async () => {
       if (!confirm(`Give the torrents back to the Transmission window app on ${home.name}? The cluster's Transmission stops and its folders stop being shared; open the window app to go on.`)) return;
       const a = await api.action({ target: home.target, module: "apps", action: "giveBack", args: {} }).catch((e) => ({ error: e.message }));

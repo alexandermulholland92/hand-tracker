@@ -18,8 +18,16 @@ or its battery is low. When it isn't free, or goes quiet, Transmission moves on.
   empty. Give them back undoes it.
 - New downloads: they go wherever they're asked to in your home; a folder that isn't shared yet is
   shared then.
+- Each torrent's traffic: the home reads every torrent's speeds every 10 s (the last hour kept as they
+  are) and keeps a reading a minute (that minute's average) for 7 days, in its state folder
+  (transmission-traffic.jsonl: a line a minute, only the torrents that moved), for the app's graph of
+  it over 1 h, 24 h or 7 days.
+- Peers and the queue: asking a torrent's trackers (or every torrent's) for more peers, how many peers
+  Transmission takes, how many torrents download and seed at once, and a waiting torrent's place in
+  the queue.
 """
 
+import collections
 import ipaddress
 import json
 import os
@@ -60,6 +68,27 @@ _run = {"contact": 0, "beat": 0, "names": None, "where": None, "starting": False
 _fwd = {"server": None, "target": None, "error": None}
 _stats = {"at": 0}  # (the home) Transmission's numbers, as its tick last read them
 _sid = {}
+
+# Each torrent's traffic (the home): a reading of every torrent's speeds every SAMPLE_S, the last hour of
+# them kept as they are; and a reading a minute (that minute's average) for 7 days, on its disk.
+SAMPLE_S, MINUTE_S = 10, 60
+if os.environ.get("HT_CLUSTER_SIM_FAST"):  # (the checks: minutes of 3 s)
+    SAMPLE_S, MINUTE_S = 1, 3
+HOUR_S, DAY_S, KEEP_S = 3600, 86400, 7 * 86400
+WEEK_BUCKET_S = 10 * MINUTE_S  # (7 days: sent as 10-minute averages, ~1,000 points, enough for a graph)
+TRIM_EVERY = 6 * 3600
+_tlock = threading.Lock()
+_traffic = {"recent": collections.deque(maxlen=HOUR_S // SAMPLE_S + 10), "minute": None, "last": 0, "trimmed": 0}
+HASH = re.compile(r"^[0-9a-fA-F]{12,40}$")
+# How many download, seed and connect at once: the app's names -> (Transmission's, lowest, highest; None: on/off)
+LIMITS = {
+    "downloadQueue": ("download-queue-enabled", None, None),
+    "downloadQueueSize": ("download-queue-size", 1, 50),
+    "seedQueue": ("seed-queue-enabled", None, None),
+    "seedQueueSize": ("seed-queue-size", 1, 100),
+    "peerLimit": ("peer-limit-global", 10, 1000),
+    "peerLimitPerTorrent": ("peer-limit-per-torrent", 2, 300),
+}
 
 
 # ----- where things are -----
@@ -313,10 +342,12 @@ def home_tick(node):
     _keep_forwarder(node)
     try:
         st = ask_tr(node, "session-stats", timeout=3)
-        alt = ask_tr(node, "session-get", {"fields": ["alt-speed-enabled"]}, timeout=3).get("alt-speed-enabled")
-        _stats.update(at=time.time(), torrents=st.get("torrentCount"), down=st.get("downloadSpeed"), up=st.get("uploadSpeed"), turtle=bool(alt))
+        s = ask_tr(node, "session-get", {"fields": ["alt-speed-enabled"] + [v[0] for v in LIMITS.values()]}, timeout=3)
+        _stats.update(at=time.time(), torrents=st.get("torrentCount"), down=st.get("downloadSpeed"), up=st.get("uploadSpeed"), turtle=bool(s.get("alt-speed-enabled")),
+                      session={k: s.get(v[0]) for k, v in LIMITS.items() if s.get(v[0]) is not None})
     except (RuntimeError, OSError):
         pass
+    sample_traffic(node)
     # New folders torrents save into (added from its web page, say): shared too.
     if now - mem.get("foldersAt", 0) > 60 and runner:
         mem["foldersAt"] = now
@@ -331,6 +362,132 @@ def home_tick(node):
             mem.save()
         except (RuntimeError, OSError):
             pass
+
+
+# ----- each torrent's traffic (the home) -----
+def traffic_file(node):
+    return os.path.join(node.state_dir, "transmission-traffic.jsonl")
+
+
+def sample_traffic(node):
+    """A reading of every torrent's speeds (only the moving ones kept), every SAMPLE_S; each minute's average
+    written to its file as the next minute starts. No reading (Transmission moving, say): a gap."""
+    now = time.time()
+    if now - _traffic["last"] < SAMPLE_S - 0.5:
+        return
+    _traffic["last"] = now
+    try:
+        got = ask_tr(node, "torrent-get", {"fields": ["hashString", "rateDownload", "rateUpload"]}, timeout=5).get("torrents", [])
+    except (RuntimeError, OSError):
+        return
+    moving = {}
+    for t in got:
+        d, u = int(t.get("rateDownload") or 0), int(t.get("rateUpload") or 0)
+        if (d or u) and HASH.match(str(t.get("hashString") or "")):
+            moving[t["hashString"][:12].lower()] = (d, u)
+    start = now - now % MINUTE_S
+    with _tlock:
+        _traffic["recent"].append((now, moving))
+        m = _traffic["minute"]
+        if m and m["t"] != start:
+            line = {"t": int(m["t"]), "r": {k: [round(s[0] / m["n"]), round(s[1] / m["n"])] for k, s in m["sum"].items()}}
+            try:
+                with open(traffic_file(node), "a", encoding="utf-8") as f:
+                    f.write(json.dumps(line, separators=(",", ":")) + "\n")
+            except OSError:
+                pass
+            m = None
+        if not m:
+            m = _traffic["minute"] = {"t": start, "n": 0, "sum": {}}
+        m["n"] += 1
+        for k, (d, u) in moving.items():
+            s = m["sum"].setdefault(k, [0, 0])
+            s[0] += d
+            s[1] += u
+        if now - _traffic["trimmed"] > TRIM_EVERY:
+            _traffic["trimmed"] = now
+            trim_traffic(node, now)
+
+
+def trim_traffic(node, now):
+    """The file without its minutes older than 7 days (under _tlock)."""
+    path = traffic_file(node)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return
+    keep = [l for l in lines if minute_of(l) is not None and minute_of(l) >= now - KEEP_S]
+    if len(keep) == len(lines):
+        return
+    try:
+        with open(path + ".new", "w", encoding="utf-8") as f:
+            f.writelines(keep)
+        os.replace(path + ".new", path)
+    except OSError:
+        pass
+
+
+def minute_of(line):
+    """A line's minute ({"t":…,…}), read without parsing all of it."""
+    try:
+        return int(line[5:line.index(",")])
+    except ValueError:
+        return None
+
+
+def minutes(node, key, frm, to):
+    """One torrent's readings a minute from frm to to: [[ms, down, up], …], 0 where it didn't move; none
+    where nothing was read (a gap)."""
+    out = []
+    try:
+        with open(traffic_file(node), "r", encoding="utf-8") as f:
+            for line in f:
+                t = minute_of(line)
+                if t is None or t < frm or t > to:
+                    continue
+                d, u = 0, 0
+                if '"%s"' % key in line:
+                    try:
+                        d, u = json.loads(line)["r"][key]
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                out.append([t * 1000, d, u])
+    except OSError:
+        pass
+    with _tlock:
+        m = _traffic["minute"]
+        if m and m["n"] and frm <= m["t"] <= to:  # (the minute going on, so far)
+            s = m["sum"].get(key) or [0, 0]
+            out.append([int(m["t"]) * 1000, round(s[0] / m["n"]), round(s[1] / m["n"])])
+    return out
+
+
+def act_traffic(node, args):
+    """A torrent's speeds over the last hour (a reading every 10 s), 24 hours (a minute) or 7 days (10-minute
+    averages of the minutes): {"points": [[ms, down, up], …], "every": seconds}."""
+    h, span = str(args.get("hash") or ""), args.get("span") or "1h"
+    if not HASH.match(h):
+        return {"ok": False, "error": "Which torrent?"}
+    if span not in ("1h", "24h", "7d"):
+        return {"ok": False, "error": "A span of 1h, 24h or 7d."}
+    key, now = h[:12].lower(), time.time()
+    if span == "1h":
+        with _tlock:
+            pts = [[int(t * 1000), *(r.get(key) or (0, 0))] for t, r in _traffic["recent"] if t >= now - HOUR_S]
+        first = pts[0][0] / 1000 if pts else now
+        # (before this service's own readings, after a restart: the minutes on its disk)
+        return {"ok": True, "span": span, "every": SAMPLE_S, "points": minutes(node, key, now - HOUR_S, first - MINUTE_S) + pts}
+    if span == "24h":
+        return {"ok": True, "span": span, "every": MINUTE_S, "points": minutes(node, key, now - DAY_S, now)}
+    buckets = collections.OrderedDict()
+    for t, d, u in minutes(node, key, now - KEEP_S, now):
+        b = buckets.setdefault(t // 1000 // WEEK_BUCKET_S * WEEK_BUCKET_S, [0, 0, 0])
+        b[0] += d
+        b[1] += u
+        b[2] += 1
+    return {"ok": True, "span": span, "every": WEEK_BUCKET_S,
+            "points": [[t * 1000, round(d / n), round(u / n)] for t, (d, u, n) in buckets.items()]}
 
 
 def share(node, names):
@@ -566,10 +723,98 @@ def act_turtle(node, args):
 
 def act_torrents(node, args):
     try:
-        t = ask_tr(node, "torrent-get", {"fields": ["id", "name", "percentDone", "status", "rateDownload", "rateUpload", "downloadDir", "errorString", "eta", "totalSize"]})
+        t = ask_tr(node, "torrent-get", {"fields": ["id", "name", "percentDone", "status", "rateDownload", "rateUpload", "downloadDir", "errorString", "eta", "totalSize",
+                                                    "hashString", "downloadedEver", "uploadedEver", "queuePosition", "peersConnected"]})
     except (RuntimeError, OSError) as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "torrents": t.get("torrents", [])}
+
+
+def act_reannounce(node, args):
+    """Its trackers asked for more peers now: these torrents', or every torrent's (Transmission asks those it
+    may: a tracker is asked at most once a minute or so)."""
+    ids = [int(i) for i in (args.get("ids") or []) if str(i).isdigit()]
+    try:
+        ask_tr(node, "torrent-reannounce", {"ids": ids} if ids else {})
+    except (RuntimeError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "message": "Asked the trackers for more peers%s." % ("" if ids else " for every torrent")}
+
+
+def act_queue(node, args):
+    """A waiting torrent's place among the others waiting the same way (to download, or to seed): top, up,
+    down or bottom."""
+    move = args.get("move")
+    tid = args.get("id")
+    if move not in ("top", "up", "down", "bottom") or not str(tid).isdigit():
+        return {"ok": False, "error": "Which torrent, and where to?"}
+    tid = int(tid)
+    try:
+        if move in ("top", "bottom"):
+            ask_tr(node, "queue-move-" + move, {"ids": [tid]})
+        else:
+            got = ask_tr(node, "torrent-get", {"fields": ["id", "status", "queuePosition"]}).get("torrents", [])
+            me = next((t for t in got if t.get("id") == tid), None)
+            if not me:
+                return {"ok": False, "error": "That torrent isn't there any more."}
+            same = sorted((t for t in got if t.get("status") == me.get("status")), key=lambda t: t.get("queuePosition") or 0)
+            i = next(i for i, t in enumerate(same) if t.get("id") == tid)
+            j = i - 1 if move == "up" else i + 1
+            if 0 <= j < len(same):  # (in Transmission's queue, the place of the one it goes past: the rest move along)
+                ask_tr(node, "torrent-set", {"ids": [tid], "queuePosition": same[j].get("queuePosition") or 0})
+    except (RuntimeError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "message": {"top": "Moved to the top of the queue.", "up": "Moved up the queue.", "down": "Moved down the queue.",
+                                    "bottom": "Moved to the bottom of the queue."}[move]}
+
+
+def act_limits(node, args):
+    """How many torrents download and seed at once (a queue each, on or off) and how many peers Transmission
+    takes, in all and for each torrent: set now, and in its settings (kept wherever it runs next)."""
+    change = {}
+    for k, (name, lo, hi) in LIMITS.items():
+        if k not in args:
+            continue
+        if lo is None:
+            change[name] = bool(args[k])
+            continue
+        try:
+            v = int(args[k])
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "That isn't a number."}
+        if not lo <= v <= hi:
+            return {"ok": False, "error": "Between %d and %d." % (lo, hi)}
+        change[name] = v
+    if not change:
+        return {"ok": False, "error": "Nothing to change."}
+    try:
+        ask_tr(node, "session-set", change)
+    except (RuntimeError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+    # (its settings file too, as Transmission writes it when it stops: kept if it stops another way)
+    path = os.path.join(config_dir(node), "settings.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            s = json.load(f)
+        s.update(change)
+        with open(path + ".new", "w", encoding="utf-8") as f:
+            json.dump(s, f, indent=4, sort_keys=True)
+        os.replace(path + ".new", path)
+    except (OSError, ValueError):
+        pass
+    _wake(node)  # (read again now)
+    said = []
+    if "download-queue-enabled" in change or "download-queue-size" in change:
+        said.append("downloads: %s" % ("as many as want to at once" if change.get("download-queue-enabled") is False else
+                                       "at most %s at once" % change.get("download-queue-size", (_stats.get("session") or {}).get("downloadQueueSize", "?"))))
+    if "seed-queue-enabled" in change or "seed-queue-size" in change:
+        said.append("seeding: %s" % ("every finished torrent" if change.get("seed-queue-enabled") is False else
+                                     "at most %s at once" % change.get("seed-queue-size", (_stats.get("session") or {}).get("seedQueueSize", "?"))))
+    if "peer-limit-global" in change:
+        said.append("at most %d peers in all" % change["peer-limit-global"])
+    if "peer-limit-per-torrent" in change:
+        said.append("at most %d peers for each torrent" % change["peer-limit-per-torrent"])
+    return {"ok": True, "message": "Transmission: %s." % ", ".join(said)}
 
 
 def act_torrent(node, args):
@@ -640,6 +885,10 @@ ACTIONS = {
     "turtle": {"run": act_turtle, "hidden": True},
     "torrents": {"run": act_torrents, "hidden": True},
     "torrent": {"run": act_torrent, "hidden": True},
+    "traffic": {"run": act_traffic, "hidden": True},
+    "reannounce": {"run": act_reannounce, "hidden": True},
+    "queue": {"run": act_queue, "hidden": True},
+    "limits": {"run": act_limits, "hidden": True},
     "folders": {"run": act_folders, "hidden": True},
     "add": {"run": act_add, "hidden": True},
 }
@@ -666,7 +915,8 @@ def status(node):
             parts.append("keeps Transmission's files; its torrents aren't moved in yet")
         else:
             if mem.get("runner") and not mem.get("handing") and time.time() - _stats["at"] < 30:
-                out.update(torrents=_stats.get("torrents"), down=_stats.get("down"), up=_stats.get("up"), turtle=_stats.get("turtle"))
+                out.update(torrents=_stats.get("torrents"), down=_stats.get("down"), up=_stats.get("up"), turtle=_stats.get("turtle"),
+                           session=_stats.get("session") or {})
                 kb = lambda b: "%.1f MB/s" % (b / 1e6) if b >= 1e6 else "%d KB/s" % round(b / 1e3)
                 parts.append("Transmission on %s · %d torrents · ↓ %s ↑ %s%s" % (mem.get("runner"), _stats.get("torrents") or 0, kb(_stats.get("down") or 0),
                                                                                   kb(_stats.get("up") or 0), " · turtle on" if _stats.get("turtle") else ""))

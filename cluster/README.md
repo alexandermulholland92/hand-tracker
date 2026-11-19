@@ -125,6 +125,16 @@ for that Pi.
     folders and progress) and settings into it; "Give them back" undoes it.
   - **New downloads:** they go into a folder you choose in your home, and a folder not shared yet
     is shared then.
+  - **Each torrent** has a drop-down with its speeds on it (0 too). Inside it:
+    - what the torrent has received and sent in all, and its peers;
+    - **Ask for more peers**: its trackers asked now;
+    - while it waits, its place in the queue (**Top**, **Up**, **Down**, **Bottom**);
+    - its traffic over 1 hour, 24 hours or 7 days. The home reads every torrent's speeds every 10
+      seconds, and keeps a reading a minute for 7 days
+      (`~/.local/state/ht-cluster/transmission-traffic.jsonl`).
+  - **How many at once:** how many torrents download and seed at once (a queue each, on or off), and
+    how many peers Transmission takes, in all and for each torrent. Also **Ask for more peers (every
+    torrent)**.
   - **On the Pis:** Debian's `transmission-daemon` runs as your account (`ht-cluster-transmission`,
     started by the root helper), with its settings in `~/.local/share/ht-cluster/transmission`.
 

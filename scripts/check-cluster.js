@@ -5,7 +5,10 @@
  *   npm run check:cluster        (Python 3 needed: PYTHON, else python3, python or py -3)
  * Checked in the app's window: the Pi listed with its modules' summaries; a module turned off
  * under ⚙ (and the Pi says so); Sentry turned off from Camera rigs (Hand Tracker is asked);
- * a module the page doesn't know shown all the same; a Pi that stops answering faded, with
+ * a module the page doesn't know shown all the same; Transmission's torrents moved in (with
+ * cluster/test_apps.py's stand-in Transmission), each torrent's Traffic drop-down (its speeds,
+ * totals, peers, a graph over 1 h and 24 h), asking for more peers, a waiting torrent moved up the
+ * queue, and how many download, seed and connect at once; a Pi that stops answering faded, with
  * Forget. The service's own checks: cluster/test_cluster.py.
  */
 const { app, BrowserWindow } = require("electron");
@@ -22,6 +25,13 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${ok ? "" : `  (${String(typeof detail === "string" ? detail : JSON.stringify(detail)).slice(0, 400)})`}`);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const freePort = () => new Promise((resolve) => {
+  const s = require("net").createServer();
+  s.listen(0, "127.0.0.1", () => {
+    const p = s.address().port;
+    s.close(() => resolve(p));
+  });
+});
 async function until(fn, ms = 20000) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -119,6 +129,30 @@ fs.mkdirSync(saveIn);
 const { dialog } = require("electron");
 dialog.showOpenDialog = async (_win, options) => ({ canceled: false, filePaths: (options.properties || []).includes("openDirectory") ? [saveIn] : [letter] });
 
+// Transmission: the window app's torrents to move in (cluster/test_apps.py's stand-ins: a Transmission's
+// RPC, keeping its torrents in its settings folder, and a root helper that starts it).
+const trHome = path.join(tmp, "home");
+const gtk = path.join(trHome, ".config", "transmission");
+const trConfig = path.join(tmp, "transmission");
+for (const d of [path.join(gtk, "torrents"), path.join(gtk, "resume"), path.join(trHome, "Videos", "shows"), path.join(trHome, "Videos", "movies"), path.join(trHome, "Downloads")]) fs.mkdirSync(d, { recursive: true });
+["Videos/shows", "Videos/shows", "Videos/movies"].forEach((sub, i) => {
+  const dest = Buffer.from(path.join(trHome, ...sub.split("/")));
+  fs.writeFileSync(path.join(gtk, "resume", `t${i}.resume`), Buffer.concat([Buffer.from(`d11:destination${dest.length}:`), dest, Buffer.from("5:addedi1ee")]));
+  fs.writeFileSync(path.join(gtk, "torrents", `t${i}.torrent`), `d4:infod4:name2:t${i}ee`);
+});
+fs.writeFileSync(path.join(gtk, "settings.json"), JSON.stringify({ "download-dir": path.join(trHome, "Downloads"), "rpc-port": 9092, "download-queue-enabled": true, "download-queue-size": 3,
+  "seed-queue-enabled": false, "seed-queue-size": 10, "peer-limit-global": 60, "peer-limit-per-torrent": 20, "peer-port": 51413 }));
+const fakeTr = path.join(tmp, "fake-tr.py"), fakeHelper = path.join(tmp, "fake-helper.py");
+spawnSync(py[0], [...py[1], "-c", "import sys; sys.path.insert(0, sys.argv[1]); import test_apps; open(sys.argv[2], 'w').write(test_apps.FAKE_TRANSMISSION); open(sys.argv[3], 'w').write(test_apps.FAKE_HELPER)",
+  path.join(ROOT, "cluster"), fakeTr, fakeHelper]);
+const fakeState = () => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(trConfig, "fake-state.json"), "utf8"));
+  } catch {
+    return {};
+  }
+};
+
 let service = null;
 process.argv.push("--app=cluster");
 process.env.HT_CLUSTER_NODES = `127.0.0.1:${port}`;
@@ -135,6 +169,9 @@ app.whenReady().then(async () => {
       env: {
         ...process.env, HT_CLUSTER_STATE: path.join(tmp, "state"), HT_CLUSTER_HT_URL: `http://127.0.0.1:${ht.address().port}`, HT_CLUSTER_GITHUB_API: `http://127.0.0.1:${gh.address().port}`,
         HT_CLUSTER_JOBS_DIR: path.join(tmp, "jobs"), HT_CLUSTER_FFMPEG: ffmpegPath, HT_CLUSTER_SIM_RECORDINGS: recordings, PYTHONDONTWRITEBYTECODE: "1",
+        HT_CLUSTER_SIM_NAME: os.hostname().split(".")[0], HT_CLUSTER_ROOT_HELPER: fakeHelper, HT_TEST_HELPER_LOG: path.join(tmp, "helper.log"), HT_TEST_FAKE_TR: fakeTr,
+        HT_CLUSTER_TR_PORT: String(await freePort()), HT_CLUSTER_TR_OLD_PORT: String(await freePort()), HT_CLUSTER_TR_CONFIG: trConfig, HT_CLUSTER_SIM_GTK: gtk,
+        HT_CLUSTER_SIM_HOME: trHome, HT_CLUSTER_SIM_FAST: "1",
       },
       stdio: "ignore",
     });
@@ -243,6 +280,55 @@ app.whenReady().then(async () => {
     const homeOn = await until(async () => (await ask(port, "GET", "/api/node")).modules.find((m) => m.name === "apps").status.home === true);
     check("...that Pi now keeps them", !!homeOn);
 
+    // Moved in: each torrent's traffic (speeds, totals, a graph over 1 h / 24 h / 7 days), asking for more
+    // peers, a waiting torrent's place in the queue, and how many download, seed and connect at once
+    await js("[...document.querySelectorAll('#trHome button')].find((b) => /Move .* Transmission torrents in/.test(b.textContent)).click(); null");
+    const trList = () => js("document.getElementById('trList').innerText");
+    const three = await until(async () => (await js("document.querySelectorAll('#trList details.traffic').length")) === 3, 60000);
+    check("Moved in: the torrents listed, each with a Traffic drop-down", !!three, await trList());
+    const sums = await js("[...document.querySelectorAll('#trList details.traffic > summary')].map((s) => s.textContent)");
+    check("...its speeds on it, 0 too", sums.length === 3 && sums.every((s) => /^Traffic\s+↓ \d+ KB\/s\s+↑ \d+ KB\/s$/.test(s)) && sums.some((s) => /↑ 2 KB\/s/.test(s)) && sums.some((s) => /↑ 0 KB\/s/.test(s)), sums);
+    const card = (name) => `[...document.querySelectorAll('#trList .card')].find((c) => c.querySelector('.summary').textContent === ${JSON.stringify(name)})`;
+    const order = () => js("[...document.querySelectorAll('#trList .card .summary')].map((s) => s.textContent).join(',')");
+    check("...those waiting to download first, in the queue's order", (await order()) === "t1,t2,t0", await order());
+    await js(`${card("t0")}.querySelector('summary').click(); null`);
+    const opened = await until(() => js(`(() => { const c = ${card("t0")}; const p = c && c.querySelector('.graph path.up'); return p && /L/.test(p.getAttribute('d')) && c.querySelector('details').innerText + ' | ' + c.querySelector('.graph').textContent; })()`), 30000);
+    check("Opened: what it's received and sent in all, its peers, and its traffic over the last hour", !!opened && /In all: ↓ 1 MB\s+↑ 500 KB · 3 peers connected/.test(opened) && /1 h ago/.test(opened), opened || (await trList()));
+    if (process.env.HT_CLUSTER_SHOT) await js(`${card("t0")}.scrollIntoView({ block: "end" }); null`);
+    await shot("5-transmission");
+    await js(`[...${card("t0")}.querySelectorAll('.spans button')].find((b) => b.textContent === '24 h').click(); null`);
+    await sleep(9000); // (the list drawn again meanwhile: it stays open, on 24 h)
+    const day = await until(() => js(`(() => { const c = ${card("t0")}; const d = c && c.querySelector('details'); return d && d.open && /24 h ago/.test(d.querySelector('.graph').textContent) && c.querySelector('.spans button[aria-pressed=true]').textContent; })()`), 30000);
+    check("...over 24 hours too, and it stays open as the list is drawn again", day === "24 h", day);
+    await js(`[...${card("t0")}.querySelectorAll('button')].find((b) => b.textContent === 'Ask for more peers').click(); null`);
+    const askedOne = await until(() => JSON.stringify(fakeState().reannounced || []) === "[[1]]");
+    check("Ask for more peers: that torrent's trackers asked", !!askedOne, fakeState());
+    await js("document.getElementById('trPeersAll').click(); null");
+    const askedAll = await until(() => (fakeState().reannounced || []).includes("all"));
+    check("...and every torrent's, from the button for all", !!askedAll, fakeState());
+    await js(`${card("t2")}.querySelector('summary').click(); null`);
+    const second = await until(() => js(`/2 of 2 waiting to download/.test(${card("t2")}.innerText)`));
+    check("A waiting torrent says its place in the queue", !!second, await trList());
+    await js(`[...${card("t2")}.querySelectorAll('button')].find((b) => b.textContent === 'Up').click(); null`);
+    const upped = await until(async () => (await order()) === "t2,t1,t0", 20000);
+    check("...and moves up it from its drop-down", !!upped, await order());
+    if (process.env.HT_CLUSTER_SHOT) await js(`${card("t2")}.scrollIntoView({ block: "end" }); null`);
+    await shot("5b-transmission-queue");
+    const limits = await until(() => js("!document.getElementById('trLimits').hidden && document.getElementById('trPeerAll').value === '60' && document.getElementById('trDlSize').value === '3'"), 20000);
+    check("How many download, seed and connect at once, as Transmission has them", !!limits, await js("document.getElementById('trLimits').innerText"));
+    const change = (id, value) => js(`(() => { const i = document.getElementById(${JSON.stringify(id)}); i.value = ${JSON.stringify(value)}; i.dispatchEvent(new Event('change')); })(); null`);
+    await change("trDlSize", "2");
+    await change("trPeerAll", "100");
+    await js("document.getElementById('trSeedQueue').click(); null");
+    const set = await until(() => {
+      const l = fakeState().limits || {};
+      return l["download-queue-size"] === 2 && l["peer-limit-global"] === 100 && l["seed-queue-enabled"] === true && l;
+    });
+    check("...changed there: Transmission told", !!set, fakeState());
+    const shown = await until(() => js("document.getElementById('trDlSize').value === '2' && document.getElementById('trPeerAll').value === '100' && document.getElementById('trSeedQueue').checked && !document.getElementById('trSeedSize').disabled"), 20000);
+    check("...and the page shows it", !!shown, await js("document.getElementById('trLimits').innerText"));
+    await shot("6-transmission-limits");
+
     // On a phone: the same page through the app's Cluster plugin (here fake-cluster-plugin.js): the
     // Pi found by its Tailscale name, a command job over a file picked on the phone, its results as one zip
     const downloads = path.join(tmp, "phone-downloads");
@@ -290,6 +376,9 @@ app.whenReady().then(async () => {
     check("No errors", false, err.message);
   } finally {
     if (service) service.kill();
+    try {
+      process.kill(Number(fs.readFileSync(path.join(tmp, "state", "tr-running"), "utf8")), "SIGKILL"); // (the stand-in Transmission)
+    } catch {}
     console.log(`${results.filter(Boolean).length}/${results.length} checks passed.`);
     try {
       fs.rmSync(path.join(tmp, "node"), { recursive: true, force: true });
