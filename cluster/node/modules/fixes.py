@@ -8,8 +8,9 @@ already on the Pi (put in by hand) is taken as it is and shows on.
     the Pi has a network.
   Network tuning (pi/network-tuning.sh): the Wi-Fi rejoin fix (no IPv6 in the saved Wi-Fi networks), BBR,
     and Tailscale's packets first on Wi-Fi.
-  Freeze restart + kept logs (pi/freeze-restart.sh): the Pi restarted when it freezes for 30 s, or 10 s
-    after a kernel panic, and its log kept on its drive.
+  Freeze restart + kept logs (pi/freeze-restart.sh): the Pi restarted when it freezes for 30 s, 10 s
+    after a kernel panic, or when something stays stuck in the kernel for 2 minutes (a drive or a driver
+    that stopped answering, which the watchdog misses), and its log kept on its drive.
   USB power (pi/usb-current.sh): a Raspberry Pi 5 that didn't find a 5 A supply ("power to peripherals will
     be restricted") treated as if it had one, from its next restart: its USB ports' full 1.6 A
     (usb_max_current_enable=1 in config.txt) and no warning (PSU_MAX_CURRENT=5000 in its bootloader's
@@ -46,7 +47,7 @@ FIXES = [
      "Network tuning: the Wi-Fi rejoin fix (no IPv6 on Wi-Fi), BBR, Tailscale's packets first",
      ["/etc/sysctl.d/90-hand-tracker-network.conf", "/etc/NetworkManager/dispatcher.d/91-hand-tracker-wlan0-ipv6"]),
     ("freezeRestart", "freeze-restart", "Freeze restart",
-     "Freeze restart + kept logs: restarted after 30 s frozen or a kernel panic, the log kept on the drive",
+     "Freeze restart + kept logs: restarted after 30 s frozen, 2 min stuck or a kernel panic, the log kept on the drive",
      ["/etc/systemd/system.conf.d/50-watchdog.conf", "/etc/sysctl.d/90-panic-reboot.conf",
       "/etc/systemd/journald.conf.d/50-persistent.conf"]),
     ("usbCurrent", "usb-current", "USB power",

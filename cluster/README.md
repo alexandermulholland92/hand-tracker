@@ -69,7 +69,9 @@ for that Pi.
   - **Network tuning** (`pi/network-tuning.sh`): the Wi-Fi rejoin fix (no IPv6 in the saved Wi-Fi
     networks), BBR, and Tailscale's packets first on Wi-Fi.
   - **Freeze restart + kept logs** (`pi/freeze-restart.sh`): the Pi restarted when it freezes for
-    30 seconds, or 10 seconds after a kernel panic, and its log kept on its drive.
+    30 seconds, 10 seconds after a kernel panic, or when something stays stuck in the kernel for 2
+    minutes (a drive or a driver that stopped answering: the watchdog misses that, as systemd still
+    answers it), and its log kept on its drive.
   - **USB power** (`pi/usb-current.sh`): a Raspberry Pi 5 that didn't find a 5 A supply (its
     "power to peripherals will be restricted": 0.6 A for its USB ports then) treated as if it had one.
     It uses two of Raspberry Pi's own settings: `usb_max_current_enable=1` in config.txt for the USB
