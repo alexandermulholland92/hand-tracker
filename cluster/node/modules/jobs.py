@@ -11,10 +11,18 @@ A job is one kind of work over a list of files (an item each):
   convert  videos converted to one of the Recording Converter's formats (the app sends its ffmpeg settings)
   command  a command line run for each file: {in} the file, {out} the folder for what it makes, {name}
            the file's name without its ending, {file} with it
+  playable a video made one every device plays as it is (autoconvert.py's): each file's own plan
+           (which streams, the picture copied or made H.264, scaled to 1080p, HDR made SDR) into an
+           .mp4, put by the Pi that keeps the list where the file's "place" says (never over a file)
 The files: recordings on any Pi (Hand Tracker's recordings folder: done by that Pi itself while it
 takes jobs, else fetched by another), files sent from a computer to the Pi that keeps the list, or a
 folder on that Pi. What's made goes to that Pi (~/ht-cluster-jobs/results/<job>/), where the app
-lists it and saves it to a computer.
+lists it and saves it to a computer. A job whose params say "here" is done only by the Pi each file
+is on (nothing sent over the Wi-Fi).
+
+Files go between Pis one at a time each way (the user, 2026-11-21, when four Pis fetching videos
+from pi at once swamped its Wi-Fi): a Pi asks the one that keeps the list for its turn to download a
+file, or to send back what it made, and waits in line for it ("turn"); its own files need no turn.
 
 When a Pi works: "Take jobs" on; not while its cameras run unless "Take jobs while its cameras run";
 not on battery unless "Take jobs on battery" (and never under 25 %); not too hot (80 °C, again under
@@ -61,6 +69,10 @@ MIN_MEMORY = 350 << 20
 LOW_BATTERY = 25
 OWNER_FRESH_S = 30  # a Pi that asked for work this lately keeps its own recordings for itself
 MAX_TRIES = 3
+TURN_STALE_S = 45  # a Pi with a turn, or in line for one, says so this often or loses its place
+TURN_ASK_S = 3  # how often a Pi in line asks again
+TURN_BEAT_S = 15  # how often a Pi moving a file says it still has its turn
+TEXT_SUBS = {"subrip", "ass", "ssa", "mov_text", "webvtt", "text"}
 VIDEO = re.compile(r"\.(mp4|webm|mkv|mov|avi|m4v|ts|mpg|mpeg|wmv|flv|3gp|ogv)$", re.I)
 SAFE_NAME = re.compile(r"^[^/\\\x00-\x1f]{1,200}$")
 SAFE_REL = re.compile(r"^[A-Za-z0-9 ._()+,=@'-]+(/[A-Za-z0-9 ._()+,=@'-]+)*$")
@@ -70,9 +82,11 @@ _lock = threading.RLock()  # (the job list, on the Pi that keeps it)
 _book = {"jobs": None}  # the job list, loaded once
 _seen = {}  # Pi -> when it last asked for work (that it's taking jobs now)
 _run = {"item": None, "proc": None, "paused": False, "pausedAt": 0, "why": "", "stop": False, "progress": 0.0,
-        "beat": 0, "home": None, "thread": None, "gave": None}
+        "beat": 0, "home": None, "thread": None, "gave": None, "turn": None}
 _state = {"why": "", "last": ""}
 _tools = {"ready": None, "making": False, "error": None}
+# (on the Pi that keeps the list: whose turn it is to move a file, and who's in line, each way)
+_turns = {"down": {"holder": None, "beat": 0, "line": []}, "up": {"holder": None, "beat": 0, "line": []}}
 
 
 # ----- where things are -----
@@ -192,13 +206,14 @@ def pick(node, worker, worker_can_reach):
     for j in sorted(book(node), key=lambda x: (not x.get("high"), x["created"])):
         if j["state"] not in ("waiting", "running"):
             continue
+        here = bool(j["params"].get("here"))  # (done only where each file is)
         for it in j["items"]:
             if it["state"] != "waiting":
                 continue
             src = it["source"]["node"]
             if src == worker:
                 return j, it
-            if fallback is None:
+            if fallback is None and not here:
                 owner_busy = src != me and now - _seen.get(src, 0) < OWNER_FRESH_S
                 if src == me or (not owner_busy and src in worker_can_reach):
                     fallback = (j, it)
@@ -237,7 +252,7 @@ def act_create(node, args):
     if not is_home(node):
         return {"ok": False, "error": "%s doesn't keep the job list." % node.name}
     kind = args.get("kind")
-    if kind not in ("animals", "convert", "command"):
+    if kind not in ("animals", "convert", "command", "playable"):
         return {"ok": False, "error": "Which kind of job?"}
     params = args.get("params") if isinstance(args.get("params"), dict) else {}
     if kind == "convert" and not (isinstance(params.get("args"), list) and all(isinstance(a, str) for a in params["args"]) and params.get("ext")):
@@ -257,8 +272,17 @@ def act_create(node, args):
             items.append({"name": s["name"], "size": int(s.get("size") or 0), "source": {"node": node.name, "path": os.path.join(data_dir(node), "inputs", jid, s["name"])}, "state": "uploading"})
         elif s.get("node") and s.get("path"):
             items.append({"name": s["name"], "size": int(s.get("size") or 0), "source": {"node": str(s["node"]), "path": str(s["path"])}, "state": "waiting"})
+        else:
+            continue
+        if kind == "playable":  # (each file its own plan, and where what's made goes)
+            if not isinstance(s.get("plan"), dict):
+                items.pop()
+                continue
+            items[-1]["plan"] = s["plan"]
+            if isinstance(s.get("place"), str) and os.path.isabs(s["place"]):
+                items[-1]["place"] = s["place"]
     folder = str(args.get("folder") or "")
-    if folder:
+    if folder and kind != "playable":  # (a playable file comes with its plan)
         if not os.path.isdir(folder):
             return {"ok": False, "error": "No folder %s on %s." % (folder, node.name)}
         for name in sorted(os.listdir(folder)):
@@ -358,7 +382,7 @@ def brief(job, items=False):
     out["working"] = sorted({it["worker"] for it in job["items"] if it["state"] == "running" and it.get("worker")})
     out["params"] = {k: v for k, v in job["params"].items() if k in ("every", "format", "command", "label", "modelName")}
     if items:
-        out["items"] = [{k: it.get(k) for k in ("id", "name", "size", "state", "worker", "progress", "error", "summary")} | {"from": it["source"]["node"]} for it in job["items"]]
+        out["items"] = [{k: it.get(k) for k in ("id", "name", "size", "state", "worker", "progress", "error", "summary", "placed")} | {"from": it["source"]["node"]} for it in job["items"]]
     return out
 
 
@@ -471,6 +495,7 @@ def act_lease(node, args):
         upload = (job["params"].get("model") or {}).get("upload")
         return {"ok": True, "item": {"job": job["id"], "kind": job["kind"], "title": job["title"], "high": job["high"], "params": job["params"],
                                      "id": it["id"], "name": it["name"], "size": it["size"], "source": it["source"], "lease": it["lease"],
+                                     "plan": it.get("plan"),
                                      "modelPath": os.path.join(data_dir(node), "inputs", job["id"], upload) if upload else None}}
 
 
@@ -495,6 +520,7 @@ def act_progress(node, args):
 
 
 def act_finish(node, args):
+    placing = None
     with _lock:
         job, it = find_lease(node, args.get("lease"))
         if not it:
@@ -503,6 +529,8 @@ def act_finish(node, args):
             it.update(state="waiting", worker=None, lease=None, progress=0)
         elif args.get("ok"):
             it.update(state="done", lease=None, progress=1, finished=time.time(), summary=args.get("summary"))
+            if job["kind"] == "playable" and it.get("place"):
+                placing = (job["id"], it)
         else:
             it.update(state="stopped" if job["state"] == "stopped" else "failed", lease=None, finished=time.time(), error=str(args.get("error") or "it failed")[:500])
         settle(job)
@@ -510,10 +538,71 @@ def act_finish(node, args):
             summarize_animals(node, job)
         save(node)
         done = job["state"] == "done"
+    if placing:  # (a move on this drive is at once; another drive's copy could take a while)
+        threading.Thread(target=place_result, args=(node,) + placing, daemon=True).start()
     if done:
         c = counts(job)
         node.event("jobs", "Job done: %s (%d of %d files%s)" % (job["title"], c["done"], len(job["items"]), ", %d failed" % c["failed"] if c["failed"] else ""), bad=bool(c["failed"]))
     return {"ok": True}
+
+
+def place_result(node, jid, it):
+    """What a playable file made, put where its place says (beside its video): never over a file there."""
+    src = os.path.join(data_dir(node), "results", jid, os.path.splitext(it["name"])[0] + ".mp4")
+    dst = it["place"]
+    try:
+        if os.path.exists(dst):
+            word = "already there"
+        elif not os.path.isfile(src):
+            word = "nothing made"
+        else:
+            try:
+                os.replace(src, dst)  # (the same drive: at once)
+            except OSError:
+                shutil.copyfile(src, dst + ".part")
+                os.replace(dst + ".part", dst)
+                os.remove(src)
+            word = "placed"
+    except OSError as e:
+        word = "couldn't place it: %s" % e
+    with _lock:
+        it["placed"] = word
+        save(node)
+
+
+def act_turn(node, args):
+    """A Pi's turn to move a file to or from here, one at a time each way, in the order they asked:
+    {lane: down|up, worker, done?} -> {go: true} (its turn: said again at least every TURN_STALE_S
+    while the file moves) or {go: false, ahead: how many before it}."""
+    if not is_home(node):
+        return {"ok": False, "error": "%s doesn't keep the job list." % node.name}
+    lane, worker = args.get("lane"), str(args.get("worker") or "")
+    if lane not in _turns or not worker:
+        return {"ok": False, "error": "Which turn?"}
+    now = time.time()
+    with _lock:
+        t = _turns[lane]
+        if t["holder"] and now - t["beat"] > TURN_STALE_S:  # (a Pi that stopped saying it has its turn)
+            t["holder"] = None
+        t["line"] = [w for w in t["line"] if now - w[1] <= TURN_STALE_S and w[0] != t["holder"]]
+        if args.get("done"):
+            if t["holder"] == worker:
+                t["holder"] = None
+            t["line"] = [w for w in t["line"] if w[0] != worker]
+            return {"ok": True, "go": False}
+        if t["holder"] == worker:
+            t["beat"] = now
+            return {"ok": True, "go": True}
+        mine = next((w for w in t["line"] if w[0] == worker), None)
+        if mine:
+            mine[1] = now
+        else:
+            t["line"].append([worker, now])
+        if t["holder"] is None and t["line"][0][0] == worker:
+            t["line"].pop(0)
+            t.update(holder=worker, beat=now)
+            return {"ok": True, "go": True}
+        return {"ok": True, "go": False, "ahead": (1 if t["holder"] else 0) + [w[0] for w in t["line"]].index(worker)}
 
 
 def act_tools(node, args):
@@ -537,6 +626,7 @@ ACTIONS = {
     "lease": {"run": act_lease, "hidden": True},
     "progress": {"run": act_progress, "hidden": True},
     "finish": {"run": act_finish, "hidden": True},
+    "turn": {"run": act_turn, "hidden": True},
     "tools": {"title": "Get the animal model's tools ready", "run": act_tools},
 }
 
@@ -733,7 +823,7 @@ def tick(node):
     if not item:
         _state["why"] = ""
         return
-    _run.update(item=item, proc=None, paused=False, pausedAt=0, why="", stop=False, progress=0.0, beat=0, home=home, gave=None)
+    _run.update(item=item, proc=None, paused=False, pausedAt=0, why="", stop=False, progress=0.0, beat=0, home=home, gave=None, turn=None)
     t = threading.Thread(target=work, args=(node, item, home), daemon=True, name="job-" + item["id"])
     _run["thread"] = t
     t.start()
@@ -789,30 +879,64 @@ def high_for(node, item):
     return bool(item.get("high") or node.setting("jobs", "high"))
 
 
+def take_turn(node, home, lane, name):
+    """Waits in line for this Pi's turn to move a file to (up) or from (down) the Pi that keeps the
+    list: one at a time each way, so its Wi-Fi isn't swamped. A list kept by a Pi without turns (one
+    not updated yet) says it can't: no waiting then."""
+    word = "download" if lane == "down" else "send back"
+    try:
+        while True:
+            if _run["stop"]:
+                raise RuntimeError("stopped")
+            code, a = ask_home(node, home, "turn", {"lane": lane, "worker": node.name}, timeout=15)
+            if code in (400, 409) or (code == 200 and isinstance(a, dict) and a.get("go")):
+                return
+            ahead = a.get("ahead") if code == 200 and isinstance(a, dict) else None
+            _run["turn"] = "Waiting its turn to %s %s%s" % (word, name, " (%d before it)" % ahead if ahead else "")
+            time.sleep(TURN_ASK_S)
+    finally:
+        _run["turn"] = None
+
+
+def keep_turn(node, home, lane):
+    ask_home(node, home, "turn", {"lane": lane, "worker": node.name}, timeout=15)
+
+
+def end_turn(node, home, lane):
+    ask_home(node, home, "turn", {"lane": lane, "worker": node.name, "done": True}, timeout=15)
+
+
 def fetch(node, item, home, dest):
-    """The file to work on: here already (its own recording), else fetched from where it is."""
+    """The file to work on: here already (its own recording), else fetched from where it is, in its turn."""
     src = item["source"]
     if src["node"] == node.name and os.path.isfile(src["path"]):
         return src["path"]
     target = home["target"] if src["node"] == home["name"] else next((p["target"] for p in node.cluster() if p["name"] == src["node"]), None)
     if not target:
         raise RuntimeError("%s, which has the file, isn't answering" % src["node"])
-    at = 0
-    with open(dest, "wb") as f:
-        while True:
-            if _run["stop"]:
-                raise RuntimeError("stopped")
-            code, data = node.ask(target, "GET", "/api/jobs/file?path=%s&at=%d" % (urllib.parse.quote(src["path"]), at), timeout=60)
-            if code != 200 or not isinstance(data, bytes):
-                raise RuntimeError("couldn't fetch %s from %s: %s" % (item["name"], src["node"], (data or {}).get("error") if isinstance(data, dict) else data))
-            if not data:
-                break
-            f.write(data)
-            at += len(data)
-            if item.get("size"):
-                _run["progress"] = 0.1 * min(1.0, at / float(item["size"]))
-            if len(data) < PIECE:
-                break
+    take_turn(node, home, "down", item["name"])
+    try:
+        at, beat = 0, time.time()
+        with open(dest, "wb") as f:
+            while True:
+                if _run["stop"]:
+                    raise RuntimeError("stopped")
+                code, data = node.ask(target, "GET", "/api/jobs/file?path=%s&at=%d" % (urllib.parse.quote(src["path"]), at), timeout=60)
+                if code != 200 or not isinstance(data, bytes):
+                    raise RuntimeError("couldn't fetch %s from %s: %s" % (item["name"], src["node"], (data or {}).get("error") if isinstance(data, dict) else data))
+                if not data:
+                    break
+                f.write(data)
+                at += len(data)
+                if item.get("size"):
+                    _run["progress"] = 0.1 * min(1.0, at / float(item["size"]))
+                if time.time() - beat > TURN_BEAT_S:
+                    keep_turn(node, home, "down")
+                    beat = time.time()
+                if len(data) < PIECE:
+                    break
+    finally:
+        end_turn(node, home, "down")
     return dest
 
 
@@ -821,28 +945,45 @@ def send_results(node, item, home, out_dir):
     for d, _, names in os.walk(out_dir):
         for n in names:
             files.append(os.path.join(d, n))
+    rels = []
     for p in files:
         rel = os.path.relpath(p, out_dir).replace(os.sep, "/")
-        if not SAFE_REL.match(rel):
-            rel = re.sub(r"[^A-Za-z0-9 ._()+,=@'/-]", "_", rel)
-        if home["name"] == node.name:
+        rels.append(rel if SAFE_REL.match(rel) else re.sub(r"[^A-Za-z0-9 ._()+,=@'/-]", "_", rel))
+    if not files:
+        return
+    if home["name"] == node.name:  # (here: moved, not copied, on the same drive)
+        for p, rel in zip(files, rels):
             dest = os.path.join(data_dir(node), "results", item["job"], *rel.split("/"))
             os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.copyfile(p, dest)
-            continue
-        size = os.path.getsize(p)
-        at = 0
-        with open(p, "rb") as f:
-            while True:
-                data = f.read(PIECE)
-                last = at + len(data) >= size
-                q = "lease=%s&path=%s&at=%d&last=%d" % (item["lease"], urllib.parse.quote(rel), at, 1 if last else 0)
-                code, a = node.ask(home["target"], "PUT", "/api/jobs/result?" + q, data=data, timeout=120)
-                if code != 200:
-                    raise RuntimeError("couldn't send %s: %s" % (rel, (a or {}).get("error") if isinstance(a, dict) else a))
-                at += len(data)
-                if last:
-                    break
+            try:
+                os.replace(p, dest)
+            except OSError:
+                shutil.copyfile(p, dest)
+        return
+    take_turn(node, home, "up", item["name"])
+    try:
+        beat = time.time()
+        for p, rel in zip(files, rels):
+            size = os.path.getsize(p)
+            at = 0
+            with open(p, "rb") as f:
+                while True:
+                    if _run["stop"]:
+                        raise RuntimeError("stopped")
+                    data = f.read(PIECE)
+                    last = at + len(data) >= size
+                    q = "lease=%s&path=%s&at=%d&last=%d" % (item["lease"], urllib.parse.quote(rel), at, 1 if last else 0)
+                    code, a = node.ask(home["target"], "PUT", "/api/jobs/result?" + q, data=data, timeout=120)
+                    if code != 200:
+                        raise RuntimeError("couldn't send %s: %s" % (rel, (a or {}).get("error") if isinstance(a, dict) else a))
+                    at += len(data)
+                    if time.time() - beat > TURN_BEAT_S:
+                        keep_turn(node, home, "up")
+                        beat = time.time()
+                    if last:
+                        break
+    finally:
+        end_turn(node, home, "up")
 
 
 def run_logged(p, on_line):
@@ -870,6 +1011,51 @@ def do_convert(node, item, src, out_dir):
     base = os.path.splitext(item["name"])[0]
     out = os.path.join(out_dir, "%s%s.%s" % (base, p.get("suffix") or "", p["ext"]))
     proc = launch(node, [ff, "-hide_banner", "-nostdin", "-y", "-i", src] + list(p["args"]) + ["-progress", "pipe:1", "-nostats", out], high_for(node, item))
+
+    def line(l):
+        m = re.match(r"out_time_(?:ms|us)=(\d+)", l)
+        if m and total > 0:
+            _run["progress"] = 0.1 + 0.85 * min(1.0, int(m.group(1)) / 1e6 / total)
+    code, tail = run_logged(proc, line)
+    if code != 0:
+        raise RuntimeError(stopped_or("ffmpeg: " + " / ".join(tail[-3:])))
+    return {"output": os.path.basename(out), "size": os.path.getsize(out)}
+
+
+def playable_args(plan):
+    """ffmpeg's options for a copy every device plays as it is (autoconvert.py's plan for the file): its
+    picture (copied, or H.264 8-bit: scaled to 1080p if bigger, HDR's colours made SDR's), every sound
+    track as AAC stereo, its text subtitles (picture ones can't go in an .mp4: the original keeps them)."""
+    args = ["-map", "0:%d" % int(plan["v"])]
+    for i in plan.get("audio") or []:
+        args += ["-map", "0:%d" % int(i)]
+    for i in plan.get("subs") or []:
+        args += ["-map", "0:%d" % int(i)]
+    if plan.get("video") == "copy":
+        args += ["-c:v", "copy"]
+    else:
+        vf = []
+        if plan.get("scale"):  # (first: the rest then works on a quarter of the picture)
+            vf.append("scale=1920:-2" if plan.get("wide", True) else "scale=-2:1080")
+        if plan.get("hdr"):
+            vf.append("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv")
+        vf.append("format=yuv420p")
+        args += ["-vf", ",".join(vf), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-profile:v", "high"]
+        if plan.get("hdr"):  # (said as SDR, so no player takes it for HDR)
+            args += ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+    args += ["-c:a", "aac", "-b:a", "160k", "-ac", "2"] if plan.get("audio") else ["-an"]
+    args += ["-c:s", "mov_text"] if plan.get("subs") else ["-sn"]
+    return args + ["-dn", "-movflags", "+faststart"]
+
+
+def do_playable(node, item, src, out_dir):
+    ff = ffmpeg(node)
+    if not ff:
+        raise RuntimeError("no ffmpeg on %s" % node.name)
+    plan = item.get("plan") or {}
+    total = float(plan.get("duration") or 0) or duration_of(node, src)
+    out = os.path.join(out_dir, os.path.splitext(item["name"])[0] + ".mp4")
+    proc = launch(node, [ff, "-hide_banner", "-nostdin", "-y", "-i", src] + playable_args(plan) + ["-progress", "pipe:1", "-nostats", out], high_for(node, item))
 
     def line(l):
         m = re.match(r"out_time_(?:ms|us)=(\d+)", l)
@@ -1009,6 +1195,8 @@ def work(node, item, home):
         src = fetch(node, item, home, os.path.join(w, "input" + os.path.splitext(item["name"])[1]))
         if item["kind"] == "convert":
             summary = do_convert(node, item, src, out_dir)
+        elif item["kind"] == "playable":
+            summary = do_playable(node, item, src, out_dir)
         elif item["kind"] == "command":
             summary = do_command(node, item, src, out_dir, w)
         else:
@@ -1036,7 +1224,7 @@ def work(node, item, home):
     except Exception as e:  # (the list hears of it when it gives the file to another Pi)
         node.log("[jobs] couldn't tell the job list about %s: %s" % (item["name"], e))
     finally:
-        _run.update(item=None, proc=None, paused=False, why="", stop=False, progress=0.0)
+        _run.update(item=None, proc=None, paused=False, why="", stop=False, progress=0.0, turn=None)
 
 
 def start(node):
@@ -1049,7 +1237,9 @@ def status(node):
     if it:
         out["working"] = {"job": it["job"], "title": it["title"], "file": it["name"], "progress": round(_run["progress"], 3),
                           "paused": _run["why"] if _run["paused"] else None, "high": high_for(node, it)}
-        word = "Paused (%s)" % _run["why"] if _run["paused"] else "%d %%" % round(100 * _run["progress"])
+        word = "Paused (%s)" % _run["why"] if _run["paused"] else _run.get("turn") or "%d %%" % round(100 * _run["progress"])
+        if _run.get("turn"):
+            out["working"]["waiting"] = _run["turn"]
         summary = "Working on %s: %s · %s%s" % (it["title"], it["name"], word, " · high priority" if out["working"]["high"] else "")
     else:
         summary = _state["why"] or ("Ready for jobs" if node.setting("jobs", "take") else "Not taking jobs")
@@ -1058,6 +1248,14 @@ def status(node):
         out["jobs"] = [brief(j) for j in sorted(jobs, key=lambda x: -x["created"])[:50]]
         going = [j for j in jobs if j["state"] in ("waiting", "running", "uploading")]
         summary += " · keeps the job list (%d going, %d in all)" % (len(going), len(jobs))
+        moving = []
+        for lane, word in (("down", "to"), ("up", "from")):
+            t = _turns[lane]
+            if t["holder"] and time.time() - t["beat"] <= TURN_STALE_S:
+                moving.append("%s %s%s" % (word, t["holder"], " (%d in line)" % len(t["line"]) if t["line"] else ""))
+        if moving:
+            summary += " · moving files: " + ", ".join(moving)
+        out["turns"] = {lane: {"holder": t["holder"], "line": [w[0] for w in t["line"]]} for lane, t in _turns.items()}
     out["summary"] = summary
     out["warnings"] = ["The animal model's tools didn't install: %s" % _tools["error"]] if _tools["error"] else []
     return out

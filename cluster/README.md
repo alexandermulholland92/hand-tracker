@@ -127,10 +127,16 @@ for that Pi.
     - **Convert videos:** to any of the Recording Converter's formats, with its own ffmpeg settings.
     - **A command for each file:** `{in}` is the file, `{out}` the folder whose contents come back,
       and `{name}` / `{file}` its name without and with its ending.
+    - **A copy every device plays** (`playable`, made by **Convert for every device** below): each
+      file with its own plan, put beside its video as it comes back, never over a file.
   - **Files for a job:** recordings on any Pi (a Pi works on its own recordings first, so they
     don't cross the Wi-Fi; another takes them if it isn't taking jobs), files sent from the
     computer, or a folder on the Pi that keeps the list. The results stay on that Pi, and the app
-    saves them to the computer.
+    saves them to the computer. A job can be kept to the Pi each file is on ("here").
+  - **One file at a time each way:** a Pi downloading a file from another, or sending back what it
+    made, first asks the Pi that keeps the list for its turn and waits in line (its summary says
+    so), so the Wi-Fi isn't swamped. Its own files need no turn. A turn not said again for 45
+    seconds goes to the next in line.
   - **Each Pi's switches:**
     - **Take jobs**
     - **while its cameras run** (off by default)
@@ -142,6 +148,19 @@ for that Pi.
     stutter. A Pi that gets too hot (80 °C), short of memory, or whose cameras start (when they
     mustn't) pauses its job. If it's still paused after 5 minutes, it hands the job back for
     another Pi.
+
+- **Convert for every device** (`modules/autoconvert.py`, off by default; on the Pi that keeps the
+  job list): every video in `~/Videos` that some device would make Jellyfin convert while it plays
+  gets a copy every device plays as it is, `<name> - converted.mp4` beside it (H.264 8-bit up to
+  1080p, AAC stereo, its text subtitles); the original stays. It looks every 30 minutes (or at once:
+  **Look for new videos now**), looks into a video once nothing has been written to it for 10
+  minutes, and puts what's new in jobs, old formats first. Each kind has a switch:
+  - **Old picture formats** (Xvid, DivX, MPEG-2, WMV, VP9, AV1, 10-bit H.264): re-encoded (on).
+  - **HEVC / H.265:** re-encoded (off; hours a video).
+  - **4K and bigger:** made 1080p, HDR's colours made SDR's (off; slowest).
+  - **Sound only:** the picture copied, the sound made AAC, by that Pi alone (off).
+  A video that failed is tried again a day later (or at once: **Try the failed ones again**).
+  Names with "sample" in them are left alone, and picture subtitles (PGS, DVD) stay in the original.
 
 - **Apps** (`modules/apps.py`): apps the cluster runs on whichever Pi is free, shown on the app's
   **Transmission** tab. The first is Transmission.
@@ -212,7 +231,8 @@ python3 cluster/test_jobs.py
 
 This checks the jobs with two Pis simulated on this computer. The animal model's part also needs
 `HT_TEST_ANIMALS_PY`, a Python with ONNX Runtime, NumPy and Pillow, and `HT_TEST_MODEL`, the app's
-`animals8.onnx`.
+`animals8.onnx`. Convert for every device's part needs ffprobe (`HT_TEST_FFPROBE`, else on the path
+or beside ffmpeg).
 
 ```bash
 python3 cluster/test_apps.py

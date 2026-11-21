@@ -11,7 +11,14 @@ clip. Each has a stand-in Hand Tracker (pie's cameras can be turned on). Checked
   (HT_TEST_MODEL); otherwise it's skipped;
 - a job stopped while it runs, then removed with its files;
 - pie not taking work while its cameras run (its switch off);
-- only shared files fetched, and results downloaded.
+- only shared files fetched, and results downloaded;
+- files moving one at a time each way: turns in the order asked, and pie waiting for its turn to
+  download while another Pi has it (2026-11-21);
+- a playable copy, done only by the Pi its file is on ("here"), put beside its video;
+- autoconvert.py: a look through a videos folder puts an old-format video and a sound-only one in jobs,
+  and leaves alone one that plays everywhere, a sample, one converted already and a 4K one (its switch
+  off); the copies come back as "<name> - converted.mp4" (H.264 + AAC); a second look adds nothing.
+  This needs ffprobe (HT_TEST_FFPROBE, else on the path, else beside ffmpeg); otherwise it's skipped.
 ffmpeg: HT_TEST_FFMPEG, else the one on the path, else node_modules/ffmpeg-static's.
 """
 
@@ -56,6 +63,22 @@ def find_ffmpeg():
         if p and os.path.exists(p):
             return os.path.abspath(p)
     return None
+
+
+def find_ffprobe(ff):
+    side = os.path.join(os.path.dirname(ff), "ffprobe.exe" if os.name == "nt" else "ffprobe") if ff else None
+    for p in (os.environ.get("HT_TEST_FFPROBE"), shutil.which("ffprobe"), side):
+        if p and os.path.exists(p):
+            return os.path.abspath(p)
+    return None
+
+
+def streams_of(fp, path):
+    out = subprocess.run([fp, "-v", "error", "-print_format", "json", "-show_streams", path], capture_output=True, text=True).stdout
+    try:
+        return [(s.get("codec_type"), s.get("codec_name")) for s in json.loads(out or "{}").get("streams", [])]
+    except ValueError:
+        return []
 
 
 def fake_ht():
@@ -142,6 +165,30 @@ def main():
                         "-pix_fmt", "yuv420p", path], check=True)
     with open(os.path.join(pi_folder, "notes.txt"), "w") as f:
         f.write("not a video")
+    # autoconvert.py's folder: what needs converting, and what doesn't
+    fp = find_ffprobe(ff)
+    vids = os.path.join(tmp, "Videos")
+    tone = ["-f", "lavfi", "-i", "sine=frequency=440:duration=2"]
+    made_vids = {
+        os.path.join("Show", "Season 1", "ep1.avi"): ["-c:v", "mpeg4", "-c:a", "libmp3lame"],  # old format
+        os.path.join("Show", "Season 1", "ep2.mkv"): ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "ac3"],  # sound only
+        os.path.join("Movie", "movie.mp4"): ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"],  # plays everywhere
+        os.path.join("Movie", "movie sample.mp4"): ["-c:v", "mpeg4", "-c:a", "libmp3lame"],  # a sample: left alone
+        os.path.join("Old", "done.avi"): ["-c:v", "mpeg4", "-c:a", "libmp3lame"],  # converted already
+        os.path.join("Old", "done - converted.mp4"): ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"],
+    }
+    for rel, codecs in made_vids.items():
+        p = os.path.join(vids, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=2"] + tone + codecs + ["-shortest", p], check=True)
+    big = os.path.join(vids, "Big", "big.mp4")  # 4K-sized: its switch is off
+    os.makedirs(os.path.dirname(big), exist_ok=True)
+    subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=2560x1440:rate=5:duration=1"] + tone +
+                   ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", big], check=True)
+    old = time.time() - 3600  # (nothing written for an hour: not still downloading)
+    for d, _, names in os.walk(vids):
+        for n in names:
+            os.utime(os.path.join(d, n), (old, old))
     pi_ht, pi_ht_url = fake_ht()
     pie_ht, pie_ht_url = fake_ht()
     pi_port, pie_port = free_port(), free_port()
@@ -163,7 +210,7 @@ def main():
         return p
 
     try:
-        start("pi", pi_port, pie_port, pi_ht_url, {})
+        start("pi", pi_port, pie_port, pi_ht_url, {"HT_CLUSTER_AUTOCONVERT_DIR": vids, **({"HT_CLUSTER_FFPROBE": fp} if fp else {})})
         ask(pi_port, "POST", "/api/settings", {"module": "jobs", "key": "home", "value": True})
         start("pie", pie_port, pi_port, pie_ht_url, {"HT_CLUSTER_SIM_RECORDINGS": pie_rec})
         check("pi says it keeps the job list", jobs_status(pi_port).get("home") is True)
@@ -268,6 +315,85 @@ def main():
         code, _ = ask(pie_port, "GET", "/api/jobs/file?path=%s&at=0" % urllib.parse.quote(outside))
         code2, data2 = ask(pie_port, "GET", "/api/jobs/file?path=%s&at=0" % urllib.parse.quote(rec["path"]))
         check("A Pi gives only its recordings and the jobs' files", code == 404 and code2 == 200 and isinstance(data2, bytes) and len(data2) == rec["size"], (code, code2))
+
+        # Files move one at a time each way, in the order the Pis asked
+        def turn(worker, done=False):
+            return act(pi_port, "turn", {"lane": "down", "worker": worker, **({"done": True} if done else {})})[1]
+        a1, b1, c1 = turn("x"), turn("y"), turn("z")
+        check("Turns: the first to ask goes, the others wait in line", a1.get("go") and not b1.get("go") and b1.get("ahead") == 1
+              and not c1.get("go") and c1.get("ahead") == 2, (a1, b1, c1))
+        turn("x", done=True)
+        b2, c2 = turn("y"), turn("z")
+        check("...the next in line goes once it's done", b2.get("go") and not c2.get("go") and c2.get("ahead") == 1, (b2, c2))
+        turn("y", done=True)
+        turn("z", done=True)
+
+        # pie waits its turn to download pi's file while another Pi has the turn
+        ask(pi_port, "POST", "/api/settings", {"module": "jobs", "key": "take", "value": False})  # (pi leaves its folder to pie)
+        hold = {"on": True}
+
+        def holder():
+            while hold["on"]:
+                turn("x")
+                time.sleep(2)
+        threading.Thread(target=holder, daemon=True).start()
+        wait_for(lambda: turn("x").get("go"), 10)
+        code, made = act(pi_port, "create", {"kind": "convert", "title": "In turn", "params": {"format": "mp4", "ext": "mp4", "suffix": "-turn", "args": args},
+                                            "files": [{"name": "walk.mp4", "size": os.path.getsize(os.path.join(pi_folder, "walk.mp4")), "node": "pi", "path": os.path.join(pi_folder, "walk.mp4")}]})
+        jid5 = made.get("job")
+        waiting = wait_for(lambda: "Waiting its turn to download" in (jobs_status(pie_port).get("summary") or ""), 30)
+        check("pie waits its turn to download pi's file while another Pi has it", bool(waiting) and (job_state(pi_port, jid5) or {}).get("state") != "done", jobs_status(pie_port))
+        hold["on"] = False
+        time.sleep(2.5)
+        turn("x", done=True)
+        done5 = wait_for(lambda: (job_state(pi_port, jid5) or {}).get("state") == "done" and job_state(pi_port, jid5), 60)
+        check("...and gets it once that's done", bool(done5) and done5["items"][0]["worker"] == "pie", job_state(pi_port, jid5))
+        ask(pi_port, "POST", "/api/settings", {"module": "jobs", "key": "take", "value": True})
+
+        # A playable copy, done only where its file is ("here"), put beside it
+        walk = os.path.join(pi_folder, "walk.mp4")
+        place = os.path.join(pi_folder, "walk - converted.mp4")
+        code, made = act(pi_port, "create", {"kind": "playable", "title": "Playable", "params": {"here": True},
+                                            "files": [{"name": "v000001.mp4", "size": os.path.getsize(walk), "node": "pi", "path": walk, "place": place,
+                                                       "plan": {"v": 0, "audio": [], "subs": [], "duration": 2, "video": "h264"}}]})
+        jid6 = made.get("job")
+        done6 = wait_for(lambda: (job_state(pi_port, jid6) or {}).get("items", [{}])[0].get("placed") and job_state(pi_port, jid6), 60)
+        it6 = (done6 or {}).get("items", [{}])[0]
+        check("A playable copy is made by the Pi its file is on (\"here\") and put beside it", it6.get("worker") == "pi" and it6.get("placed") == "placed"
+              and os.path.isfile(place) and not os.path.exists(os.path.join(tmp, "pi-jobs", "results", jid6 or "-", "v000001.mp4")), job_state(pi_port, jid6))
+
+        # autoconvert.py: a look through the videos folder
+        if fp:
+            ask(pi_port, "POST", "/api/settings", {"module": "autoconvert", "on": True})
+            ask(pi_port, "POST", "/api/settings", {"module": "autoconvert", "key": "sound", "value": True})
+            ask(pi_port, "POST", "/api/action", {"module": "autoconvert", "action": "look", "args": {}})
+
+            def auto_jobs():
+                return [j for j in act(pi_port, "list", {})[1].get("jobs", []) if j["title"].startswith("Convert for every device")]
+            two = wait_for(lambda: len(auto_jobs()) == 2 and auto_jobs(), 60)
+            titles = sorted(j["title"] for j in (two or []))
+            check("A look puts the old-format video and the sound-only one in jobs (not the rest)",
+                  titles == ["Convert for every device: 1 old-format video", "Convert for every device: 1 sound-only video"], titles)
+            ep1 = os.path.join(vids, "Show", "Season 1", "ep1 - converted.mp4")
+            ep2 = os.path.join(vids, "Show", "Season 1", "ep2 - converted.mp4")
+            placed = wait_for(lambda: os.path.isfile(ep1) and os.path.isfile(ep2), 120)
+            check("...their copies come back beside them", bool(placed), sorted(os.listdir(os.path.join(vids, "Show", "Season 1"))))
+            check("...each H.264 with AAC sound", streams_of(fp, ep1) == [("video", "h264"), ("audio", "aac")] and streams_of(fp, ep2) == [("video", "h264"), ("audio", "aac")],
+                  (streams_of(fp, ep1), streams_of(fp, ep2)))
+            sound_job = next((j for j in (two or []) if "sound-only" in j["title"]), {})
+            check("...the sound-only one done by pi itself, where it is", [i["worker"] for i in (job_state(pi_port, sound_job.get("id")) or {}).get("items", [])] == ["pi"],
+                  job_state(pi_port, sound_job.get("id")))
+            def auto_status():
+                return next((m for m in ask(pi_port, "GET", "/api/node")[1].get("modules", []) if m["name"] == "autoconvert"), {}).get("status") or {}
+            before = auto_status().get("lastLook") or 0
+            ask(pi_port, "POST", "/api/action", {"module": "autoconvert", "action": "look", "args": {}})
+            st = wait_for(lambda: (auto_status().get("lastLook") or 0) > before and "Looked at" in auto_status().get("summary", "") and auto_status(), 30) or {}
+            check("...and a second look adds nothing", bool(st) and len(auto_jobs()) == 2, [j["title"] for j in auto_jobs()])
+            others = [p for p in (os.path.join(vids, "Movie", "movie - converted.mp4"), os.path.join(vids, "Movie", "movie sample - converted.mp4"), os.path.join(vids, "Big", "big - converted.mp4")) if os.path.exists(p)]
+            check("...nothing made for the one that plays, the sample or the 4K one (its switch off), which it says it'd convert; 3 converted",
+                  not others and st.get("toConvert") == {"big": 1} and "4K (switched off)" in st.get("summary", "") and st.get("converted") == 3, (others, st))
+        else:
+            print("SKIP  autoconvert (ffprobe: HT_TEST_FFPROBE)")
     finally:
         for p in procs:
             p.terminate()
