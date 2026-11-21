@@ -15,7 +15,7 @@ phone, a job's results come as one zip in Downloads (the Files app on an iPhone)
 **This phone's apps** (phones only), from GitHub's **Latest build**, the release the Pis update from:
 - **Android:** Pi Cluster and this phone's other Hand Tracker apps (Hand Tracker, Hand Mouse, Remote
   Recording, Recording Converter) update by themselves.
-  - **When:** within an hour of a new build, on Wi-Fi (a build is over 200 MB), even while Pi Cluster
+  - **When:** usually within a few hours of a new build, on Wi-Fi (a build is over 200 MB), even while Pi Cluster
     is closed (`AppUpdateJob.java`). Pi Cluster updates itself only while it isn't open.
   - **Not while the phone records:** nothing updates while it's recording or saving a take (cameras
     on alone don't hold it). Hand Tracker and Remote Recording say so (the page every 30 seconds

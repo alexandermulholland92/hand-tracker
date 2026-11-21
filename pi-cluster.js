@@ -977,7 +977,7 @@
 
   // ---------- this phone's apps: a newer build from GitHub's "Latest build", as the Pis take theirs ----------
   // Android (the app's AppUpdates plugin: AppUpdatePlugin.java): this phone's Hand Tracker apps update
-  // by themselves within an hour on Wi-Fi, Pi Cluster too, unless the phone is recording or saving a
+  // by themselves on Wi-Fi (an hourly look, as often as Android lets it: usually within a few hours), Pi Cluster too, unless the phone is recording or saving a
   // take (AppUpdateJob.java); Update does it now, and Install puts on one that isn't here. Android asks
   // once before Pi Cluster updates an app it didn't install itself; until then, those wait for Update.
   // The page looks when it opens and once a day while open, with a notice when there's a newer build.
@@ -1127,8 +1127,8 @@
         };
         const asking = older.filter((a) => !st.silent || !a.ours);
         const how = st.recording ? ` They wait while ${st.recording} is recording or saving a take.`
-          : asking.length ? ` Android asks once before Pi Cluster updates ${asking.map((a) => a.name).join(", ")}: tap Update.${asking.length < older.length ? " The others update by themselves within an hour on Wi-Fi." : ""}`
-            : " They update by themselves within an hour on Wi-Fi, or now with Update.";
+          : asking.length ? ` Android asks once before Pi Cluster updates ${asking.map((a) => a.name).join(", ")}: tap Update.${asking.length < older.length ? " The others update by themselves on Wi-Fi." : ""}`
+            : " They update by themselves on Wi-Fi, usually within a few hours, or now with Update.";
         notice.replaceChildren(el("div", {}, `Newer builds of this phone's apps are out (${build()}): ${older.map((a) => a.name).join(", ")}.${how}`), el("div", { className: "buttons" }, go, see));
       }
       if (box.hidden) return;
@@ -1165,7 +1165,7 @@
         ...rows,
         el("div", { className: "buttons" }, all),
         st.auto ? el("div", { className: "hint" }, `Last hourly look: ${st.auto}`) : null,
-        el("div", { className: "hint" }, "The apps update by themselves within an hour of a new build, on Wi-Fi, except while this phone records or saves a take. Android asks once before Pi Cluster updates an app it didn't install itself, and before it installs one; after that, from Android 12, they update without asking. Pi Cluster updates itself while it isn't open; with Update, it goes last and closes."),
+        el("div", { className: "hint" }, "The apps update by themselves on Wi-Fi, usually within a few hours of a new build (Android decides how often Pi Cluster may look, by how much it's used), except while this phone records or saves a take. Android asks once before Pi Cluster updates an app it didn't install itself, and before it installs one; after that, from Android 12, they update without asking. Pi Cluster updates itself while it isn't open; with Update, it goes last and closes."),
       ].filter(Boolean));
     }
 

@@ -50,9 +50,12 @@ import java.util.concurrent.locks.ReentrantLock;
  *   install()     through Android's PackageInstaller. Android asks first the first time Pi Cluster
  *                 updates an app (and before it installs a new one); after that, from Android 12, an
  *                 app Pi Cluster installed updates without asking. How it went: AppUpdateResult.java.
- *   autoUpdate()  every hour on Wi-Fi (AppUpdateJob.java): the apps with a newer build updated by
- *                 themselves, unless this phone is recording or saving a take (then an hour later);
- *                 Pi Cluster itself not while it's open. Those Android would ask about first get a
+ *   autoUpdate()  every hour on Wi-Fi, as often as Android lets it (an app used less is let look less
+ *                 often: usually within a few hours) (AppUpdateJob.java): the apps with a newer build
+ *                 updated by themselves, unless this phone is recording or saving a take (then at the
+ *                 next look); Pi Cluster itself last, and not while it's open. Each is left installing
+ *                 after a short wait (Play Protect can take minutes to check one first), its answer
+ *                 added to the note when it comes. Those Android would ask about first get a
  *                 notification instead (once for each build), to be updated from Pi Cluster.
  * Used by AppUpdatePlugin.java (pi-cluster.js: This phone's apps) and AppUpdateJob.java.
  */
@@ -71,7 +74,9 @@ final class AppUpdates {
     static final String[] RECORDERS = {"com.handtracker.app", "com.handtracker.remote"};
     static final String PREFS = "app-updates";
     static final long ASK_MS = 10 * 60 * 1000; // (Android's question, waited for that long)
-    private static final long BACKGROUND_WAIT_MS = 3 * 60 * 1000;
+    // (an hourly one: Play Protect can take minutes to check an app first, seen 2-15 on the Wing, longer
+    // than a job may run; so it's left installing, and its answer added to the note when it comes)
+    private static final long BACKGROUND_WAIT_MS = 20 * 1000;
     private static final String CHANNEL = "app-updates";
     private static final int NOTIFICATION_ID = 21;
     private static final int MAX_ANSWER = 2 * 1024 * 1024;
@@ -292,6 +297,7 @@ final class AppUpdates {
         JSONArray done = new JSONArray();
         JSONArray failed = new JSONArray();
         JSONArray asks = new JSONArray();
+        JSONArray pending = new JSONArray();
         LinkedBlockingQueue<Object[]> results = new LinkedBlockingQueue<>();
         AppUpdateResult.listener = (pkg, ok, error) -> results.offer(new Object[] {pkg, ok, error});
         try {
@@ -309,6 +315,18 @@ final class AppUpdates {
                     Object[] r = results.poll(background ? BACKGROUND_WAIT_MS : ASK_MS, TimeUnit.MILLISECONDS);
                     //noinspection ResultOfMethodCallIgnored
                     apk.delete();
+                    if (r == null && background) {
+                        // (left installing: its answer goes in the note when it comes, resultLater; one that
+                        // came just as it was marked is taken here instead)
+                        markPending(ctx, pkg);
+                        r = results.poll();
+                        if (r == null) {
+                            pending.put(pkg);
+                            progress.tell(pkg, "pending", 0, 0, null);
+                            continue;
+                        }
+                        unmarkPending(ctx, pkg);
+                    }
                     if (r == null) throw new Exception("No answer from Android (its question may still be open).");
                     if (AppUpdateResult.ASKS.equals(r[2])) {
                         asks.put(pkg);
@@ -333,7 +351,43 @@ final class AppUpdates {
         out.put("done", done);
         out.put("failed", failed);
         out.put("asks", asks);
+        out.put("pending", pending);
         return out;
+    }
+
+    // ---------- an hourly install's answer, after the job moved on (AppUpdateResult) ----------
+    static synchronized void markPending(Context ctx, String pkg) {
+        SharedPreferences p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        java.util.Set<String> s = new java.util.HashSet<>(p.getStringSet("pending", new java.util.HashSet<>()));
+        s.add(pkg);
+        p.edit().putStringSet("pending", s).commit();
+    }
+
+    static synchronized boolean unmarkPending(Context ctx, String pkg) {
+        SharedPreferences p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        java.util.Set<String> s = new java.util.HashSet<>(p.getStringSet("pending", new java.util.HashSet<>()));
+        boolean was = s.remove(pkg);
+        p.edit().putStringSet("pending", s).commit();
+        return was;
+    }
+
+    // Android's answer for one the hourly look left installing: added to what the look said (kept until
+    // the look says it, when it comes while the look is still going).
+    private static boolean looking;
+    private static final StringBuilder ARRIVED = new StringBuilder();
+
+    static void resultLater(Context ctx, String pkg, boolean ok, String error) {
+        if (pkg == null || !unmarkPending(ctx, pkg)) return;
+        String when = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date());
+        String piece = " " + nameOf(pkg) + (ok ? " updated (" + when + ")." : " not installed (" + when + "): " + error);
+        synchronized (AppUpdates.class) {
+            if (looking) {
+                ARRIVED.append(piece);
+                return;
+            }
+            SharedPreferences p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            p.edit().putString("auto", p.getString("auto", "") + piece).commit();
+        }
     }
 
     // ---------- every hour: the apps with a newer build updated by themselves ----------
@@ -364,15 +418,31 @@ final class AppUpdates {
             }
             String busy = recording(ctx);
             if (busy != null) {
-                said(ctx, "Waiting: " + busy + " is recording or saving a take (looks again within an hour).");
+                said(ctx, "Waiting: " + busy + " is recording or saving a take (looks again later).");
                 return;
             }
             List<String> stillAsk = new ArrayList<>(asking);
+            // (Pi Cluster itself after the note is written: updating it ends this process)
+            boolean self = silent.remove(ctx.getPackageName());
             if (!silent.isEmpty()) {
-                JSONObject r = update(ctx, silent, latest, true, (pkg, stage, got, size, error) -> {
-                });
+                synchronized (AppUpdates.class) {
+                    looking = true;
+                    ARRIVED.setLength(0);
+                }
+                JSONObject r;
+                try {
+                    r = update(ctx, silent, latest, true, (pkg, stage, got, size, error) -> {
+                    });
+                } catch (Exception e) {
+                    synchronized (AppUpdates.class) {
+                        looking = false;
+                    }
+                    throw e;
+                }
                 List<String> names = new ArrayList<>();
+                List<String> installing = new ArrayList<>();
                 for (int i = 0; i < r.getJSONArray("done").length(); i++) names.add(nameOf(r.getJSONArray("done").getString(i)));
+                for (int i = 0; i < r.getJSONArray("pending").length(); i++) installing.add(nameOf(r.getJSONArray("pending").getString(i)));
                 for (int i = 0; i < r.getJSONArray("asks").length(); i++) stillAsk.add(nameOf(r.getJSONArray("asks").getString(i)));
                 StringBuilder s = new StringBuilder();
                 if (!names.isEmpty()) s.append("Updated ").append(String.join(", ", names)).append(" to build ").append(commit, 0, 7).append(". ");
@@ -380,7 +450,21 @@ final class AppUpdates {
                 for (int i = 0; i < failed.length(); i++) {
                     s.append(nameOf(failed.getJSONObject(i).getString("pkg"))).append(": ").append(failed.getJSONObject(i).getString("error")).append(" ");
                 }
-                said(ctx, s.toString().trim());
+                if (!installing.isEmpty()) s.append("Installing ").append(String.join(", ", installing)).append(" (build ").append(commit, 0, 7).append("; Android checks each first):");
+                synchronized (AppUpdates.class) {
+                    s.append(ARRIVED);
+                    looking = false;
+                    said(ctx, s.toString().trim() + (self ? " Pi Cluster itself next." : ""));
+                }
+            }
+            if (self) {
+                if (silent.isEmpty()) said(ctx, "Updating Pi Cluster itself to build " + commit.substring(0, 7) + ".");
+                if (!stillAsk.isEmpty()) tellOnce(ctx, commit, stillAsk); // (before: updating itself ends this process)
+                List<String> me = new ArrayList<>();
+                me.add(ctx.getPackageName());
+                update(ctx, me, latest, true, (pkg, stage, got, size, error) -> {
+                });
+                return;
             }
             if (!stillAsk.isEmpty()) tellOnce(ctx, commit, stillAsk);
         } finally {

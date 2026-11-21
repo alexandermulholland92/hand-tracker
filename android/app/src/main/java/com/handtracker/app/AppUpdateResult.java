@@ -50,6 +50,7 @@ public class AppUpdateResult extends BroadcastReceiver {
             return;
         }
         if (status == PackageInstaller.STATUS_SUCCESS) {
+            AppUpdates.resultLater(ctx, pkg, true, null); // (one an hourly look left installing: in its note)
             tell(pkg, true, null);
             return;
         }
@@ -57,7 +58,9 @@ public class AppUpdateResult extends BroadcastReceiver {
         if (status == PackageInstaller.STATUS_FAILURE_ABORTED) why = "Not installed: it was cancelled.";
         else if (status == PackageInstaller.STATUS_FAILURE_CONFLICT) why = "It conflicts with the copy on this phone (signed with another key?)" + (why != null ? ": " + why : ".");
         else if (status == PackageInstaller.STATUS_FAILURE_STORAGE) why = "Not enough room on this phone.";
-        tell(pkg, false, why != null ? why : "Android didn't install it (" + status + ").");
+        if (why == null) why = "Android didn't install it (" + status + ").";
+        AppUpdates.resultLater(ctx, pkg, false, why);
+        tell(pkg, false, why);
     }
 
     private static void tell(String pkg, boolean ok, String error) {

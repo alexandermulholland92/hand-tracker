@@ -151,8 +151,10 @@ if active; then
   exit 0
 fi
 
-# No network and no hotspot. NetworkManager joining one: that first.
-case "$(nmcli -g GENERAL.STATE device show "$IF" 2>/dev/null)" in [4-9]0\ *) exit 0 ;; esac
+# No network and no hotspot. NetworkManager joining one: that first; and one it says it's on (100,
+# connected), left alone: joining it again only knocked the Pi off it (pi, 2026-11-20 14:49, when
+# iw didn't see the link for a moment).
+case "$(nmcli -g GENERAL.STATE device show "$IF" 2>/dev/null)" in [4-9]0\ *|100\ *) exit 0 ;; esac
 [ -f "$SINCE" ] || echo "$now" > "$SINCE"
 if [ "${1:-}" = now ] || [ $(( now - $(cat "$SINCE") )) -ge 25 ]; then
   # A network it knows may still be in range: it dropped off and NetworkManager gave up on it
