@@ -12,6 +12,30 @@ The phones reach the Pis through the app's own Cluster plugin, `ClusterPlugin.ja
 ones it knows; the first time, it asks the one called `pi`, or one named under **Add a Pi**. On a
 phone, a job's results come as one zip in Downloads (the Files app on an iPhone).
 
+**This phone's apps** (phones only), from GitHub's **Latest build**, the release the Pis update from:
+- **Android:** Pi Cluster and this phone's other Hand Tracker apps (Hand Tracker, Hand Mouse, Remote
+  Recording, Recording Converter) update by themselves.
+  - **When:** within an hour of a new build, on Wi-Fi (a build is over 200 MB), even while Pi Cluster
+    is closed (`AppUpdateJob.java`). Pi Cluster updates itself only while it isn't open.
+  - **Not while the phone records:** nothing updates while it's recording or saving a take (cameras
+    on alone don't hold it). Hand Tracker and Remote Recording say so (the page every 30 seconds
+    meanwhile, `remote-record-ui.js`; `AppStateProvider.java`, which only Hand Tracker's own apps may
+    ask).
+  - **Update** does it now, and **Install** puts on an app that isn't on the phone yet.
+  - A notice at the top names the apps that have a newer build.
+  - Each APK is checked against GitHub's size and SHA-256, then installed through Android's
+    PackageInstaller (`AppUpdates.java`, `AppUpdatePlugin.java`). With **Update**, Pi Cluster updates
+    itself last, and closes then.
+  - **Android asks first:** once to allow Pi Cluster to install apps, and before it updates an app it
+    didn't install itself, or installs one. Until then, those apps wait for **Update**, with a
+    notification once for each build. From Android 12, an app Pi Cluster installed updates without
+    asking after that.
+  - Each app's build is in its manifest (`com.handtracker.build`, the GitHub commit it was made from;
+    `android/app/build.gradle`). An app from before that shows as "an older build".
+- **iPhone:** an app can't install apps there, so only a notice that a newer build is out (one with
+  Pi Cluster's iPhone app in it). Installing it stays with AltServer. The page knows its own build
+  from the meta tag `scripts/build-web.js` writes.
+
 ## Putting a Pi in
 
 You need Raspberry Pi OS (64-bit) with Tailscale installed and logged in to your account. Then, on the

@@ -2,13 +2,34 @@
 <!-- Pi Cluster (the "cluster" flavor: your Raspberry Pis in one place, pi-cluster.html) has neither
      the hand mouse nor remote recording: this phone's control (its camera window and its
      accessibility service) and Sentry mode's alerts (their watcher and its start after a restart)
-     aren't in it. -->
+     aren't in it. It updates this phone's Hand Tracker apps, itself too, from GitHub's "Latest
+     build" (AppUpdates.java): it installs them (Android lets it once you allow it; from Android 12
+     an app it installed updates without asking again), sees which of them are here and whether
+     Hand Tracker or Remote Recording is recording (their AppStateProvider, a signature permission),
+     and updates them by itself every hour on Wi-Fi unless one is (AppUpdateJob.java). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+    <queries>
+        <package android:name="com.handtracker.app" />
+        <package android:name="com.handtracker.mouse" />
+        <package android:name="com.handtracker.remote" />
+        <package android:name="com.handtracker.converter" />
+    </queries>
     <application>
         <service android:name=".PhoneControlService" tools:node="remove" />
         <service android:name=".HandControlService" tools:node="remove" />
         <service android:name=".SentryWatchService" tools:node="remove" />
         <receiver android:name=".SentryWatchBoot" tools:node="remove" />
+        <!-- (it doesn't record: it asks Hand Tracker's and Remote Recording's instead) -->
+        <provider android:name=".AppStateProvider" tools:node="remove" />
+        <service
+            android:name=".AppUpdateJob"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="false" />
+        <receiver
+            android:name=".AppUpdateResult"
+            android:exported="false" />
     </application>
 </manifest>

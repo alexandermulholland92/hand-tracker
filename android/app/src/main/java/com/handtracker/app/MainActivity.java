@@ -22,11 +22,15 @@ public class MainActivity extends BridgeActivity {
         // only the hand mouse's: the PC link's key in the Keystore and its messages, this phone's
         // control, the Bluetooth mouse. Remote Recording has no hand mouse, Recording Converter
         // neither the hand mouse nor remote recording.
-        // Pi Cluster has neither either, only its way to the Pis (ClusterPlugin).
+        // Pi Cluster has neither either, only its way to the Pis (ClusterPlugin) and its updates of
+        // this phone's apps (AppUpdatePlugin).
         boolean cluster = getResources().getBoolean(R.bool.pi_cluster);
         boolean converter = getResources().getBoolean(R.bool.recording_converter) || cluster;
         registerPlugin(RemotePlugin.class);
-        if (cluster) registerPlugin(ClusterPlugin.class);
+        if (cluster) {
+            registerPlugin(ClusterPlugin.class);
+            registerPlugin(AppUpdatePlugin.class);
+        }
         if (!getResources().getBoolean(R.bool.remote_recording) && !converter) {
             registerPlugin(UdpPlugin.class);
             registerPlugin(PhoneControlPlugin.class);

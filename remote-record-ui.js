@@ -1586,6 +1586,22 @@
     if (!remote || !$("remoteRec")) return;
     if (rigApp && $("remoteAppName")) $("remoteAppName").textContent = "Remote Recording";
     onPhone = !opts.desktop;
+    // On a phone: whether it's recording or saving a take (remote recording on or not), as it starts
+    // and every 30 seconds meanwhile, for Pi Cluster on the same phone, which doesn't update the
+    // phone's apps then (AppStateProvider.java).
+    if (onPhone && remote.setBusy) {
+      let told = false, toldAt = 0;
+      setInterval(() => {
+        const busy = !!(saving || (cams() && cams().isRecording()) || (global.VideoRecorder && global.VideoRecorder.isRecording()) || (global.RobotMotion && global.RobotMotion.isRecording()));
+        if (busy && (!told || Date.now() - toldAt > 30000)) {
+          remote.setBusy(true);
+          toldAt = Date.now();
+        } else if (!busy && told) {
+          remote.setBusy(false);
+        }
+        told = busy;
+      }, 2000);
+    }
     lookAtSystem();
     setInterval(lookAtSystem, 60000);
     lookAtRoom();

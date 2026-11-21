@@ -112,6 +112,9 @@ function write(rel, data) {
 // Shown in the page header, so it's clear which copy a phone or browser is running.
 const BUILT = new Date().toISOString();
 const VERSION = require("../package.json").version;
+// The commit a GitHub build is made from (empty for one made here): a phone's Pi Cluster tells from it
+// whether the "Latest build" release is newer than this copy (pi-cluster.js).
+const COMMIT = /^[0-9a-f]{40}$/.test(process.env.GITHUB_SHA || "") ? process.env.GITHUB_SHA : "";
 
 fs.rmSync(OUT, { recursive: true, force: true });
 // [from, to]: Hand Mouse's page is its index.html.
@@ -131,7 +134,7 @@ for (const [from, rel] of pages) {
     text = text.replace(
       '<meta charset="UTF-8" />',
       '<meta charset="UTF-8" />\n<meta name="hand-tracker-bundle" content="1" />\n' +
-        `<meta name="hand-tracker-build" content="${BUILT}" data-version="${VERSION}" />`
+        `<meta name="hand-tracker-build" content="${BUILT}" data-version="${VERSION}" data-commit="${COMMIT}" />`
     );
   }
   write(rel, Buffer.from(text, "utf8"));

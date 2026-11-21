@@ -8,8 +8,10 @@
  * a module the page doesn't know shown all the same; Transmission's torrents moved in (with
  * cluster/test_apps.py's stand-in Transmission), each torrent's Traffic drop-down (its speeds,
  * totals, peers, a graph over 1 h and 24 h), asking for more peers, a waiting torrent moved up the
- * queue, and how many download, seed and connect at once; a Pi that stops answering faded, with
- * Forget. The service's own checks: cluster/test_cluster.py.
+ * queue, and how many download, seed and connect at once; on a phone (the app's plugins standing
+ * in: fake-cluster-plugin.js), the Pi found and a job done from there, and this phone's apps (a
+ * newer build's notice, the list, Update all, Install; the iPhone's notice only); a Pi that stops
+ * answering faded, with Forget. The service's own checks: cluster/test_cluster.py.
  */
 const { app, BrowserWindow } = require("electron");
 const { spawn, spawnSync } = require("child_process");
@@ -361,6 +363,91 @@ app.whenReady().then(async () => {
     const zipBytes = zipped ? fs.readFileSync(path.join(downloads, "From the phone.zip")) : Buffer.alloc(0);
     check("...its results saved on the phone as one zip in Downloads", !!zipped && zipBytes.includes(Buffer.from("letter.txt")) && zipBytes.includes(Buffer.from("hello from this computer")), await pjs("document.getElementById('message').textContent"));
     phone.destroy();
+
+    // This phone's apps (Android): GitHub's newest build, through the app's AppUpdates plugin (here
+    // fake-cluster-plugin.js's): a notice for the older ones, the list, Update all, and Install
+    const NEW = "b".repeat(40);
+    const OLD = "a".repeat(40);
+    const asset = (n) => ({ asset: `${n}-1.1.0.apk`, size: 50e6, sha256: "0".repeat(64), url: `https://github.com/x/${n}.apk` });
+    Object.assign(process.env, {
+      FAKE_APPS: JSON.stringify([
+        { pkg: "com.handtracker.app", name: "Hand Tracker", installed: true, commit: OLD, updated: Date.now() - 86400000 },
+        { pkg: "com.handtracker.mouse", name: "Hand Mouse", installed: true, commit: NEW, updated: Date.now() },
+        { pkg: "com.handtracker.remote", name: "Remote Recording", installed: false },
+        { pkg: "com.handtracker.converter", name: "Recording Converter", installed: true, commit: "", updated: Date.parse("2026-11-01T12:00:00Z") },
+        { pkg: "com.handtracker.cluster", name: "Pi Cluster", installed: true, commit: OLD, updated: Date.now() - 86400000, self: true, ours: true },
+      ]),
+      FAKE_LATEST: JSON.stringify({ commit: NEW, published: "2026-11-20T22:40:51Z", apps: {
+        "com.handtracker.app": asset("HandTracker"), "com.handtracker.mouse": asset("HandMouse"), "com.handtracker.remote": asset("RemoteRecording"),
+        "com.handtracker.converter": asset("RecordingConverter"), "com.handtracker.cluster": asset("PiCluster") } }),
+    });
+    const handset = new BrowserWindow({ show: false, width: 400, height: 860, webPreferences: { preload: path.join(__dirname, "fake-cluster-plugin.js"), contextIsolation: false, sandbox: false } });
+    await handset.loadURL("app://hand-tracker/pi-cluster.html");
+    const hjs = (code) => handset.webContents.executeJavaScript(code, true);
+    await hjs("window.confirm = () => true; null");
+    const notice = await until(() => hjs("!document.getElementById('appNotice').hidden && document.getElementById('appNotice').innerText"), 20000);
+    check("This phone's apps: a notice when GitHub has a newer build, naming the older ones here",
+      !!notice && /build bbbbbbb/.test(notice) && /Hand Tracker, Recording Converter, Pi Cluster/.test(notice) && !/Hand Mouse/.test(notice) && /3 newer/.test(await hjs("document.getElementById('phoneAppsBtn').textContent")), notice);
+    check("...and Android asked once whether it may notify (the hourly look's notices)", (await hjs("window.__notices")) === 1, await hjs("window.__notices"));
+    await hjs("[...document.querySelectorAll('#appNotice button')].find((b) => b.textContent === 'See all').click(); null");
+    const appList = () => hjs("document.getElementById('phoneAppsBox').innerText");
+    const appsListed = await until(async () => {
+      const t = await appList();
+      return /Hand Mouse — this phone: build bbbbbbb · up to date/.test(t) && /Recording Converter — this phone: an older build/.test(t) && /Remote Recording — not on this phone/.test(t) && t;
+    });
+    check("...the list: each app's build here (up to date, older, or not on this phone)", !!appsListed, await appList());
+    const list = await appList();
+    check("...which update by themselves (Pi Cluster installed them) and which Android asks about once",
+      /Pi Cluster — this phone: build aaaaaaa · updates by itself/.test(list) && /Hand Tracker — this phone: build aaaaaaa · Android asks once: Update/.test(list), list);
+    const installs = () => hjs("JSON.stringify(window.__appInstalls)");
+    const lookAgain = "[...document.querySelectorAll('#phoneAppsBox button')].find((b) => b.textContent === 'Look again').click(); null";
+    await hjs(`window.__appRecording = 'Hand Tracker'; window.__appAuto = '16:40: Waiting: Hand Tracker is recording or saving a take (looks again within an hour).'; ${lookAgain}`);
+    const waiting = await until(async () => /Waiting: Hand Tracker is recording or saving a take/.test(await appList()) && /Last hourly look: 16:40/.test(await appList()));
+    check("While this phone records: the apps wait, it says so, with what the hourly look did last", !!waiting, await appList());
+    await hjs("[...document.querySelectorAll('#phoneAppsBox button')].find((b) => b.textContent.startsWith('Update all')).click(); null");
+    await sleep(800);
+    check("...and Update all doesn't update meanwhile", (await installs()) === "[]" && /recording or saving a take/.test(await hjs("document.getElementById('message').textContent")),
+      (await installs()) + " | " + (await hjs("document.getElementById('message').textContent")));
+    await hjs(`window.__appRecording = null; ${lookAgain}`);
+    await until(async () => !/Waiting:/.test(await appList()));
+    await hjs("[...document.querySelectorAll('#phoneAppsBox button')].find((b) => b.textContent.startsWith('Update all')).click(); null");
+    const updatedAll = await until(async () => (await installs()) === JSON.stringify([["com.handtracker.app", "com.handtracker.converter", "com.handtracker.cluster"]]) &&
+      /updated to build bbbbbbb/.test(await hjs("document.getElementById('message').textContent")) && /Hand Tracker — this phone: build bbbbbbb · up to date/.test(await appList()));
+    check("Update all: the older ones updated, Pi Cluster last, and up to date after", !!updatedAll, (await installs()) + " | " + (await appList()));
+    await hjs("[...document.querySelectorAll('#phoneAppsBox .app-row')].find((r) => r.textContent.startsWith('Remote Recording')).querySelector('button').click(); null");
+    const installedOne = await until(async () => JSON.parse(await installs()).length === 2 && JSON.parse(await installs())[1].join() === "com.handtracker.remote" &&
+      /Remote Recording — this phone: build bbbbbbb · up to date/.test(await appList()));
+    check("Install: an app not on this phone put on it", !!installedOne, (await installs()) + " | " + (await appList()));
+    check("...and with nothing older left, no notice", await until(() => hjs("document.getElementById('appNotice').hidden && document.getElementById('phoneAppsBtn').textContent === \"This phone's apps\"")));
+    handset.destroy();
+
+    // The iPhone app: only a notice that a newer build (with the iPhone app in it) is out, as GitHub says
+    // (here a stand-in for api.github.com); installing stays with AltServer
+    const { session, net } = require("electron");
+    let githubAsked = 0;
+    session.defaultSession.protocol.handle("https", (req) => {
+      if (new URL(req.url).hostname !== "api.github.com") return net.fetch(req, { bypassCustomProtocolHandlers: true });
+      githubAsked++;
+      return new Response(JSON.stringify({ target_commitish: NEW, published_at: "2026-11-20T22:40:51Z", assets: [{ name: "PiCluster-1.1.0-ios-unsigned.ipa" }, { name: "PiCluster-1.1.0.apk" }] }),
+        { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+    });
+    delete process.env.FAKE_APPS;
+    Object.assign(process.env, { FAKE_PLATFORM: "ios", FAKE_BUILD_COMMIT: OLD });
+    try {
+      const iphone = new BrowserWindow({ show: false, width: 400, height: 860, webPreferences: { preload: path.join(__dirname, "fake-cluster-plugin.js"), contextIsolation: false, sandbox: false } });
+      await iphone.loadURL("app://hand-tracker/pi-cluster.html");
+      const ijs = (code) => iphone.webContents.executeJavaScript(code, true);
+      const iNotice = await until(() => ijs("!document.getElementById('appNotice').hidden && document.getElementById('appNotice').innerText"), 20000);
+      check("iPhone: a notice that a newer build is out, to install with AltServer (no updating there)",
+        !!iNotice && /newer build of the apps is out \(build bbbbbbb/.test(iNotice) && /AltServer/.test(iNotice) && (await ijs("document.getElementById('phoneAppsBtn').hidden")) === true && githubAsked > 0, iNotice);
+      await ijs("document.querySelector('#appNotice button').click(); null");
+      check("...gone once seen, until the next build", !!(await until(() => ijs("document.getElementById('appNotice').hidden"))));
+      iphone.destroy();
+    } finally {
+      session.defaultSession.protocol.unhandle("https");
+      delete process.env.FAKE_PLATFORM;
+      delete process.env.FAKE_BUILD_COMMIT;
+    }
 
     // The Pi goes away
     service.kill();

@@ -8,7 +8,8 @@
      cluster): the Raspberry Pis running Pi Cluster's service (cluster/node), found over Tailscale.
      Each Pi's health, its camera rig, its updates, and its modules' switches and settings.
      pi-cluster.js; the requests go through electron/cluster.js. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'" />
+<!-- (connect-src: GitHub's "Latest build", which the iPhone app looks at for a newer build itself: pi-cluster.js phoneApps) -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src https://api.github.com; base-uri 'none'; form-action 'none'" />
 <title>Pi Cluster</title>
 <style>
   * { box-sizing: border-box; }
@@ -96,6 +97,13 @@
   .legend .sw { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: 3px; margin-right: 5px; }
   .sw.down { background: #5b8cff; }
   .sw.up { background: #3fbf6a; }
+  /* (a phone's own apps: a newer build, and updating them) */
+  .notice { border-color: #3b6ce0; background: #16203a; line-height: 1.5; }
+  .app-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 0; border-top: 1px solid #2c2e36; }
+  .app-row:first-of-type { border-top: none; }
+  .app-row .what { flex: 1; min-width: 180px; line-height: 1.45; }
+  .app-row .line { font-size: 12px; opacity: 0.75; }
+  .app-row .line.bad { color: #ff8a7a; opacity: 1; }
   /* (a phone) */
   @media (max-width: 600px) {
     body { padding: 10px; }
@@ -111,9 +119,12 @@
   <header>
     <h1>Pi Cluster</h1>
     <span id="buildInfo"></span>
+    <button id="phoneAppsBtn" hidden title="Pi Cluster and this phone's other Hand Tracker apps: updated or installed from GitHub's newest build">This phone's apps</button>
     <button id="updateAll" title="Every Pi that's on updates Hand Tracker (a Pi that's recording waits until it stops)">Update all Pis</button>
     <button id="addPi" class="main">Add a Pi</button>
   </header>
+  <div id="appNotice" class="card notice" hidden></div>
+  <section id="phoneAppsBox" class="card" hidden></section>
   <div class="tabs" role="tablist">
     <button role="tab" id="tabPis" aria-selected="true">Pis</button>
     <button role="tab" id="tabRigs" aria-selected="false">Camera rigs</button>

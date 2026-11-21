@@ -975,6 +975,218 @@
     setTimeout(refresh, 500);
   }
 
+  // ---------- this phone's apps: a newer build from GitHub's "Latest build", as the Pis take theirs ----------
+  // Android (the app's AppUpdates plugin: AppUpdatePlugin.java): this phone's Hand Tracker apps update
+  // by themselves within an hour on Wi-Fi, Pi Cluster too, unless the phone is recording or saving a
+  // take (AppUpdateJob.java); Update does it now, and Install puts on one that isn't here. Android asks
+  // once before Pi Cluster updates an app it didn't install itself; until then, those wait for Update.
+  // The page looks when it opens and once a day while open, with a notice when there's a newer build.
+  // iPhone: an app can't install apps there, so only the notice, for a build with Pi Cluster's iPhone
+  // app in it; installing stays with AltServer.
+  const RELEASE = "https://api.github.com/repos/alexandermulholland92/hand-tracker/releases/tags/latest-build";
+  function phoneApps() {
+    const cap = window.Capacitor;
+    const U = cap && cap.Plugins && cap.Plugins.AppUpdates;
+    const ios = !U && !!cap && typeof cap.getPlatform === "function" && cap.getPlatform() === "ios";
+    if (!U && !ios) return;
+    const DAY = 86400000;
+    const SELF = "com.handtracker.cluster";
+    const st = { apps: [], latest: null, canInstall: true, error: "", busy: false, line: {}, looked: 0, recording: "", auto: "", silent: false };
+    const mine = () => {
+      // (this copy's own build, as a GitHub build's page says it: the iPhone's notice)
+      const built = document.querySelector('meta[name="hand-tracker-build"]');
+      return (built && built.dataset.commit) || "";
+    };
+    const day = (iso) => {
+      const d = new Date(iso);
+      return isNaN(d) ? "" : d.toLocaleDateString([], { month: "short", day: "numeric" });
+    };
+    const mb = (n) => (n / 1e6).toFixed(n < 1e7 ? 1 : 0);
+    // (an app with no build stamp, from before apps had one, counts as newest once put on after the build came out)
+    const newer = (a) => !!(a.installed && st.latest && st.latest.apps[a.pkg] && (a.commit ? a.commit !== st.latest.commit : !(a.updated >= Date.parse(st.latest.published))));
+    const missing = (a) => !!(!a.installed && st.latest && st.latest.apps[a.pkg]);
+    const names = (pkgs) => pkgs.map((p) => (st.apps.find((a) => a.pkg === p) || { name: p }).name).join(", ");
+    const build = () => (st.latest ? `build ${short(st.latest.commit)}${st.latest.published ? `, ${day(st.latest.published)}` : ""}` : "");
+    const remember = (k, v) => {
+      try {
+        if (v === undefined) return localStorage.getItem(k);
+        localStorage.setItem(k, v);
+      } catch {}
+      return null;
+    };
+
+    async function look(github = true) {
+      if (U) {
+        try {
+          const a = await U.apps();
+          st.apps = a.apps || [];
+          st.canInstall = a.canInstall !== false;
+          st.recording = a.recording || "";
+          st.auto = a.auto || "";
+          st.silent = !!a.silent;
+        } catch (e) {
+          st.error = `Couldn't see this phone's apps: ${(e && e.message) || e}`;
+        }
+        if (github) {
+          try {
+            st.latest = await U.latest();
+            st.looked = Date.now();
+            st.error = "";
+          } catch (e) {
+            st.error = `Couldn't ask GitHub for the newest build: ${(e && e.message) || e}`;
+          }
+        }
+        // (once: Android 13 and later ask whether Pi Cluster may notify, for the daily look's notice)
+        if (st.latest && !remember("piClusterAskedNotices")) {
+          remember("piClusterAskedNotices", "1");
+          U.notices().catch(() => {});
+        }
+      } else {
+        try {
+          const r = await fetch(RELEASE, { headers: { Accept: "application/vnd.github+json" } });
+          if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
+          const j = await r.json();
+          const ipa = (j.assets || []).some((x) => /^PiCluster-.*\.ipa$/.test(x.name || ""));
+          st.latest = ipa && /^[0-9a-f]{40}$/.test(j.target_commitish || "") ? { commit: j.target_commitish, published: j.published_at, apps: {} } : null;
+          st.looked = Date.now();
+          st.error = "";
+        } catch (e) {
+          st.error = `Couldn't ask GitHub for the newest build: ${(e && e.message) || e}`;
+        }
+      }
+      show();
+    }
+
+    async function update(pkgs) {
+      if (st.busy || !pkgs.length) return;
+      if (!st.canInstall) {
+        say("Pi Cluster needs Android's OK to install apps first: Allow, under This phone's apps.", true);
+        $("phoneAppsBox").hidden = false;
+        show();
+        return;
+      }
+      const self = pkgs.includes(SELF);
+      if (st.recording) {
+        say(`${st.recording} is recording or saving a take: the apps update by themselves once it stops.`, true);
+        return;
+      }
+      if (!confirm(`Update ${names(pkgs)} to ${build()}? Android may ask before each.${self ? " Pi Cluster updates itself last and closes then: open it again afterwards." : ""}`)) return;
+      st.busy = true;
+      for (const p of pkgs) st.line[p] = { text: "Waiting its turn…" };
+      show();
+      const handle = await U.addListener("progress", (p) => {
+        const text = p.stage === "download" ? `Downloading: ${mb(p.got)} of ${p.size > 0 ? mb(p.size) : "?"} MB`
+          : p.stage === "install" ? "Installing… (Android may ask first)"
+            : p.stage === "done" ? "Done ✓" : p.stage === "asks" ? "Android asks first: answer its notification" : p.error || "It didn't work.";
+        st.line[p.pkg] = { text, bad: p.stage === "failed" };
+        show();
+      });
+      try {
+        const r = await U.install({ pkgs });
+        const bad = r.failed || [];
+        const good = r.done || [];
+        say(bad.length ? bad.map((f) => `${names([f.pkg])}: ${f.error}`).join(" · ") : good.length ? `${names(good)}: updated to ${build()}.` : "Android asks first: answer its notification.", bad.length > 0);
+      } catch (e) {
+        say(`Updating didn't work: ${(e && e.message) || e}`, true);
+      } finally {
+        if (handle && handle.remove) handle.remove();
+        st.busy = false;
+        look(false);
+      }
+    }
+
+    function show() {
+      const notice = $("appNotice");
+      const box = $("phoneAppsBox");
+      if (ios) {
+        const fresh = !!(st.latest && mine() && st.latest.commit !== mine() && remember("piClusterSeenBuild") !== st.latest.commit);
+        notice.hidden = !fresh;
+        if (fresh) {
+          const ok = el("button", { textContent: "OK" });
+          ok.onclick = () => {
+            remember("piClusterSeenBuild", st.latest.commit);
+            show();
+          };
+          notice.replaceChildren(el("div", {}, `A newer build of the apps is out (${build()}). Install it with AltServer, as before.`), el("div", { className: "buttons" }, ok));
+        }
+        return;
+      }
+      const older = st.apps.filter(newer);
+      const absent = st.apps.filter(missing);
+      $("phoneAppsBtn").hidden = false;
+      $("phoneAppsBtn").textContent = older.length ? `This phone's apps (${older.length} newer)` : "This phone's apps";
+      $("phoneAppsBtn").className = older.length ? "main" : "";
+      notice.hidden = !older.length || !box.hidden;
+      if (older.length) {
+        const go = el("button", { className: "main", textContent: older.length === 1 ? "Update it" : "Update them", disabled: st.busy });
+        go.onclick = () => update(older.map((a) => a.pkg));
+        const see = el("button", { textContent: "See all" });
+        see.onclick = () => {
+          box.hidden = false;
+          show();
+        };
+        const asking = older.filter((a) => !st.silent || !a.ours);
+        const how = st.recording ? ` They wait while ${st.recording} is recording or saving a take.`
+          : asking.length ? ` Android asks once before Pi Cluster updates ${asking.map((a) => a.name).join(", ")}: tap Update.${asking.length < older.length ? " The others update by themselves within an hour on Wi-Fi." : ""}`
+            : " They update by themselves within an hour on Wi-Fi, or now with Update.";
+        notice.replaceChildren(el("div", {}, `Newer builds of this phone's apps are out (${build()}): ${older.map((a) => a.name).join(", ")}.${how}`), el("div", { className: "buttons" }, go, see));
+      }
+      if (box.hidden) return;
+      const again = el("button", { textContent: "Look again", disabled: st.busy });
+      again.onclick = () => look();
+      const rows = st.apps.map((a) => {
+        const here = !a.installed ? "not on this phone" : a.commit ? `this phone: build ${short(a.commit)}` : `this phone: an older build${a.updated ? ` (from ${day(a.updated)})` : ""}`;
+        const line = st.line[a.pkg];
+        let button = null;
+        if (newer(a) || missing(a)) {
+          button = el("button", { textContent: a.installed ? "Update" : "Install", disabled: st.busy });
+          button.onclick = () => update([a.pkg]);
+        }
+        const state = a.installed && st.latest && !newer(a) && st.latest.apps[a.pkg] ? " · up to date"
+          : newer(a) ? (st.silent && a.ours ? " · updates by itself" : " · Android asks once: Update") : "";
+        return el("div", { className: "app-row" },
+          el("div", { className: "what" }, el("b", {}, a.name), ` — ${here}${state}`, line ? el("div", { className: "line" + (line.bad ? " bad" : "") }, line.text) : null),
+          button);
+      });
+      const all = el("button", { className: "main", textContent: `Update all (${older.length})`, disabled: st.busy || !older.length });
+      all.onclick = () => update(older.map((a) => a.pkg));
+      const allow = el("button", { textContent: "Allow" });
+      allow.onclick = () => U.allowInstalls().catch((e) => say(`Couldn't open Android's settings: ${e.message || e}`, true));
+      const close = el("button", { textContent: "Close" });
+      close.onclick = () => {
+        box.hidden = true;
+        show();
+      };
+      box.replaceChildren(...[
+        el("div", { className: "top" }, el("span", { className: "name" }, "This phone's apps"), el("span", { className: "sub" }, st.latest ? `Newest: ${build()}` : st.error ? "" : "Asking GitHub…"), again, close),
+        st.error ? el("div", { className: "warn-line" }, "⚠ " + st.error) : null,
+        st.canInstall ? null : el("div", { className: "warn-line" }, "Pi Cluster needs Android's OK to install apps: ", allow),
+        st.recording ? el("div", { className: "warn-line" }, `Waiting: ${st.recording} is recording or saving a take. The apps update once it stops.`) : null,
+        ...rows,
+        el("div", { className: "buttons" }, all),
+        st.auto ? el("div", { className: "hint" }, `Last hourly look: ${st.auto}`) : null,
+        el("div", { className: "hint" }, "The apps update by themselves within an hour of a new build, on Wi-Fi, except while this phone records or saves a take. Android asks once before Pi Cluster updates an app it didn't install itself, and before it installs one; after that, from Android 12, they update without asking. Pi Cluster updates itself while it isn't open; with Update, it goes last and closes."),
+      ].filter(Boolean));
+    }
+
+    if (U) {
+      $("phoneAppsBtn").hidden = false;
+      $("phoneAppsBtn").onclick = () => {
+        $("phoneAppsBox").hidden = !$("phoneAppsBox").hidden;
+        show();
+        if (!$("phoneAppsBox").hidden && !st.busy) look(Date.now() - st.looked > 60000);
+      };
+    }
+    // (back from Android's settings or its question: the apps again; GitHub again after a day)
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && !st.busy) look(Date.now() - st.looked > DAY);
+    });
+    setInterval(() => {
+      if (!document.hidden && !st.busy && Date.now() - st.looked > DAY) look();
+    }, 3600000);
+    look();
+  }
+
   if (api && api.onProgress) {
     api.onProgress((p) => {
       if (p.zip) say(`Saving ${p.name}: ${Math.round((100 * p.got) / Math.max(1, p.size))}%`);
@@ -1044,8 +1256,9 @@
     $("note").textContent = "Pi Cluster runs in its own app (Pi Cluster), not in a browser.";
     return;
   }
-  // On a phone: a Pi set up already, by its Tailscale name (Add a Pi).
+  // On a phone: a Pi set up already, by its Tailscale name (Add a Pi); this phone's apps.
   if (api.phone) {
+    phoneApps();
     $("pickFiles").textContent = "Files from this phone…";
     $("phoneAdd").hidden = false;
     $("findPi").onclick = async () => {

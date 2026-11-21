@@ -10,6 +10,10 @@
         android:requestLegacyExternalStorage="true"
         android:theme="@style/AppTheme">
 
+        <!-- The commit this build is made from ("git:" and the commit; "git:" alone for one made on a
+             computer): Pi Cluster on this phone compares it with GitHub's "Latest build" (AppUpdates.java). -->
+        <meta-data android:name="com.handtracker.build" android:value="git:${buildCommit}" />
+
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:name=".MainActivity"
@@ -65,6 +69,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- Whether this app is recording or saving a take just now, for Pi Cluster on the same phone
+             (it doesn't update the phone's apps meanwhile); only Hand Tracker's own apps may ask
+             (AppStateProvider.java). -->
+        <provider
+            android:name=".AppStateProvider"
+            android:authorities="${applicationId}.state"
+            android:exported="true"
+            android:permission="com.handtracker.permission.APP_STATE" />
+
         <!-- A dashboard's own sign-in page (Capture Sessions, Live Rigs). -->
         <activity
             android:name=".SignInActivity"
@@ -84,6 +97,13 @@
     </application>
 
     <!-- Permissions -->
+
+    <!-- Hand Tracker's own apps (signed with the same key) asking each other's state: AppStateProvider.java. -->
+    <permission
+        android:name="com.handtracker.permission.APP_STATE"
+        android:label="Hand Tracker's apps' state"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="com.handtracker.permission.APP_STATE" />
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- OptiTrack Motive's live stream arrives by UDP multicast on Wi-Fi, which Android
