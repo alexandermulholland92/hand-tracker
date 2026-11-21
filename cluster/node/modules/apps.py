@@ -88,6 +88,7 @@ LIMITS = {
     "seedQueueSize": ("seed-queue-size", 1, 100),
     "peerLimit": ("peer-limit-global", 10, 1000),
     "peerLimitPerTorrent": ("peer-limit-per-torrent", 2, 300),
+    "utp": ("utp-enabled", None, None),  # (off: peers over TCP only, as on pi since 2026-11-20: its router copes worst with UDP)
 }
 
 
@@ -555,12 +556,32 @@ def runner_tick(node):
         return
     _run["contact"] = now
     if a.get("run"):
-        if not running or a.get("names") != _run["names"] or a.get("where") != _run["where"]:
+        if running and _run["names"] is None and not _run["starting"] and kept(node, a["where"], a.get("names") or []):
+            # (running already: this service restarted, an update say, and left it going. Started again, it
+            # would ask every torrent's trackers and peers at once, which twice set pi's router off)
+            _run.update(names=a.get("names") or [], where=a["where"], error=None)
+            mem = node.memory("apps")
+            if mem.get("started") is None:  # (the note the version before didn't write)
+                mem["started"] = {"where": a["where"], "names": list(a.get("names") or [])}
+                mem.save()
+            node.event("apps", "Transmission kept running through this service's restart.")
+            keep_caps(node)
+        elif not running or a.get("names") != _run["names"] or a.get("where") != _run["where"]:
             start_here(node, a["where"], a.get("names") or [])
         else:
             keep_caps(node)
     elif running:
         stop_here(node, "%s asked it to stop" % home["name"])
+
+
+def kept(node, where, names):
+    """Whether the Transmission running here is the one this service started before it restarted, with these
+    files: its note says so, or, with no note (started by a version that didn't write one), it's this Pi's own
+    files (only another Pi's are bound in, so nothing else can differ)."""
+    started = node.memory("apps").get("started")
+    if started is None:
+        return where == "local"
+    return started.get("where") == where and sorted(started.get("names") or []) == sorted(names)
 
 
 def start_here(node, where, names):
@@ -578,6 +599,9 @@ def start_here(node, where, names):
             a = node.root("transmission-start", where, *names, timeout=600)
             if a.get("ok"):
                 _run.update(names=names, where=where, error=None, caps=None)
+                mem = node.memory("apps")
+                mem["started"] = {"where": where, "names": list(names)}  # (kept through this service's restarts)
+                mem.save()
                 node.event("apps", "Transmission started here%s." % ("" if where == "local" else " (its files from " + where + ")"))
             else:
                 _run["error"] = "Transmission didn't start: %s" % a.get("error")
@@ -590,6 +614,9 @@ def start_here(node, where, names):
 def stop_here(node, why):
     a = node.root("transmission-stop", timeout=300)
     _run.update(names=None, where=None, caps=None)
+    mem = node.memory("apps")
+    if mem.pop("started", None) is not None:
+        mem.save()
     node.event("apps", "Transmission stopped here: %s." % why, bad=not a.get("ok"))
 
 
@@ -814,6 +841,8 @@ def act_limits(node, args):
         said.append("at most %d peers in all" % change["peer-limit-global"])
     if "peer-limit-per-torrent" in change:
         said.append("at most %d peers for each torrent" % change["peer-limit-per-torrent"])
+    if "utp-enabled" in change:
+        said.append("uTP on" if change["utp-enabled"] else "uTP off (peers over TCP only)")
     return {"ok": True, "message": "Transmission: %s." % ", ".join(said)}
 
 

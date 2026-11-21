@@ -54,7 +54,7 @@ import hashlib, http.server, json, os, sys, threading
 port, config, who = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 STATE = os.path.join(config, "fake-state.json")
 lock = threading.Lock()
-LIMIT_KEYS = ("download-queue-enabled", "download-queue-size", "seed-queue-enabled", "seed-queue-size", "peer-limit-global", "peer-limit-per-torrent")
+LIMIT_KEYS = ("download-queue-enabled", "download-queue-size", "seed-queue-enabled", "seed-queue-size", "peer-limit-global", "peer-limit-per-torrent", "utp-enabled")
 def load():
     try:
         return json.load(open(STATE))
@@ -350,6 +350,30 @@ def main():
         code, a = act(pi_port, "limits", {"peerLimit": 5000})
         code2, a2 = act(pi_port, "limits", {"downloadQueueSize": "lots"})
         check("...but not beyond what makes sense", code != 200 and code2 != 200, (a, a2))
+        code, a = act(pi_port, "limits", {"utp": False})
+        utp = wait_for(lambda: apps(pi_port).get("session", {}).get("utp") is False, 20)
+        check("uTP off (peers over TCP only): set, read back, kept in its settings, said",
+              code == 200 and utp and json.load(open(os.path.join(config, "settings.json"))).get("utp-enabled") is False and "uTP off" in a.get("message", ""), (a, apps(pi_port).get("session")))
+
+        # pi's service restarting (an update, say) leaves its Transmission running: started again, it would ask
+        # every torrent's trackers and peers at once (pi's router went down after that, 2026-11-20)
+        marker = os.path.join(tmp, "pi-state", "tr-running")
+        starts = lambda: len([l for l in open(log).read().splitlines() if l.startswith("pi transmission-start")])
+        for note in (True, False):  # (then as from the version before, which kept no note of it)
+            n0, pid0 = starts(), open(marker).read()
+            procs["pi"].terminate()
+            procs["pi"].wait(10)
+            if not note:
+                mem_file = os.path.join(tmp, "pi-state", "apps.json")
+                m = json.load(open(mem_file))
+                had = m.pop("started", None)
+                json.dump(m, open(mem_file, "w"))
+            start("pi", pi_port, pie_port, pi_ht_url, pi_tr)
+            said = wait_for(lambda: any("kept running" in e.get("text", "") for e in ask(pi_port, "GET", "/api/node")[1].get("events", [])[-5:]), 30)
+            time.sleep(6)  # (a few more of its words with itself)
+            check("pi's service restarting leaves Transmission running, not started again" + ("" if note else ", with no note from the version before"),
+                  said and starts() == n0 and os.path.exists(marker) and open(marker).read() == pid0 and apps(pi_port).get("runner") == "pi" and
+                  (tr_ask(old, "session-stats") or {}).get("who") == "pi" and (note or had), (starts(), n0, apps(pi_port)))
 
         pi_ht["recording"] = True
         time.sleep(6)
