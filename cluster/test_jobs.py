@@ -241,7 +241,18 @@ def unit_checks(tmp):
     e = turn("e")
     check("A Pi that stopped saying it has its turn loses it", e.get("go") and "d" not in lane["holders"], (e, sorted(lane["holders"])))
     node.turtle = False
-    turn("e", done=True)
+    at(217)
+    turn("e", rate=310000, slowest=13)  # (pi's one link, 2026-11-21: 0.3 MB/s, 13 s a piece)
+    f = turn("f")
+    check("A link going at pi's 0.3 MB/s (13 s a piece) gets a second beside it", f.get("go"), (f, lane["allowed"]))
+    at(234)
+    turn("e", rate=200000, slowest=22)
+    turn("f", rate=190000, slowest=22)
+    g = turn("g")
+    check("...pieces near crawling (22 s): no third, none taken away", not g.get("go") and lane["allowed"] == 2, (g, lane["allowed"]))
+    for w in "ef":
+        turn(w, done=True)
+    turn("g", done=True)
 
     # A piece asked for again
     calls = []

@@ -155,7 +155,7 @@ for that Pi.
     waits in line (its summary says so). Its own files need no turn.
     - **Staggered, then together:** a new link starts at most every 15 seconds, then runs beside
       the others.
-    - **One more** while every 4 MB piece comes in under 12 seconds and the total speed grew with
+    - **One more** while every 4 MB piece comes in within 20 seconds and the total speed grew with
       the last link let in. **As many as now** when another link would only share the same speed.
     - **One fewer** when a piece takes over 25 seconds: that Pi is straining.
     - **One at a time** while Transmission's turtle is on (someone's watching on Jellyfin).

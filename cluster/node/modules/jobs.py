@@ -78,7 +78,8 @@ TURN_STALE_S = 45  # a Pi with a turn, or in line for one, says so this often or
 TURN_ASK_S = 3  # how often a Pi in line asks again
 TURN_BEAT_S = 15  # how often a Pi moving a file says it still has its turn (and how fast its pieces go)
 TURN_STAGGER_S = 15  # links start one after the other, at least this far apart
-PIECE_FAST_S = 12  # every piece in this long (4 MB: about 0.35 MB/s a link) and the total grew: room for one more link
+PIECE_FAST_S = 20  # every piece within this (4 MB: 0.2 MB/s a link, short of crawling) and the total grew: one more link
+# (12 s at first let no second link in on pi, whose one link went at 0.3-0.5 MB/s: 8-13 s a piece, 2026-11-21)
 PIECE_SLOW_S = 25  # a piece slower than this (about 0.17 MB/s): the Pi keeping the list is straining, one link fewer
 PIECE_TRIES = 6  # a piece that doesn't come through (a stall on the Wi-Fi) is tried this many times in all
 PIECE_WAITS = (5, 10, 20, 30, 30)  # seconds between those tries
