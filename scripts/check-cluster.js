@@ -10,8 +10,10 @@
  * totals, peers, a graph over 1 h and 24 h), asking for more peers, a waiting torrent moved up the
  * queue, and how many download, seed and connect at once; on a phone (the app's plugins standing
  * in: fake-cluster-plugin.js), the Pi found and a job done from there, and this phone's apps (a
- * newer build's notice, the list, Update all, Install; the iPhone's notice only); a Pi that stops
- * answering faded, with Forget. The service's own checks: cluster/test_cluster.py.
+ * newer build's notice, the list, Update all, Install; the iPhone's notice only); in a browser, the
+ * page as a Pi serves it (a second Pi asked through it, a job from a file picked there, its results
+ * saved from a one-time link, another site's page refused); a Pi that stops answering faded, with
+ * Forget. The service's own checks: cluster/test_cluster.py.
  */
 const { app, BrowserWindow } = require("electron");
 const { spawn, spawnSync } = require("child_process");
@@ -111,6 +113,11 @@ const port = 47900 + Math.floor(Math.random() * 90);
 // (an extra module, as one added later would be: the page has to show it without knowing it)
 const nodeDir = path.join(tmp, "node");
 fs.cpSync(path.join(ROOT, "cluster", "node"), nodeDir, { recursive: true, filter: (src) => !src.includes("__pycache__") });
+// (the Pi Cluster page beside the service, as a build puts it there: what a simulated Pi serves to a browser)
+for (const f of ["pi-cluster.html", "pi-cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png"]) {
+  fs.mkdirSync(path.dirname(path.join(nodeDir, "web", f)), { recursive: true });
+  fs.copyFileSync(path.join(ROOT, f), path.join(nodeDir, "web", f));
+}
 fs.writeFileSync(path.join(nodeDir, "modules", "zz_later.py"), [
   'TITLE = "Later module"', "ORDER = 90", "ON = True",
   'SETTINGS = [{"key": "speed", "title": "Speed", "default": "slow", "choices": [["slow", "Slow"], ["fast", "Fast"]]}]',
@@ -447,6 +454,83 @@ app.whenReady().then(async () => {
       session.defaultSession.protocol.unhandle("https");
       delete process.env.FAKE_PLATFORM;
       delete process.env.FAKE_BUILD_COMMIT;
+    }
+
+    // In a browser: the page as a Pi serves it itself (http://<the Pi>:47830/), with the other Pi asked through
+    // it: both listed, a setting changed on the other one, a command job over a file picked in the browser, its
+    // results saved from a one-time link; and another site's page can't use the service (a pair of Pis of their own)
+    const aPort = await freePort();
+    const bPort = await freePort();
+    const pair = [["alpha", aPort, bPort], ["beta", bPort, aPort]].map(([name, p, other]) => spawn(py[0], [...py[1], path.join(nodeDir, "ht_cluster.py"), "--simulate", "--port", String(p)], {
+      env: {
+        ...process.env, HT_CLUSTER_SIM_NAME: name, HT_CLUSTER_SIM_PEERS: `127.0.0.1:${other}`, HT_CLUSTER_STATE: path.join(tmp, `state-${name}`), HT_CLUSTER_JOBS_DIR: path.join(tmp, `jobs-${name}`),
+        HT_CLUSTER_HT_URL: `http://127.0.0.1:${ht.address().port}`, HT_CLUSTER_GITHUB_API: `http://127.0.0.1:${gh.address().port}`, HT_CLUSTER_ROOT_HELPER: fakeHelper,
+        HT_TEST_HELPER_LOG: path.join(tmp, `helper-${name}.log`), PYTHONDONTWRITEBYTECODE: "1", HT_CLUSTER_SIM_FAST: "1",
+      },
+      stdio: "ignore",
+    }));
+    try {
+      for (const [p, name] of [[aPort, "alpha"], [bPort, "beta"]]) {
+        await until(() => ask(p, "GET", "/api/node").then((d) => d.name === name), 20000);
+        await ask(p, "POST", "/api/settings", { module: "jobs", key: "withCameras", value: true }); // (its stand-in Hand Tracker's cameras run)
+      }
+      const browser = new BrowserWindow({ show: false, width: 1000, height: 900 }); // (no preload: an ordinary browser)
+      const browserSaved = path.join(tmp, "browser-downloads");
+      fs.mkdirSync(browserSaved);
+      const downloads = [];
+      browser.webContents.session.on("will-download", (_e, item) => {
+        item.setSavePath(path.join(browserSaved, item.getFilename()));
+        item.once("done", (_e2, state) => downloads.push([item.getFilename(), state]));
+      });
+      await browser.loadURL(`http://127.0.0.1:${aPort}/`);
+      const bjs = (code) => browser.webContents.executeJavaScript(code, true);
+      await bjs("window.confirm = () => true; null");
+      const browserText = () => bjs("document.getElementById('pis').innerText");
+      const both = await until(async () => {
+        const t = await browserText();
+        return /alpha/.test(t) && /beta/.test(t) && (t.match(/CPU/g) || []).length >= 2 && t;
+      }, 30000);
+      check("In a browser: the page a Pi serves lists that Pi, and the other one through it", !!both, await browserText());
+      const through = await bjs("document.getElementById('buildInfo').textContent");
+      check("...saying which Pi it came through", through === "through alpha", through);
+      const card = (name) => `[...document.querySelectorAll('#pis .card')].find((c) => c.querySelector('.name').textContent === ${JSON.stringify(name)})`;
+      await bjs(`${card("beta")}.querySelector('.top button').click(); null`);
+      await until(() => bjs(`!!${card("beta")}.querySelector('.settings')`));
+      await bjs(`(() => { const s = [...${card("beta")}.querySelectorAll('.settings label')].find((l) => l.textContent.startsWith('Speed')).querySelector('select'); s.value = 'fast'; s.dispatchEvent(new Event('change')); })(); null`);
+      const speed = async (p) => ((await ask(p, "GET", "/api/node")).modules.find((m) => m.name === "zz_later").settings.find((s) => s.key === "speed") || {}).value;
+      const relayed = await until(async () => (await speed(bPort)) === "fast");
+      check("...a setting changed under the other Pi's ⚙ is made there (passed on), not on the Pi the page came from", !!relayed && (await speed(aPort)) === "slow", [await speed(bPort), await speed(aPort)]);
+      await bjs("document.activeElement && document.activeElement.blur(); document.getElementById('tabJobs').click(); null");
+      await until(() => bjs("[...document.querySelectorAll('#jobsHome button')].some((b) => b.textContent === 'Keep it there')"));
+      await bjs("document.querySelector('#jobsHome select').value = 'alpha'; [...document.querySelectorAll('#jobsHome button')].find((b) => b.textContent === 'Keep it there').click(); null");
+      await until(() => bjs("/alpha keeps the job list/.test(document.getElementById('jobsHome').textContent)"));
+      const bclick = (sel, text) => bjs(`[...document.querySelectorAll(${JSON.stringify(sel)})].find((b) => b.textContent.startsWith(${JSON.stringify(text)})).click(); null`);
+      await bclick("#jobs button", "New job");
+      await bjs("document.querySelector('input[name=kind][value=command]').click(); null");
+      await bjs(`document.getElementById('command').value = ${JSON.stringify(`${py[0]} ${py[1].join(" ")} -c "import shutil,sys; shutil.copy(sys.argv[1], sys.argv[2])" {in} {out}`)}; document.getElementById('jobTitle').value = 'From a browser'; null`);
+      // (the browser's file box answers by itself: a file "picked" on this device)
+      await bjs(`HTMLInputElement.prototype.click = function () { if (this.type !== 'file') return; const dt = new DataTransfer(); dt.items.add(new File(['hello from this device\\n'.repeat(3000)], 'letter.txt', { type: 'text/plain' })); this.files = dt.files; this.onchange && this.onchange(); }; null`);
+      await bclick("#newJob button", "Files from this device");
+      const bpicked = await until(async () => /1 file from this device/.test(await bjs("document.getElementById('chosen').textContent")));
+      check("...a file picked in the browser is chosen", !!bpicked, await bjs("document.getElementById('chosen').textContent"));
+      await bclick("#newJob button", "Start the job");
+      const bdone = await until(async () => /From a browser[\s\S]*1 of 1 done/.test(await bjs("document.getElementById('jobList').innerText")), 90000);
+      check("...sent to the Pi that keeps the job list, and the job done", !!bdone, (await bjs("document.getElementById('jobList').innerText")) + " | " + (await bjs("document.getElementById('message').textContent")));
+      await bjs("[...document.querySelectorAll('#jobList .card')].find((c) => c.textContent.startsWith('From a browser')).querySelector('button').click(); null");
+      const zipPath = path.join(browserSaved, "From a browser.zip");
+      const bzip = await until(() => downloads.some(([n, s]) => n === "From a browser.zip" && s === "completed") && fs.existsSync(zipPath), 30000);
+      const bzipBytes = bzip ? fs.readFileSync(zipPath) : Buffer.alloc(0);
+      check("...its results saved by the browser as one zip (from a one-time link)", !!bzip && bzipBytes.includes(Buffer.from("letter.txt")) && bzipBytes.includes(Buffer.from("hello from this device")),
+        JSON.stringify(downloads) + " | " + (await bjs("document.getElementById('message').textContent")));
+      browser.destroy();
+      // Another site's page in the same browser: its request with the app's header isn't let through (no CORS)
+      const other = new BrowserWindow({ show: false });
+      await other.loadURL("data:text/html,<title>another site</title>");
+      const foreign = await other.webContents.executeJavaScript(`fetch("http://127.0.0.1:${aPort}/api/node", { headers: { "X-HT-Cluster": "1" } }).then((r) => "answered " + r.status, (e) => "refused: " + e.message)`, true);
+      check("Another site's page can't use the service", /^refused/.test(foreign), foreign);
+      other.destroy();
+    } finally {
+      for (const p of pair) p.kill();
     }
 
     // The Pi goes away

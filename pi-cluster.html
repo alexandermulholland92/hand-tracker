@@ -7,9 +7,11 @@
 <!-- Pi Cluster (an app of its own: the computer apps' "cluster" builds, scripts/dist.js --app
      cluster): the Raspberry Pis running Pi Cluster's service (cluster/node), found over Tailscale.
      Each Pi's health, its camera rig, its updates, and its modules' switches and settings.
-     pi-cluster.js; the requests go through electron/cluster.js. -->
-<!-- (connect-src: GitHub's "Latest build", which the iPhone app looks at for a newer build itself: pi-cluster.js phoneApps) -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src https://api.github.com; base-uri 'none'; form-action 'none'" />
+     pi-cluster.js; the requests go through electron/cluster.js. In a browser, a Pi serves this page
+     itself (http://<a Pi>:47830/) and passes its requests on to the other Pis (cluster/node/ht_cluster.py). -->
+<!-- (connect-src: 'self', the Pi that served the page in a browser; GitHub's "Latest build", which the
+     iPhone app looks at for a newer build itself: pi-cluster.js phoneApps) -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'" />
 <title>Pi Cluster</title>
 <style>
   * { box-sizing: border-box; }

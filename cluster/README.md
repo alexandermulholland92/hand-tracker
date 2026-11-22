@@ -12,6 +12,23 @@ The phones reach the Pis through the app's own Cluster plugin, `ClusterPlugin.ja
 ones it knows; the first time, it asks the one called `pi`, or one named under **Add a Pi**. On a
 phone, a job's results come as one zip in Downloads (the Files app on an iPhone).
 
+**In a browser:** each Pi serves the same page itself, at `http://pi:47830/` (any Pi's name or
+Tailscale address, port 47830). It works in any browser on a phone or computer signed in to your
+Tailscale, and does everything the app does.
+- **Who gets in:** your own Tailscale account only, as with the app. Anyone else, and anything not
+  on Tailscale, is turned away.
+- **Through one Pi:** the page asks the Pi it came from. That Pi passes the page's requests for the
+  other Pis on to them (`X-HT-Cluster-To`), but only to Pis on your Tailscale.
+- **A job's results** come as one zip, saved in the browser's downloads through a one-time link
+  (`/api/ticket`, then `/api/download`). The link works once, for two minutes, from that device.
+- **Kept safe from other websites:** another site's page can't use the service, because the page's
+  requests carry the app's header and only the Pi's own page can send that. The page never opens
+  inside another site's page either (`frame-ancestors 'none'`).
+- **Where the page's files come from:** `pi-cluster.html` and the few files it loads, copied beside
+  the service in `web/` by its update. The first update to a version that serves the page is done by
+  the root helper from before it, so the service then has its new root helper fetch them for its own
+  version (`ht-cluster-root page`).
+
 **This phone's apps** (phones only), from GitHub's **Latest build**, the release the Pis update from:
 - **Android:** Pi Cluster and this phone's other Hand Tracker apps (Hand Tracker, Hand Mouse, Remote
   Recording, Recording Converter) update by themselves.
@@ -201,8 +218,9 @@ too: its summary, its warnings, its buttons and its settings.
   (`systemctl --user status ht-cluster`) and starts at boot.
   - It answers only your own Tailscale account (checked with `tailscale whois`).
   - Requests from the Pi itself can only read, not change anything.
-  - Every request must carry the app's header and name the Pi in its Host. A web page can't send
-    either.
+  - Every request must carry the app's header and name the Pi in its Host. Another site's page can't
+    send either; only the Pi Cluster page the Pi serves itself sends the header (see **In a
+    browser** above).
   - What each Pi was set to, and what happened lately: `~/.local/state/ht-cluster/`.
 - **The root helper** (`node/ht-cluster-root`, installed as `/usr/local/sbin/ht-cluster-root`): the
   few jobs that need root. Those are installing Hand Tracker, the system's updates and the
@@ -212,10 +230,12 @@ too: its summary, its warnings, its buttons and its settings.
     (`/etc/sudoers.d/ht-cluster`).
   - It takes no file or address from the service. It downloads what it installs itself and checks
     it against GitHub: the size and SHA-256 of the `.deb`, and the service's files (with the Pi
-    fixes) against the commit's file list.
+    fixes and the Pi Cluster page) against the commit's file list.
   - Its log: `/var/log/ht-cluster-root.log`.
 - **The app** (`electron/cluster.js`): finds the Pis among the Linux computers on this computer's
   Tailscale network, and asks each one's service.
+- **The page in a browser** (`pi-cluster.js`, browser mode): asks the Pi that served it, which lists
+  the other Pis on its Tailscale and passes requests on to them.
 
 ## Checks
 
@@ -223,7 +243,8 @@ too: its summary, its warnings, its buttons and its settings.
 python3 cluster/test_cluster.py
 ```
 
-This checks the service against stand-ins for Hand Tracker, GitHub and the root helper.
+This checks the service against stand-ins for Hand Tracker, GitHub and the root helper, and the
+page in a browser: served by the Pi, requests passed on to a second Pi, and one-time download links.
 
 ```bash
 python3 cluster/test_jobs.py

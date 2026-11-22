@@ -16,11 +16,163 @@
  * Pis, so it asks the Pis it knows (the first time: "pi", by its Tailscale name, or one named on
  * Add a Pi) which others there are; and a job's results come as one zip, into Downloads (iPhone:
  * the Files app).
+ *
+ * In a browser (on a device on the same Tailscale account): a Pi's own service serves this page at
+ * http://<that Pi>:47830/ (cluster/node/ht_cluster.py) and says so in a meta tag; browserCluster()
+ * below asks that Pi, which passes a request for another Pi on (X-HT-Cluster-To), and a job's results
+ * come as one zip, saved by the browser through a one-time link.
  */
 (() => {
   const $ = (id) => document.getElementById(id);
-  const api = (window.desktop && window.desktop.cluster) || phoneCluster();
+  const api = (window.desktop && window.desktop.cluster) || phoneCluster() || browserCluster();
   const REFRESH_MS = 4000;
+
+  // ---------- in a browser: the page as a Pi served it, the same calls through that Pi ----------
+  function browserCluster() {
+    const meta = document.querySelector('meta[name="ht-cluster-page"]');
+    if (!meta || !/^https?:$/.test(location.protocol)) return null;
+    const SELF = location.host; // (the Pi that served the page: asked directly; the others through it)
+    const KEY = "piClusterPis";
+    const ASK_MS = 8000;
+    const PIECE = 8 << 20; // (a file's piece going to a Pi: the service takes up to 16 MB)
+    let known = {};
+    try {
+      known = JSON.parse(localStorage.getItem(KEY) || "{}") || {};
+    } catch {}
+    const keep = () => {
+      try {
+        localStorage.setItem(KEY, JSON.stringify(known));
+      } catch {}
+    };
+    const files = new Map(); // picked here: id -> File
+    const notOne = new Map(); // a computer whose service didn't answer: not asked again for a minute
+    let peers = { at: 0, list: [] };
+    const listeners = new Set();
+    const tell = (p) => listeners.forEach((cb) => cb(p));
+
+    async function ask(target, method, path, { body, blob, timeoutMs = ASK_MS } = {}) {
+      const headers = { "X-HT-Cluster": "1" };
+      if (target && target !== SELF) headers["X-HT-Cluster-To"] = target;
+      if (body !== undefined) headers["Content-Type"] = "application/json";
+      else if (blob) headers["Content-Type"] = "application/octet-stream";
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), timeoutMs);
+      try {
+        const r = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : blob, signal: ctl.signal, cache: "no-store", credentials: "omit" });
+        if ((r.headers.get("Content-Type") || "").startsWith("application/json")) {
+          let j = {};
+          try {
+            j = await r.json();
+          } catch {
+            j = { error: "Its answer wasn't readable." };
+          }
+          return { status: r.status, ...(j && typeof j === "object" ? j : {}) };
+        }
+        return { status: r.status, error: r.ok ? null : (await r.text()).slice(0, 200) || `It answered ${r.status}.` };
+      } catch (e) {
+        return { status: 0, error: e && e.name === "AbortError" ? "No answer" : (e && e.message) || String(e) };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function list() {
+      const now = Date.now();
+      // The Pis the Pi that served the page sees on Tailscale (asked once a minute).
+      if (now - peers.at > 60000) {
+        const a = await ask(SELF, "GET", "/api/peers");
+        if (a.status === 200 && Array.isArray(a.peers)) peers = { at: now, list: a.peers.filter((p) => p.online && p.ip).map((p) => String(p.ip)) };
+      }
+      const knownTarget = new Set(Object.values(known).map((k) => k.target));
+      const targets = [SELF, ...peers.list.filter((t) => t !== SELF && (knownTarget.has(t) || !(notOne.get(t) > now)))];
+      const answers = await Promise.all(targets.map((t) => ask(t, "GET", "/api/node").then((a) => [t, a])));
+      const nodes = new Map();
+      for (const [target, a] of answers) {
+        if (a.status === 200 && a.name && Array.isArray(a.modules)) {
+          notOne.delete(target);
+          known[a.name] = { target, seen: now, node: a };
+          nodes.set(a.name, { name: a.name, target, online: true, answering: true, seen: now, node: a, error: null });
+        } else {
+          const name = Object.keys(known).find((n) => known[n].target === target);
+          if (name && !nodes.has(name)) nodes.set(name, { name, target, online: true, answering: false, seen: known[name].seen, node: known[name].node, error: a.error || `It answered ${a.status}.` });
+          else if (!name && target !== SELF) notOne.set(target, now + 60000);
+        }
+      }
+      for (const [name, k] of Object.entries(known)) {
+        if (nodes.has(name)) continue;
+        if (now - (k.seen || 0) > 30 * 86400000) {
+          delete known[name];
+          continue;
+        }
+        nodes.set(name, { name, target: k.target, online: k.target === SELF || peers.list.includes(k.target), answering: false, seen: k.seen, node: k.node, error: null });
+      }
+      keep();
+      return { nodes: [...nodes.values()].sort((a, b) => a.name.localeCompare(b.name)), tailscale: true, browser: true, at: now };
+    }
+
+    const post = (target, path, body, timeoutMs = 30000) => ask(target, "POST", path, { body, timeoutMs });
+    // (picked on this device, through a file box: the page reads it a piece at a time)
+    const pick = (accept) => new Promise((resolve) => {
+      const input = Object.assign(document.createElement("input"), { type: "file", multiple: !accept, accept: accept || "" });
+      input.onchange = () => {
+        resolve([...(input.files || [])].map((f) => {
+          const id = `browser:${files.size}:${f.name}`;
+          files.set(id, f);
+          return { path: id, name: f.name, size: f.size };
+        }));
+      };
+      input.click();
+    });
+
+    return {
+      browser: true,
+      served: meta.content,
+      list,
+      settings: ({ target, module, on, key, value }) => post(target, "/api/settings", { module, ...(typeof on === "boolean" ? { on } : {}), ...(key !== undefined ? { key, value } : {}) }),
+      action: ({ target, module, action, args }) => post(target, "/api/action", { module, action, args: args || {} }),
+      forget: async (name) => {
+        delete known[name];
+        keep();
+        return { ok: true };
+      },
+      pickFiles: () => pick(""),
+      pickModel: () => pick(".onnx"),
+      pickFolder: async () => "your browser's downloads", // (a browser saves a job's results as one zip, there)
+      async upload({ target, job, files: list }) {
+        for (const f of list || []) {
+          const file = files.get(f.path);
+          if (!file) throw new Error(`${f.name} isn't one picked on this device.`);
+          let at = 0;
+          do {
+            const piece = file.slice(at, Math.min(file.size, at + PIECE));
+            const last = at + piece.size >= file.size ? 1 : 0;
+            const a = await ask(target, "PUT", `/api/jobs/upload?job=${encodeURIComponent(job)}&name=${encodeURIComponent(f.name)}&at=${at}&last=${last}`, { blob: piece, timeoutMs: 120000 });
+            if (a.status !== 200) throw new Error(`${f.name}: ${a.error || `it answered ${a.status}`}`);
+            at += piece.size;
+            tell({ name: f.name, sent: at, size: file.size });
+          } while (at < file.size);
+        }
+        return { ok: true };
+      },
+      // A job's results as one zip (packed on the Pi that keeps the job list), saved by the browser
+      // itself from a one-time link (it can't add the service's header to a download).
+      async download({ target, job }) {
+        const z = await post(target, "/api/action", { module: "jobs", action: "zip", args: { job } }, 300000);
+        if (z.status !== 200 || !z.ok) throw new Error(z.error || "Its results couldn't be packed.");
+        const t = await post(SELF, "/api/ticket", { ...(target !== SELF ? { to: target } : {}), path: `/api/jobs/zip-file?job=${encodeURIComponent(job)}&whole=1` });
+        if (t.status !== 200 || !t.ok || !/^\/api\/download\?ticket=/.test(t.url || "")) throw new Error(t.error || "The Pi didn't give a link to save it from.");
+        const a = Object.assign(document.createElement("a"), { href: t.url, download: z.name, hidden: true });
+        document.body.append(a);
+        a.click();
+        a.remove();
+        return { ok: true, message: `Saving ${z.name} (${(z.size / 1e6).toFixed(1)} MB) in your browser's downloads.` };
+      },
+      onProgress: (cb) => {
+        listeners.add(cb);
+        return () => listeners.delete(cb);
+      },
+    };
+  }
 
   // ---------- on a phone: the same calls as electron/cluster.js, through the app's Cluster plugin ----------
   function phoneCluster() {
@@ -844,7 +996,7 @@
     const n = pickedJobs.recordings.size + pickedJobs.files.length;
     const bits = [];
     if (pickedJobs.recordings.size) bits.push(`${pickedJobs.recordings.size} recording${pickedJobs.recordings.size === 1 ? "" : "s"} on the Pis`);
-    if (pickedJobs.files.length) bits.push(`${pickedJobs.files.length} file${pickedJobs.files.length === 1 ? "" : "s"} from this ${api && api.phone ? "phone" : "computer"}`);
+    if (pickedJobs.files.length) bits.push(`${pickedJobs.files.length} file${pickedJobs.files.length === 1 ? "" : "s"} from this ${api && api.phone ? "phone" : api && api.browser ? "device" : "computer"}`);
     if (pickedJobs.folder) bits.push(`the folder ${pickedJobs.folder}`);
     $("chosen").textContent = bits.length ? "Chosen: " + bits.join(", ") + "." : "No files chosen yet.";
     $("startJob").disabled = !(n || pickedJobs.folder);
@@ -1253,8 +1405,13 @@
 
   if (window.desktop && window.desktop.getInfo) window.desktop.getInfo().then((i) => i && i.version && ($("buildInfo").textContent = `v${i.version}`), () => {});
   if (!api) {
-    $("note").textContent = "Pi Cluster runs in its own app (Pi Cluster), not in a browser.";
+    $("note").textContent = "Pi Cluster runs in its own app (Pi Cluster), or in a browser from a Pi: http://pi:47830/ on a device on your Tailscale.";
     return;
+  }
+  // In a browser: which Pi served the page (the others are asked through it).
+  if (api.browser) {
+    $("buildInfo").textContent = `through ${api.served}`;
+    $("pickFiles").textContent = "Files from this device…";
   }
   // On a phone: a Pi set up already, by its Tailscale name (Add a Pi); this phone's apps.
   if (api.phone) {

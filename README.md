@@ -698,3 +698,5 @@ It runs the real one-time OAK setup into an empty folder (about 150 MB), then ch
 ## License
 
 Hand Tracker is licensed under the GNU Affero General Public License v3.0; see [LICENSE](LICENSE). It includes code from [depthai_hand_tracker](https://github.com/geaxgx/depthai_hand_tracker) by geaxgx (MIT licence) and uses Google's MediaPipe (Apache 2.0); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Built off of code made by Shenlum Teng.

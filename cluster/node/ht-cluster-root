@@ -6,8 +6,11 @@ It takes nothing from that account but the job's name: whatever it installs, it 
 from this project's GitHub "Latest build" release and checks first.
 
   ht-cluster-root install-hand-tracker   the latest build's Hand Tracker .deb for this Pi, put in
-  ht-cluster-root update-cluster         the latest build's cluster/node files, into /opt/ht-cluster
-  ht-cluster-root os-check               apt-get update, then which packages have updates
+  ht-cluster-root update-cluster         the latest build's cluster/node files, into /opt/ht-cluster (with the
+                                         Pi Cluster page's files, which the service serves itself, in web/)
+  ht-cluster-root page                   the Pi Cluster page's files for the version of the service that's here,
+                                         when its update didn't bring them (done by the helper from before)
+  ht-cluster-root os-check              apt-get update, then which packages have updates
   ht-cluster-root os-upgrade             those updates (no package removed); whether a restart is needed
   ht-cluster-root reboot                 restarts this Pi
   ht-cluster-root renice-jobs            the jobs running at high priority (Pi Cluster's) ahead of everything
@@ -70,6 +73,9 @@ SAFE_PATH = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 # The Pi fixes (modules/fixes.py): pi/<name>.sh in the repository, brought with the service's own update
 # into its fixes/ folder.
 FIXES = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current")
+# The Pi Cluster page and the files it loads, which the service serves itself (ht_cluster.py PAGE_FILES):
+# from the repository's top folder, brought with the service's own update into its web/ folder.
+PAGE = ("pi-cluster.html", "pi-cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png")
 
 
 class Failed(Exception):
@@ -220,6 +226,7 @@ def update_cluster():
         raise Failed("Couldn't list the latest build's files: %s" % e)
     prefix = "cluster/node/"
     fixes = {"pi/%s.sh" % f: "fixes/%s.sh" % f for f in FIXES}
+    page = {p: "web/" + p for p in PAGE}
     files = []
     for e in tree.get("tree") or []:
         path = str(e.get("path") or "")
@@ -228,10 +235,14 @@ def update_cluster():
         if path in fixes:  # (the Pi fixes, with the service: modules/fixes.py puts them in)
             files.append((fixes[path], path, str(e.get("sha") or "")))
             continue
+        if path in page:  # (the Pi Cluster page, which the service serves)
+            files.append((page[path], path, str(e.get("sha") or "")))
+            continue
         if not path.startswith(prefix):
             continue
         rel_path = path[len(prefix):]
-        if not SAFE_PATH.match(rel_path) or ".." in rel_path.split("/") or "__pycache__" in rel_path or rel_path.startswith("fixes/"):
+        if (not SAFE_PATH.match(rel_path) or ".." in rel_path.split("/") or "__pycache__" in rel_path
+                or rel_path.startswith("fixes/") or rel_path.startswith("web/")):
             continue
         files.append((rel_path, path, str(e.get("sha") or "")))
     if not any(f[0] == "ht_cluster.py" for f in files):
@@ -556,6 +567,56 @@ def fetch_fixes():
         os.replace(target + ".new", target)
 
 
+def fetch_page():
+    """The Pi Cluster page's files for the version of the service that's here, when its update didn't bring
+    them (the first update to a version that serves the page is done by the root helper from before): from
+    GitHub, for that version's commit, checked against GitHub's list of its files, into its web/ folder."""
+    current = os.path.join(INSTALL, "current")
+    try:
+        with open(os.path.join(current, "VERSION"), "r", encoding="utf-8") as f:
+            commit = f.read().strip()
+    except OSError:
+        commit = ""
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise Missing("This Pi's version of the service (%s) has no Pi Cluster page to fetch." % (commit or "?"))
+    folder = os.path.join(current, "web")
+    if all(os.path.isfile(os.path.join(folder, *p.split("/"))) for p in PAGE):
+        return {"commit": commit, "unchanged": True}
+    try:
+        tree = json.loads(fetch(API + "/repos/%s/git/trees/%s?recursive=1" % (REPO, commit)).decode("utf-8"))
+    except (OSError, ValueError) as e:
+        raise Failed("Couldn't list this version's files: %s" % e)
+    got = {}
+    for e in tree.get("tree") or []:
+        path = str(e.get("path") or "")
+        if e.get("type") != "blob" or path not in PAGE:
+            continue
+        try:
+            data = fetch("%s/%s/%s/%s" % (RAW, REPO, commit, path))
+        except OSError as err:
+            raise Failed("Couldn't download %s: %s" % (path, err))
+        if git_blob_sha(data) != str(e.get("sha") or ""):
+            raise Failed("%s didn't come out as GitHub lists it." % path)
+        got[path] = data
+    if "pi-cluster.html" not in got:
+        raise Missing("This version of the service has no Pi Cluster page.")
+    part = folder + ".part"
+    shutil.rmtree(part, ignore_errors=True)
+    for path, data in got.items():
+        target = os.path.join(part, *path.split("/"))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as f:
+            f.write(data)
+        os.chmod(target, 0o644)
+    for root_dir, dirs, _ in os.walk(part):
+        for d in dirs:
+            os.chmod(os.path.join(root_dir, d), 0o755)
+    os.chmod(part, 0o755)
+    shutil.rmtree(folder, ignore_errors=True)
+    os.replace(part, folder)
+    return {"commit": commit, "files": len(got)}
+
+
 def fix_script(name):
     if name not in FIXES:
         raise Failed("No fix called %s (%s)." % (name, ", ".join(FIXES)))
@@ -606,6 +667,7 @@ def wifi_test():
 # name: (what it does, how many words after it: 0, or None for "as many as it checks itself", which lock).
 # (Transmission's jobs have a lock of their own: they don't wait behind a long system update.)
 JOBS = {"install-hand-tracker": (install_hand_tracker, 0, "updates"), "update-cluster": (update_cluster, 0, "updates"),
+        "page": (fetch_page, 0, "updates"),
         "os-check": (os_check, 0, "updates"), "os-upgrade": (os_upgrade, 0, "updates"), "reboot": (reboot, 0, "updates"),
         "renice-jobs": (renice_jobs, 0, None),
         "install-transmission": (install_transmission, 0, "updates"), "nfs-share": (nfs_share, None, "transmission"),

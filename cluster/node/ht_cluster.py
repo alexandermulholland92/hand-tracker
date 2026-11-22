@@ -12,6 +12,13 @@ looked up with `tailscale whois`), and this Pi itself (readings only). Every req
 X-HT-Cluster: 1 and names this Pi in its Host (so a web page in a browser can't send one), and a
 change is JSON.
 
+The Pi Cluster page in a browser: http://<this Pi>:47830/ serves the app's own page (PAGE_FILES, from
+web/: the root helper puts the build's copies there), to the same Tailscale account only, never in
+another site's frame. Its requests come from the page itself (same origin, so they can carry the
+header); one for another Pi of the cluster names it in X-HT-Cluster-To, and this Pi passes it on as it
+is (relay). A download goes through a one-time link (POST /api/ticket, then GET /api/download?ticket=:
+a browser saves a file by following a link, which can't carry the header).
+
   python3 ht_cluster.py [--port 47830] [--simulate]
     --simulate: on any computer, for the checks: made-up readings, requests from this computer
     allowed for everything, Hand Tracker where HT_CLUSTER_HT_URL says, GitHub where
@@ -39,12 +46,15 @@ Pis ask each other the same way the app asks them (node.ask), and find each othe
 
 import argparse
 import collections
+import html
 import http.client
 import http.server
 import importlib.util
 import ipaddress
 import json
 import os
+import re
+import secrets
 import socket
 import subprocess
 import sys
@@ -59,6 +69,15 @@ MODULES_DIR = os.path.join(HERE, "modules")
 ROOT_HELPER = "/usr/local/sbin/ht-cluster-root"
 MAX_BODY = 1 << 20  # (a job's list of files can be long)
 KEEP_EVENTS = 60
+# The Pi Cluster page and the files it loads (the same list as ht-cluster-root's PAGE), served from web/
+# beside this file; a copy of the code run as it is (dev, or --simulate) serves them from the folder
+# they're in, two up.
+PAGE_FILES = ("pi-cluster.html", "pi-cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png")
+PAGE_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".png": "image/png"}
+RELAY_MAX = 32 << 20  # (a piece of a file going to another Pi through this one: the jobs take up to 16 MB)
+RELAY_CONNECT_S = 6
+RELAY_S = 300  # (packing a job's results as one zip can take minutes)
+TICKET_S = 120
 TS_V4 = ipaddress.ip_network("100.64.0.0/10")
 TS_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
@@ -221,6 +240,9 @@ class Node:
         if simulate and os.environ.get("HT_CLUSTER_SIM_NAME"):
             self.name = os.environ["HT_CLUSTER_SIM_NAME"]
         self.peers_cache = {"at": 0, "list": []}
+        self.relay_ips = {"at": 0, "ips": set()}  # (the Tailscale addresses a request may be passed on to)
+        self.tickets = {}  # one-time download links: token -> {target, path, addr, until}
+        self.page_asked = 0
         self.started = time.time()
         self.state_dir = state_dir or os.environ.get("HT_CLUSTER_STATE") or os.path.join(os.path.expanduser("~"), ".local", "state", "ht-cluster")
         os.makedirs(self.state_dir, exist_ok=True)
@@ -394,6 +416,34 @@ class Node:
             os._exit(0)
         threading.Thread(target=go, daemon=True).start()
 
+    # ----- the Pi Cluster page -----
+    def page_dir(self):
+        """Where the page's files are: web/ beside this file (as a build puts them in), or, for a copy of
+        the code run as it is, the folder they're in; None while they aren't here."""
+        web = os.path.join(HERE, "web")
+        if os.path.isfile(os.path.join(web, "pi-cluster.html")):
+            return web
+        repo = os.path.normpath(os.path.join(HERE, "..", ".."))
+        if (self.simulate or self.version == "dev") and os.path.isfile(os.path.join(repo, "pi-cluster.html")):
+            return repo
+        return None
+
+    def fetch_page_soon(self):
+        """This version's page, when its update didn't bring it (the first update to a version that serves
+        the page is done by the root helper from before it): the root helper fetches it from GitHub for
+        this version's commit (at most every 10 minutes)."""
+        if self.simulate or not re.fullmatch(r"[0-9a-f]{40}", self.version) or self.page_dir():
+            return
+        with self.lock:
+            if time.time() - self.page_asked < 600:
+                return
+            self.page_asked = time.time()
+
+        def go():
+            answer = self.root("page", timeout=600)
+            self.log("The Pi Cluster page's files: %s" % ("here" if answer.get("ok") else answer.get("error")))
+        threading.Thread(target=go, daemon=True, name="page").start()
+
     # ----- running -----
     def start(self):
         for m in self.modules.values():
@@ -405,6 +455,7 @@ class Node:
                     self.log("%s: %s" % (m.name, traceback.format_exc()))
             if hasattr(m.mod, "tick"):
                 threading.Thread(target=self._ticks, args=(m,), daemon=True, name="tick-" + m.name).start()
+        self.fetch_page_soon()
 
     def _ticks(self, m):
         last_error = ""
@@ -511,12 +562,14 @@ class Node:
         try:
             addr = str(h.client_address[0])
             path = h.path.split("?")[0]
-            if not path.startswith("/api/"):
-                return self.send(h, 404, {"error": "Not found"})
             local = is_loopback(addr)
+            if not path.startswith("/api/"):
+                return self.page(h, method, addr, local, path)
             if not local and not is_tailscale(addr):
                 return self.send(h, 403, {"error": "Only over Tailscale."})
-            if h.headers.get("X-HT-Cluster") != "1":
+            # (a one-time download link is followed by the browser itself, which can't add the header: the
+            # link stands for it, given only to a request that had it)
+            if h.headers.get("X-HT-Cluster") != "1" and not (method == "GET" and path == "/api/download"):
                 return self.send(h, 403, {"error": "Only the Pi Cluster app can ask that."})
             if not self.own_host(h.headers.get("Host")):
                 return self.send(h, 403, {"error": "That isn't one of this Pi's names."})
@@ -525,14 +578,18 @@ class Node:
                     return self.send(h, 403, {"error": "From this Pi itself: readings only."})
             elif not self.allowed(addr):
                 return self.send(h, 403, {"error": "Only your own Tailscale account can use this Pi's cluster service."})
-            # A module's own request (it reads the body itself: a file's piece can be megabytes).
-            key = "%s %s" % (method, path)
-            for m in self.modules.values():
-                if key in m.routes:
-                    if not self.is_on(m.name):
-                        return self.send(h, 409, {"error": "%s is off on %s." % (m.title, self.name)})
-                    query = {k: v[-1] for k, v in urllib.parse.parse_qs(urllib.parse.urlsplit(h.path).query).items()}
-                    return m.routes[key](self, h, query)
+            if method == "GET" and path == "/api/download":
+                return self.download(h, addr)
+            # For another Pi of the cluster (the page in a browser asks only the Pi it came from): passed on.
+            to = h.headers.get("X-HT-Cluster-To")
+            if to:
+                target = self.relay_target(to)
+                if not target:
+                    return self.send(h, 403, {"error": "%s isn't a Pi of this cluster." % str(to)[:60]})
+                if target != "self":
+                    return self.relay(h, method, target, h.path)
+            if self.route(h, method, h.path):
+                return
             body = {}
             if method == "POST":
                 if not str(h.headers.get("Content-Type") or "").startswith("application/json"):
@@ -549,30 +606,234 @@ class Node:
             if method == "GET" and path == "/api/node":
                 return self.send(h, 200, self.describe())
             if method == "GET" and path == "/api/peers":
-                return self.send(h, 200, {"peers": [] if self.simulate else self.tailscale.peers()})
+                if self.simulate:  # (the other simulated Pis, as Tailscale would list them)
+                    sim = [t.strip() for t in os.environ.get("HT_CLUSTER_SIM_PEERS", "").split(",") if t.strip()]
+                    return self.send(h, 200, {"peers": [{"name": t, "ip": t, "online": True} for t in sim]})
+                return self.send(h, 200, {"peers": self.tailscale.peers()})
             if method == "POST" and path == "/api/settings":
                 return self.send(h, *self.change(body))
             if method == "POST" and path == "/api/action":
                 return self.send(h, *self.act(body))
+            if method == "POST" and path == "/api/ticket":
+                return self.send(h, *self.ticket(body, addr))
             return self.send(h, 404, {"error": "Not found"})
         except Exception as e:
             self.log("Request failed: %s" % traceback.format_exc())
             return self.send(h, 500, {"error": str(e)[:300]})
 
+    def route(self, h, method, full):
+        """A module's own request (it reads the body itself: a file's piece can be megabytes): answered, and
+        True, or False when no module has it."""
+        parts = urllib.parse.urlsplit(full)
+        key = "%s %s" % (method, parts.path)
+        for m in self.modules.values():
+            if key in m.routes:
+                if not self.is_on(m.name):
+                    self.send(h, 409, {"error": "%s is off on %s." % (m.title, self.name)})
+                    return True
+                query = {k: v[-1] for k, v in urllib.parse.parse_qs(parts.query).items()}
+                m.routes[key](self, h, query)
+                return True
+        return False
+
+    def page(self, h, method, addr, local, path):
+        """The Pi Cluster page and the files it loads, for a browser on this Tailscale account (never inside
+        another site's page: it has buttons)."""
+        def say(code, text):
+            return self.send_bytes(h, code, text.encode("utf-8"), "text/plain; charset=utf-8")
+        if method != "GET":
+            return say(405, "Only the page is here.")
+        if not local and not is_tailscale(addr):
+            return say(403, "Only over Tailscale.")
+        if not self.own_host(h.headers.get("Host")):
+            return say(403, "That isn't one of this Pi's names.")
+        if not local and not self.allowed(addr):
+            return say(403, "Only your own Tailscale account can use this Pi's cluster service.")
+        name = "pi-cluster.html" if path in ("/", "/index.html") else urllib.parse.unquote(path[1:])
+        if name not in PAGE_FILES:
+            return say(404, "Not found.")
+        where = self.page_dir()
+        if not where:
+            self.fetch_page_soon()
+            return say(503, "This Pi's copy of the Pi Cluster page isn't here yet: it's being fetched for the version of the "
+                            "service it runs. Try again in a minute.")
+        try:
+            with open(os.path.join(where, *name.split("/")), "rb") as f:
+                data = f.read()
+        except OSError:
+            return say(404, "Not found.")
+        extra = {"Referrer-Policy": "no-referrer"}
+        if name.endswith(".html"):
+            # (how the page knows it came from a Pi: pi-cluster.js asks this Pi, and the others through it)
+            data = data.replace(b"<head>", b'<head>\n<meta name="ht-cluster-page" content="%s" />' % html.escape(self.name).encode("utf-8"), 1)
+            extra.update({"Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY"})
+        return self.send_bytes(h, 200, data, PAGE_TYPES.get(os.path.splitext(name)[1], "application/octet-stream"), extra)
+
+    def relay_target(self, to):
+        """Where a request may be passed on to: "self" for this Pi, another Pi of the cluster as node.ask takes
+        it (a Tailscale address among this Tailscale network's Linux computers; simulated: 127.0.0.1:port), or
+        None for anywhere else."""
+        to = str(to or "").strip()
+        if self.simulate:
+            host, _, port = to.rpartition(":")
+            if host in ("127.0.0.1", "localhost") and port.isdigit() and 0 < int(port) < 65536:
+                return "self" if int(port) == self.port else "127.0.0.1:%d" % int(port)
+            return None
+        ip = _ip(to)
+        if not ip or not is_tailscale(str(ip)):
+            return None
+        ip = str(ip)
+        if ip in (self.tailscale.me() or {}).get("ips", []):
+            return "self"
+        now = time.time()
+        with self.lock:
+            known = self.relay_ips
+        if now - known["at"] > 60 or (ip not in known["ips"] and now - known["at"] > 5):
+            known = {"at": now, "ips": {p["ip"] for p in self.tailscale.peers()}}
+            with self.lock:
+                self.relay_ips = known
+        if ip not in known["ips"]:
+            return None
+        return ip if self.port == PORT else "%s:%d" % (ip, self.port)
+
+    def relay(self, h, method, target, path):
+        """A request passed on to another Pi of the cluster as it is, and its answer back as it comes (a file's
+        piece, or a whole file, a little at a time)."""
+        host, _, port = target.partition(":")
+        port = int(port or PORT)
+        try:
+            n = int(h.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > RELAY_MAX:
+            h.close_connection = True
+            return self.send(h, 413, {"error": "Too long."})
+        conn = http.client.HTTPConnection(host, port, timeout=RELAY_CONNECT_S)
+        try:
+            conn.connect()
+            conn.sock.settimeout(RELAY_S)
+            conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+            conn.putheader("Host", "%s:%d" % (host, port))
+            conn.putheader("X-HT-Cluster", "1")
+            if h.headers.get("Content-Type"):
+                conn.putheader("Content-Type", h.headers["Content-Type"])
+            if n or method != "GET":
+                conn.putheader("Content-Length", str(n))
+            conn.endheaders()
+            left = n
+            while left > 0:
+                chunk = h.rfile.read(min(left, 1 << 16))
+                if not chunk:
+                    raise OSError("the request stopped part way")
+                conn.send(chunk)
+                left -= len(chunk)
+            res = conn.getresponse()
+        except (OSError, http.client.HTTPException) as e:
+            conn.close()
+            h.close_connection = True  # (what's left of its body isn't read)
+            return self.send(h, 502, {"error": "No answer from %s (%s)." % (host, e)})
+        try:
+            h.send_response(res.status)
+            h.send_header("Content-Type", res.getheader("Content-Type") or "application/octet-stream")
+            length = res.getheader("Content-Length")
+            if length is not None:
+                h.send_header("Content-Length", length)
+            else:
+                h.send_header("Connection", "close")
+                h.close_connection = True
+            if res.getheader("Content-Disposition"):
+                h.send_header("Content-Disposition", res.getheader("Content-Disposition"))
+            h.send_header("Cache-Control", "no-store")
+            h.send_header("X-Content-Type-Options", "nosniff")
+            h.end_headers()
+            while True:
+                chunk = res.read(1 << 16)
+                if not chunk:
+                    break
+                h.wfile.write(chunk)
+        except (OSError, http.client.HTTPException):
+            h.close_connection = True
+        finally:
+            conn.close()
+
+    def ticket(self, body, addr):
+        """A one-time link (for TICKET_S seconds, from this address) to one GET of this Pi's, or of another
+        Pi's of the cluster (to): what a browser follows to save a file."""
+        p = str(body.get("path") or "")
+        if (not re.fullmatch(r"/api/[A-Za-z0-9/_.-]+(\?[A-Za-z0-9_.~%&=+!*'(),-]*)?", p) or ".." in p
+                or p.split("?")[0] in ("/api/ticket", "/api/download")):
+            return 400, {"error": "That isn't something to download."}
+        target = "self"
+        if body.get("to"):
+            target = self.relay_target(body["to"])
+            if not target:
+                return 403, {"error": "That isn't a Pi of this cluster."}
+        now = time.time()
+        with self.lock:
+            self.tickets = {k: t for k, t in self.tickets.items() if t["until"] > now}
+            if len(self.tickets) >= 50:
+                return 429, {"error": "Too many downloads waiting: try again in a couple of minutes."}
+            token = secrets.token_urlsafe(24)
+            self.tickets[token] = {"target": target, "path": p, "addr": addr, "until": now + TICKET_S}
+        return 200, {"ok": True, "url": "/api/download?ticket=" + token}
+
+    def download(self, h, addr):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(h.path).query)
+        token = (q.get("ticket") or [""])[-1]
+        with self.lock:
+            t = self.tickets.pop(token, None) if token else None
+        if not t or t["until"] < time.time() or t["addr"] != addr:
+            return self.send_bytes(h, 410, "That download link has been used or has run out: press Save results again.".encode("utf-8"),
+                                   "text/plain; charset=utf-8")
+        if t["target"] != "self":
+            return self.relay(h, "GET", t["target"], t["path"])
+        if not self.route(h, "GET", t["path"]):
+            return self.send(h, 404, {"error": "Not found"})
+
     def send(self, h, code, body):
         self.send_bytes(h, code, json.dumps(body).encode("utf-8"), "application/json; charset=utf-8")
 
-    def send_bytes(self, h, code, data, ctype="application/octet-stream"):
+    def send_bytes(self, h, code, data, ctype="application/octet-stream", headers=None):
         try:
             h.send_response(code)
             h.send_header("Content-Type", ctype)
             h.send_header("Content-Length", str(len(data)))
             h.send_header("Cache-Control", "no-store")
             h.send_header("X-Content-Type-Options", "nosniff")
+            for k, v in (headers or {}).items():
+                h.send_header(k, v)
             h.end_headers()
             h.wfile.write(data)
         except OSError:
             pass
+
+    def send_file(self, h, path, name, ctype="application/octet-stream"):
+        """A whole file as a download, a little at a time (a browser saves it as name)."""
+        try:
+            f = open(path, "rb")
+        except OSError:
+            return self.send(h, 404, {"error": "No such file."})
+        with f:
+            size = os.fstat(f.fileno()).st_size
+            plain = "".join(c if " " <= c <= "~" and c not in '"\\' else "_" for c in name) or "download"
+            try:
+                h.send_response(200)
+                h.send_header("Content-Type", ctype)
+                h.send_header("Content-Length", str(size))
+                h.send_header("Content-Disposition", "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (plain, urllib.parse.quote(name, safe="")))
+                h.send_header("Cache-Control", "no-store")
+                h.send_header("X-Content-Type-Options", "nosniff")
+                h.end_headers()
+                left = size
+                while left > 0:
+                    chunk = f.read(min(left, 1 << 20))
+                    if not chunk:
+                        h.close_connection = True  # (it got shorter as it went: the browser sees it cut off)
+                        break
+                    h.wfile.write(chunk)
+                    left -= len(chunk)
+            except OSError:
+                h.close_connection = True
 
     def body_bytes(self, h, limit):
         """A request's body as it is (at most limit bytes), or None if it's longer."""

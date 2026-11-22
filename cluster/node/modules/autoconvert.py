@@ -142,13 +142,13 @@ def look(node):
         return
     _state["why"] = ""
     seen, probed = set(), 0
-    for d, dirs, names in os.walk(folder):
+    for where, dirs, names in os.walk(folder):
         dirs[:] = sorted(x for x in dirs if not x.startswith("."))
         here = set(names)
         for n in sorted(names):
             if n.startswith(".") or not VIDEO.search(n) or CONVERTED.search(n) or "sample" in n.lower():
                 continue
-            p = os.path.join(d, n)
+            p = os.path.join(where, n)
             try:
                 st = os.stat(p)
             except OSError:
@@ -161,12 +161,15 @@ def look(node):
             if converted_name(n) in here:  # (made already: by a job, or by hand)
                 f["state"] = "done"
             if "need" not in f and now - st.st_mtime >= STEADY_S:
-                info = probe(node, tool, p)
-                d = decide(info)
-                plan = d.get("plan") or {}
-                if plan.get("video") == "h264" and not plan.get("hdr") and "10" in str(next((s.get("pix_fmt") for s in info["streams"] if s.get("index") == plan["v"]), "")):
-                    d = decide(info, frame_transfer(node, tool, p))  # (HDR is 10-bit: its first picture may say so)
-                f.update(d)
+                try:
+                    info = probe(node, tool, p)
+                    found = decide(info)
+                    plan = found.get("plan") or {}
+                    if plan.get("video") == "h264" and not plan.get("hdr") and "10" in str(next((s.get("pix_fmt") for s in info.get("streams") or [] if s.get("index") == plan["v"]), "")):
+                        found = decide(info, frame_transfer(node, tool, p))  # (HDR is 10-bit: its first picture may say so)
+                except Exception as e:  # (one odd file doesn't stop the look: it's said, and the rest are looked into)
+                    found = {"need": None, "why": "couldn't look into it: %s" % str(e)[:200], "broken": True}
+                f.update(found)
                 probed += 1
                 _state["progress"] = "looked into %d" % probed
                 if probed % 200 == 0:

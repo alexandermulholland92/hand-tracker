@@ -120,14 +120,22 @@ def node_files():
 FIX_SCRIPTS = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current")
 
 
+PAGE = ("pi-cluster.html", "pi-cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png")
+
+
 def repo_files():
-    """The build's files the service's update looks at: cluster/node's, and the Pi fixes in pi/ (with one of
-    pi/'s other scripts, which isn't taken)."""
+    """The build's files the service's update looks at: cluster/node's, the Pi fixes in pi/ (with one of
+    pi/'s other scripts, which isn't taken), and the Pi Cluster page's (with one of the top folder's other
+    files, which isn't)."""
     out = node_files()
     for f in FIX_SCRIPTS:
         with open(os.path.join(HERE, "..", "pi", f + ".sh"), "rb") as fh:
             out.append(("pi/%s.sh" % f, fh.read()))
     out.append(("pi/hotspot-setup.sh", b"# not a fix: never taken\n"))
+    for f in PAGE:
+        with open(os.path.join(HERE, "..", *f.split("/")), "rb") as fh:
+            out.append((f, fh.read()))
+    out.append(("index.html", b"<!-- not the Pi Cluster page: never taken -->\n"))
     return out
 
 
@@ -245,8 +253,8 @@ def wait_for(fn, seconds=30):
     return None
 
 
-def start_node(tmp, gh, ht, version=None, extra=None):
-    port = free_port()
+def start_node(tmp, gh, ht, version=None, extra=None, port=None):
+    port = port or free_port()
     env = dict(os.environ, HT_CLUSTER_STATE=os.path.join(tmp, "state-%d" % port), HT_CLUSTER_HT_URL=ht,
                HT_CLUSTER_GITHUB_API=gh, HT_CLUSTER_ROOT_HELPER=os.path.join(tmp, "fake-helper.py"),
                HT_TEST_HELPER_LOG=os.path.join(tmp, "helper.log"), HT_CLUSTER_SIM_HT=os.path.join(tmp, "installed.json"),
@@ -422,6 +430,82 @@ def check_fixes(tmp, gh, ht):
             node.wait(10)
 
 
+def raw(port, path, headers=None, method="GET", data=None):
+    """A request as a browser makes it (without the app's header unless it's given): (status, headers, bytes)."""
+    h = {"Host": "127.0.0.1:%d" % port}
+    h.update(headers or {})
+    req = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=data, method=method, headers=h)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, r.headers, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read()
+
+
+def check_page(tmp, gh, ht):
+    """The Pi Cluster page in a browser: the Pi serves it itself (only its own files, never in another site's
+    frame), passes the page's requests for another Pi of the cluster on, and gives one-time download links."""
+    a_port, b_port = free_port(), free_port()
+    a, _ = start_node(tmp, gh, ht, port=a_port, extra={"HT_CLUSTER_SIM_NAME": "alpha", "HT_CLUSTER_SIM_PEERS": "127.0.0.1:%d" % b_port,
+                                                        "HT_CLUSTER_STATE": os.path.join(tmp, "state-alpha"), "HT_CLUSTER_JOBS_DIR": os.path.join(tmp, "jobs-alpha")})
+    b, _ = start_node(tmp, gh, ht, port=b_port, extra={"HT_CLUSTER_SIM_NAME": "beta", "HT_CLUSTER_SIM_PEERS": "127.0.0.1:%d" % a_port,
+                                                       "HT_CLUSTER_STATE": os.path.join(tmp, "state-beta"), "HT_CLUSTER_JOBS_DIR": os.path.join(tmp, "jobs-beta")})
+    try:
+        code, hd, body = raw(a_port, "/")
+        check("The Pi serves the Pi Cluster page to a browser (no app header needed for the page)",
+              code == 200 and hd.get("Content-Type", "").startswith("text/html") and b"<title>Pi Cluster</title>" in body, (code, hd.get("Content-Type")))
+        check("...saying which Pi served it", b'<meta name="ht-cluster-page" content="alpha" />' in body, body[:300])
+        check("...never inside another site's page", "frame-ancestors 'none'" in (hd.get("Content-Security-Policy") or "") and hd.get("X-Frame-Options") == "DENY",
+              dict(hd))
+        with open(os.path.join(HERE, "..", "pi-cluster.js"), "rb") as f:
+            want = f.read()
+        code, hd, body = raw(a_port, "/pi-cluster.js")
+        check("...and the files it loads", code == 200 and body == want and hd.get("Content-Type", "").startswith("text/javascript") and
+              raw(a_port, "/models/kinds.js")[0] == 200 and raw(a_port, "/favicon.png")[1].get("Content-Type") == "image/png", (code, hd.get("Content-Type")))
+        others = [raw(a_port, p)[0] for p in ("/ht_cluster.py", "/README.md", "/../README.md", "/%2e%2e/README.md", "/node/ht_cluster.py", "/index.js")]
+        check("...but nothing else", all(c == 404 for c in others), others)
+        check("A page asked for under another name is refused", raw(a_port, "/", {"Host": "evil.example:47830"})[0] == 403)
+        check("...and only fetched (a POST to it is refused)", raw(a_port, "/", method="POST", data=b"x")[0] == 405)
+        check("The API still wants the app's header (sent by the page itself)", raw(a_port, "/api/node")[0] == 403)
+        code, d = ask(a_port, "GET", "/api/peers")
+        check("The Pi lists the other Pis it sees", code == 200 and [p["ip"] for p in d.get("peers", [])] == ["127.0.0.1:%d" % b_port], d)
+
+        # Passed on to another Pi (X-HT-Cluster-To)
+        code, d = ask(a_port, "GET", "/api/node", headers={"X-HT-Cluster-To": "127.0.0.1:%d" % b_port})
+        check("A request for another Pi is passed on to it", code == 200 and d.get("name") == "beta", (code, d.get("name")))
+        code, d = ask(a_port, "GET", "/api/node", headers={"X-HT-Cluster-To": "127.0.0.1:%d" % a_port})
+        check("...one naming the Pi itself is answered there", code == 200 and d.get("name") == "alpha", (code, d.get("name")))
+        code, _ = ask(a_port, "POST", "/api/settings", {"module": "health", "key": "power", "value": "battery"}, headers={"X-HT-Cluster-To": "127.0.0.1:%d" % b_port})
+        b_power = next((s.get("value") for s in module(b_port, "health").get("settings", []) if s["key"] == "power"), None)
+        a_power = next((s.get("value") for s in module(a_port, "health").get("settings", []) if s["key"] == "power"), None)
+        check("...a change too (its body passed on as it is), made there and not here", code == 200 and b_power == "battery" and a_power != "battery", (code, b_power, a_power))
+        refused = [ask(a_port, "GET", "/api/node", headers={"X-HT-Cluster-To": t})[0] for t in ("8.8.8.8", "example.com", "100.64.0.1", "127.0.0.1:0")]
+        check("...but never anywhere that isn't a Pi of the cluster", all(c == 403 for c in refused), refused)
+        code, d = ask(a_port, "GET", "/api/node", headers={"X-HT-Cluster-To": "127.0.0.1:%d" % free_port()})
+        check("...and a Pi that doesn't answer is said to", code == 502 and "No answer" in d.get("error", ""), (code, d))
+
+        # One-time download links
+        for p in ("/api/download", "http://evil.example/api/node", "/api/x/../../etc/passwd", "/api/node\r\nX: y", "relative"):
+            code, _ = ask(a_port, "POST", "/api/ticket", {"path": p})
+            if code != 400:
+                break
+        check("A download link is only made for one of the service's own requests", code == 400, (p, code))
+        code, _ = ask(a_port, "POST", "/api/ticket", {"path": "/api/jobs/zip-file?job=x&whole=1", "to": "8.8.8.8"})
+        check("...on a Pi of the cluster", code == 403, code)
+        code, d = ask(a_port, "POST", "/api/ticket", {"path": "/api/jobs/zip-file?job=nothing&whole=1", "to": "127.0.0.1:%d" % b_port})
+        url = d.get("url", "")
+        first = raw(a_port, url)
+        second = raw(a_port, url)
+        check("A link is followed without the app's header (the request it stands for is made: here, a job that isn't there)",
+              code == 200 and url.startswith("/api/download?ticket=") and first[0] == 404 and b"No such" in first[2], (code, d, first[0], first[2][:100]))
+        check("...once only", second[0] == 410, second[0])
+        check("...and a made-up one goes nowhere", raw(a_port, "/api/download?ticket=madeup")[0] == 410 and raw(a_port, "/api/download")[0] == 410)
+    finally:
+        for p in (a, b):
+            p.terminate()
+            p.wait(10)
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="ht-cluster-test-")
     with open(os.path.join(tmp, "fake-helper.py"), "w") as f:
@@ -507,6 +591,9 @@ def main():
     # The Pi fixes
     check_fixes(tmp, gh, ht)
 
+    # The Pi Cluster page in a browser
+    check_page(tmp, gh, ht)
+
     # The real root helper's downloads (as a user other than root: pointed at the stand-in GitHub)
     loader = importlib.machinery.SourceFileLoader("ht_cluster_root", os.path.join(NODE, "ht-cluster-root"))
     spec = importlib.util.spec_from_loader("ht_cluster_root", loader)
@@ -522,6 +609,36 @@ def main():
             check("A download with the wrong %s is thrown away" % what, False, "kept")
         except helper.Failed:
             check("A download with the wrong %s is thrown away" % what, not os.path.exists(dest + what) and not os.path.exists(dest + what + ".part"))
+    # The Pi Cluster page's files: the same list in the service and its root helper; fetched for a version
+    # put in by the helper from before (any system: no folder switch)
+    spec = importlib.util.spec_from_file_location("ht_cluster_service", os.path.join(NODE, "ht_cluster.py"))
+    service = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(service)
+    check("The service and its root helper list the same page files", tuple(service.PAGE_FILES) == tuple(helper.PAGE) == PAGE, (service.PAGE_FILES, helper.PAGE))
+    cur_dir = os.path.join(tmp, "root", "opt", "ht-cluster", "current")
+    os.makedirs(cur_dir, exist_ok=True)
+    with open(os.path.join(cur_dir, "VERSION"), "w") as f:
+        f.write(NEW + "\n")
+    got = helper.fetch_page()
+    same = True
+    for p in PAGE:
+        with open(os.path.join(HERE, "..", *p.split("/")), "rb") as a:
+            try:
+                with open(os.path.join(cur_dir, "web", *p.split("/")), "rb") as b:
+                    same = same and a.read() == b.read()
+            except OSError:
+                same = False
+    check("A version without the page's files gets them from GitHub for its own commit, checked", got.get("files") == len(PAGE) and same, got)
+    check("...once (asked again: nothing to do)", helper.fetch_page().get("unchanged") is True)
+    with open(os.path.join(cur_dir, "VERSION"), "w") as f:
+        f.write("local\n")
+    shutil.rmtree(os.path.join(cur_dir, "web"))
+    try:
+        helper.fetch_page()
+        check("A copy put in by hand (no commit to fetch them for) says so", False, "it fetched something")
+    except helper.Missing:
+        check("A copy put in by hand (no commit to fetch them for) says so", True)
+    shutil.rmtree(os.path.join(tmp, "root", "opt"))
     for name, why in (("rm-rf", "No fix called"), ("wifi-watchdog", "hasn't got the fixes")):
         try:
             helper.fix_install(name)
@@ -544,6 +661,15 @@ def main():
                 except OSError:
                     same = False
         check("...with the Pi fixes from pi/, in fixes/ (and none of pi/'s other scripts)", same and not os.path.exists(os.path.join(cur, "fixes", "hotspot-setup.sh")))
+        page_same = True
+        for p in PAGE:
+            with open(os.path.join(HERE, "..", *p.split("/")), "rb") as a:
+                try:
+                    with open(os.path.join(cur, "web", *p.split("/")), "rb") as b:
+                        page_same = page_same and a.read() == b.read()
+                except OSError:
+                    page_same = False
+        check("...and the Pi Cluster page's files in web/ (and none of the top folder's others)", page_same and not os.path.exists(os.path.join(cur, "web", "index.html")))
         check("...and installs its new self", os.path.exists(os.path.join(tmp, "root", "usr", "local", "sbin", "ht-cluster-root")))
         try:
             helper.fix_install("wifi-watchdog")

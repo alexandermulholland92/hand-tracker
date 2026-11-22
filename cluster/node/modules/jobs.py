@@ -436,13 +436,22 @@ def act_zip(node, args):
             for f in sorted(files):
                 z.write(f, os.path.relpath(f, root).replace(os.sep, "/"))
         os.replace(path + ".part", path)
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", job["title"]).strip() or job["id"]
-    return {"ok": True, "name": name + ".zip", "size": os.path.getsize(path)}
+    return {"ok": True, "name": zip_name(job), "size": os.path.getsize(path)}
+
+
+def zip_name(job):
+    return (re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", job["title"]).strip() or job["id"]) + ".zip"
 
 
 def route_zip_file(node, h, q):
+    """The zip act_zip made: a piece at a time (?at=), or whole as a download (?whole=1: the Pi Cluster
+    page in a browser, through a one-time link)."""
     job = job_of(node, q.get("job")) if is_home(node) else None
     path = os.path.join(data_dir(node), "zips", job["id"] + ".zip") if job else None
+    if job and q.get("whole") == "1":
+        if not path or not os.path.isfile(path):
+            return node.send(h, 404, {"error": "No such file."})
+        return node.send_file(h, path, zip_name(job), "application/zip")
     return read_piece(node, h, path, q)
 
 

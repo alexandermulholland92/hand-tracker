@@ -52,6 +52,10 @@ if [ -n "$FROM" ]; then
   rm -rf "$V.part"
   mkdir -p "$V.part"
   cp -r "$FROM"/. "$V.part"/
+  # (the Pi Cluster page, which the service serves itself: from the copy's top folder, when it's in one)
+  for f in pi-cluster.html pi-cluster.js video-formats.js sentry-models.js models/kinds.js favicon.png apple-touch-icon.png; do
+    if [ -f "$FROM/../../$f" ]; then install -D -m 644 "$FROM/../../$f" "$V.part/web/$f"; fi
+  done
   find "$V.part" -name __pycache__ -prune -exec rm -rf {} +
   echo local > "$V.part/VERSION"
   chown -R root:root "$V.part"

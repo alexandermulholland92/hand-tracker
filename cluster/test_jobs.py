@@ -101,8 +101,9 @@ def fake_ht():
     return st, "http://127.0.0.1:%d" % srv.server_address[1]
 
 
-def ask(port, method, path, body=None, data=None):
+def ask(port, method, path, body=None, data=None, headers=None):
     h = {"X-HT-Cluster": "1", "Host": "127.0.0.1:%d" % port}
+    h.update(headers or {})
     payload = None
     if body is not None:
         payload = json.dumps(body).encode()
@@ -172,6 +173,7 @@ def main():
     made_vids = {
         os.path.join("Show", "Season 1", "ep1.avi"): ["-c:v", "mpeg4", "-c:a", "libmp3lame"],  # old format
         os.path.join("Show", "Season 1", "ep2.mkv"): ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "ac3"],  # sound only
+        os.path.join("Show", "Season 1", "ep3.mp4"): ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"],  # plays everywhere (a third in the folder)
         os.path.join("Movie", "movie.mp4"): ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"],  # plays everywhere
         os.path.join("Movie", "movie sample.mp4"): ["-c:v", "mpeg4", "-c:a", "libmp3lame"],  # a sample: left alone
         os.path.join("Old", "done.avi"): ["-c:v", "mpeg4", "-c:a", "libmp3lame"],  # converted already
@@ -251,6 +253,16 @@ def main():
         except zipfile.BadZipFile:
             inside_zip = []
         check("Its results as one zip (for a phone)", z.get("name") == "Smaller MP4s.zip" and inside_zip == names, (z, inside_zip))
+        # The Pi Cluster page in a browser, served by pie: the zip saved whole through a one-time link, from pi through pie
+        code, t = ask(pie_port, "POST", "/api/ticket", {"to": "127.0.0.1:%d" % pi_port, "path": "/api/jobs/zip-file?job=%s&whole=1" % jid})
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (pie_port, t.get("url", "/x") if isinstance(t, dict) else "/x"), headers={"Host": "127.0.0.1:%d" % pie_port})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                whole, disp = r.read(), r.headers.get("Content-Disposition", "")
+        except urllib.error.HTTPError as e:
+            whole, disp = b"", "HTTP %d" % e.code
+        check("In a browser: the zip saved whole from a one-time link (no header), from pi through pie", code == 200 and whole == got and len(got) > 0
+              and 'filename="Smaller MP4s.zip"' in disp, (code, t, len(whole), len(got), disp))
 
         # A command over a file sent from a computer
         payload = b"hello from a computer\n" * 1000
@@ -263,9 +275,11 @@ def main():
         check("...it can't start before the file has come", code == 409, a)
         half = len(payload) // 2
         c1, _ = ask(pi_port, "PUT", "/api/jobs/upload?job=%s&name=letter.txt&at=0" % jid2, data=payload[:half])
-        c2, _ = ask(pi_port, "PUT", "/api/jobs/upload?job=%s&name=letter.txt&at=%d&last=1" % (jid2, half), data=payload[half:])
+        # (the second piece as the page in a browser on pie sends it: through pie, X-HT-Cluster-To)
+        c2, _ = ask(pie_port, "PUT", "/api/jobs/upload?job=%s&name=letter.txt&at=%d&last=1" % (jid2, half), data=payload[half:],
+                    headers={"X-HT-Cluster-To": "127.0.0.1:%d" % pi_port})
         c3, a3 = ask(pi_port, "PUT", "/api/jobs/upload?job=%s&name=other.txt&at=0&last=1" % jid2, data=b"x")
-        check("...the file arrives in two pieces (and no other is taken)", c1 == 200 and c2 == 200 and c3 == 400, (c1, c2, c3, a3))
+        check("...the file arrives in two pieces, the second passed on by another Pi (and no other is taken)", c1 == 200 and c2 == 200 and c3 == 400, (c1, c2, c3, a3))
         code, a = act(pi_port, "start", {"job": jid2})
         done2 = wait_for(lambda: (job_state(pi_port, jid2) or {}).get("state") == "done", 60)
         code, res = act(pi_port, "results", {"job": jid2})
@@ -364,7 +378,11 @@ def main():
 
         # autoconvert.py: a look through the videos folder
         if fp:
+            def auto_status():
+                return next((m for m in ask(pi_port, "GET", "/api/node")[1].get("modules", []) if m["name"] == "autoconvert"), {}).get("status") or {}
             ask(pi_port, "POST", "/api/settings", {"module": "autoconvert", "on": True})
+            first = wait_for(lambda: "Looked at" in auto_status().get("summary", "") and auto_status(), 60) or {}
+            check("One look goes through every video, each of several in a folder too (6 here)", ": 6 videos" in first.get("summary", ""), first.get("summary"))
             ask(pi_port, "POST", "/api/settings", {"module": "autoconvert", "key": "sound", "value": True})
             ask(pi_port, "POST", "/api/action", {"module": "autoconvert", "action": "look", "args": {}})
 
@@ -383,13 +401,12 @@ def main():
             sound_job = next((j for j in (two or []) if "sound-only" in j["title"]), {})
             check("...the sound-only one done by pi itself, where it is", [i["worker"] for i in (job_state(pi_port, sound_job.get("id")) or {}).get("items", [])] == ["pi"],
                   job_state(pi_port, sound_job.get("id")))
-            def auto_status():
-                return next((m for m in ask(pi_port, "GET", "/api/node")[1].get("modules", []) if m["name"] == "autoconvert"), {}).get("status") or {}
             before = auto_status().get("lastLook") or 0
             ask(pi_port, "POST", "/api/action", {"module": "autoconvert", "action": "look", "args": {}})
             st = wait_for(lambda: (auto_status().get("lastLook") or 0) > before and "Looked at" in auto_status().get("summary", "") and auto_status(), 30) or {}
             check("...and a second look adds nothing", bool(st) and len(auto_jobs()) == 2, [j["title"] for j in auto_jobs()])
-            others = [p for p in (os.path.join(vids, "Movie", "movie - converted.mp4"), os.path.join(vids, "Movie", "movie sample - converted.mp4"), os.path.join(vids, "Big", "big - converted.mp4")) if os.path.exists(p)]
+            others = [p for p in (os.path.join(vids, "Movie", "movie - converted.mp4"), os.path.join(vids, "Movie", "movie sample - converted.mp4"), os.path.join(vids, "Big", "big - converted.mp4"),
+                                  os.path.join(vids, "Show", "Season 1", "ep3 - converted.mp4")) if os.path.exists(p)]
             check("...nothing made for the one that plays, the sample or the 4K one (its switch off), which it says it'd convert; 3 converted",
                   not others and st.get("toConvert") == {"big": 1} and "4K (switched off)" in st.get("summary", "") and st.get("converted") == 3, (others, st))
         else:
