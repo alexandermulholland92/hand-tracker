@@ -20,9 +20,14 @@ folder on that Pi. What's made goes to that Pi (~/ht-cluster-jobs/results/<job>/
 lists it and saves it to a computer. A job whose params say "here" is done only by the Pi each file
 is on (nothing sent over the Wi-Fi).
 
-Files go between Pis one at a time each way (the user, 2026-11-21, when four Pis fetching videos
-from pi at once swamped its Wi-Fi): a Pi asks the one that keeps the list for its turn to download a
-file, or to send back what it made, and waits in line for it ("turn"); its own files need no turn.
+Files go between Pis in turns (the user, 2026-11-21: four Pis fetching videos from pi at once swamped
+its Wi-Fi; then, with one at a time too slow, "staggered then together but as fast as they can without
+putting strain on pi"): a Pi asks the one that keeps the list for its turn to download a file, or to
+send back what it made, and waits in line for it ("turn"); its own files need no turn. Links start one
+after the other (TURN_STAGGER_S apart) and run together: one more is let in while every piece comes
+quickly and the total grew with the last one, one fewer when a piece crawls, and one at a time while
+Transmission's turtle is on (someone's watching). A piece that doesn't come through is tried again
+(PIECE_TRIES); a file that still can't be moved goes back on the list (MAX_TRIES times), not failed.
 
 When a Pi works: "Take jobs" on; not while its cameras run unless "Take jobs while its cameras run";
 not on battery unless "Take jobs on battery" (and never under 25 %); not too hot (80 °C, again under
@@ -71,7 +76,12 @@ OWNER_FRESH_S = 30  # a Pi that asked for work this lately keeps its own recordi
 MAX_TRIES = 3
 TURN_STALE_S = 45  # a Pi with a turn, or in line for one, says so this often or loses its place
 TURN_ASK_S = 3  # how often a Pi in line asks again
-TURN_BEAT_S = 15  # how often a Pi moving a file says it still has its turn
+TURN_BEAT_S = 15  # how often a Pi moving a file says it still has its turn (and how fast its pieces go)
+TURN_STAGGER_S = 15  # links start one after the other, at least this far apart
+PIECE_FAST_S = 12  # every piece in this long (4 MB: about 0.35 MB/s a link) and the total grew: room for one more link
+PIECE_SLOW_S = 25  # a piece slower than this (about 0.17 MB/s): the Pi keeping the list is straining, one link fewer
+PIECE_TRIES = 6  # a piece that doesn't come through (a stall on the Wi-Fi) is tried this many times in all
+PIECE_WAITS = (5, 10, 20, 30, 30)  # seconds between those tries
 TEXT_SUBS = {"subrip", "ass", "ssa", "mov_text", "webvtt", "text"}
 VIDEO = re.compile(r"\.(mp4|webm|mkv|mov|avi|m4v|ts|mpg|mpeg|wmv|flv|3gp|ogv)$", re.I)
 SAFE_NAME = re.compile(r"^[^/\\\x00-\x1f]{1,200}$")
@@ -85,8 +95,20 @@ _run = {"item": None, "proc": None, "paused": False, "pausedAt": 0, "why": "", "
         "beat": 0, "home": None, "thread": None, "gave": None, "turn": None}
 _state = {"why": "", "last": ""}
 _tools = {"ready": None, "making": False, "error": None}
+
+
+def _lane():
+    # holders: Pi -> {since, beat, rate (bytes/s, as it last said), slowest (its slowest piece lately, s)};
+    # line: [[Pi, when it last asked]]; allowed: how many links may run together now
+    return {"holders": {}, "line": [], "allowed": 1, "last_go": 0.0, "total_at_go": 0.0}
+
+
 # (on the Pi that keeps the list: whose turn it is to move a file, and who's in line, each way)
-_turns = {"down": {"holder": None, "beat": 0, "line": []}, "up": {"holder": None, "beat": 0, "line": []}}
+_turns = {"down": _lane(), "up": _lane()}
+
+
+class Moving(RuntimeError):
+    """A file that couldn't be moved between Pis (the network, not the file): it goes back on the list."""
 
 
 # ----- where things are -----
@@ -540,6 +562,9 @@ def act_finish(node, args):
             it.update(state="done", lease=None, progress=1, finished=time.time(), summary=args.get("summary"))
             if job["kind"] == "playable" and it.get("place"):
                 placing = (job["id"], it)
+        elif args.get("again") and job["state"] != "stopped" and it.get("tries", 0) + 1 < MAX_TRIES:
+            # (its file couldn't be moved between Pis, the network's doing: back on the list, a few times)
+            it.update(state="waiting", worker=None, lease=None, progress=0, tries=it.get("tries", 0) + 1, error=None)
         else:
             it.update(state="stopped" if job["state"] == "stopped" else "failed", lease=None, finished=time.time(), error=str(args.get("error") or "it failed")[:500])
         settle(job)
@@ -580,38 +605,68 @@ def place_result(node, jid, it):
 
 
 def act_turn(node, args):
-    """A Pi's turn to move a file to or from here, one at a time each way, in the order they asked:
-    {lane: down|up, worker, done?} -> {go: true} (its turn: said again at least every TURN_STALE_S
-    while the file moves) or {go: false, ahead: how many before it}."""
+    """A Pi's turn to move a file to or from here, in the order they asked: {lane: down|up, worker, done?,
+    rate?, slowest?} -> {go: true} (its turn: said again at least every TURN_STALE_S while the file moves,
+    with how fast its pieces went: rate, bytes/s, and slowest, s) or {go: false, ahead: how many before it}.
+    Links start one after the other and run together, as many as make it faster without straining this Pi
+    (allow())."""
     if not is_home(node):
         return {"ok": False, "error": "%s doesn't keep the job list." % node.name}
     lane, worker = args.get("lane"), str(args.get("worker") or "")
     if lane not in _turns or not worker:
         return {"ok": False, "error": "Which turn?"}
+    quiet = bool((node.status_of("apps") or {}).get("turtle"))  # (someone's watching: one link at a time)
     now = time.time()
     with _lock:
         t = _turns[lane]
-        if t["holder"] and now - t["beat"] > TURN_STALE_S:  # (a Pi that stopped saying it has its turn)
-            t["holder"] = None
-        t["line"] = [w for w in t["line"] if now - w[1] <= TURN_STALE_S and w[0] != t["holder"]]
+        for w in [w for w, h in t["holders"].items() if now - h["beat"] > TURN_STALE_S]:  # (stopped saying it has its turn)
+            del t["holders"][w]
+        t["line"] = [w for w in t["line"] if now - w[1] <= TURN_STALE_S and w[0] not in t["holders"]]
         if args.get("done"):
-            if t["holder"] == worker:
-                t["holder"] = None
+            t["holders"].pop(worker, None)
             t["line"] = [w for w in t["line"] if w[0] != worker]
             return {"ok": True, "go": False}
-        if t["holder"] == worker:
-            t["beat"] = now
-            return {"ok": True, "go": True}
-        mine = next((w for w in t["line"] if w[0] == worker), None)
+        mine = t["holders"].get(worker)
         if mine:
-            mine[1] = now
+            mine["beat"] = now
+            for k in ("rate", "slowest"):
+                if isinstance(args.get(k), (int, float)):
+                    mine[k] = float(args[k])
+            allow(t, now, quiet)
+            return {"ok": True, "go": True}
+        waiting = next((w for w in t["line"] if w[0] == worker), None)
+        if waiting:
+            waiting[1] = now
         else:
             t["line"].append([worker, now])
-        if t["holder"] is None and t["line"][0][0] == worker:
+        allow(t, now, quiet)
+        if (t["line"][0][0] == worker and len(t["holders"]) < t["allowed"]
+                and (not t["holders"] or now - t["last_go"] >= TURN_STAGGER_S)):
             t["line"].pop(0)
-            t.update(holder=worker, beat=now)
+            t["total_at_go"] = sum(h["rate"] for h in t["holders"].values())
+            t["holders"][worker] = {"since": now, "beat": now, "rate": 0.0, "slowest": 0.0}
+            t["last_go"] = now
             return {"ok": True, "go": True}
-        return {"ok": True, "go": False, "ahead": (1 if t["holder"] else 0) + [w[0] for w in t["line"]].index(worker)}
+        return {"ok": True, "go": False, "ahead": [w[0] for w in t["line"]].index(worker)}
+
+
+def allow(t, now, quiet):
+    """How many links may run together in a lane now: one while the turtle's on; one fewer than run now when
+    a piece crawled (PIECE_SLOW_S: this Pi's straining); one more when every link has said how it's going,
+    every piece came quickly (PIECE_FAST_S) and the total grew with the last link let in (or there's one);
+    else as many as now (another link would only share the same speed)."""
+    holders = list(t["holders"].values())
+    n = len(holders)
+    if not n and now - t["last_go"] > 300:  # (quiet a while: start again from one)
+        t["allowed"] = 1
+    if quiet:
+        t["allowed"] = 1
+    elif any(h["slowest"] > PIECE_SLOW_S for h in holders):
+        t["allowed"] = max(1, n - 1)
+    elif n and all(now - h["since"] > TURN_BEAT_S and 0 < h["slowest"] <= PIECE_FAST_S for h in holders):
+        total = sum(h["rate"] for h in holders)
+        t["allowed"] = n + 1 if (n == 1 or total > t["total_at_go"] * 1.15) else max(n, 1)
+    t["allowed"] = max(1, t["allowed"])
 
 
 def act_tools(node, args):
@@ -676,9 +731,13 @@ def write_piece(node, h, path, q):
     part = path + ".part"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     have = os.path.getsize(part) if os.path.exists(part) else 0
-    if at != have:
+    if at == 0:  # (a file started again: what a try before left of it goes)
+        have = 0
+    elif at != have:
+        if q.get("last") == "1" and not os.path.exists(part) and os.path.isfile(path) and os.path.getsize(path) == at + len(data):
+            return node.send(h, 200, {"ok": True, "have": at + len(data)})  # (its last piece came before: the answer got lost)
         return node.send(h, 409, {"error": "Out of turn", "have": have})
-    with open(part, "ab") as f:
+    with open(part, "ab" if have else "wb") as f:
         f.write(data)
     if q.get("last") == "1":
         os.replace(part, path)
@@ -907,12 +966,83 @@ def take_turn(node, home, lane, name):
         _run["turn"] = None
 
 
-def keep_turn(node, home, lane):
-    ask_home(node, home, "turn", {"lane": lane, "worker": node.name}, timeout=15)
+def keep_turn(node, home, lane, rate=None, slowest=None):
+    args = {"lane": lane, "worker": node.name}
+    if rate is not None:
+        args.update(rate=rate, slowest=slowest)
+    ask_home(node, home, "turn", args, timeout=15)
 
 
 def end_turn(node, home, lane):
     ask_home(node, home, "turn", {"lane": lane, "worker": node.name, "done": True}, timeout=15)
+
+
+class Turn:
+    """This Pi's turn to move a file to or from the Pi that keeps the list: waited for (take_turn), kept
+    while the file moves (a beat every TURN_BEAT_S from a thread of its own, so a slow piece or a wait
+    between tries doesn't lose it, saying how fast its pieces went: that's how that Pi tells whether
+    another link would help), and given up after."""
+
+    def __init__(self, node, home, lane, name):
+        self.node, self.home, self.lane, self.name = node, home, lane, name
+        self.lock = threading.Lock()
+        self.bytes, self.slowest, self.since = 0, 0.0, time.time()
+        self.stop = threading.Event()
+        self.thread = None
+
+    def __enter__(self):
+        take_turn(self.node, self.home, self.lane, self.name)
+        self.since = time.time()
+        self.thread = threading.Thread(target=self._keep, daemon=True, name="turn-" + self.lane)
+        self.thread.start()
+        return self
+
+    def piece(self, nbytes, seconds):
+        with self.lock:
+            self.bytes += nbytes
+            self.slowest = max(self.slowest, seconds)
+
+    def _keep(self):
+        while not self.stop.wait(TURN_BEAT_S):
+            with self.lock:
+                now = time.time()
+                rate = self.bytes / max(0.001, now - self.since)
+                slowest = self.slowest
+                self.bytes, self.slowest, self.since = 0, 0.0, now
+            try:
+                keep_turn(self.node, self.home, self.lane, round(rate), round(slowest, 1))
+            except Exception:  # (the next beat tries again)
+                pass
+
+    def __exit__(self, *exc):
+        self.stop.set()
+        if self.thread:
+            self.thread.join(5)
+        end_turn(self.node, self.home, self.lane)
+        return False
+
+
+def with_tries(what, request):
+    """One piece of a file moving between Pis, asked for again after a wait when it doesn't come through (no
+    answer, or the other Pi's error): a stall on the Wi-Fi isn't the file's fault. request() -> (code,
+    answer). -> (code, answer, seconds the answer took) once there's an answer to go on (4xx too: the
+    caller decides), else Moving after PIECE_TRIES."""
+    why = None
+    for i in range(PIECE_TRIES):
+        if _run["stop"]:
+            raise RuntimeError("stopped")
+        t0 = time.time()
+        code, a = request()
+        if code is not None and code < 500:
+            return code, a, time.time() - t0
+        why = a.get("error") if isinstance(a, dict) else a
+        if i < PIECE_TRIES - 1:
+            until = time.time() + PIECE_WAITS[min(i, len(PIECE_WAITS) - 1)]
+            while time.time() < until:  # (in small steps: a stop isn't kept waiting)
+                if _run["stop"]:
+                    raise RuntimeError("stopped")
+                time.sleep(0.5)
+    raise Moving("%s didn't come through in %d tries (%s)" % (what, PIECE_TRIES, str(why)[:160]))
 
 
 def fetch(node, item, home, dest):
@@ -922,30 +1052,26 @@ def fetch(node, item, home, dest):
         return src["path"]
     target = home["target"] if src["node"] == home["name"] else next((p["target"] for p in node.cluster() if p["name"] == src["node"]), None)
     if not target:
-        raise RuntimeError("%s, which has the file, isn't answering" % src["node"])
-    take_turn(node, home, "down", item["name"])
-    try:
-        at, beat = 0, time.time()
+        raise Moving("%s, which has the file, isn't answering" % src["node"])
+    with Turn(node, home, "down", item["name"]) as turn:
+        at = 0
         with open(dest, "wb") as f:
             while True:
                 if _run["stop"]:
                     raise RuntimeError("stopped")
-                code, data = node.ask(target, "GET", "/api/jobs/file?path=%s&at=%d" % (urllib.parse.quote(src["path"]), at), timeout=60)
+                path = "/api/jobs/file?path=%s&at=%d" % (urllib.parse.quote(src["path"]), at)
+                code, data, took = with_tries("%s from %s" % (item["name"], src["node"]), lambda: node.ask(target, "GET", path, timeout=60))
                 if code != 200 or not isinstance(data, bytes):
                     raise RuntimeError("couldn't fetch %s from %s: %s" % (item["name"], src["node"], (data or {}).get("error") if isinstance(data, dict) else data))
+                turn.piece(len(data), took)
                 if not data:
                     break
                 f.write(data)
                 at += len(data)
                 if item.get("size"):
                     _run["progress"] = 0.1 * min(1.0, at / float(item["size"]))
-                if time.time() - beat > TURN_BEAT_S:
-                    keep_turn(node, home, "down")
-                    beat = time.time()
                 if len(data) < PIECE:
                     break
-    finally:
-        end_turn(node, home, "down")
     return dest
 
 
@@ -969,9 +1095,7 @@ def send_results(node, item, home, out_dir):
             except OSError:
                 shutil.copyfile(p, dest)
         return
-    take_turn(node, home, "up", item["name"])
-    try:
-        beat = time.time()
+    with Turn(node, home, "up", item["name"]) as turn:
         for p, rel in zip(files, rels):
             size = os.path.getsize(p)
             at = 0
@@ -982,17 +1106,14 @@ def send_results(node, item, home, out_dir):
                     data = f.read(PIECE)
                     last = at + len(data) >= size
                     q = "lease=%s&path=%s&at=%d&last=%d" % (item["lease"], urllib.parse.quote(rel), at, 1 if last else 0)
-                    code, a = node.ask(home["target"], "PUT", "/api/jobs/result?" + q, data=data, timeout=120)
-                    if code != 200:
+                    code, a, took = with_tries("%s to %s" % (rel, home["name"]), lambda: node.ask(home["target"], "PUT", "/api/jobs/result?" + q, data=data, timeout=120))
+                    came = code == 409 and isinstance(a, dict) and a.get("have") == at + len(data)  # (it came, its answer didn't)
+                    if code != 200 and not came:
                         raise RuntimeError("couldn't send %s: %s" % (rel, (a or {}).get("error") if isinstance(a, dict) else a))
+                    turn.piece(len(data), took)
                     at += len(data)
-                    if time.time() - beat > TURN_BEAT_S:
-                        keep_turn(node, home, "up")
-                        beat = time.time()
                     if last:
                         break
-    finally:
-        end_turn(node, home, "up")
 
 
 def run_logged(p, on_line):
@@ -1198,7 +1319,7 @@ def work(node, item, home):
     w = os.path.join(work_dir(node), item["lease"])
     out_dir = os.path.join(w, "out")
     os.makedirs(out_dir, exist_ok=True)
-    ok, error, summary = False, None, None
+    ok, error, summary, again = False, None, None, False
     try:
         _state["last"] = "%s: %s" % (item["title"], item["name"])
         src = fetch(node, item, home, os.path.join(w, "input" + os.path.splitext(item["name"])[1]))
@@ -1215,6 +1336,8 @@ def work(node, item, home):
         _run["progress"] = 0.95
         send_results(node, item, home, out_dir)
         ok = True
+    except Moving as e:  # (the network, not the file: back on the list)
+        error, again = str(e)[:400], True
     except Exception as e:  # (said to the job list, and shown with the file)
         error = str(e)[:400]
     finally:
@@ -1222,7 +1345,8 @@ def work(node, item, home):
     give_back = _run["stop"] == "give back"
     try:
         for _ in range(5):
-            code, _a = ask_home(node, home, "finish", {"lease": item["lease"], "ok": ok, "error": error, "summary": summary, "giveBack": give_back}, timeout=30)
+            code, _a = ask_home(node, home, "finish", {"lease": item["lease"], "ok": ok, "error": error, "summary": summary, "giveBack": give_back,
+                                                       "again": again}, timeout=30)
             if code == 200:
                 break
             time.sleep(10)
@@ -1258,13 +1382,19 @@ def status(node):
         going = [j for j in jobs if j["state"] in ("waiting", "running", "uploading")]
         summary += " · keeps the job list (%d going, %d in all)" % (len(going), len(jobs))
         moving = []
-        for lane, word in (("down", "to"), ("up", "from")):
-            t = _turns[lane]
-            if t["holder"] and time.time() - t["beat"] <= TURN_STALE_S:
-                moving.append("%s %s%s" % (word, t["holder"], " (%d in line)" % len(t["line"]) if t["line"] else ""))
+        now = time.time()
+        with _lock:
+            for lane, word in (("down", "to"), ("up", "from")):
+                t = _turns[lane]
+                live = sorted(w for w, h in t["holders"].items() if now - h["beat"] <= TURN_STALE_S)
+                if live:
+                    total = sum(h["rate"] for w, h in t["holders"].items() if w in live)
+                    moving.append("%s %s%s%s" % (word, ", ".join(live), " at %.1f MB/s" % (total / 1e6) if total else "",
+                                                 " (%d in line)" % len(t["line"]) if t["line"] else ""))
+            out["turns"] = {lane: {"holders": sorted(t["holders"]), "allowed": t["allowed"], "line": [w[0] for w in t["line"]]}
+                            for lane, t in _turns.items()}
         if moving:
-            summary += " · moving files: " + ", ".join(moving)
-        out["turns"] = {lane: {"holder": t["holder"], "line": [w[0] for w in t["line"]]} for lane, t in _turns.items()}
+            summary += " · moving files: " + "; ".join(moving)
     out["summary"] = summary
     out["warnings"] = ["The animal model's tools didn't install: %s" % _tools["error"]] if _tools["error"] else []
     return out

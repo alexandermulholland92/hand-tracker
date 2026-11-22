@@ -150,10 +150,20 @@ for that Pi.
     don't cross the Wi-Fi; another takes them if it isn't taking jobs), files sent from the
     computer, or a folder on the Pi that keeps the list. The results stay on that Pi, and the app
     saves them to the computer. A job can be kept to the Pi each file is on ("here").
-  - **One file at a time each way:** a Pi downloading a file from another, or sending back what it
-    made, first asks the Pi that keeps the list for its turn and waits in line (its summary says
-    so), so the Wi-Fi isn't swamped. Its own files need no turn. A turn not said again for 45
-    seconds goes to the next in line.
+  - **Files in turns, as fast as the Pi keeping the list can go:** a Pi downloading a file from
+    another, or sending back what it made, first asks the Pi that keeps the list for its turn and
+    waits in line (its summary says so). Its own files need no turn.
+    - **Staggered, then together:** a new link starts at most every 15 seconds, then runs beside
+      the others.
+    - **One more** while every 4 MB piece comes in under 12 seconds and the total speed grew with
+      the last link let in. **As many as now** when another link would only share the same speed.
+    - **One fewer** when a piece takes over 25 seconds: that Pi is straining.
+    - **One at a time** while Transmission's turtle is on (someone's watching on Jellyfin).
+    - Each Pi says how fast its pieces go every 15 seconds; a turn not said again for 45 seconds goes
+      to the next in line. The Pi keeping the list says how fast files are moving in its summary.
+  - **A stall on the Wi-Fi isn't the file's fault:** a piece that doesn't come through is tried
+    again, up to 6 times, waiting longer each time (5 to 30 seconds). A file that still can't be
+    moved goes back on the list, and is marked failed only after 3 rounds.
   - **Each Pi's switches:**
     - **Take jobs**
     - **while its cameras run** (off by default)

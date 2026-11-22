@@ -12,8 +12,11 @@ clip. Each has a stand-in Hand Tracker (pie's cameras can be turned on). Checked
 - a job stopped while it runs, then removed with its files;
 - pie not taking work while its cameras run (its switch off);
 - only shared files fetched, and results downloaded;
-- files moving one at a time each way: turns in the order asked, and pie waiting for its turn to
-  download while another Pi has it (2026-11-21);
+- files moving in turns: in the order asked, pie waiting for its turn to download while another Pi has
+  it (2026-11-21); in this process with a clock of its own, links let in one after the other while they
+  make it faster, one fewer when a piece crawls, one only while the turtle's on, a piece asked for
+  again, and a file that couldn't be moved put back on the list, then failed after 3 tries; a file
+  sent again from its start, and a last piece sent again, taken as they should be;
 - a playable copy, done only by the Pi its file is on ("here"), put beside its video;
 - autoconvert.py: a look through a videos folder puts an old-format video and a sound-only one in jobs,
   and leaves alone one that plays everywhere, a sample, one converted already and a 4K one (its switch
@@ -151,12 +154,140 @@ def job_state(port, jid):
     return a.get("job") if code == 200 else None
 
 
+def unit_checks(tmp):
+    """jobs.py's turns, tries and files put back on the list, in this process with a clock of its own (no
+    waiting for real beats): links let in one after the other while they help, one fewer when a piece crawls,
+    one only while the turtle's on; a piece asked for again; a file that can't be moved put back, then failed."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("jobs_unit", os.path.join(NODE, "modules", "jobs.py"))
+    J = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(J)
+
+    class Clock:
+        now = 1000.0
+
+        @classmethod
+        def time(cls):
+            return cls.now
+
+        @classmethod
+        def sleep(cls, s):
+            cls.now += s
+    J.time = Clock  # (the module's time.time() and time.sleep())
+
+    class Node:
+        name, simulate, state_dir, turtle = "pi", True, tmp, False
+
+        def setting(self, module, key):
+            return key in ("home", "take")
+
+        def status_of(self, name):
+            return {"turtle": self.turtle} if name == "apps" else {}
+
+        def event(self, *a, **k):
+            pass
+
+        def log(self, *a):
+            pass
+    node = Node()
+    lane = J._turns["down"]
+
+    def turn(worker, **kw):
+        return J.act_turn(node, dict(lane="down", worker=worker, **kw))
+
+    def at(t):
+        Clock.now = 1000.0 + t
+
+    at(0)
+    a, b = turn("a"), turn("b")
+    check("Links: one goes first, the next waits in line", a.get("go") and not b.get("go") and b.get("ahead") == 0, (a, b))
+    at(10)
+    turn("a", rate=500000, slowest=8)
+    b = turn("b")
+    check("...the next not before the first has said how its pieces go", not b.get("go"), (b, lane["allowed"]))
+    at(16)
+    turn("a", rate=500000, slowest=8)
+    b = turn("b")
+    check("...then, every piece quick (and 15 s on), a second link starts beside it", b.get("go"), (b, lane["allowed"]))
+    at(17)
+    c = turn("c")
+    check("...a third waits while the second hasn't said yet", not c.get("go") and c.get("ahead") == 0, c)
+    at(33)
+    turn("a", rate=500000, slowest=8)
+    turn("b", rate=450000, slowest=9)
+    c = turn("c")
+    check("...and starts once the total grew with the second", c.get("go"), (c, lane["allowed"], lane["total_at_go"]))
+    at(50)
+    for w in "abc":
+        turn(w, rate=330000, slowest=11)
+    d = turn("d")
+    check("...but no fourth when the third only shared the same speed", not d.get("go") and lane["allowed"] == 3, (d, lane["allowed"]))
+    at(52)
+    turn("a", rate=150000, slowest=30)
+    turn("a", done=True)
+    d = turn("d")
+    check("One fewer when a piece crawled (this Pi straining): one ending isn't followed by another", not d.get("go") and lane["allowed"] == 2, (d, lane["allowed"]))
+    at(60)
+    node.turtle = True
+    turn("b", rate=300000, slowest=5)
+    for w in "bc":
+        turn(w, done=True)
+    d = turn("d")
+    at(80)
+    turn("d", rate=900000, slowest=3)
+    e = turn("e")
+    check("While the turtle's on (someone's watching), one link at a time however quick", d.get("go") and not e.get("go") and lane["allowed"] == 1, (d, e, lane["allowed"]))
+    at(200)
+    e = turn("e")
+    check("A Pi that stopped saying it has its turn loses it", e.get("go") and "d" not in lane["holders"], (e, sorted(lane["holders"])))
+    node.turtle = False
+    turn("e", done=True)
+
+    # A piece asked for again
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        return (None, "timed out") if len(calls) < 3 else (200, b"x")
+    code, data, _took = J.with_tries("a piece", flaky)
+    check("A piece that didn't come through is asked for again, and comes", code == 200 and data == b"x" and len(calls) == 3, (code, len(calls)))
+    del calls[:]
+    try:
+        J.with_tries("a piece", lambda: (calls.append(1), (None, "timed out"))[1])
+        moved = False
+    except J.Moving as e:
+        moved = len(calls) == J.PIECE_TRIES and "%d tries" % J.PIECE_TRIES in str(e)
+    check("...one that never does stops after %d tries, as a file that couldn't be moved" % J.PIECE_TRIES, moved, len(calls))
+    del calls[:]
+    code, _a, _took = J.with_tries("a piece", lambda: (calls.append(1), (404, {"error": "No such file."}))[1])
+    check("...but the other Pi's no (a 4xx) isn't asked again", code == 404 and len(calls) == 1, (code, len(calls)))
+
+    # A file that couldn't be moved: back on the list, then failed after MAX_TRIES
+    os.environ["HT_CLUSTER_JOBS_DIR"] = os.path.join(tmp, "unit-jobs")
+    try:
+        J._book["jobs"] = [{"id": "j1", "kind": "playable", "title": "T", "state": "running", "params": {}, "created": 0, "high": False,
+                            "items": [{"id": "i1", "name": "v1.avi", "state": "running", "lease": "L1", "worker": "pie", "tries": 0,
+                                       "source": {"node": "pi", "path": "/x"}}]}]
+        it = J._book["jobs"][0]["items"][0]
+        J.act_finish(node, {"lease": "L1", "ok": False, "again": True, "error": "v1.avi from pi didn't come through"})
+        back = it["state"] == "waiting" and it.get("tries") == 1 and not it.get("error")
+        it.update(state="running", lease="L2")
+        J.act_finish(node, {"lease": "L2", "ok": False, "again": True, "error": "not again"})
+        it.update(state="running", lease="L3")
+        J.act_finish(node, {"lease": "L3", "ok": False, "again": True, "error": "still not through"})
+        check("A file that couldn't be moved goes back on the list, not failed", back, it)
+        check("...and fails after %d tries, saying why" % J.MAX_TRIES, it["state"] == "failed" and "still not through" in it.get("error", ""), it)
+    finally:
+        os.environ.pop("HT_CLUSTER_JOBS_DIR", None)
+
+
 def main():
     ff = find_ffmpeg()
     if not ff:
         print("ffmpeg is needed (HT_TEST_FFMPEG=…)")
         return 1
     tmp = tempfile.mkdtemp(prefix="ht-jobs-test-")
+    unit_checks(tmp)
     pie_rec = os.path.join(tmp, "pie-recordings")
     pi_folder = os.path.join(tmp, "pi-folder")
     for d in (pie_rec, pi_folder):
@@ -274,17 +405,22 @@ def main():
         code, a = act(pi_port, "start", {"job": jid2})
         check("...it can't start before the file has come", code == 409, a)
         half = len(payload) // 2
-        c1, _ = ask(pi_port, "PUT", "/api/jobs/upload?job=%s&name=letter.txt&at=0" % jid2, data=payload[:half])
+        ask(pi_port, "PUT", "/api/jobs/upload?job=%s&name=letter.txt&at=0" % jid2, data=b"a try that broke off")
+        c1, _ = ask(pi_port, "PUT", "/api/jobs/upload?job=%s&name=letter.txt&at=0" % jid2, data=payload[:half])  # (started again: that's thrown away)
         # (the second piece as the page in a browser on pie sends it: through pie, X-HT-Cluster-To)
         c2, _ = ask(pie_port, "PUT", "/api/jobs/upload?job=%s&name=letter.txt&at=%d&last=1" % (jid2, half), data=payload[half:],
                     headers={"X-HT-Cluster-To": "127.0.0.1:%d" % pi_port})
+        c2b, a2b = ask(pi_port, "PUT", "/api/jobs/upload?job=%s&name=letter.txt&at=%d&last=1" % (jid2, half), data=payload[half:])  # (its answer lost: sent again)
         c3, a3 = ask(pi_port, "PUT", "/api/jobs/upload?job=%s&name=other.txt&at=0&last=1" % jid2, data=b"x")
         check("...the file arrives in two pieces, the second passed on by another Pi (and no other is taken)", c1 == 200 and c2 == 200 and c3 == 400, (c1, c2, c3, a3))
+        check("...its last piece sent again is taken as come (its answer was lost)", c2b == 200, (c2b, a2b))
         code, a = act(pi_port, "start", {"job": jid2})
         done2 = wait_for(lambda: (job_state(pi_port, jid2) or {}).get("state") == "done", 60)
         code, res = act(pi_port, "results", {"job": jid2})
         names2 = sorted(f["path"] for f in res.get("files", []))
         check("...the command ran on it and its copy came back", bool(done2) and names2 == ["letter.txt", "log.txt"], (job_state(pi_port, jid2), names2))
+        code, copy = ask(pi_port, "GET", "/api/jobs/result-file?job=%s&path=letter.txt&at=0" % jid2)
+        check("...the file as sent: the broken-off try gone, nothing twice", code == 200 and copy == payload, (code, len(copy) if isinstance(copy, bytes) else copy, len(payload)))
 
         # The animal model
         if os.environ.get("HT_TEST_ANIMALS_PY") and os.environ.get("HT_TEST_MODEL"):
@@ -334,11 +470,11 @@ def main():
         def turn(worker, done=False):
             return act(pi_port, "turn", {"lane": "down", "worker": worker, **({"done": True} if done else {})})[1]
         a1, b1, c1 = turn("x"), turn("y"), turn("z")
-        check("Turns: the first to ask goes, the others wait in line", a1.get("go") and not b1.get("go") and b1.get("ahead") == 1
-              and not c1.get("go") and c1.get("ahead") == 2, (a1, b1, c1))
+        check("Turns: the first to ask goes, the others wait in line", a1.get("go") and not b1.get("go") and b1.get("ahead") == 0
+              and not c1.get("go") and c1.get("ahead") == 1, (a1, b1, c1))
         turn("x", done=True)
         b2, c2 = turn("y"), turn("z")
-        check("...the next in line goes once it's done", b2.get("go") and not c2.get("go") and c2.get("ahead") == 1, (b2, c2))
+        check("...the next in line goes once it's done", b2.get("go") and not c2.get("go") and c2.get("ahead") == 0, (b2, c2))
         turn("y", done=True)
         turn("z", done=True)
 
