@@ -164,6 +164,9 @@ for that Pi.
   - **A stall on the Wi-Fi isn't the file's fault:** a piece that doesn't come through is tried
     again, up to 6 times, waiting longer each time (5 to 30 seconds). A file that still can't be
     moved goes back on the list, and is marked failed only after 3 rounds.
+  - **A Pi keeps its file while the Pi keeping the list doesn't answer** (its Wi-Fi may just be full):
+    it says how it's going every 20 seconds, and only a Pi not heard from for 10 minutes has its file
+    put back on the list (failed after 3 rounds).
   - **Each Pi's switches:**
     - **Take jobs**
     - **while its cameras run** (off by default)

@@ -27,7 +27,9 @@ send back what it made, and waits in line for it ("turn"); its own files need no
 after the other (TURN_STAGGER_S apart) and run together: one more is let in while every piece comes
 quickly and the total grew with the last one, one fewer when a piece crawls, and one at a time while
 Transmission's turtle is on (someone's watching). A piece that doesn't come through is tried again
-(PIECE_TRIES); a file that still can't be moved goes back on the list (MAX_TRIES times), not failed.
+(PIECE_TRIES); a file that still can't be moved goes back on the list (MAX_TRIES times), not failed. A Pi
+keeps its file while the Pi keeping the list doesn't answer: only one not heard from for LEASE_S (10 minutes)
+has it put back on the list.
 
 When a Pi works: "Take jobs" on; not while its cameras run unless "Take jobs while its cameras run";
 not on battery unless "Take jobs on battery" (and never under 25 %); not too hot (80 °C, again under
@@ -67,7 +69,10 @@ SETTINGS = [
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PIECE = 4 << 20  # bytes per request, files going between Pis and to the app
 MAX_PIECE = 16 << 20
-LEASE_S = 90  # a Pi working on a file says so at least this often, or the file goes back on the list
+# A Pi working on a file says so every 20 s; one not heard from for this long has its file put back on the list.
+# Long, so a Pi keeps its file while the Pi keeping the list doesn't answer (the user, 2026-11-21: at 90 s,
+# 4 videos were dropped while pi's Wi-Fi was full; "keep videos through pauses", for up to 10 minutes).
+LEASE_S = 600
 GIVE_BACK_S = 300  # paused this long: given back for another Pi
 HOT_C, COOL_C = 80, 70
 MIN_MEMORY = 350 << 20

@@ -288,6 +288,22 @@ def unit_checks(tmp):
         J.act_finish(node, {"lease": "L3", "ok": False, "again": True, "error": "still not through"})
         check("A file that couldn't be moved goes back on the list, not failed", back, it)
         check("...and fails after %d tries, saying why" % J.MAX_TRIES, it["state"] == "failed" and "still not through" in it.get("error", ""), it)
+
+        # A Pi not heard from: its file stays its own for LEASE_S (the Pi keeping the list may not be answering)
+        at(0)
+        it.update(state="running", lease="L4", worker="pie", tries=0, error=None, until=Clock.now + J.LEASE_S)
+        at(5 * 60)
+        J.expire(node)
+        kept = it["state"] == "running" and it["lease"] == "L4"
+        check("A Pi not heard from for 5 minutes keeps its file", kept, it)
+        J.act_progress(node, {"lease": "L4", "progress": 0.5})
+        at(5 * 60 + J.LEASE_S - 1)
+        J.expire(node)
+        check("...a word from it gives it another %d minutes" % (J.LEASE_S // 60), it["state"] == "running" and it["lease"] == "L4", it)
+        at(5 * 60 + J.LEASE_S + 1)
+        J.expire(node)
+        check("...and one not heard from for %d minutes has its file put back on the list" % (J.LEASE_S // 60),
+              it["state"] == "waiting" and it.get("tries") == 1 and not it.get("lease"), it)
     finally:
         os.environ.pop("HT_CLUSTER_JOBS_DIR", None)
 
