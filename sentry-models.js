@@ -1,15 +1,15 @@
 /**
  * sentry-models.js — Sentry mode's two models for finding animals, downloaded the first time
- * they're wanted from this project's sentry-models-3 release, each checked against its size and
+ * they're wanted from this project's sentry-models-4 release, each checked against its size and
  * SHA-256, then kept: by the Windows, Mac and Linux app itself (electron/sentry-models.js, in
  * its data folder), on a phone by the app's own web request (mobile.fetchBytes: a page can't
- * fetch GitHub's release files) in the app's storage (IndexedDB). Trained for this app (run 8,
- * 2026-11-12): see THIRD_PARTY_NOTICES.md.
+ * fetch GitHub's release files) in the app's storage (IndexedDB). Trained for this app (run 10,
+ * 2026-11-21): see THIRD_PARTY_NOTICES.md.
  *   finder: the object finder (object-finder.js) for cameras that don't find objects themselves:
- *     YOLOv8 nano trained further on animals (animals8, the OAK cameras' model too), its kinds in
+ *     YOLOv8 nano trained further on animals (animals10, the OAK cameras' model too), its kinds in
  *     models/kinds.js.
  *   second: the second look (second-look.js): a model of another kind (SSDLite, MobileNetV3) that
- *     finds people and animals in a black-and-white close-up (nightlook6).
+ *     finds people and animals in a black-and-white close-up (nightlook8).
  *
  *   await SentryModels.bytes("finder" | "second")   // its bytes (a Uint8Array), downloaded once
  *   SentryModels.MODELS                             // { finder, second: { name, url, size, sha256 } }
@@ -17,12 +17,12 @@
  */
 
 (function (global) {
-  const BASE = "https://github.com/alexandermulholland92/hand-tracker/releases/download/sentry-models-3/";
+  const BASE = "https://github.com/alexandermulholland92/hand-tracker/releases/download/sentry-models-4/";
   const MODELS = {
-    finder: { name: "animals8.onnx", url: BASE + "animals8.onnx", size: 13071704, sha256: "62f76d03c90701582d5023240340b0e0d9b5249695033bd2fcd8f6206bce2b27" },
-    second: { name: "nightlook6.onnx", url: BASE + "nightlook6.onnx", size: 8982877, sha256: "73b2556b48d20cbeed76323dde60102e5f4eea1a6bdcfa454bb8490228e104eb" },
+    finder: { name: "animals10.onnx", url: BASE + "animals10.onnx", size: 12932491, sha256: "9a7dcbfbf85c22166a6cac45a578ee261584b4c224f44df10d6f5b36f4f3cc0c" },
+    second: { name: "nightlook8.onnx", url: BASE + "nightlook8.onnx", size: 8982877, sha256: "684c1fd20f33c5e542c85e93130b956f4e2d9a0d893d3130fc00218365b3e566" },
   };
-  const OLD = ["yolov8n_coco.onnx", "animals7.onnx", "nightlook5.onnx"]; // (sentry-models-1's second look, and run 7's: sentry-models-2)
+  const OLD = ["yolov8n_coco.onnx", "animals7.onnx", "nightlook5.onnx", "animals8.onnx", "nightlook6.onnx"]; // (sentry-models-1's second look, run 7's: sentry-models-2, run 8's: sentry-models-3)
   const DB = "hand-tracker-models"; // (a phone's IndexedDB: each model, by its name)
 
   // The model whole: its size and SHA-256 as published.

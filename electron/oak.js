@@ -55,15 +55,15 @@ const FAST_MODELS = [
   ["hand_landmark_lite_sh6.blob", "219cca957379ad0338f1278d6593be9e6c4780dfd2e77984d4783e9783071c50"],
 ];
 // The object finder (YOLOv8 nano: Ultralytics, AGPL-3.0; trained further on animals for this app,
-// run 8's animals8, its kinds in models/kinds.js; made for OpenVINO 2021.4 by scripts/yolo-blob.py,
-// on the oak-models-4 release): downloaded the first time Find objects is turned on, not with the
+// run 10's animals10, its kinds in models/kinds.js; made for OpenVINO 2021.4 by scripts/yolo-blob.py,
+// on the oak-models-5 release): downloaded the first time Find objects is turned on, not with the
 // setup. OLD_DETECT_MODELS: the ones before it, deleted then.
 const DETECT_MODEL = {
-  name: "animals8_640x352_2021.4_6shave.blob",
-  url: "https://github.com/alexandermulholland92/hand-tracker/releases/download/oak-models-4/animals8_640x352_2021.4_6shave.blob",
-  sha256: "1689102ef16b4add2d333adcfdb61d256b53fc759ae32ecc473427a535005c37",
+  name: "animals10_640x352_2021.4_6shave.blob",
+  url: "https://github.com/alexandermulholland92/hand-tracker/releases/download/oak-models-5/animals10_640x352_2021.4_6shave.blob",
+  sha256: "9a8cbbc18292035eef0621a8c47b609eaee5c3e2fdec1264a9c29e2ab3b08c75",
 };
-const OLD_DETECT_MODELS = ["mobilenet-ssd_openvino_2021.4_5shave.blob", "yolov8n_coco_640x352_2021.4_6shave.blob", "animals7_640x352_2021.4_6shave.blob"];
+const OLD_DETECT_MODELS = ["mobilenet-ssd_openvino_2021.4_5shave.blob", "yolov8n_coco_640x352_2021.4_6shave.blob", "animals7_640x352_2021.4_6shave.blob", "animals8_640x352_2021.4_6shave.blob"];
 // Python reads the bridge from disk, so in the packaged app it's outside app.asar.
 const BRIDGE = path.join(__dirname, "..", "oak", "oak_bridge.py").replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
 
