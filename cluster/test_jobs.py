@@ -16,7 +16,9 @@ clip. Each has a stand-in Hand Tracker (pie's cameras can be turned on). Checked
   it (2026-11-21); in this process with a clock of its own, links let in one after the other while they
   make it faster, one fewer when a piece crawls, one only while the turtle's on, a piece asked for
   again, and a file that couldn't be moved put back on the list, then failed after 3 tries; a file
-  sent again from its start, and a last piece sent again, taken as they should be;
+  sent again from its start, and a last piece sent again, taken as they should be; a Pi not heard from
+  keeping its file for 10 minutes; failed conversions first in line, from any job, coming back by
+  themselves 3 times, then failed (Try again and the look a day later: one more round, first);
 - a playable copy, done only by the Pi its file is on ("here"), put beside its video;
 - autoconvert.py: a look through a videos folder puts an old-format video and a sound-only one in jobs,
   and leaves alone one that plays everywhere, a sample, one converted already and a 4K one (its switch
@@ -157,7 +159,8 @@ def job_state(port, jid):
 def unit_checks(tmp):
     """jobs.py's turns, tries and files put back on the list, in this process with a clock of its own (no
     waiting for real beats): links let in one after the other while they help, one fewer when a piece crawls,
-    one only while the turtle's on; a piece asked for again; a file that can't be moved put back, then failed."""
+    one only while the turtle's on; a piece asked for again; a file that can't be moved put back, then failed;
+    failed conversions first in line (autoconvert.py's look too); a Pi not heard from keeping its file a while."""
     import importlib.util
     spec = importlib.util.spec_from_file_location("jobs_unit", os.path.join(NODE, "modules", "jobs.py"))
     J = importlib.util.module_from_spec(spec)
@@ -165,6 +168,7 @@ def unit_checks(tmp):
 
     class Clock:
         now = 1000.0
+        strftime = staticmethod(time.strftime)  # (a new job's name)
 
         @classmethod
         def time(cls):
@@ -273,40 +277,112 @@ def unit_checks(tmp):
     code, _a, _took = J.with_tries("a piece", lambda: (calls.append(1), (404, {"error": "No such file."}))[1])
     check("...but the other Pi's no (a 4xx) isn't asked again", code == 404 and len(calls) == 1, (code, len(calls)))
 
-    # A file that couldn't be moved: back on the list, then failed after MAX_TRIES
+    # A file that couldn't be moved: back on the list, then failed after MAX_TRIES (a command's: not a conversion)
     os.environ["HT_CLUSTER_JOBS_DIR"] = os.path.join(tmp, "unit-jobs")
     try:
-        J._book["jobs"] = [{"id": "j1", "kind": "playable", "title": "T", "state": "running", "params": {}, "created": 0, "high": False,
-                            "items": [{"id": "i1", "name": "v1.avi", "state": "running", "lease": "L1", "worker": "pie", "tries": 0,
-                                       "source": {"node": "pi", "path": "/x"}}]}]
+        leases = [0]
+
+        def run(it, worker="pie"):  # (leased to a Pi now: its lease)
+            leases[0] += 1
+            it.update(state="running", lease="L%d" % leases[0], worker=worker, until=Clock.now + J.LEASE_S)
+            return it["lease"]
+
+        def job(jid, kind, created, *names):
+            return {"id": jid, "kind": kind, "title": jid, "state": "running", "params": {}, "created": created, "high": False,
+                    "items": [{"id": x, "name": x, "state": "waiting", "lease": None, "worker": None, "tries": 0,
+                               "source": {"node": "pi", "path": "/x/" + x}} for x in names]}
+        at(0)
+        J._book["jobs"] = [job("j0", "command", 0, "c1")]
         it = J._book["jobs"][0]["items"][0]
-        J.act_finish(node, {"lease": "L1", "ok": False, "again": True, "error": "v1.avi from pi didn't come through"})
-        back = it["state"] == "waiting" and it.get("tries") == 1 and not it.get("error")
-        it.update(state="running", lease="L2")
-        J.act_finish(node, {"lease": "L2", "ok": False, "again": True, "error": "not again"})
-        it.update(state="running", lease="L3")
-        J.act_finish(node, {"lease": "L3", "ok": False, "again": True, "error": "still not through"})
+        J.act_finish(node, {"lease": run(it), "ok": False, "again": True, "error": "c1 from pi didn't come through"})
+        back = it["state"] == "waiting" and it.get("tries") == 1 and not it.get("error") and not it.get("first")
+        J.act_finish(node, {"lease": run(it), "ok": False, "again": True, "error": "not again"})
+        J.act_finish(node, {"lease": run(it), "ok": False, "again": True, "error": "still not through"})
         check("A file that couldn't be moved goes back on the list, not failed", back, it)
-        check("...and fails after %d tries, saying why" % J.MAX_TRIES, it["state"] == "failed" and "still not through" in it.get("error", ""), it)
+        check("...and a command's fails after %d tries, saying why (not a conversion: as before)" % J.MAX_TRIES,
+              it["state"] == "failed" and "still not through" in it.get("error", ""), it)
+
+        # Failed conversions first (the user, 2026-11-22: "have failed conversions be first in the queue always")
+        J._book["jobs"] = [job("old", "playable", 1, "a1", "a2"), job("hevc", "playable", 2, "b1", "b2")]
+        a1, a2 = J._book["jobs"][0]["items"]
+        b1, b2 = J._book["jobs"][1]["items"]
+        J.act_finish(node, {"lease": run(b1), "ok": False, "again": True, "error": "b1 didn't come through"})
+        got = J.pick(node, "rhubarb", ["pi"])
+        check("A conversion whose try didn't work goes back in line first, ahead of an older job's waiting videos",
+              b1["state"] == "waiting" and b1.get("first") and got is not None and got[1] is b1, (b1, got and got[1]["id"]))
+        at(10)
+        J.act_finish(node, {"lease": run(a2), "ok": False, "error": "ffmpeg: no video in it"})
+        check("...one whose conversion failed comes back first by itself (round 1 of %d), its error kept" % J.AUTO_ROUNDS,
+              a2["state"] == "waiting" and a2.get("rounds") == 1 and a2.get("first") and "no video" in a2.get("lastError", ""), a2)
+        got = J.pick(node, "rhubarb", ["pi"])
+        check("...the one put back longest ago goes first", got is not None and got[1] is b1, got and got[1]["id"])
+        for _ in range(J.AUTO_ROUNDS):
+            J.act_finish(node, {"lease": run(a2), "ok": False, "error": "ffmpeg: no video in it"})
+        check("...and after %d more rounds it stays failed, saying why" % J.AUTO_ROUNDS,
+              a2["state"] == "failed" and a2.get("rounds") == J.AUTO_ROUNDS and "no video" in a2.get("error", ""), a2)
+        J.act_finish(node, {"lease": run(b1), "ok": True})
+        J.act_again(node, {"job": "old"})
+        got = J.pick(node, "rhubarb", ["pi"])
+        check("Try again gives it one more round, first", a2["state"] == "waiting" and got is not None and got[1] is a2, (a2, got and got[1]["id"]))
+        J.act_finish(node, {"lease": run(a2), "ok": False, "error": "ffmpeg: no video in it"})
+        got = J.pick(node, "rhubarb", ["pi"])
+        check("...after which it stays failed, and the line goes on as before", a2["state"] == "failed" and got is not None and got[1] is a1,
+              (a2, got and got[1]["id"]))
+        made = J.act_create(node, {"kind": "playable", "title": "again", "files": [
+            {"name": "v9.avi", "node": "pi", "path": "/x/v9.avi", "plan": {}, "again": True}, {"name": "v10.avi", "node": "pi", "path": "/x/v10.avi", "plan": {}}]})
+        nine, ten = (J.job_of(node, made.get("job")) or {"items": [{}, {}]})["items"]
+        got = J.pick(node, "rhubarb", ["pi"])
+        check("A video the look sends again a day later goes first, for one round", nine.get("first") and nine.get("rounds") == J.AUTO_ROUNDS
+              and not ten.get("first") and got is not None and got[1] is nine, (nine, ten))
+
+        # autoconvert.py's look: a video that failed a day ago goes in its job marked so, and its day starts again
+        spec = importlib.util.spec_from_file_location("autoconvert_unit", os.path.join(NODE, "modules", "autoconvert.py"))
+        A = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(A)
+        made_jobs = []
+
+        class LookNode:
+            name = "pi"
+
+            def call(self, module, what, args=None):
+                if what == "book":
+                    return [{"id": "jold", "items": [{"source": {"path": "/v/bad.avi"}, "state": "failed"}]}]
+                made_jobs.append(args)
+                return {"ok": True, "job": "jnew"}
+
+            def setting(self, module, key):
+                return True
+
+            def event(self, *a, **k):
+                pass
+        now = 10 * 24 * 3600.0
+        files = {"/v/bad.avi": {"need": "old", "key": [1, 1], "plan": {}, "job": "jold", "state": "failed", "failedAt": now - A.RETRY_S - 1},
+                 "/v/new.avi": {"need": "old", "key": [1, 1], "plan": {}}}
+        A.queue(LookNode(), {"next": 0}, files, now)
+        sent = {e["path"]: e for e in (made_jobs[0]["files"] if made_jobs else [])}
+        check("The look sends a video that failed a day ago again, marked to go first; a new one as before",
+              sent.get("/v/bad.avi", {}).get("again") is True and "again" not in sent.get("/v/new.avi", {"again": 1}), sent)
+        check("...and its next failure counts its day from then", files["/v/bad.avi"].get("failedAt") is None and files["/v/bad.avi"]["state"] == "queued",
+              files["/v/bad.avi"])
 
         # A Pi not heard from: its file stays its own for LEASE_S (the Pi keeping the list may not be answering)
-        at(0)
-        it.update(state="running", lease="L4", worker="pie", tries=0, error=None, until=Clock.now + J.LEASE_S)
-        at(5 * 60)
+        at(100)
+        J._book["jobs"] = [job("j2", "playable", 3, "v1")]
+        it = J._book["jobs"][0]["items"][0]
+        lease = run(it)
+        at(100 + 5 * 60)
         J.expire(node)
-        kept = it["state"] == "running" and it["lease"] == "L4"
-        check("A Pi not heard from for 5 minutes keeps its file", kept, it)
-        J.act_progress(node, {"lease": "L4", "progress": 0.5})
-        at(5 * 60 + J.LEASE_S - 1)
+        check("A Pi not heard from for 5 minutes keeps its file", it["state"] == "running" and it["lease"] == lease, it)
+        J.act_progress(node, {"lease": lease, "progress": 0.5})
+        at(100 + 5 * 60 + J.LEASE_S - 1)
         J.expire(node)
-        check("...a word from it gives it another %d minutes" % (J.LEASE_S // 60), it["state"] == "running" and it["lease"] == "L4", it)
-        at(5 * 60 + J.LEASE_S + 1)
+        check("...a word from it gives it another %d minutes" % (J.LEASE_S // 60), it["state"] == "running" and it["lease"] == lease, it)
+        at(100 + 5 * 60 + J.LEASE_S + 1)
         J.expire(node)
-        check("...and one not heard from for %d minutes has its file put back on the list" % (J.LEASE_S // 60),
-              it["state"] == "waiting" and it.get("tries") == 1 and not it.get("lease"), it)
+        check("...and one not heard from for %d minutes has its file put back on the list, first (a conversion)" % (J.LEASE_S // 60),
+              it["state"] == "waiting" and it.get("tries") == 1 and not it.get("lease") and it.get("first"), it)
     finally:
         os.environ.pop("HT_CLUSTER_JOBS_DIR", None)
-
 
 def main():
     ff = find_ffmpeg()

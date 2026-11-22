@@ -31,6 +31,13 @@ Transmission's turtle is on (someone's watching). A piece that doesn't come thro
 keeps its file while the Pi keeping the list doesn't answer: only one not heard from for LEASE_S (10 minutes)
 has it put back on the list.
 
+Failed conversions go first (the user, 2026-11-22: "have failed conversions be first in the queue always"; their
+choices: straight back by itself, ahead of every waiting video in any job, and 3 more rounds, then it stays failed):
+a conversion whose try didn't work goes back in line ahead of every waiting file, the one put back longest ago
+first ("first"); one that fails for good (its tries used up, or its program failed) comes back so by itself
+AUTO_ROUNDS times ("rounds"), then stays failed; Try again, or autoconvert's look a day later, gives it one more
+round, first. Other kinds of job (the animal model's, commands) are as before.
+
 When a Pi works: "Take jobs" on; not while its cameras run unless "Take jobs while its cameras run";
 not on battery unless "Take jobs on battery" (and never under 25 %); not too hot (80 °C, again under
 70), not short of memory. A job going while one of those changes is paused, and given back for
@@ -79,6 +86,8 @@ MIN_MEMORY = 350 << 20
 LOW_BATTERY = 25
 OWNER_FRESH_S = 30  # a Pi that asked for work this lately keeps its own recordings for itself
 MAX_TRIES = 3
+AUTO_ROUNDS = 3  # a conversion that failed comes back in line first by itself this many times, then stays failed
+CONVERSIONS = ("convert", "playable")  # (the kinds of job whose failed files go first)
 TURN_STALE_S = 45  # a Pi with a turn, or in line for one, says so this often or loses its place
 TURN_ASK_S = 3  # how often a Pi in line asks again
 TURN_BEAT_S = 15  # how often a Pi moving a file says it still has its turn (and how fast its pieces go)
@@ -208,7 +217,8 @@ def settle(job):
 
 
 def expire(node):
-    """Files whose Pi stopped saying it's on them: back on the list (failed after MAX_TRIES)."""
+    """Files whose Pi stopped saying it's on them: back on the list (a conversion first), failed after MAX_TRIES (a
+    conversion only after AUTO_ROUNDS more rounds)."""
     now = time.time()
     changed = False
     with _lock:
@@ -216,9 +226,12 @@ def expire(node):
             for it in j["items"]:
                 if it["state"] == "running" and it.get("until", 0) < now:
                     it["tries"] = it.get("tries", 0) + 1
-                    who = it.get("worker")
-                    it.update(state="waiting" if it["tries"] < MAX_TRIES else "failed", worker=None, lease=None,
-                              error=None if it["tries"] < MAX_TRIES else "%s stopped answering %d times" % (who, it["tries"]))
+                    why = "%s stopped answering %d times" % (it.get("worker"), it["tries"])
+                    if it["tries"] < MAX_TRIES:
+                        it.update(state="waiting", worker=None, lease=None, error=None)
+                        put_first(j, it)
+                    elif not come_back(j, it, why):
+                        it.update(state="failed", worker=None, lease=None, error=why)
                     changed = True
             settle(j)
         if changed:
@@ -226,26 +239,52 @@ def expire(node):
 
 
 def pick(node, worker, worker_can_reach):
-    """The next file for this worker: its own recordings first; then the job list's own files and
-    any other Pi's whose Pi isn't taking jobs itself (fetched from there)."""
+    """The next file for this worker: a conversion whose last try didn't work first, from any job, the one put back
+    longest ago; then its own recordings; then the job list's own files and any other Pi's whose Pi isn't taking
+    jobs itself (fetched from there)."""
     now = time.time()
     me = node.name
+
+    def takes(j, it):
+        src = it["source"]["node"]
+        if src == worker:
+            return True
+        if j["params"].get("here"):  # (done only where each file is)
+            return False
+        owner_busy = src != me and now - _seen.get(src, 0) < OWNER_FRESH_S
+        return src == me or (not owner_busy and src in worker_can_reach)
+    live = [j for j in sorted(book(node), key=lambda x: (not x.get("high"), x["created"])) if j["state"] in ("waiting", "running")]
+    again = [(it["first"], j, it) for j in live if j["kind"] in CONVERSIONS for it in j["items"]
+             if it["state"] == "waiting" and it.get("first") and takes(j, it)]
+    if again:
+        _, j, it = min(again, key=lambda x: x[0])
+        return j, it
     fallback = None
-    for j in sorted(book(node), key=lambda x: (not x.get("high"), x["created"])):
-        if j["state"] not in ("waiting", "running"):
-            continue
-        here = bool(j["params"].get("here"))  # (done only where each file is)
+    for j in live:
         for it in j["items"]:
             if it["state"] != "waiting":
                 continue
-            src = it["source"]["node"]
-            if src == worker:
+            if it["source"]["node"] == worker:
                 return j, it
-            if fallback is None and not here:
-                owner_busy = src != me and now - _seen.get(src, 0) < OWNER_FRESH_S
-                if src == me or (not owner_busy and src in worker_can_reach):
-                    fallback = (j, it)
+            if fallback is None and takes(j, it):
+                fallback = (j, it)
     return fallback
+
+
+def put_first(job, it):
+    """A conversion whose try didn't work: ahead of every waiting file in line, in any job (pick)."""
+    if job["kind"] in CONVERSIONS:
+        it["first"] = time.time()
+
+
+def come_back(job, it, why):
+    """A conversion that failed for good comes back in line first by itself, its tries counted again, AUTO_ROUNDS
+    times; then it stays failed. True if it came back."""
+    if job["kind"] not in CONVERSIONS or job["state"] == "stopped" or it.get("rounds", 0) >= AUTO_ROUNDS:
+        return False
+    it.update(state="waiting", worker=None, lease=None, progress=0, tries=0, error=None, rounds=it.get("rounds", 0) + 1,
+              lastError=str(why)[:500], first=time.time())
+    return True
 
 
 def summarize_animals(node, job):
@@ -309,6 +348,8 @@ def act_create(node, args):
             items[-1]["plan"] = s["plan"]
             if isinstance(s.get("place"), str) and os.path.isabs(s["place"]):
                 items[-1]["place"] = s["place"]
+        if s.get("again") and kind in CONVERSIONS:  # (it failed before: autoconvert's look a day later) first, one round
+            items[-1].update(first=time.time(), rounds=AUTO_ROUNDS)
     folder = str(args.get("folder") or "")
     if folder and kind != "playable":  # (a playable file comes with its plan)
         if not os.path.isdir(folder):
@@ -375,6 +416,8 @@ def act_again(node, args):
         n = 0
         for it in job["items"]:
             if it["state"] in ("stopped", "failed"):
+                if it["state"] == "failed":  # (one more round, first)
+                    put_first(job, it)
                 it.update(state="waiting", tries=0, error=None, worker=None, lease=None)
                 n += 1
         job["state"] = "waiting"
@@ -571,7 +614,8 @@ def act_finish(node, args):
         elif args.get("again") and job["state"] != "stopped" and it.get("tries", 0) + 1 < MAX_TRIES:
             # (its file couldn't be moved between Pis, the network's doing: back on the list, a few times)
             it.update(state="waiting", worker=None, lease=None, progress=0, tries=it.get("tries", 0) + 1, error=None)
-        else:
+            put_first(job, it)
+        elif not come_back(job, it, args.get("error") or "it failed"):
             it.update(state="stopped" if job["state"] == "stopped" else "failed", lease=None, finished=time.time(), error=str(args.get("error") or "it failed")[:500])
         settle(job)
         if job["kind"] == "animals":
@@ -864,8 +908,8 @@ def stop_proc():
             if hasattr(os, "killpg"):
                 os.killpg(p.pid, signal.SIGCONT)
                 os.killpg(p.pid, signal.SIGTERM)
-            else:
-                p.terminate()
+            elif subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True, timeout=10).returncode:
+                p.terminate()  # (Windows, for the checks: taskkill stops cmd's own programs too, which terminate() left running)
             p.wait(10)
         except (OSError, subprocess.TimeoutExpired):
             try:

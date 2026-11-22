@@ -167,6 +167,11 @@ for that Pi.
   - **A Pi keeps its file while the Pi keeping the list doesn't answer** (its Wi-Fi may just be full):
     it says how it's going every 20 seconds, and only a Pi not heard from for 10 minutes has its file
     put back on the list (failed after 3 rounds).
+  - **Failed conversions go first:** a conversion whose try didn't work goes straight back in line,
+    ahead of every waiting video in any job (the one put back longest ago first). One that fails for
+    good (its tries used up, or the conversion itself failed) comes back so by itself 3 more times,
+    then stays failed; **Try again**, or the look a day later, gives it one more round, first. The
+    animal model's jobs and commands are as before.
   - **Each Pi's switches:**
     - **Take jobs**
     - **while its cameras run** (off by default)
@@ -189,7 +194,7 @@ for that Pi.
   - **HEVC / H.265:** re-encoded (off; hours a video).
   - **4K and bigger:** made 1080p, HDR's colours made SDR's (off; slowest).
   - **Sound only:** the picture copied, the sound made AAC, by that Pi alone (off).
-  A video that failed is tried again a day later (or at once: **Try the failed ones again**).
+  A video that failed is tried again a day later, first in line (or at once: **Try the failed ones again**).
   Names with "sample" in them are left alone, and picture subtitles (PGS, DVD) stay in the original.
 
 - **Apps** (`modules/apps.py`): apps the cluster runs on whichever Pi is free, shown on the app's

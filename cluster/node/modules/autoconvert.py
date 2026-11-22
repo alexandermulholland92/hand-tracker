@@ -16,7 +16,7 @@ remembered by its size and time. What it needs, each kind with its own switch:
          picture copied, the sound made AAC; done by this Pi alone, where the file is
 Each look puts what's new in jobs (jobs.py's "playable" kind: shared out across the Pis, one file moving
 over the Wi-Fi at a time each way), old formats first; the Pi that keeps the list puts each copy beside
-its video as it comes back. A file that failed is tried again a day later. Picture subtitles (PGS, DVD)
+its video as it comes back. A file that failed is tried again a day later, first in line (jobs.py). Picture subtitles (PGS, DVD)
 can't go in an .mp4: the original keeps them. Names with "sample" in them are left alone.
 """
 
@@ -185,6 +185,7 @@ def queue(node, mem, files, now):
     """What needs converting and isn't on its way yet: a job for each kind (its switch on)."""
     jobs = {j["id"]: j for j in list(node.call("jobs", "book") or [])}
     pending = collections.defaultdict(list)
+    again = set()
     for p, f in sorted(files.items()):
         kind = f.get("need")
         if not kind or f.get("state") == "done" or not node.setting("autoconvert", kind):
@@ -202,8 +203,10 @@ def queue(node, mem, files, now):
             f["state"], f["failedAt"] = "failed", f.get("failedAt") or now
         elif it and it["state"] in ("failed", "stopped"):
             f["state"], f["failedAt"] = "failed", f.get("failedAt") or now
-        if f.get("state") == "failed" and now - float(f.get("failedAt") or 0) < RETRY_S:
-            continue
+        if f.get("state") == "failed":
+            if now - float(f.get("failedAt") or 0) < RETRY_S:
+                continue
+            again.add(p)  # (it failed before: first in line this time, one round)
         pending[kind].append(p)
     for kind in KINDS:
         paths = pending.get(kind)
@@ -214,12 +217,12 @@ def queue(node, mem, files, now):
             mem["next"] = int(mem.get("next") or 0) + 1
             entries.append({"name": "v%06d%s" % (mem["next"], os.path.splitext(p)[1].lower()), "size": files[p]["key"][0],
                             "node": node.name, "path": p, "plan": files[p]["plan"],
-                            "place": os.path.join(os.path.dirname(p), converted_name(os.path.basename(p)))})
+                            "place": os.path.join(os.path.dirname(p), converted_name(os.path.basename(p)))} | ({"again": True} if p in again else {}))
         a = node.call("jobs", "act_create", {"kind": "playable", "title": "Convert for every device: %d %s video%s" % (len(entries), WORDS[kind], "" if len(entries) == 1 else "s"),
                                              "params": {"auto": kind, "here": kind == "sound"}, "files": entries})
         if a and a.get("ok"):
             for p in paths:
-                files[p].update(job=a["job"], state="queued")
+                files[p].update(job=a["job"], state="queued", failedAt=None)  # (a day from its next failure, not its first)
             node.event("autoconvert", "Converting %d %s video%s for every device" % (len(paths), WORDS[kind], "" if len(paths) == 1 else "s"))
         else:
             node.event("autoconvert", "Couldn't make a job for the %s videos: %s" % (WORDS[kind], (a or {}).get("error", "the jobs module is off")), bad=True)
