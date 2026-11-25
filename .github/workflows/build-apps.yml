@@ -402,7 +402,7 @@ jobs:
             grep -q '"ok":true' "selftest-$kind.txt" || { echo "== $kind" >> ios-build.log; tail -n 80 "sim-$kind.log" >> ios-build.log; exit 1; }
             echo "$kind: its self-test passed"
           done
-          python3 -c "import json,sys; t=open('selftest-cluster.txt').read(); d=json.loads(t.split('HT-SELFTEST ',1)[1]); sys.exit(0 if all((d.get(k) or {}).get('ok') for k in ('member','ffmpeg','animals','downloads','ftp')) else 1)" \
+          python3 -c "import json,sys; t=open('selftest-cluster.txt').read(); d=json.loads(t.split('HT-SELFTEST ',1)[1]); sys.exit(0 if d.get('ok') and all((d.get(k) or {}).get('ok') for k in ('member','ffmpeg','animals','downloads','ftp')) else 1)" \
             && cmp -s ftp-shared/shared/hello.txt ftp-shared/shared/sent-from-iphone.txt && test -d ftp-shared/shared/made-on-iphone \
             || { echo "== cluster: its member's checks" >> ios-build.log; tail -n 80 sim-cluster.log >> ios-build.log; tail -n 40 cluster-sim.log >> ios-build.log; exit 1; }
           echo "Cluster: this iPhone as a member passed too (its Python, ffmpeg, the animal model's tools, Transmission and FTP link)"
@@ -433,6 +433,7 @@ jobs:
           done
           for f in ClusterFFmpeg ClusterORT ClusterTransmission Python; do lipo -archs "build/ios-cluster/App.app/Frameworks/$f.framework/$f" | grep -q arm64; done
           test -f build/ios-cluster/App.app/Frameworks/numpy._core._multiarray_umath.framework/numpy._core._multiarray_umath
+          test -f build/ios-cluster/App.app/Frameworks/PIL._imaging.framework/PIL._imaging
           # (Cluster's under its name from before the rename too, 2026-11-25: an iPhone's Cluster app from before
           # looks for PiCluster-*.ipa to say there's a new build)
           cp "dist/Cluster-$version-ios-unsigned.ipa" "dist/PiCluster-$version-ios-unsigned.ipa"
@@ -441,7 +442,7 @@ jobs:
         if: failure()
         run: |
           test -f ios-build.log || exit 0
-          echo "::error title=iPhone build::$(grep -E "error:|HT-SELFTEST|Error" ios-build.log | tail -n 40 | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')"
+          echo "::error title=iPhone build::$(grep -E "error:|HT-SELFTEST|Error|Traceback" ios-build.log | tail -n 40 | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')"
 
       - uses: actions/upload-artifact@v4
         with:
