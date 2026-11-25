@@ -207,12 +207,15 @@ final class FtpClient {
         }
     }
 
-    // A folder's files and folders (MLSD: pyftpdlib's, its links to folders followed, as folders).
+    // A folder's files and folders (MLSD: pyftpdlib's, its links to folders followed, as folders). Its lines split as
+    // bytes, as line() does: in a Swift string "\r\n" is one character, neither "\r" nor "\n" (split on those, each name
+    // kept its line's end; found in the simulator check, 2026-11-25).
     func list(_ path: String) throws -> [[String: Any]] {
         var all = Data()
         try transfer("MLSD " + path) { fd in try FtpClient.receive(fd) { all.append($0) } }
         var out: [[String: Any]] = []
-        for raw in String(decoding: all, as: UTF8.self).split(whereSeparator: { $0 == "\r" || $0 == "\n" }) {
+        for piece in all.split(separator: 10) {
+            let raw = String(decoding: piece.last == 13 ? piece.dropLast() : piece, as: UTF8.self)
             guard let space = raw.firstIndex(of: " ") else { continue }
             let name = String(raw[raw.index(after: space)...])
             var facts: [String: String] = [:]
