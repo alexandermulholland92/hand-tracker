@@ -417,10 +417,22 @@ jobs:
 
       # The Cluster app's own Transmission (scripts/build-transmission-android.js: its library with curl and
       # mbedTLS, built with the runner's NDK), kept from the last build while its sources and script are the same.
-      - uses: actions/cache@v4
+      - id: transmission-cache
+        uses: actions/cache@v4
         with:
           path: android/app/src/cluster/jniLibs
           key: transmission-android-${{ hashFiles('scripts/build-transmission-android.js', 'android/app/src/cluster/cpp/**') }}
+
+      # Built with the SDK's CMake 3.22.1, as on the PC it was tried on: the runner's own CMake (4.x) doesn't find
+      # Android's threads for Transmission's libevent (Android has no pthread_cancel, and 4.x no longer falls back to
+      # -pthread), which failed the first build of it, 2026-11-25.
+      - name: The Android SDK's CMake 3.22.1, for the phone Transmission
+        if: steps.transmission-cache.outputs.cache-hit != 'true'
+        run: |
+          sdkm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$sdkm" ] || sdkm=sdkmanager
+          yes | "$sdkm" --install "cmake;3.22.1" > /dev/null
+          "$ANDROID_HOME/cmake/3.22.1/bin/cmake" --version | head -n 1
 
       # Every build is signed with the same key, so each APK installs over the last one.
       # Best: a key saved as the repository secret ANDROID_DEBUG_KEYSTORE (a debug.keystore,
