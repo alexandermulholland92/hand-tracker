@@ -65,7 +65,8 @@ build_slice() {
    # The ffmpeg tool as a function: its main, called by ht_ffmpeg.c in the library (where main is a function like
    # any other), and a way to ask a run to stop, as its own signal handler does (added to its own file, where that is).
    grep -Eq '^(static void )?sigterm_handler\(int sig\)$' fftools/ffmpeg.c || { echo "fftools/ffmpeg.c isn't as expected."; exit 1; }
-   printf '\n/* The Cluster app (scripts/build-ffmpeg-ios.sh): a run asked to stop, as a signal would. */\nvoid ht_ffmpeg_tool_stop(void)\n{\n    sigterm_handler(SIGTERM);\n}\n' >> fftools/ffmpeg.c
+   # (declared first: FFmpeg's build makes a function without a declaration an error)
+   printf '\n/* The Cluster app (scripts/build-ffmpeg-ios.sh): a run asked to stop, as a signal would. */\nvoid ht_ffmpeg_tool_stop(void);\nvoid ht_ffmpeg_tool_stop(void)\n{\n    sigterm_handler(SIGTERM);\n}\n' >> fftools/ffmpeg.c
    PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" ./configure --prefix="$prefix" \
      --enable-cross-compile --target-os=darwin --arch=aarch64 --cc="$cc" --sysroot="$sysroot" \
      --extra-cflags="$flags -I$prefix/include" --extra-ldflags="$flags -L$prefix/lib" \
