@@ -352,6 +352,7 @@ final class ClusterPython {
     private var gilRelease: ReleaseFn?
     private let lock = NSLock()
     private let wake = DispatchSemaphore(value: 0)
+    private let initialized = DispatchGroup() // (left once Python has started, on its thread)
     private var thread: Thread?
     private var wanted = false
     private(set) var running = false
@@ -392,26 +393,65 @@ final class ClusterPython {
         defer { lock.unlock() }
         let data = try JSONSerialization.data(withJSONObject: settings)
         try data.write(to: Self.settingsFile, options: .atomic)
-        if thread == nil {
-            let begin = try load()
-            setenv("PYTHONHOME", bundle + "/python", 1)
-            setenv("PYTHONPATH", bundle + "/cluster-node", 1)
-            setenv("PYTHONDONTWRITEBYTECODE", "1", 1)
-            setenv("PYTHONUNBUFFERED", "1", 1)
-            setenv("PYTHONUTF8", "1", 1)
-            setenv("NO_COLOR", "1", 1)
-            let t = Thread { [weak self] in
-                begin()
-                self?.loop()
-            }
-            t.name = "cluster-python"
-            t.stackSize = 16 << 20
-            thread = t
-            t.start()
-        }
+        try startThread()
         wanted = true
         lastError = ""
         wake.signal()
+    }
+
+    // Python's own thread, started once (lock held): Python started on it, then its loop.
+    private func startThread() throws {
+        if thread != nil { return }
+        let begin = try load()
+        setenv("PYTHONHOME", bundle + "/python", 1)
+        setenv("PYTHONPATH", bundle + "/cluster-node", 1)
+        setenv("PYTHONDONTWRITEBYTECODE", "1", 1)
+        setenv("PYTHONUNBUFFERED", "1", 1)
+        setenv("PYTHONUTF8", "1", 1)
+        setenv("NO_COLOR", "1", 1)
+        // (its HTTPS, a job's model from GitHub, say: Apple's root certificates, which ios-variant.js puts in the app; an
+        // iPhone gives an app's own OpenSSL none)
+        setenv("SSL_CERT_FILE", bundle + "/python/cacert.pem", 1)
+        let started = initialized
+        started.enter()
+        let t = Thread { [weak self] in
+            begin()
+            started.leave()
+            self?.loop()
+        }
+        t.name = "cluster-python"
+        t.stackSize = 16 << 20
+        thread = t
+        t.start()
+    }
+
+    // Python code run once, beside the service (the build's simulator check: phonecheck.py), on a thread of its own
+    // with Python's stack; Python started first if it isn't yet. -> PyRun_SimpleString's answer (0: it ran to its end)
+    func runScript(_ code: String) throws -> Int32 {
+        lock.lock()
+        do {
+            try startThread()
+        } catch {
+            lock.unlock()
+            throw error
+        }
+        lock.unlock()
+        initialized.wait()
+        guard let ensure = gilEnsure, let release = gilRelease, let run = runString else { return -1 }
+        final class Answer { var code: Int32 = -1 }
+        let answer = Answer()
+        let done = DispatchSemaphore(value: 0)
+        let t = Thread {
+            let g = ensure()
+            answer.code = code.withCString { run($0) }
+            release(g)
+            done.signal()
+        }
+        t.name = "cluster-python-script"
+        t.stackSize = 16 << 20
+        t.start()
+        done.wait()
+        return answer.code
     }
 
     private func loop() {
@@ -466,6 +506,7 @@ public class MemberPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "status", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "allowTakes", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "selfTestFfmpeg", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "selfTestAnimals", returnType: CAPPluginReturnPromise),
     ]
     static let PORT = 47830
     static let NAME = "^[A-Za-z0-9][A-Za-z0-9 _.+'-]{0,39}$"
@@ -505,13 +546,23 @@ public class MemberPlugin: CAPPlugin, CAPBridgedPlugin {
         try? FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
         port = (test?["port"] as? NSNumber)?.intValue ?? Self.PORT
         var env: [String: String] = [
-            "HT_CLUSTER_PLATFORM": "ios", "HT_CLUSTER_NAME": name, "HT_CLUSTER_TS_IP": ClusterNative.tailscaleAddress(),
+            "HT_CLUSTER_NAME": name, "HT_CLUSTER_TS_IP": ClusterNative.tailscaleAddress(),
             "HT_CLUSTER_SEEDS": seeds.joined(separator: ","), "HT_CLUSTER_STATE": state.path, "HT_CLUSTER_PORT": String(port),
-            "HT_CLUSTER_NATIVE_CALL": String(UInt(bitPattern: unsafeBitCast(htNativeCall, to: Int.self))),
-            "HT_CLUSTER_NATIVE_FREE": String(UInt(bitPattern: unsafeBitCast(htNativeFree, to: Int.self))),
         ]
+        for (key, value) in Self.appEnv() { env[key] = value }
         if test != nil { env["HT_CLUSTER_SIMULATE"] = "1" } // (the build's simulator check only: see start)
         try ClusterPython.shared.start(["code": Bundle.main.bundlePath + "/cluster-node", "env": env])
+    }
+
+    // What the service's Python is told of the app itself: this platform, its two functions' addresses (phonesys.py)
+    // and its ONNX Runtime (phonetools.py: the animal model's jobs).
+    static func appEnv() -> [String: String] {
+        return [
+            "HT_CLUSTER_PLATFORM": "ios",
+            "HT_CLUSTER_NATIVE_CALL": String(UInt(bitPattern: unsafeBitCast(htNativeCall, to: Int.self))),
+            "HT_CLUSTER_NATIVE_FREE": String(UInt(bitPattern: unsafeBitCast(htNativeFree, to: Int.self))),
+            "HT_CLUSTER_ORT": Bundle.main.bundlePath + "/Frameworks/ClusterORT.framework/ClusterORT",
+        ]
     }
 
     @objc func start(_ call: CAPPluginCall) {
@@ -556,6 +607,50 @@ public class MemberPlugin: CAPPlugin, CAPBridgedPlugin {
         guard selfTest else { return call.reject("Only in the build's check.") }
         DispatchQueue.global().async {
             call.resolve(ClusterFFmpeg.selfTest())
+        }
+    }
+
+    // The build's simulator check only: the animal model's tools, as its jobs use them (cluster/node/phonecheck.py, in the
+    // app's Python: NumPy, Pillow, HTTPS, its ONNX Runtime and the model's own script).
+    @objc func selfTestAnimals(_ call: CAPPluginCall) {
+        guard selfTest else { return call.reject("Only in the build's check.") }
+        let bundle = Bundle.main.bundlePath
+        guard ClusterPython.shared.available, FileManager.default.fileExists(atPath: bundle + "/Frameworks/ClusterORT.framework/ClusterORT") else {
+            return call.resolve(["available": false])
+        }
+        DispatchQueue.global().async {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("selftest-animals")
+            let result = dir.appendingPathComponent("result.json")
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            var answer: [String: Any] = ["available": true, "ok": false]
+            do {
+                // (what it's to do, in a file it reads: Python's environment was read as it started)
+                let settings: [String: Any] = ["code": bundle + "/cluster-node", "work": dir.path, "result": result.path, "env": MemberPlugin.appEnv()]
+                let file = ClusterPython.settingsFile.deletingLastPathComponent().appendingPathComponent("cluster-selftest.json")
+                try JSONSerialization.data(withJSONObject: settings).write(to: file, options: .atomic)
+                let code = """
+                import json, os, sys
+                c = json.load(open(os.path.join(os.environ["HOME"], "Library", "Application Support", "cluster-selftest.json"), encoding="utf-8"))
+                os.environ.update(c["env"])
+                if c["code"] not in sys.path:
+                    sys.path.insert(0, c["code"])
+                import phonecheck
+                r = phonecheck.animals(c["work"])
+                with open(c["result"], "w", encoding="utf-8") as f:
+                    json.dump(r, f)
+                """
+                let rc = try ClusterPython.shared.runScript(code)
+                if let data = try? Data(contentsOf: result), let r = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                    answer = r
+                    answer["available"] = true
+                } else {
+                    answer["error"] = "It left no answer (Python: \(rc); the app's log says why)."
+                }
+            } catch {
+                answer["error"] = error.localizedDescription
+            }
+            call.resolve(answer)
         }
     }
 }

@@ -11,6 +11,11 @@
  *     cluster:   Cluster — only its own few files (build-web.js --cluster: cluster.html as its
  *                page), for the Raspberry Pis running Cluster's service (RemoteLink.swift's
  *                ClusterPlugin reaches them)
+ *       with, for this iPhone as a member of the cluster (ClusterMember.swift), any of:
+ *       --python <Python.xcframework>  its own Python and the cluster's service
+ *       --ffmpeg <folder>              its ffmpeg (scripts/build-ffmpeg-ios.sh's)
+ *       --ort <folder>                 its ONNX Runtime (scripts/build-ort-ios.sh's)
+ *       --wheels <folder>              NumPy and Pillow for its Python (scripts/get-ios-wheels.sh's; with --python)
  * Writes <out folder>/App.app. The app isn't signed (nor is Hand Tracker's): Sideloadly or
  * AltStore sign it with the user's own Apple ID when they install it.
  */
@@ -60,24 +65,75 @@ if (kind === "mouse" || kind === "cluster") {
 // modules, each made a framework of its own (iOS loads code only from frameworks; as Python's own build/utils.sh
 // does in an Xcode build: a .fwork file where the module was, a .origin file beside it), and the service's code
 // (cluster/node's Python files, as build-android.js puts them in the Android app, and the app's starter).
+let dylibTemplate = null; // (BeeWare's Info.plist for compiled modules made frameworks: --python's)
 const pyAt = process.argv.indexOf("--python");
 if (kind === "cluster" && pyAt > 0) addPython(app, path.resolve(process.argv[pyAt + 1]));
 // Its ffmpeg, for a job's conversions, with --ffmpeg <folder> (scripts/build-ffmpeg-ios.sh's: ClusterFFmpeg.framework
 // for iPhones and for the simulator).
 const ffAt = process.argv.indexOf("--ffmpeg");
-if (kind === "cluster" && ffAt > 0) addFfmpeg(app, path.resolve(process.argv[ffAt + 1]));
-if (kind === "cluster" && (pyAt > 0 || ffAt > 0)) signForSimulator(app);
+if (kind === "cluster" && ffAt > 0) addFramework(app, path.resolve(process.argv[ffAt + 1]), "ClusterFFmpeg");
+// The animal model's tools: its ONNX Runtime, with --ort <folder> (scripts/build-ort-ios.sh's: ClusterORT.framework for
+// iPhones and for the simulator), and NumPy and Pillow for its Python, with --wheels <folder> (scripts/get-ios-wheels.sh's).
+const ortAt = process.argv.indexOf("--ort");
+if (kind === "cluster" && ortAt > 0) addFramework(app, path.resolve(process.argv[ortAt + 1]), "ClusterORT");
+const wheelsAt = process.argv.indexOf("--wheels");
+if (kind === "cluster" && wheelsAt > 0) addWheels(app, path.resolve(process.argv[wheelsAt + 1]));
+if (kind === "cluster" && (pyAt > 0 || ffAt > 0 || ortAt > 0 || wheelsAt > 0)) signForSimulator(app);
 
 function onSimulator(app) {
   return execFileSync("plutil", ["-extract", "DTPlatformName", "raw", "-o", "-", path.join(app, "Info.plist")]).toString().trim() === "iphonesimulator";
 }
 
-function addFfmpeg(app, folder) {
-  const from = path.join(folder, onSimulator(app) ? "ios-arm64-simulator" : "ios-arm64", "ClusterFFmpeg.framework");
-  if (!fs.existsSync(path.join(from, "ClusterFFmpeg"))) throw new Error(`No ClusterFFmpeg.framework in ${from}`);
+function addFramework(app, folder, name) {
+  const from = path.join(folder, onSimulator(app) ? "ios-arm64-simulator" : "ios-arm64", `${name}.framework`);
+  if (!fs.existsSync(path.join(from, name))) throw new Error(`No ${name}.framework in ${from}`);
   fs.mkdirSync(path.join(app, "Frameworks"), { recursive: true });
-  execFileSync("ditto", [from, path.join(app, "Frameworks", "ClusterFFmpeg.framework")]);
-  console.log(`Cluster's ffmpeg: ${path.relative(process.cwd(), from)}`);
+  execFileSync("ditto", [from, path.join(app, "Frameworks", `${name}.framework`)]);
+  console.log(`Cluster's ${name}: ${path.relative(process.cwd(), from)}`);
+}
+
+// A compiled Python module (a .so) made a framework of its own, by its full name (iOS loads code only from frameworks;
+// as Python's own build/utils.sh does in an Xcode build): a .fwork file where it was, a .origin file beside it.
+function moduleFramework(app, file, name, sim) {
+  const folder = path.join(app, "Frameworks", `${name}.framework`);
+  fs.mkdirSync(folder, { recursive: true });
+  const info = path.join(folder, "Info.plist");
+  fs.writeFileSync(info, dylibTemplate);
+  execFileSync("plutil", ["-replace", "CFBundleExecutable", "-string", name, info]);
+  execFileSync("plutil", ["-replace", "CFBundleIdentifier", "-string", `${own.id}.${name}`.replace(/_/g, "-"), info]);
+  execFileSync("plutil", ["-replace", "CFBundleSupportedPlatforms", "-json", sim ? '["iPhoneSimulator"]' : '["iPhoneOS"]', info]);
+  fs.renameSync(file, path.join(folder, name));
+  const fwork = file.replace(/\.so$/, ".fwork");
+  fs.writeFileSync(fwork, `Frameworks/${name}.framework/${name}\n`);
+  fs.writeFileSync(path.join(folder, `${name}.origin`), path.relative(app, fwork).split(path.sep).join("/") + "\n");
+}
+
+// Wheels for this app's platform (…_arm64_iphoneos.whl, or …_iphonesimulator.whl in the simulator) into its Python's
+// site-packages, each compiled module a framework (numpy._core._multiarray_umath.framework, say).
+function addWheels(app, folder) {
+  const sim = onSimulator(app);
+  const lib = path.join(app, "python", "lib");
+  const version = dylibTemplate && fs.readdirSync(lib).find((d) => /^python3\.\d+$/.test(d));
+  if (!version) throw new Error("--wheels needs --python (the app's own Python) with it");
+  const site = path.join(lib, version, "site-packages");
+  fs.mkdirSync(site, { recursive: true });
+  const wheels = fs.readdirSync(folder).filter((f) => f.endsWith(sim ? "_arm64_iphonesimulator.whl" : "_arm64_iphoneos.whl"));
+  if (!wheels.length) throw new Error(`No wheels for ${sim ? "the simulator" : "iPhones"} in ${folder}`);
+  for (const w of wheels) execFileSync("unzip", ["-q", "-o", path.join(folder, w), "-d", site]);
+  const found = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".so")) found.push(p);
+    }
+  };
+  walk(site);
+  for (const so of found) {
+    const name = path.relative(site, so).split(path.sep).join("/").split(".")[0].replace(/\//g, ".");
+    moduleFramework(app, so, name, sim);
+  }
+  console.log(`Cluster's Python packages: ${wheels.join(", ")} (${found.length} compiled modules as frameworks)`);
 }
 
 // (the simulator runs on the Mac, which loads only signed code: each framework added signed as it is, by no one, as
@@ -104,23 +160,16 @@ function addPython(app, xcf) {
   }
   const version = fs.readdirSync(lib).find((d) => /^python3\.\d+$/.test(d));
   const dynload = path.join(lib, version, "lib-dynload");
-  const template = fs.readFileSync(path.join(xcf, "build", "iOS-dylib-Info-template.plist"));
+  dylibTemplate = fs.readFileSync(path.join(xcf, "build", "iOS-dylib-Info-template.plist"));
   let modules = 0;
   for (const file of fs.readdirSync(dynload).filter((f) => f.endsWith(".so"))) {
-    const name = file.split(".")[0];
-    const folder = path.join(frameworks, `${name}.framework`);
-    fs.mkdirSync(folder, { recursive: true });
-    const info = path.join(folder, "Info.plist");
-    fs.writeFileSync(info, template);
-    execFileSync("plutil", ["-replace", "CFBundleExecutable", "-string", name, info]);
-    execFileSync("plutil", ["-replace", "CFBundleIdentifier", "-string", `${own.id}.${name}`.replace(/_/g, "-"), info]);
-    execFileSync("plutil", ["-replace", "CFBundleSupportedPlatforms", "-json", sim ? '["iPhoneSimulator"]' : '["iPhoneOS"]', info]);
-    fs.renameSync(path.join(dynload, file), path.join(folder, name));
-    const fwork = path.join(dynload, file.replace(/\.so$/, ".fwork"));
-    fs.writeFileSync(fwork, `Frameworks/${name}.framework/${name}\n`);
-    fs.writeFileSync(path.join(folder, `${name}.origin`), path.relative(app, fwork).split(path.sep).join("/") + "\n");
+    moduleFramework(app, path.join(dynload, file), file.split(".")[0], sim);
     modules++;
   }
+  // (its HTTPS, a job's model from GitHub, say: checked against Apple's own root certificates, as this Mac has them;
+  // an iPhone gives an app's own OpenSSL none. ClusterMember.swift points SSL_CERT_FILE at them.)
+  const roots = execFileSync("security", ["find-certificate", "-a", "-p", "/System/Library/Keychains/SystemRootCertificates.keychain"], { maxBuffer: 64 << 20 });
+  fs.writeFileSync(path.join(app, "python", "cacert.pem"), roots);
   const from = path.join(ROOT, "cluster", "node"), code = path.join(app, "cluster-node");
   const files = [...fs.readdirSync(from).filter((f) => f.endsWith(".py")), ...fs.readdirSync(path.join(from, "modules")).filter((f) => f.endsWith(".py")).map((f) => `modules/${f}`)];
   for (const f of files) {

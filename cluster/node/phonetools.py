@@ -10,7 +10,8 @@ does, so:
   a shell command   Android's own sh (/system/bin/sh: no bash there); none on an iPhone
 Each as subprocess.Popen is used by jobs.py: poll(), wait(), stdout (its lines), terminate(), kill(), returncode, pid.
 And onnxruntime() -> a module for the animal model's script (jobs_animals.py), as onnxruntime's own: its
-InferenceSession runs the model with the app's ONNX Runtime (Android: its Java API, through Chaquopy).
+InferenceSession runs the model with the app's ONNX Runtime (Android: its Java API, through Chaquopy; an iPhone:
+ClusterORT.framework, through ctypes).
 """
 
 import ctypes
@@ -337,5 +338,113 @@ def onnxruntime():
                     t.close()
 
     m.SessionOptions = SessionOptions
-    m.InferenceSession = InferenceSession
+    m.InferenceSession = _IosSession if PLATFORM == "ios" else InferenceSession
     return m
+
+
+# (an iPhone: the Cluster app's own ONNX Runtime, ClusterORT.framework: Microsoft's iOS library with ios/ort/ht_ort.c)
+_ort = {"lib": None}
+
+
+def _ort_lib():
+    if _ort["lib"] is None:
+        c = ctypes
+        path = os.environ.get("HT_CLUSTER_ORT") or os.path.join(os.path.dirname(sys.executable), "Frameworks", "ClusterORT.framework", "ClusterORT")
+        lib = c.CDLL(path)
+        lib.ht_ort_open.restype = c.c_void_p
+        lib.ht_ort_open.argtypes = [c.c_char_p, c.c_int, c.c_char_p, c.c_int]
+        lib.ht_ort_describe.restype = c.c_void_p
+        lib.ht_ort_describe.argtypes = [c.c_void_p]
+        lib.ht_ort_run.restype = c.c_void_p
+        lib.ht_ort_run.argtypes = [c.c_void_p, c.c_int, c.POINTER(c.c_char_p), c.POINTER(c.c_void_p), c.POINTER(c.POINTER(c.c_int64)),
+                                   c.POINTER(c.c_int), c.c_char_p, c.c_int]
+        lib.ht_ort_output.restype = c.c_void_p
+        lib.ht_ort_output.argtypes = [c.c_void_p, c.c_int, c.POINTER(c.c_int64), c.c_int, c.POINTER(c.c_int)]
+        for name in ("ht_ort_release", "ht_ort_free", "ht_ort_close"):
+            getattr(lib, name).restype = None
+            getattr(lib, name).argtypes = [c.c_void_p]
+        _ort["lib"] = lib
+    return _ort["lib"]
+
+
+class _IosArg:
+    def __init__(self, name, shape):
+        self.name, self.shape = name, shape
+
+
+class _IosMeta:
+    def __init__(self, custom):
+        self.custom_metadata_map = custom
+
+
+class _IosSession:
+    """onnxruntime's InferenceSession on an iPhone: float32 inputs and outputs (all the animal model has), its unknown
+    sizes None (as onnxruntime's own gives them: not -1)."""
+
+    def __init__(self, path, sess_options=None, providers=None):
+        self.lib, self.s = _ort_lib(), None
+        err = ctypes.create_string_buffer(1024)
+        threads = int(getattr(sess_options, "intra_op_num_threads", 0) or 0)
+        self.s = self.lib.ht_ort_open(os.fsencode(str(path)), threads, err, len(err))
+        if not self.s:
+            raise RuntimeError("ONNX Runtime: " + err.value.decode("utf-8", "replace"))
+        p = self.lib.ht_ort_describe(self.s)
+        if not p:
+            raise RuntimeError("ONNX Runtime: the model couldn't be described")
+        try:
+            d = json.loads(ctypes.string_at(p).decode("utf-8"))
+        finally:
+            self.lib.ht_ort_free(p)
+        dims = lambda shape: [v if v >= 0 else None for v in shape]
+        self.inputs = [_IosArg(a["name"], dims(a["shape"])) for a in d["inputs"]]
+        self.outputs = [_IosArg(a["name"], dims(a["shape"])) for a in d["outputs"]]
+        self.meta = {str(k): str(v) for k, v in d["meta"].items()}
+
+    def get_inputs(self):
+        return self.inputs
+
+    def get_outputs(self):
+        return self.outputs
+
+    def get_modelmeta(self):
+        return _IosMeta(self.meta)
+
+    def run(self, output_names, feeds):
+        import numpy as np
+
+        c = ctypes
+        xs = [(str(k), np.ascontiguousarray(v, dtype=np.float32)) for k, v in feeds.items()]
+        n = len(xs)
+        names = (c.c_char_p * n)(*[k.encode("utf-8") for k, _ in xs])
+        data = (c.c_void_p * n)(*[x.ctypes.data for _, x in xs])
+        kept = [(c.c_int64 * max(1, x.ndim))(*x.shape) for _, x in xs]
+        shapes = (c.POINTER(c.c_int64) * n)(*[c.cast(s, c.POINTER(c.c_int64)) for s in kept])
+        ndims = (c.c_int * n)(*[x.ndim for _, x in xs])
+        err = c.create_string_buffer(1024)
+        r = self.lib.ht_ort_run(self.s, n, names, data, shapes, ndims, err, len(err))
+        if not r:
+            raise RuntimeError("ONNX Runtime: " + err.value.decode("utf-8", "replace"))
+        try:
+            outs = []
+            for i, o in enumerate(self.outputs):
+                shape, nd = (c.c_int64 * 16)(), c.c_int(-1)
+                p = self.lib.ht_ort_output(r, i, shape, 16, c.byref(nd))
+                if nd.value < 0:
+                    raise RuntimeError("ONNX Runtime: the model's output %s isn't float32" % o.name)
+                size = tuple(int(v) for v in shape[:nd.value])
+                count = int(np.prod(size)) if size else 1
+                if not p or count == 0:
+                    outs.append(np.zeros(size, dtype=np.float32))
+                else:
+                    outs.append(np.ctypeslib.as_array((c.c_float * count).from_address(p)).reshape(size).copy())
+        finally:
+            self.lib.ht_ort_release(r)
+        if output_names:
+            order = [o.name for o in self.outputs]
+            outs = [outs[order.index(name)] for name in output_names]
+        return outs
+
+    def __del__(self):
+        if getattr(self, "s", None):
+            self.lib.ht_ort_close(self.s)
+            self.s = None

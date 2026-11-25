@@ -60,6 +60,26 @@ jobs:
           path: build/ffmpeg-ios
           key: ffmpeg-ios-${{ hashFiles('scripts/build-ffmpeg-ios.sh', 'ios/ffmpeg/**') }}
 
+      # The animal model's tools in the Cluster app: NumPy and Pillow for its Python (scripts/get-ios-wheels.sh: iOS
+      # wheels, each checked against its SHA-256), and ONNX Runtime 1.27.0 for iOS with the app's own way in
+      # (scripts/build-ort-ios.sh: ClusterORT.framework, from Microsoft's package, its SHA-512 checked), kept in the
+      # Actions cache once built, while its script is the same.
+      - name: NumPy and Pillow for iOS
+        run: bash scripts/get-ios-wheels.sh build/ios-wheels
+      - id: ort-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/ort-ios
+          key: ort-ios-${{ hashFiles('scripts/build-ort-ios.sh', 'ios/ort/**') }}
+      - name: ONNX Runtime for iOS
+        if: steps.ort-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-ort-ios.sh build/ort-ios
+      - if: steps.ort-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/ort-ios
+          key: ort-ios-${{ hashFiles('scripts/build-ort-ios.sh', 'ios/ort/**') }}
+
       # Started now: a simulator's first start takes minutes, done while the app builds.
       - name: Start the simulator
         run: |
@@ -76,26 +96,26 @@ jobs:
           test -d build/ios-sim/Build/Products/Debug-iphonesimulator/App.app
 
       # Cluster in the simulator, with its own Python: a Pi simulated here (cluster/node), reached through the app's
-      # Cluster plugin; then the app's member service started beside it and asked through that Pi (cluster.js's
-      # self-test, in the app's log as HT-SELFTEST).
+      # Cluster plugin; then the app's member service started beside it and asked through that Pi, its ffmpeg, and the
+      # animal model's tools (cluster.js's self-test, in the app's log as HT-SELFTEST).
       - name: Check Cluster in the simulator
         timeout-minutes: 30
         run: |
           udid="$SIM"
           xcrun simctl bootstatus "$udid" -b > /dev/null
           python3 cluster/node/ht_cluster.py --simulate --port 47830 > cluster-sim.log 2>&1 &
-          node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app cluster build/ios-sim-cluster --python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios
+          node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app cluster build/ios-sim-cluster --python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels
           xcrun simctl install "$udid" build/ios-sim-cluster/App.app
           xcrun simctl launch --console-pty "$udid" com.handtracker.cluster -HTSelfTest http://127.0.0.1:8765/ > sim-cluster.log 2>&1 &
-          for i in $(seq 1 150); do grep -q "HT-SELFTEST" sim-cluster.log && break; sleep 2; done
+          for i in $(seq 1 300); do grep -q "HT-SELFTEST" sim-cluster.log && break; sleep 2; done
           grep -a "HT-SELFTEST" sim-cluster.log | tail -1 | tee selftest-cluster.txt
-          if ! python3 -c "import json,sys; t=open('selftest-cluster.txt').read(); d=json.loads(t.split('HT-SELFTEST ',1)[1]); sys.exit(0 if d.get('ok') and (d.get('member') or {}).get('ok') and (d.get('ffmpeg') or {}).get('ok') else 1)"; then
+          if ! python3 -c "import json,sys; t=open('selftest-cluster.txt').read(); d=json.loads(t.split('HT-SELFTEST ',1)[1]); sys.exit(0 if d.get('ok') and (d.get('member') or {}).get('ok') and (d.get('ffmpeg') or {}).get('ok') and (d.get('animals') or {}).get('ok') else 1)"; then
             echo "== the app's log" >> ios-build.log; tail -n 150 sim-cluster.log >> ios-build.log
             echo "== the simulated Pi's log" >> ios-build.log; tail -n 40 cluster-sim.log >> ios-build.log
             tail -n 150 sim-cluster.log
             exit 1
           fi
-          echo "Cluster: its self-test passed, this iPhone's member service and its ffmpeg included"
+          echo "Cluster: its self-test passed, this iPhone's member service, its ffmpeg and the animal model's tools included"
 
       - name: Build for iPhones (unsigned)
         run: |
@@ -108,10 +128,11 @@ jobs:
           test -d "$app"
           version=$(node -p "require('./package.json').version")
           mkdir -p dist
-          node scripts/ios-variant.js "$app" cluster build/ios-cluster --python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios
+          node scripts/ios-variant.js "$app" cluster build/ios-cluster --python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels
           test -f build/ios-cluster/App.app/Frameworks/Python.framework/Python
-          lipo -archs build/ios-cluster/App.app/Frameworks/ClusterFFmpeg.framework/ClusterFFmpeg | grep -q arm64
-          lipo -archs build/ios-cluster/App.app/Frameworks/Python.framework/Python | grep -q arm64
+          test -f build/ios-cluster/App.app/Frameworks/numpy._core._multiarray_umath.framework/numpy._core._multiarray_umath
+          test -f build/ios-cluster/App.app/Frameworks/PIL._imaging.framework/PIL._imaging
+          for f in ClusterFFmpeg ClusterORT Python; do lipo -archs "build/ios-cluster/App.app/Frameworks/$f.framework/$f" | grep -q arm64; done
           rm -rf Payload && mkdir Payload && cp -R build/ios-cluster/App.app Payload/
           zip -qr "dist/Cluster-$version-ios-unsigned.ipa" Payload
           ls -la dist

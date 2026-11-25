@@ -1926,6 +1926,12 @@
           out.ffmpeg = ff;
           out.ok = out.ok && !!ff.ok;
         }
+        // the animal model's tools, as its jobs use them, where the app has them (ClusterORT.framework, NumPy, Pillow)
+        const an = await Member.selfTestAnimals().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+        if (an.available !== false) {
+          out.animals = an;
+          out.ok = out.ok && !!an.ok;
+        }
       }
       console.log("HT-SELFTEST " + JSON.stringify(out));
     })();
