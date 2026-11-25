@@ -16,6 +16,7 @@
  *       --ffmpeg <folder>              its ffmpeg (scripts/build-ffmpeg-ios.sh's)
  *       --ort <folder>                 its ONNX Runtime (scripts/build-ort-ios.sh's)
  *       --wheels <folder>              NumPy and Pillow for its Python (scripts/get-ios-wheels.sh's; with --python)
+ *       --transmission <folder>        its own Transmission (scripts/build-transmission-ios.sh's)
  * Writes <out folder>/App.app. The app isn't signed (nor is Hand Tracker's): Sideloadly or
  * AltStore sign it with the user's own Apple ID when they install it.
  */
@@ -78,7 +79,11 @@ const ortAt = process.argv.indexOf("--ort");
 if (kind === "cluster" && ortAt > 0) addFramework(app, path.resolve(process.argv[ortAt + 1]), "ClusterORT");
 const wheelsAt = process.argv.indexOf("--wheels");
 if (kind === "cluster" && wheelsAt > 0) addWheels(app, path.resolve(process.argv[wheelsAt + 1]));
-if (kind === "cluster" && (pyAt > 0 || ffAt > 0 || ortAt > 0 || wheelsAt > 0)) signForSimulator(app);
+// Its own Transmission, for the cluster's downloads, with --transmission <folder> (scripts/build-transmission-ios.sh's:
+// ClusterTransmission.framework for iPhones and for the simulator).
+const trAt = process.argv.indexOf("--transmission");
+if (kind === "cluster" && trAt > 0) addFramework(app, path.resolve(process.argv[trAt + 1]), "ClusterTransmission");
+if (kind === "cluster" && (pyAt > 0 || ffAt > 0 || ortAt > 0 || wheelsAt > 0 || trAt > 0)) signForSimulator(app);
 
 function onSimulator(app) {
   return execFileSync("plutil", ["-extract", "DTPlatformName", "raw", "-o", "-", path.join(app, "Info.plist")]).toString().trim() === "iphonesimulator";

@@ -65,6 +65,17 @@ enum ClusterNative {
             case "ffmpeg-cancel":
                 ClusterFFmpeg.shared.cancel((a["id"] as? NSNumber)?.intValue ?? -1)
                 answer = ["ok": true]
+            // its own Transmission, for the cluster's downloads (downloads.py), as on Android
+            case "transmission-start":
+                try ClusterTransmission.shared.start(a["config"] as? String ?? "")
+                answer = ["ok": true]
+            case "transmission-stop":
+                ClusterTransmission.shared.stop()
+                answer = ["ok": true]
+            case "transmission-running":
+                answer = ["ok": true, "running": ClusterTransmission.shared.running]
+            case "net":
+                answer = netCounters()
             default:
                 answer = ["ok": false, "error": "This iPhone can't do that yet (\(name))."]
             }
@@ -114,6 +125,44 @@ enum ClusterNative {
         }
         guard result == KERN_SUCCESS else { return 0 }
         return (UInt64(stats.free_count) + UInt64(stats.inactive_count)) * UInt64(getpagesize())
+    }
+
+    // What this iPhone's networks have received and sent (bytes, all but its loopback), as the downloads' traffic graph
+    // counts it (downloads.py); no Wi-Fi speed, which an iPhone doesn't tell an app. Its counters are 32-bit: counted on
+    // here, per network, past each wrap (and from 0 again for a network that came back); a network that turns up later
+    // (Tailscale's, say) counted from then.
+    private static var netSeen: [String: (rx: UInt32, tx: UInt32)] = [:]
+    private static var netTotal: (rx: UInt64, tx: UInt64) = (0, 0)
+    private static var netLooked = false
+    static func netCounters() -> [String: Any] {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return ["ok": false, "error": "No networks."] }
+        defer { freeifaddrs(list) }
+        func grew(_ now: UInt32, _ before: UInt32) -> UInt64 {
+            if now >= before { return UInt64(now - before) }
+            return before > 0xC000_0000 ? UInt64(now &- before) : UInt64(now)
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        var p: UnsafeMutablePointer<ifaddrs>? = first
+        while let a = p {
+            p = a.pointee.ifa_next
+            guard let sa = a.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_LINK), let raw = a.pointee.ifa_data else { continue }
+            let name = String(cString: a.pointee.ifa_name)
+            if name.hasPrefix("lo") { continue }
+            let d = raw.assumingMemoryBound(to: if_data.self).pointee
+            let rx = d.ifi_ibytes, tx = d.ifi_obytes
+            if let seen = netSeen[name] {
+                netTotal.rx &+= grew(rx, seen.rx)
+                netTotal.tx &+= grew(tx, seen.tx)
+            } else if !netLooked {
+                netTotal.rx &+= UInt64(rx)
+                netTotal.tx &+= UInt64(tx)
+            }
+            netSeen[name] = (rx, tx)
+        }
+        netLooked = true
+        return ["ok": true, "rx": netTotal.rx, "tx": netTotal.tx]
     }
 
     // This iPhone's Tailscale address (100.64.0.0/10, on the VPN's interface), or "" without Tailscale on.
@@ -326,6 +375,65 @@ final class ClusterFFmpeg {
     }
 }
 
+// The app's own Transmission (ClusterTransmission.framework: libtransmission 4.1.4 with curl and mbedTLS,
+// scripts/build-transmission-ios.sh; only the Cluster app has it), loaded once it's first needed: the cluster's downloads
+// on this iPhone (downloads.py), its settings in the folder it's given (written by the service), its remote control on
+// 127.0.0.1 as on the Pis.
+final class ClusterTransmission {
+    static let shared = ClusterTransmission()
+    private typealias StartFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafeMutablePointer<CChar>?, Int32) -> Int32
+    private typealias StopFn = @convention(c) () -> Void
+    private typealias RunningFn = @convention(c) () -> Int32
+
+    private let lock = NSLock()
+    private var startFn: StartFn?
+    private var stopFn: StopFn?
+    private var runningFn: RunningFn?
+
+    var path: String { Bundle.main.bundlePath + "/Frameworks/ClusterTransmission.framework/ClusterTransmission" }
+
+    private func load() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if startFn != nil { return }
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw NSError(domain: "Cluster", code: 7, userInfo: [NSLocalizedDescriptionKey: "This app has no Transmission of its own."])
+        }
+        guard let h = dlopen(path, RTLD_NOW) else {
+            throw NSError(domain: "Cluster", code: 8, userInfo: [NSLocalizedDescriptionKey: "This app's Transmission didn't load: " + (dlerror().map { String(cString: $0) } ?? "?")])
+        }
+        guard let s = dlsym(h, "ht_tr_start"), let t = dlsym(h, "ht_tr_stop"), let r = dlsym(h, "ht_tr_running") else {
+            throw NSError(domain: "Cluster", code: 9, userInfo: [NSLocalizedDescriptionKey: "This app's Transmission isn't as expected."])
+        }
+        startFn = unsafeBitCast(s, to: StartFn.self)
+        stopFn = unsafeBitCast(t, to: StopFn.self)
+        runningFn = unsafeBitCast(r, to: RunningFn.self)
+    }
+
+    // (its trackers' HTTPS checked against Apple's root certificates, ios-variant.js's, as the app's Python's is)
+    func start(_ config: String) throws {
+        try load()
+        guard let start = startFn, !config.isEmpty else { throw NSError(domain: "Cluster", code: 10, userInfo: [NSLocalizedDescriptionKey: "No settings folder."]) }
+        var err = [CChar](repeating: 0, count: 512)
+        let size = Int32(err.count)
+        let ca = Bundle.main.bundlePath + "/python/cacert.pem"
+        let rc = config.withCString { c in ca.withCString { a in start(c, a, &err, size) } }
+        if rc != 0 {
+            throw NSError(domain: "Cluster", code: 11, userInfo: [NSLocalizedDescriptionKey: String(cString: err)])
+        }
+    }
+
+    func stop() {
+        guard (try? load()) != nil, let stop = stopFn else { return }
+        stop()
+    }
+
+    var running: Bool {
+        guard (try? load()) != nil, let running = runningFn else { return false }
+        return running() != 0
+    }
+}
+
 // The service's way in (phonesys.py, by ctypes, at the addresses it's given): an answer as a C string it frees.
 let htNativeCall: @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? = { name, args in
     let n = name.map { String(cString: $0) } ?? ""
@@ -507,6 +615,7 @@ public class MemberPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "allowTakes", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "selfTestFfmpeg", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "selfTestAnimals", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "selfTestDownloads", returnType: CAPPluginReturnPromise),
     ]
     static let PORT = 47830
     static let NAME = "^[A-Za-z0-9][A-Za-z0-9 _.+'-]{0,39}$"
@@ -610,23 +719,34 @@ public class MemberPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    // The build's simulator check only: the animal model's tools, as its jobs use them (cluster/node/phonecheck.py, in the
-    // app's Python: NumPy, Pillow, HTTPS, its ONNX Runtime and the model's own script).
+    // The build's simulator check only: the animal model's tools, as its jobs use them (cluster/node/phonecheck.py's
+    // animals, in the app's Python: NumPy, Pillow, HTTPS, its ONNX Runtime and the model's own script).
     @objc func selfTestAnimals(_ call: CAPPluginCall) {
+        pythonCheck(call, "animals", needs: "ClusterORT")
+    }
+
+    // The build's simulator check only: its own Transmission, as the cluster's downloads use it (phonecheck.py's downloads).
+    @objc func selfTestDownloads(_ call: CAPPluginCall) {
+        pythonCheck(call, "downloads", needs: "ClusterTransmission")
+    }
+
+    // One of phonecheck.py's checks, run in the app's Python where the app has what it checks: its answer.
+    private func pythonCheck(_ call: CAPPluginCall, _ check: String, needs framework: String) {
         guard selfTest else { return call.reject("Only in the build's check.") }
         let bundle = Bundle.main.bundlePath
-        guard ClusterPython.shared.available, FileManager.default.fileExists(atPath: bundle + "/Frameworks/ClusterORT.framework/ClusterORT") else {
+        guard ClusterPython.shared.available, FileManager.default.fileExists(atPath: "\(bundle)/Frameworks/\(framework).framework/\(framework)") else {
             return call.resolve(["available": false])
         }
         DispatchQueue.global().async {
-            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("selftest-animals")
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("selftest-" + check)
             let result = dir.appendingPathComponent("result.json")
             try? FileManager.default.removeItem(at: dir)
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             var answer: [String: Any] = ["available": true, "ok": false]
             do {
                 // (what it's to do, in a file it reads: Python's environment was read as it started)
-                let settings: [String: Any] = ["code": bundle + "/cluster-node", "work": dir.path, "result": result.path, "env": MemberPlugin.appEnv()]
+                let settings: [String: Any] = ["code": bundle + "/cluster-node", "check": check, "work": dir.path, "result": result.path,
+                                               "env": MemberPlugin.appEnv()]
                 let file = ClusterPython.settingsFile.deletingLastPathComponent().appendingPathComponent("cluster-selftest.json")
                 try JSONSerialization.data(withJSONObject: settings).write(to: file, options: .atomic)
                 let code = """
@@ -636,7 +756,7 @@ public class MemberPlugin: CAPPlugin, CAPBridgedPlugin {
                 if c["code"] not in sys.path:
                     sys.path.insert(0, c["code"])
                 import phonecheck
-                r = phonecheck.animals(c["work"])
+                r = getattr(phonecheck, c["check"])(c["work"])
                 with open(c["result"], "w", encoding="utf-8") as f:
                     json.dump(r, f)
                 """

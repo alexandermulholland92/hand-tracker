@@ -419,7 +419,8 @@
       const row = el("button", { className: "fileRow", textContent: e.dir ? `📁 ${e.name}` : `${e.name} · ${sizeText(e.size)}` });
       row.onclick = async () => {
         if (e.dir) return openFiles(files.pi, joinPath(files.path, e.name));
-        if (!confirm(`Fetch ${e.name} (${sizeText(e.size)}) into this phone's Downloads?`)) return;
+        const into = window.Capacitor && window.Capacitor.getPlatform && window.Capacitor.getPlatform() === "ios" ? "this iPhone's files (the Files app)" : "this phone's Downloads";
+        if (!confirm(`Fetch ${e.name} (${sizeText(e.size)}) into ${into}?`)) return;
         files.note = `Fetching ${e.name}…`;
         renderFiles();
         const handle = await Ftp.addListener("progress", (p) => {
@@ -427,8 +428,8 @@
           renderFiles();
         });
         try {
-          await Ftp.download({ host: files.pi.target, path: joinPath(files.path, e.name), name: e.name, size: e.size });
-          files.note = `${e.name} is in Downloads.`;
+          const got = await Ftp.download({ host: files.pi.target, path: joinPath(files.path, e.name), name: e.name, size: e.size });
+          files.note = `${e.name} is in ${(got && got.saved) || "Downloads"}.`;
         } catch (err) {
           files.note = `${e.name}: ${(err && err.message) || err}`;
         } finally {
@@ -1932,9 +1933,53 @@
           out.animals = an;
           out.ok = out.ok && !!an.ok;
         }
+        // its own Transmission, as the cluster's downloads use it, where the app has one (ClusterTransmission.framework)
+        const dl = await Member.selfTestDownloads().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+        if (dl.available !== false) {
+          out.downloads = dl;
+          out.ok = out.ok && !!dl.ok;
+        }
+        // its FTP link to a Pi's shared folders (ClusterFtp.swift), where the simulated Pi has its FTP server
+        const ftp = Ftp ? await ftpSelfTest(target) : { available: false };
+        if (ftp.available !== false) {
+          out.ftp = ftp;
+          out.ok = out.ok && !!ftp.ok;
+        }
       }
       console.log("HT-SELFTEST " + JSON.stringify(out));
     })();
+  }
+  // The simulated Pi's shared folder over its FTP link, as this iPhone (its name and key, which the member gave the Pi):
+  // listed, a folder made, hello.txt fetched, and sent back as sent-from-iphone.txt (the build checks what came).
+  async function ftpSelfTest(pi) {
+    const r = { ok: false };
+    try {
+      const a = await window.Capacitor.Plugins.Cluster.request({ target: pi, method: "GET", path: "/api/node", timeoutMs: 8000 });
+      const node = a.status === 200 ? JSON.parse(a.body) : {};
+      const m = (node.modules || []).find((x) => x.name === "ftp");
+      if (!(m && m.status && m.status.ready)) return { available: false };
+      const host = "127.0.0.1";
+      const top = await Ftp.list({ host, path: "/" });
+      const shared = (top.entries || []).find((e) => e.dir);
+      r.top = (top.entries || []).map((e) => e.name);
+      if (!shared) return r;
+      const dir = `/${shared.name}`;
+      const inside = await Ftp.list({ host, path: dir });
+      const hello = (inside.entries || []).find((e) => e.name === "hello.txt" && !e.dir);
+      r.hello = hello || null;
+      await Ftp.mkdir({ host, path: `${dir}/made-on-iphone` });
+      const got = await Ftp.download({ host, path: `${dir}/hello.txt`, name: "hello.txt", size: hello ? hello.size : -1 });
+      const sent = await Ftp.upload({ host, dir, testFile: got.file, testAs: "sent-from-iphone.txt" });
+      const after = (await Ftp.list({ host, path: dir })).entries || [];
+      r.got = got;
+      r.sent = sent;
+      r.after = after.map((e) => e.name);
+      r.ok = !!(hello && got.size === hello.size && sent.size === hello.size && after.some((e) => e.name === "made-on-iphone" && e.dir) &&
+        after.some((e) => e.name === "sent-from-iphone.txt" && e.size === hello.size));
+    } catch (e) {
+      r.error = String((e && e.message) || e);
+    }
+    return r;
   }
   async function memberSelfTest(pi) {
     const me = "127.0.0.1:47831";

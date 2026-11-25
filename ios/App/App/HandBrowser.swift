@@ -36,6 +36,8 @@ class HandTrackerViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(ClusterPlugin())
         // This iPhone as a member of the cluster (ClusterMember.swift): only the Cluster app has the Python it needs.
         bridge?.registerPluginInstance(MemberPlugin())
+        // ...and its FTP link to a Pi's shared folders (ClusterFtp.swift).
+        bridge?.registerPluginInstance(FtpPlugin())
         // Remote recording on this device itself (RigServer.swift, RigBluetooth.swift).
         bridge?.registerPluginInstance(RigServerPlugin())
         let args = ProcessInfo.processInfo.arguments

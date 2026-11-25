@@ -7,6 +7,12 @@ the same both times, its output as the model's should be); and the animal model'
 a job runs it, in this Python) over a clip made here with the app's ffmpeg: its pictures, label proposals and list.
 
   animals(work) -> {"ok": bool, and what each part found}
+
+And of its own Transmission, for the cluster's downloads (downloads.py): started from a settings folder as the service
+starts it (phonesys "transmission-start"), its remote control answering as Transmission 4.1.4 (its session-get), then
+stopped; and the network's counters it's given (phonesys "net").
+
+  downloads(work) -> {"ok": bool, and what each part found}
 """
 
 import hashlib
@@ -15,6 +21,7 @@ import os
 import sys
 import time
 import traceback
+import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -104,3 +111,65 @@ def _animals(work, out):
     job_ok = (code == 0 and summary.get("pictures", 0) >= 2 and len(pictures) == summary["pictures"] and len(labels) == len(pictures)
               and os.path.exists(os.path.join(dest, "clips", "check.json")))
     out["ok"] = bool(fetched and model_ok and out["clip"]["code"] == 0 and job_ok)
+
+
+def downloads(work):
+    out = {"ok": False}
+    try:
+        _downloads(work, out)
+    except BaseException:
+        out["error"] = traceback.format_exc()[-2000:]
+    return out
+
+
+def _rpc(port, method, args):
+    """Transmission's remote control, as downloads.py's own() asks it (its session id first, when it asks for one)."""
+    body = json.dumps({"method": method, "arguments": args}).encode("utf-8")
+    sid = ""
+    for _ in range(3):
+        req = urllib.request.Request("http://127.0.0.1:%d/transmission/rpc" % port, data=body,
+                                     headers={"Content-Type": "application/json", "X-Transmission-Session-Id": sid})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as res:
+                return json.loads(res.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code != 409:
+                raise
+            sid = e.headers.get("X-Transmission-Session-Id", "")
+    raise RuntimeError("Transmission gave no session id")
+
+
+def _downloads(work, out):
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import phonesys
+
+    # (its own ports, beside the service's: 9094 and 51415)
+    port, config, dest = 47894, os.path.join(work, "own-transmission"), os.path.join(work, "downloads")
+    os.makedirs(config, exist_ok=True)
+    os.makedirs(dest, exist_ok=True)
+    with open(os.path.join(config, "settings.json"), "w", encoding="utf-8") as f:
+        json.dump({"rpc-enabled": True, "rpc-port": port, "rpc-bind-address": "127.0.0.1", "rpc-whitelist-enabled": True,
+                   "rpc-whitelist": "127.0.0.1,::1", "rpc-authentication-required": False, "rpc-host-whitelist-enabled": False,
+                   "download-dir": dest, "incomplete-dir-enabled": False, "peer-port": 51499, "peer-port-random-on-start": False,
+                   "port-forwarding-enabled": False, "dht-enabled": False, "lpd-enabled": False, "utp-enabled": False}, f, indent=4)
+    first = phonesys.call("net")
+    started = phonesys.call("transmission-start", {"config": config})
+    session, said = None, None
+    for _ in range(30):
+        try:
+            session = _rpc(port, "session-get", {"fields": ["version", "download-dir", "rpc-version"]}).get("arguments")
+            break
+        except Exception as e:
+            said = str(e)[:300]
+            time.sleep(1)
+    running = phonesys.call("transmission-running").get("running")
+    phonesys.call("transmission-stop")
+    stopped = not phonesys.call("transmission-running").get("running")
+    then = phonesys.call("net")
+    out.update(start=started, session=session, running=running, stopped=stopped, net={"first": first, "then": then})
+    if session is None:
+        out["said"] = said
+    counted = bool(first.get("ok") and then.get("ok") and int(then.get("rx", -1)) >= int(first.get("rx", 0)) >= 0)
+    out["ok"] = bool(started.get("ok") and session and str(session.get("version", "")).startswith("4.1.4")
+                     and os.path.basename(str(session.get("download-dir", "")).rstrip("/")) == "downloads" and running and stopped and counted)
