@@ -14,6 +14,7 @@
 #include <string>
 
 #include <libtransmission/transmission.h>
+#include <libtransmission/utils.h> // tr_lib_init()
 #include <libtransmission/variant.h>
 
 #define HT_EXPORT extern "C" __attribute__((visibility("default")))
@@ -41,6 +42,9 @@ HT_EXPORT int ht_tr_start(char const* config, char const* ca, char* err, int len
     {
         setenv("CURL_CA_BUNDLE", ca, 1);
     }
+    // (first, as Transmission's own programs do: without it no setting can be read, settings.json's included, and it
+    // would run on its defaults, its remote control off; found in the simulator check, 2026-11-25)
+    tr_lib_init();
     auto const dir = std::string{ config };
     auto const settings = tr_sessionLoadSettings(dir);
     session = tr_sessionInit(dir, false, settings);

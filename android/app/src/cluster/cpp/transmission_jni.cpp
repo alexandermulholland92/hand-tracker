@@ -11,6 +11,7 @@
 #include <string>
 
 #include <libtransmission/transmission.h>
+#include <libtransmission/utils.h> // tr_lib_init()
 #include <libtransmission/variant.h>
 
 namespace
@@ -53,6 +54,9 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_handtracker_app_TransmissionNative
     {
         setenv("CURL_CA_BUNDLE", ca.c_str(), 1);
     }
+    // (first, as Transmission's own programs do: without it no setting can be read, settings.json's included, and it
+    // would run on its defaults, its remote control off; found in the iPhone's simulator check, 2026-11-25)
+    tr_lib_init();
     auto const settings = tr_sessionLoadSettings(config);
     session = tr_sessionInit(config, false, settings);
     if (session == nullptr)

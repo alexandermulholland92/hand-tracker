@@ -115,6 +115,15 @@ jobs:
       # Cluster plugin; then the app's member service started beside it and asked through that Pi, its ffmpeg, and the
       # animal model's tools, its own Transmission and its FTP link to the Pi's shared folder (cluster.js's self-test, in the
       # app's log as HT-SELFTEST).
+      # The simulated Pi on Python 3.11, as Pi OS's own: pyftpdlib (its FTP link) is built on Python's asyncore, which
+      # Python 3.12 dropped (newer Pythons need two more packages for it), and the runner's own Python is newer. Kept off
+      # the PATH: only the simulated Pi uses it.
+      - id: pi-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          update-environment: false
+
       - name: Check Cluster in the simulator
         timeout-minutes: 30
         run: |
@@ -127,7 +136,7 @@ jobs:
           tar -xzf pyftpdlib.tar.gz
           mkdir -p ftp-shared/shared
           echo 'Hello from the simulated Pi.' > ftp-shared/shared/hello.txt
-          PYTHONPATH="$PWD/pyftpdlib-2.2.0" HT_CLUSTER_FTP_FOLDERS="$PWD/ftp-shared/shared" python3 cluster/node/ht_cluster.py --simulate --port 47830 > cluster-sim.log 2>&1 &
+          PYTHONPATH="$PWD/pyftpdlib-2.2.0" HT_CLUSTER_FTP_FOLDERS="$PWD/ftp-shared/shared" "${{ steps.pi-python.outputs.python-path }}" cluster/node/ht_cluster.py --simulate --port 47830 > cluster-sim.log 2>&1 &
           node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app cluster build/ios-sim-cluster --python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels --transmission build/transmission-ios
           xcrun simctl install "$udid" build/ios-sim-cluster/App.app
           xcrun simctl launch --console-pty "$udid" com.handtracker.cluster -HTSelfTest http://127.0.0.1:8765/ > sim-cluster.log 2>&1 &
@@ -137,6 +146,7 @@ jobs:
             echo "== the app's log" >> ios-build.log; tail -n 150 sim-cluster.log >> ios-build.log
             echo "== the simulated Pi's log" >> ios-build.log; tail -n 40 cluster-sim.log >> ios-build.log
             tail -n 150 sim-cluster.log
+            echo "== the simulated Pi's log"; tail -n 40 cluster-sim.log
             exit 1
           fi
           echo "Cluster: its self-test passed, this iPhone's member service, its ffmpeg, the animal model's tools, its own Transmission and its FTP link included"
