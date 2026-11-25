@@ -62,6 +62,33 @@ if (kind === "mouse" || kind === "cluster") {
 // (cluster/node's Python files, as build-android.js puts them in the Android app, and the app's starter).
 const pyAt = process.argv.indexOf("--python");
 if (kind === "cluster" && pyAt > 0) addPython(app, path.resolve(process.argv[pyAt + 1]));
+// Its ffmpeg, for a job's conversions, with --ffmpeg <folder> (scripts/build-ffmpeg-ios.sh's: ClusterFFmpeg.framework
+// for iPhones and for the simulator).
+const ffAt = process.argv.indexOf("--ffmpeg");
+if (kind === "cluster" && ffAt > 0) addFfmpeg(app, path.resolve(process.argv[ffAt + 1]));
+if (kind === "cluster" && (pyAt > 0 || ffAt > 0)) signForSimulator(app);
+
+function onSimulator(app) {
+  return execFileSync("plutil", ["-extract", "DTPlatformName", "raw", "-o", "-", path.join(app, "Info.plist")]).toString().trim() === "iphonesimulator";
+}
+
+function addFfmpeg(app, folder) {
+  const from = path.join(folder, onSimulator(app) ? "ios-arm64-simulator" : "ios-arm64", "ClusterFFmpeg.framework");
+  if (!fs.existsSync(path.join(from, "ClusterFFmpeg"))) throw new Error(`No ClusterFFmpeg.framework in ${from}`);
+  fs.mkdirSync(path.join(app, "Frameworks"), { recursive: true });
+  execFileSync("ditto", [from, path.join(app, "Frameworks", "ClusterFFmpeg.framework")]);
+  console.log(`Cluster's ffmpeg: ${path.relative(process.cwd(), from)}`);
+}
+
+// (the simulator runs on the Mac, which loads only signed code: each framework added signed as it is, by no one, as
+// the app itself is there; on an iPhone Sideloadly or AltStore signs them all with the app)
+function signForSimulator(app) {
+  if (!onSimulator(app)) return;
+  const frameworks = path.join(app, "Frameworks");
+  for (const f of fs.readdirSync(frameworks).filter((f) => f.endsWith(".framework"))) {
+    execFileSync("codesign", ["--force", "--sign", "-", "--timestamp=none", path.join(frameworks, f)]);
+  }
+}
 
 function addPython(app, xcf) {
   const platform = execFileSync("plutil", ["-extract", "DTPlatformName", "raw", "-o", "-", path.join(app, "Info.plist")]).toString().trim();
@@ -93,13 +120,6 @@ function addPython(app, xcf) {
     fs.writeFileSync(fwork, `Frameworks/${name}.framework/${name}\n`);
     fs.writeFileSync(path.join(folder, `${name}.origin`), path.relative(app, fwork).split(path.sep).join("/") + "\n");
     modules++;
-  }
-  // (the simulator runs on the Mac, which loads only signed code: each of these signed as they are, by no one, as the
-  // app itself is there; on an iPhone Sideloadly or AltStore signs them all with the app)
-  if (sim) {
-    for (const f of fs.readdirSync(frameworks).filter((f) => f.endsWith(".framework"))) {
-      execFileSync("codesign", ["--force", "--sign", "-", "--timestamp=none", path.join(frameworks, f)]);
-    }
   }
   const from = path.join(ROOT, "cluster", "node"), code = path.join(app, "cluster-node");
   const files = [...fs.readdirSync(from).filter((f) => f.endsWith(".py")), ...fs.readdirSync(path.join(from, "modules")).filter((f) => f.endsWith(".py")).map((f) => `modules/${f}`)];

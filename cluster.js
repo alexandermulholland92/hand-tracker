@@ -1920,6 +1920,12 @@
       if (has.available) {
         out.member = await memberSelfTest(target);
         out.ok = out.ok && out.member.ok;
+        // its ffmpeg, as a job's conversions use it, where the app has one (ClusterFFmpeg.framework)
+        const ff = await Member.selfTestFfmpeg().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+        if (ff.available !== false) {
+          out.ffmpeg = ff;
+          out.ok = out.ok && !!ff.ok;
+        }
       }
       console.log("HT-SELFTEST " + JSON.stringify(out));
     })();

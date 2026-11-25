@@ -16,7 +16,7 @@ concurrency:
 jobs:
   ios:
     runs-on: macos-latest
-    timeout-minutes: 75
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -42,6 +42,24 @@ jobs:
           tar -xzf python-ios.tar.gz -C python-ios
           test -d python-ios/Python.xcframework/ios-arm64/Python.framework
 
+      # FFmpeg 8.0 with x264 for iOS, the Cluster app's own ffmpeg (scripts/build-ffmpeg-ios.sh: ClusterFFmpeg.framework
+      # for iPhones and the simulator), kept in the Actions cache as soon as it's built, while its script is the same.
+      - id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/ffmpeg-ios
+          key: ffmpeg-ios-${{ hashFiles('scripts/build-ffmpeg-ios.sh', 'ios/ffmpeg/**') }}
+      - name: FFmpeg for iOS
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          command -v pkg-config > /dev/null || brew install pkgconf
+          bash scripts/build-ffmpeg-ios.sh build/ffmpeg-ios
+      - if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/ffmpeg-ios
+          key: ffmpeg-ios-${{ hashFiles('scripts/build-ffmpeg-ios.sh', 'ios/ffmpeg/**') }}
+
       # Started now: a simulator's first start takes minutes, done while the app builds.
       - name: Start the simulator
         run: |
@@ -66,18 +84,18 @@ jobs:
           udid="$SIM"
           xcrun simctl bootstatus "$udid" -b > /dev/null
           python3 cluster/node/ht_cluster.py --simulate --port 47830 > cluster-sim.log 2>&1 &
-          node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app cluster build/ios-sim-cluster --python python-ios/Python.xcframework
+          node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app cluster build/ios-sim-cluster --python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios
           xcrun simctl install "$udid" build/ios-sim-cluster/App.app
           xcrun simctl launch --console-pty "$udid" com.handtracker.cluster -HTSelfTest http://127.0.0.1:8765/ > sim-cluster.log 2>&1 &
           for i in $(seq 1 150); do grep -q "HT-SELFTEST" sim-cluster.log && break; sleep 2; done
           grep -a "HT-SELFTEST" sim-cluster.log | tail -1 | tee selftest-cluster.txt
-          if ! python3 -c "import json,sys; t=open('selftest-cluster.txt').read(); d=json.loads(t.split('HT-SELFTEST ',1)[1]); sys.exit(0 if d.get('ok') and (d.get('member') or {}).get('ok') else 1)"; then
+          if ! python3 -c "import json,sys; t=open('selftest-cluster.txt').read(); d=json.loads(t.split('HT-SELFTEST ',1)[1]); sys.exit(0 if d.get('ok') and (d.get('member') or {}).get('ok') and (d.get('ffmpeg') or {}).get('ok') else 1)"; then
             echo "== the app's log" >> ios-build.log; tail -n 150 sim-cluster.log >> ios-build.log
             echo "== the simulated Pi's log" >> ios-build.log; tail -n 40 cluster-sim.log >> ios-build.log
             tail -n 150 sim-cluster.log
             exit 1
           fi
-          echo "Cluster: its self-test passed, this iPhone's member service included"
+          echo "Cluster: its self-test passed, this iPhone's member service and its ffmpeg included"
 
       - name: Build for iPhones (unsigned)
         run: |
@@ -90,8 +108,9 @@ jobs:
           test -d "$app"
           version=$(node -p "require('./package.json').version")
           mkdir -p dist
-          node scripts/ios-variant.js "$app" cluster build/ios-cluster --python python-ios/Python.xcframework
+          node scripts/ios-variant.js "$app" cluster build/ios-cluster --python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios
           test -f build/ios-cluster/App.app/Frameworks/Python.framework/Python
+          lipo -archs build/ios-cluster/App.app/Frameworks/ClusterFFmpeg.framework/ClusterFFmpeg | grep -q arm64
           lipo -archs build/ios-cluster/App.app/Frameworks/Python.framework/Python | grep -q arm64
           rm -rf Payload && mkdir Payload && cp -R build/ios-cluster/App.app Payload/
           zip -qr "dist/Cluster-$version-ios-unsigned.ipa" Payload
