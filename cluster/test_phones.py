@@ -121,6 +121,34 @@ def unit_checks(tmp):
         boots = n.memory("health").get("boots") or []
         check("A Pi asked to stop notes it through the service (health: a clean restart; node.stopping is the threads' Event)",
               error is None and boots and boots[-1].get("ended") == "restart" and hasattr(n.stopping, "is_set"), (error, boots))
+        # (2026-11-25, the user's phone: "Can't download here yet: no Transmission here", and pi couldn't reach it)
+        r = subprocess.run([sys.executable, "-c", "import importlib.util, os, sys; sys.path.insert(0, sys.argv[1]); "
+                            "os.environ['HT_CLUSTER_PLATFORM'] = 'android'; s = importlib.util.spec_from_file_location('dl', os.path.join(sys.argv[1], 'modules', 'downloads.py')); "
+                            "m = importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.ready(type('N', (), {'simulate': False})()))", NODE],
+                           capture_output=True, text=True, timeout=60)
+        check("A phone (not simulated) can download: its app's own Transmission, not a Pi's transmission-daemon",
+              r.stdout.strip() == "True", (r.stdout + r.stderr)[-300:])
+        asked = []
+
+        class FakeNode:
+            name = "OnePlus"
+
+            def ask(self, target, method, path, timeout=8, **kw):
+                asked.append(target)
+                return 200, {"peers": [{"name": "PC", "ip": "100.101.44.120", "online": True}]}
+
+        real = socket.getaddrinfo
+        saved_env = {k: os.environ.get(k) for k in ("HT_CLUSTER_SEEDS", "HT_CLUSTER_TS_IP")}
+        os.environ.update(HT_CLUSTER_SEEDS="pi", HT_CLUSTER_TS_IP="100.111.136.82")
+        ht_cluster.socket.getaddrinfo = lambda host, *a, **k: ([(2, 1, 6, "", ("100.104.174.49", 0))] if host == "pi" else real(host, *a, **k))
+        try:
+            peers = ht_cluster.PhoneTailscale(FakeNode()).peers()
+        finally:
+            ht_cluster.socket.getaddrinfo = real
+            for k, v in saved_env.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        check("A phone that knows a Pi by name (\"pi\") tells it its key too: the name's Tailscale address is among its Pis",
+              any(p["ip"] == "100.104.174.49" for p in peers) and asked == ["pi"], (asked, peers))
     finally:
         for k, v in saved.items():
             if v is None:

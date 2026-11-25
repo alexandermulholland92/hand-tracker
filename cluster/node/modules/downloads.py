@@ -316,9 +316,11 @@ FIELDS = ["id", "hashString", "name", "percentDone", "status", "rateDownload", "
 # ----- this computer: free, room, network -----
 def ready(node):
     """Whether this computer can run a Transmission of its own: a Pi with Transmission installed, the PC with its Linux
-    set up."""
+    set up, a phone always (the Cluster app's own, libtransmission in it: start_own asks the app)."""
     if node.simulate:
         return not os.environ.get("HT_CLUSTER_SIM_NO_OWN_TR")
+    if PHONE:  # (looked for /usr/bin/transmission-daemon before, so a phone said "no Transmission here": the user, 2026-11-25)
+        return True
     if WINDOWS:
         a = apps_mod(node)
         return bool(a and a.wsl_ready(node))

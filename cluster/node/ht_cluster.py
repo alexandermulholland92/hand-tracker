@@ -273,6 +273,12 @@ class PhoneTailscale:
             if code != 200 or not isinstance(d, dict):
                 continue
             host = seed.rsplit(":", 1)[0] if seed.count(":") == 1 else seed
+            if not is_tailscale(host):  # (a Pi the app knows by name, as "pi": its Tailscale address, as Tailscale's DNS gives it;
+                # without it that Pi never had this phone's key, as it doesn't list itself among its peers: 2026-11-25)
+                try:
+                    host = next((a[4][0] for a in socket.getaddrinfo(host, None, socket.AF_INET) if is_tailscale(a[4][0])), host)
+                except OSError:
+                    pass
             if is_tailscale(host):
                 found.setdefault(host, {"name": host, "ip": host, "online": True})
             for p in d.get("peers") or []:
