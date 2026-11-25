@@ -241,7 +241,8 @@ class OakCamera {
   // options: { lm: "lite" | "full", twoHands, xyz, far: null | "both" | "higher" | "left" | "right", allHands, device, simulate,
   //   detect (find objects too), picture: "color" | "depth" | "blend" | "side" | "left" | "right", motion (each ninth's movement, for Sentry mode), fps,
   //   hands (false: no hand tracking, none of the hands' models on the camera: Sentry mode),
-  //   night: "auto" | "on" | "off" (night vision by the camera's infrared light, OAK-D Pro), dots (its dot projector too) }
+  //   night: "auto" | "on" | "off" (night vision by the camera's infrared light, OAK-D Pro), dots (its dot projector too),
+  //   h264 (its colour picture as H.264 too, from its own encoder: onMessage gets { video: { u, key }, data } for each) }
   // (device: which OAK camera, by its id; the first one found otherwise)
   start(options, onMessage) {
     this.stop();
@@ -270,6 +271,7 @@ class OakCamera {
     if (options.motion) args.push("--motion");
     if (options.imu) args.push("--imu");
     if (options.hands === false) args.push("--no-hands");
+    if (options.h264) args.push("--h264");
     if (Number.isInteger(options.fps) && options.fps >= 10 && options.fps <= 60) args.push("--fps", String(options.fps));
     if (["auto", "on", "off"].includes(options.night)) args.push("--night", options.night);
     if (options.dots) args.push("--ir-dots");
@@ -280,7 +282,8 @@ class OakCamera {
       buf = Buffer.concat([buf, d]);
       const { messages, rest } = readMessages(buf);
       buf = rest;
-      for (const m of messages) onMessage(m.header.status ? m.header : { frame: m.header, jpeg: m.jpeg });
+      // (--h264: each encoded picture its own message, { video: { u, key }, data })
+      for (const m of messages) onMessage(m.header.status ? m.header : m.header.h264 ? { video: m.header.h264, data: m.jpeg } : { frame: m.header, jpeg: m.jpeg });
     });
     proc.stderr.on("data", (d) => (err = (err + d).slice(-4000)));
     proc.on("error", (e) => onMessage({ status: "error", message: `The OAK helper couldn't start: ${e.message}` }));

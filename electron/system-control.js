@@ -15,6 +15,11 @@
  *     back): an OAK camera by its id (or, not started, the OAK cameras that aren't), another by
  *     its USB ids or port (devicesOf); others: the other cameras on the ports switched
  *     ({ dev, serial, usb } each)
+ *   cameraUsb({ serial, usb, dev }) -> { port, serial, usb, ports } or null
+ *     where one camera is on the USB, for a take's record (each role's camera: multi-camera.js):
+ *     its port ("1-1.2": bus 1, then each hub's port) and serial, found as devicesOf finds it,
+ *     at once (an OAK camera that isn't started isn't looked for). Several cameras alike (the
+ *     same USB ids, no serial to tell them apart): port null, ports each one's. Linux only.
  *
  * Linux: "sudo -n" for what pi/restart-setup.sh allows (systemctl reboot and poweroff, uhubctl),
  * else what the person logged in may do anyway. Windows: shutdown. Mac: System Events (it may
@@ -288,6 +293,21 @@ async function devicesOf(match, root = USB) {
   return usbDevices(root).filter((d) => first.includes(d.dev) && still.has(d.dev));
 }
 
+function cameraUsb(match = {}, root = USB) {
+  if (process.platform !== "linux" && root === USB) return null;
+  let list = [];
+  if (match.dev) list = usbDevices(root).filter((d) => d.dev === match.dev);
+  else if (match.usb) {
+    const ids = String(match.usb).toLowerCase().split(",");
+    const all = usbDevices(root).filter((d) => ids.includes(d.usb));
+    const own = match.serial ? all.filter((d) => d.serial === match.serial) : [];
+    list = own.length ? own : all;
+  } else if (match.serial) list = usbDevices(root).filter((d) => d.usb.startsWith("03e7:") && d.serial === match.serial);
+  if (!list.length) return null;
+  const one = list.length === 1 ? list[0] : null;
+  return { port: one ? one.dev : null, serial: (one && one.serial) || match.serial || "", usb: one ? one.usb : list[0].usb, ports: list.map((d) => d.dev) };
+}
+
 async function resetCamera(match = {}) {
   if (process.platform !== "linux") return { ok: false, message: "Only a Linux computer's cameras (a Raspberry Pi's) can have their USB turned off and on from here.", how: null, others: [] };
   const list = await devicesOf(match);
@@ -336,4 +356,4 @@ async function resetCamera(match = {}) {
   return { ok: true, how: "power", others, message: `Its USB was turned off and on${n ? ` (with ${n} other camera${n === 1 ? "" : "s"} on the same ports, started again too)` : ""}.` };
 }
 
-module.exports = { capabilities, reboot, powerOff, resetCameras, resetCamera, cameraDevices, hubPort, rootGroup, driveOn, usbDevices };
+module.exports = { capabilities, reboot, powerOff, resetCameras, resetCamera, cameraUsb, cameraDevices, hubPort, rootGroup, driveOn, usbDevices };

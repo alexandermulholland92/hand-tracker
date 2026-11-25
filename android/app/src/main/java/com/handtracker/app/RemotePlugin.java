@@ -227,7 +227,7 @@ public class RemotePlugin extends Plugin {
 
     // ---------- remote recording on another computer ----------
     private static final Pattern RIG = Pattern.compile("^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*):(\\d{1,5})$");
-    private static final Pattern RIG_PATH = Pattern.compile("^/api/(state|command|imu(\\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\\?span=(1h|24h|7d)(&after=\\d{1,15})?|preview\\?i=[0-3](&full=1)?(&after=\\d{1,12})?|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12})$");
+    private static final Pattern RIG_PATH = Pattern.compile("^/api/(state|command|imu(\\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\\?span=(1h|24h|7d)(&after=\\d{1,15})?|preview\\?i=[0-3](&full=1)?(&after=\\d{1,12})?|video\\?i=[0-3]&after=\\d{1,12}|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12})$");
     private static final Pattern RIG_KEY = Pattern.compile("^[A-Za-z0-9_-]{8,64}$");
     private static final int RIG_TIMEOUT_MS = 10000;
     private static final int RIG_MAX_BYTES = 4 * 1024 * 1024;

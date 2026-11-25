@@ -136,7 +136,7 @@ class Pi:
                     continue
                 if name in ("dpkg", "apt", "apt-get", "unattended-upgr"):
                     return "packages are being installed (%s)" % name
-        # Hand Tracker's remote recording, asked over this Pi's own Tailscale address (as the Pi Cluster
+        # Hand Tracker's remote recording, asked over this Pi's own Tailscale address (as the Cluster
         # asks it; that stays on this Pi, network or not)
         words = (run(["ip", "-4", "-o", "addr", "show", "dev", "tailscale0"], 10) or "").split()
         ip = next((w.split("/")[0] for w in words if w.startswith("100.")), None)

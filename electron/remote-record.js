@@ -29,6 +29,24 @@
  *   remote.on("status", (s) => …); remote.newKey(); remote.stop();
  *   remote.setState(state); // what the page shows, from the main window (about twice a second)
  *   remote.setPreview(i, jpeg); // camera i's latest preview (only sent while a page asks for them)
+ *   remote.setVideo(source, { u, key }, data); // a camera's H.264, one picture: an OAK camera's own
+ *     (oak_bridge.py --h264), or a webcam's made by the app; source: the state's cameras[i].videoId
+ *     (which pages aren't sent)
+ *   remote.setOverlay(source, frame); remote.videoWatched(source) // its frames' hands and objects, while
+ *     a page plays its video
+ *   remote.on("video-watch", (on) => …) // a page is (or stopped) playing a camera's video
+ *   remote.on("video-want", (sources) => …) // the cameras whose video pages are playing (a webcam's is
+ *     made only then: the state's cameras[i].videoOnDemand)
+ *
+ * Full screen as video (a camera's H.264): a camera whose video is coming (or, a webcam with its own
+ * switch on, would be made once asked for) says so in the state (cameras[i].stream "h264"), and a page
+ * that can play it (WebCodecs: the apps; a browser only on a secure page, so not this plain-HTTP one)
+ * asks /api/video?i=N&after=S instead of its pictures:
+ * every picture after number S (from the last keyframe when S is 0 or too old, or the page is over
+ * VIDEO_BEHIND pictures behind), waiting up to NEXT_WAIT_MS for one, as records (videoRecords): its
+ * hands and objects come along (the frames' own, from the camera's helper), for the page to draw
+ * over it. The group since the last keyframe (and the one before) is kept, so a page starts at once.
+ * No previews are made for a page playing the video.
  *
  * ask(action, { details, camera, pick, mode, settings }) -> Promise<{ ok, message }>: the main
  * window carries out "cameras" (start the cameras), "record" (start recording, starting the
@@ -80,7 +98,28 @@ const PREVIEW_WANTED_MS = 3000; // previews are made while a page asked for one 
 const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it this recently
 const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
+const VIDEO_FRESH_MS = 3000; // a camera's video is offered while a picture of it came this recently
+const VIDEO_START_MS = 3000; // a webcam's video, made once asked for: its first picture waited for this long
+const VIDEO_WANTED_MS = 3000; // its hands and objects are kept while a page asked for its video this recently
+const VIDEO_KEEP = 4 * 1024 * 1024; // at most this much of a camera's video kept (its last two groups)
+const VIDEO_MOST = 2 * 1024 * 1024; // at most this much (and VIDEO_MOST_PICTURES pictures) to one request
+const VIDEO_MOST_PICTURES = 90;
+const VIDEO_BEHIND = 45; // a page this many pictures behind (1.5 s at 30 a second) skips to the last keyframe
+const OVERLAYS_KEPT = 120; // a camera's last frames' hands and objects (4 s at 30 a second)
 const VIEWER_GONE_MS = 10000;
+// While Cluster puts in a new Hand Tracker on this computer (cluster/node/modules/updates.py writes it, with the
+// time it's good until, and takes it away once Hand Tracker has restarted), a recording isn't started: it would be
+// cut off by the restart (the user, 2026-11-22: no recording during an update, no update during a recording).
+const UPDATING_FLAG = process.env.HT_UPDATING_FLAG || path.join(os.tmpdir(), "hand-tracker-updating");
+
+function beingUpdated() {
+  try {
+    const flag = JSON.parse(fs.readFileSync(UPDATING_FLAG, "utf8"));
+    return Number(flag.until) > Date.now();
+  } catch {
+    return false;
+  }
+}
 const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "takeDetails", "editTake", "sentry", "oak", "kinect", "ps4", "resetCameras", "restartCamera", "reboot", "powerOff", "restartApp", "upright", "forward", "timing"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
@@ -94,9 +133,28 @@ const VIDEO_QUALITIES = ["low", "standard", "high", "best"]; // (camera-video.js
 // networks, the takes and a slice of one). The one list: main.js and the Android checks' stand-in
 // use it, and the checks compare RemotePlugin.java's copy (Java can't load this) with it.
 const RIG_HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*):(\d{1,5})$/i;
-const RIG_PATH = /^\/api\/(state|command|imu(\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\?span=(1h|24h|7d)(&after=\d{1,15})?|preview\?i=[0-3](&full=1)?(&after=\d{1,12})?|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/;
+const RIG_PATH = /^\/api\/(state|command|imu(\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\?span=(1h|24h|7d)(&after=\d{1,15})?|preview\?i=[0-3](&full=1)?(&after=\d{1,12})?|video\?i=[0-3]&after=\d{1,12}|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/;
 
 const PAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
+
+// A camera's video for a page (/api/video): records one after another, each a 17-byte head (its kind: 1 a
+// keyframe's picture, 2 another picture, 3 a frame's hands and objects as JSON; its picture number (32 bits;
+// 0 for 3); when the camera took it, ms since 1970 as a 64-bit float; its length (32 bits); all little-endian),
+// then that many bytes: a picture's H.264 (Annex B), or the JSON.
+function videoRecords(packets, overlays) {
+  const parts = [];
+  const record = (kind, seq, u, data) => {
+    const head = Buffer.alloc(17);
+    head.writeUInt8(kind, 0);
+    head.writeUInt32LE(seq >>> 0, 1);
+    head.writeDoubleLE(u, 5);
+    head.writeUInt32LE(data.length, 13);
+    parts.push(head, data);
+  };
+  for (const o of overlays) record(3, 0, o.u, Buffer.from(JSON.stringify(o)));
+  for (const p of packets) record(p.key ? 1 : 2, p.seq, p.u, p.data);
+  return Buffer.concat(parts);
+}
 
 // The take details from a request: those three, as short single-line text.
 function cleanDetails(d) {
@@ -125,6 +183,7 @@ function cleanPick(p) {
   if (typeof p.use === "boolean") out.use = p.use;
   if (typeof p.tracking === "boolean") out.tracking = p.tracking;
   if (typeof p.secondLook === "boolean") out.secondLook = p.secondLook;
+  if (typeof p.video === "boolean") out.video = p.video;
   if (ROLES.includes(p.role)) out.role = p.role;
   return out;
 }
@@ -604,6 +663,9 @@ class RemoteRecordServer extends EventEmitter {
     this.previewSeq = new Map(); // camera index -> its last picture's number
     this.focusFrom = new Map(); // camera index -> its first picture's number since full screen
     this.previewWaiters = new Set(); // requests waiting for a camera's next picture
+    this.videos = new Map(); // an OAK camera's id -> its H.264: { packets: [{ seq, u, key, data }], seq, at, bytes, overlays, wantUntil, waiters }
+    this.watchingVideo = false; // a page is playing a camera's video
+    this.videoWantKey = ""; // (the cameras whose video is wanted, as last told)
     this.wantUntil = 0;
     this.focus = null; // the camera a page is looking at full screen
     this.focusUntil = 0;
@@ -698,6 +760,8 @@ class RemoteRecordServer extends EventEmitter {
     this.timer = setInterval(() => {
       if (this.focus !== null && Date.now() > this.focusUntil) this.setFocus(null);
       if (this.wanting && Date.now() > this.wantUntil) this.setWanting(false);
+      if (this.watchingVideo && ![...this.videos.values()].some((v) => v.wantUntil > Date.now())) this.setWatchingVideo(false);
+      this.tellVideoWant();
       if (this.viewer && Date.now() - this.viewer.seen > VIEWER_GONE_MS && !this.viewer.gone) {
         this.viewer.gone = true;
         this.emitStatus();
@@ -717,7 +781,11 @@ class RemoteRecordServer extends EventEmitter {
     clearInterval(this.timer);
     this.timer = null;
     this.setWanting(false);
+    this.setWatchingVideo(false);
     this.previews.clear();
+    for (const v of this.videos.values()) for (const w of [...v.waiters]) w();
+    this.videos.clear();
+    this.tellVideoWant();
     this.viewer = null;
     this.focus = null; // (no page is looking at a camera full screen any more)
     this.focusUntil = 0;
@@ -739,6 +807,116 @@ class RemoteRecordServer extends EventEmitter {
       this.lightMade++;
       this.judgeLight();
     }
+  }
+
+  // ---------- an OAK camera's own H.264 (oak_bridge.py --h264) ----------
+  // One picture of it, as the camera's helper sent it: kept with the rest of its group (since its last
+  // keyframe) and the group before, up to VIDEO_KEEP; a page waiting for it is answered.
+  setVideo(source, { u, key } = {}, data) {
+    if (!(typeof source === "string" && source && data && data.length)) return;
+    let v = this.videos.get(source);
+    if (!v) {
+      v = { packets: [], seq: 0, at: 0, bytes: 0, overlays: [], wantUntil: 0, waiters: new Set() };
+      this.videos.set(source, v);
+    }
+    const packet = { seq: ++v.seq, u: Number.isFinite(u) ? u : Date.now(), key: !!key, data: Buffer.from(data) };
+    if (packet.key) {
+      // (a new group: the one before it stays, for a page part way through; any older goes)
+      const keys = v.packets.filter((p) => p.key);
+      if (keys.length >= 2) v.packets = v.packets.slice(v.packets.indexOf(keys[keys.length - 1]));
+    } else if (!v.packets.length) {
+      return; // (no group started yet: nothing can be played from it)
+    }
+    v.packets.push(packet);
+    v.bytes = v.packets.reduce((n, p) => n + p.data.length, 0);
+    while (v.bytes > VIDEO_KEEP && v.packets.length > 1) {
+      // (too big: from the next keyframe on, else the oldest pictures go)
+      const next = v.packets.findIndex((p, k) => k > 0 && p.key);
+      const cut = next > 0 ? next : 1;
+      v.bytes -= v.packets.slice(0, cut).reduce((n, p) => n + p.data.length, 0);
+      v.packets = v.packets.slice(cut);
+    }
+    v.at = Date.now();
+    for (const w of [...v.waiters]) w();
+  }
+
+  // A frame's hands and objects (the helper's own: hands' points 0-1 of its picture, their side and
+  // gesture; objects' boxes), kept while a page plays that camera's video, to be drawn over it.
+  setOverlay(source, frame) {
+    const v = this.videos.get(source);
+    if (!v || v.wantUntil < Date.now() || !frame || typeof frame !== "object") return;
+    const round = (x) => Math.round(Number(x) * 10000) / 10000;
+    const hands = (Array.isArray(frame.hands) ? frame.hands : []).slice(0, 4).filter((h) => h && Array.isArray(h.lm)).map((h) => ({
+      lm: h.lm.slice(0, 21).map((p) => [round(p[0]), round(p[1])]),
+      label: h.label === "Left" || h.label === "Right" ? h.label : "",
+      gesture: typeof h.gesture === "string" ? h.gesture.slice(0, 40) : null,
+    }));
+    const objects = (Array.isArray(frame.objects) ? frame.objects : []).slice(0, 20).filter((o) => o && Array.isArray(o.box) && o.box.length === 4).map((o) => ({
+      label: String(o.label || "").slice(0, 40), score: round(o.score || 0), box: o.box.map(round),
+    }));
+    v.overlays.push({ u: Number.isFinite(frame.u) ? frame.u : Date.now(), w: frame.w, h: frame.h, hands, objects });
+    if (v.overlays.length > OVERLAYS_KEPT) v.overlays.splice(0, v.overlays.length - OVERLAYS_KEPT);
+  }
+
+  // Whether a page is playing that camera's video (its frames' hands and objects are wanted).
+  videoWatched(source) {
+    const v = this.videos.get(source);
+    return !!v && v.wantUntil > Date.now();
+  }
+
+  setWatchingVideo(on) {
+    if (this.watchingVideo === on) return;
+    this.watchingVideo = on;
+    this.emit("video-watch", on);
+  }
+
+  // The cameras whose video a page asked for lately: told when that changes (a webcam's is made only then).
+  tellVideoWant() {
+    const now = Date.now();
+    const list = [...this.videos].filter(([, v]) => v.wantUntil > now).map(([source]) => source).sort();
+    const key = list.join("\n");
+    if (key === this.videoWantKey) return;
+    this.videoWantKey = key;
+    this.emit("video-want", list);
+  }
+
+  // Camera i's video source (its videoId, from the state) and whether it's made only once asked for.
+  videoSource(i) {
+    const c = Number.isInteger(i) ? ((this.state && this.state.cameras) || [])[i] : null;
+    return c && typeof c.videoId === "string" && c.videoId ? { source: c.videoId, onDemand: c.videoOnDemand === true } : null;
+  }
+
+  // Camera i's video, if a picture of it came lately.
+  videoOf(i) {
+    const src = this.videoSource(i);
+    const v = src ? this.videos.get(src.source) : null;
+    return v && v.packets.length && Date.now() - v.at < VIDEO_FRESH_MS ? v : null;
+  }
+
+  // Where a page that has had picture number after goes on: the next one, unless it's gone or the page
+  // is too far behind (then from the last keyframe). -> an index of v.packets (its length: none yet).
+  videoFrom(v, after) {
+    const last = v.packets[v.packets.length - 1];
+    if (!last || after >= last.seq) return v.packets.length;
+    const lastKey = v.packets.map((p) => p.key).lastIndexOf(true);
+    const next = v.packets.findIndex((p) => p.seq === after + 1);
+    if (after > 0 && next >= 0 && !(v.packets.length - next > VIDEO_BEHIND && lastKey > next)) return next;
+    return lastKey >= 0 ? lastKey : v.packets.length;
+  }
+
+  // Until camera's video has a picture after number after, or ms have gone.
+  nextVideo(v, after, ms) {
+    if (this.videoFrom(v, after) < v.packets.length) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        v.waiters.delete(check);
+        resolve();
+      };
+      const check = () => this.videoFrom(v, after) < v.packets.length && done();
+      const timer = setTimeout(done, ms);
+      v.waiters.add(check);
+    });
   }
 
   // Full screen's pictures lighter (light 1, 2: smaller and more squeezed) while they're fetched
@@ -918,7 +1096,14 @@ class RemoteRecordServer extends EventEmitter {
       // (tailnet: its own Tailscale address, so a phone that reached it by name can find it again where the
       // name can't be looked up: on mobile data without Tailscale's DNS)
       const tailnet = (addresses().find((a) => a.kind === "Tailscale") || {}).address || null;
-      return this.send(res, 200, { ...this.state, host: this.host, wifi: wifiHere ? { allowed: true, ...this.wifi.status() } : null, ...(direct ? { direct } : {}), ...(tailnet ? { tailnet } : {}) });
+      // (Each camera whose H.264 is coming, or would be made once asked for (a webcam with its switch on):
+      // stream "h264", for full screen. Its videoId stays here.)
+      const cameras = Array.isArray(this.state.cameras) ? this.state.cameras.map((c, i) => {
+        if (!c || typeof c !== "object" || !("videoId" in c)) return c;
+        const { videoId, videoOnDemand, ...rest } = c;
+        return this.videoOf(i) || videoOnDemand === true ? { ...rest, stream: "h264" } : rest;
+      }) : this.state.cameras;
+      return this.send(res, 200, { ...this.state, ...(cameras ? { cameras } : {}), host: this.host, wifi: wifiHere ? { allowed: true, ...this.wifi.status() } : null, ...(direct ? { direct } : {}), ...(tailnet ? { tailnet } : {}) });
     }
     // A week of CPU, GPU, memory and space readings (room-history.js), for the device settings page's graphs.
     if (req.method === "GET" && url.pathname === "/api/history") {
@@ -970,6 +1155,41 @@ class RemoteRecordServer extends EventEmitter {
       if (full && i === this.focus) this.lightServed++;
       return this.send(res, 200, p.jpeg, `image/jpeg; seq=${p.seq}`);
     }
+    // Full screen as video: camera i's own H.264 after picture number &after= (videoRecords), waiting for
+    // one up to NEXT_WAIT_MS (none: 204). Not coming (not an OAK camera, its helper without it, or it
+    // stopped): 404, and the page shows its pictures instead.
+    if (req.method === "GET" && url.pathname === "/api/video") {
+      const i = Number(url.searchParams.get("i")), after = Number(url.searchParams.get("after"));
+      const src = this.videoSource(i);
+      let v = this.videoOf(i);
+      let wait = NEXT_WAIT_MS;
+      if (!v && src && src.onDemand && Number.isInteger(after) && after >= 0) {
+        // (a webcam's: made from now on, while it's asked for; its first picture, a keyframe, waited for)
+        v = this.videos.get(src.source);
+        if (!v) {
+          v = { packets: [], seq: 0, at: 0, bytes: 0, overlays: [], wantUntil: 0, waiters: new Set() };
+          this.videos.set(src.source, v);
+        }
+        wait = VIDEO_START_MS;
+      }
+      if (!v || !Number.isInteger(after) || after < 0) return this.send(res, 404, { error: "No video from that camera: its pictures are shown instead." });
+      v.wantUntil = Date.now() + VIDEO_WANTED_MS;
+      this.setWatchingVideo(true);
+      this.tellVideoWant();
+      await this.nextVideo(v, after, wait);
+      if (!v.packets.length) return this.send(res, 404, { error: "That camera's video didn't start: its pictures are shown instead." });
+      const from = this.videoFrom(v, after);
+      if (from >= v.packets.length) return this.send(res, 204, "");
+      const list = [];
+      let bytes = 0;
+      for (const p of v.packets.slice(from)) {
+        if (list.length && (list.length >= VIDEO_MOST_PICTURES || bytes + p.data.length > VIDEO_MOST)) break;
+        list.push(p);
+        bytes += p.data.length;
+      }
+      const lo = list[0].u - 200, hi = list[list.length - 1].u + 200;
+      return this.send(res, 200, videoRecords(list, v.overlays.filter((o) => o.u >= lo && o.u <= hi)), "application/octet-stream");
+    }
     // A motion sensor's readings (the page on a phone sending its own; anything else that has the key):
     // JSON or text lines, as electron/imu-in.js reads them. ?name= names the sensor (else where they came from).
     if (req.method === "POST" && url.pathname === "/api/imu") {
@@ -1018,6 +1238,7 @@ class RemoteRecordServer extends EventEmitter {
         return this.send(res, 400, { error: "Not JSON" });
       }
       if (!ACTIONS.has(action)) return this.send(res, 400, { error: `Unknown action: ${action}` });
+      if (action === "record" && beingUpdated()) return this.send(res, 409, { error: "Hand Tracker is being updated on this computer: record again in a minute or two, once it has restarted." });
       if (action === "camera" && !camera) return this.send(res, 400, { error: "Which camera?" });
       if (action === "pick" && !pick) return this.send(res, 400, { error: "Which camera?" });
       if (action === "mode" && !mode) return this.send(res, 400, { error: "Which mode?" });
@@ -1067,4 +1288,4 @@ class RemoteRecordServer extends EventEmitter {
   }
 }
 
-module.exports = { RemoteRecordServer, addresses, tailnetPeer, hotspotAddress, HOTSPOT_ADDR, BLUETOOTH_ADDR, cleanDetails, cleanCamera, cleanPick, cleanWifi, cleanSentry, cleanOak, crc32, RIG_HOST, RIG_PATH, PICK_ID };
+module.exports = { RemoteRecordServer, videoRecords, addresses, tailnetPeer, hotspotAddress, HOTSPOT_ADDR, BLUETOOTH_ADDR, cleanDetails, cleanCamera, cleanPick, cleanWifi, cleanSentry, cleanOak, crc32, RIG_HOST, RIG_PATH, PICK_ID };

@@ -4,15 +4,15 @@
 <meta charset="UTF-8" />
 <link rel="icon" type="image/png" href="favicon.png" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<!-- Pi Cluster (an app of its own: the computer apps' "cluster" builds, scripts/dist.js --app
-     cluster): the Raspberry Pis running Pi Cluster's service (cluster/node), found over Tailscale.
+<!-- Cluster (an app of its own: the computer apps' "cluster" builds, scripts/dist.js --app
+     cluster): the Raspberry Pis running Cluster's service (cluster/node), found over Tailscale.
      Each Pi's health, its camera rig, its updates, and its modules' switches and settings.
-     pi-cluster.js; the requests go through electron/cluster.js. In a browser, a Pi serves this page
+     cluster.js; the requests go through electron/cluster.js. In a browser, a Pi serves this page
      itself (http://<a Pi>:47830/) and passes its requests on to the other Pis (cluster/node/ht_cluster.py). -->
 <!-- (connect-src: 'self', the Pi that served the page in a browser; GitHub's "Latest build", which the
-     iPhone app looks at for a newer build itself: pi-cluster.js phoneApps) -->
+     iPhone app looks at for a newer build itself: cluster.js phoneApps) -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'" />
-<title>Pi Cluster</title>
+<title>Cluster</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -39,6 +39,8 @@
   #message.err { background: #3a1d1d; }
   .card { border: 1px solid #2c2e36; background: #17181c; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
   .card.away { opacity: 0.55; }
+  .fileList { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+  .fileRow { text-align: left; overflow-wrap: anywhere; }
   .top { display: flex; align-items: center; gap: 10px; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: #666; flex: none; }
   .dot.on { background: #3fbf6a; }
@@ -70,6 +72,10 @@
     font: inherit; font-size: 13px; color: #e8e8ea; background: #0e0f12; border: 1px solid #343743; border-radius: 6px; padding: 5px 8px;
   }
   input[type="number"] { width: 70px; }
+  input[type="password"], textarea {
+    font: inherit; font-size: 13px; color: #e8e8ea; background: #0e0f12; border: 1px solid #343743; border-radius: 6px; padding: 5px 8px;
+  }
+  #runMembers label { display: inline-flex; margin: 0 10px 0 0; }
   .hint { font-size: 12px; opacity: 0.6; line-height: 1.5; margin-top: 4px; }
   .pick-list { max-height: 260px; overflow: auto; border: 1px solid #2c2e36; border-radius: 8px; padding: 6px 10px; margin-top: 8px; }
   .pick-list h4 { font-size: 12px; margin: 8px 0 2px; opacity: 0.8; }
@@ -82,6 +88,19 @@
   /* (Transmission: how many at once, and each torrent's traffic) */
   .tr-limits { margin-top: 10px; padding-top: 8px; border-top: 1px solid #2c2e36; }
   .tr-limits label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; font-size: 13px; }
+  .tr-pct { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tr-bar { position: relative; height: 18px; border-radius: 9px; background: #2c2e36; overflow: hidden; margin-top: 8px; }
+  .tr-bar > .fill { position: absolute; top: 0; bottom: 0; left: 0; background: #2f5fd0; }
+  .tr-bar.done > .fill { background: #2f8f52; }
+  .tr-bar.paused > .fill { background: #4a4d58; }
+  .tr-bar > .num {
+    position: relative; display: block; padding: 0 9px; font-size: 11px; line-height: 18px; font-weight: 600;
+    font-variant-numeric: tabular-nums; color: #fff; text-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
+  }
+  .sort-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 2px 0 10px; font-size: 13px; }
+  .sort-row label { display: flex; align-items: center; gap: 6px; }
+  details.boots { margin-top: 4px; font-size: 12px; }
+  details.boots > summary { cursor: pointer; opacity: 0.75; }
   details.traffic { margin-top: 6px; }
   details.traffic > summary { cursor: pointer; font-size: 12px; opacity: 0.85; font-variant-numeric: tabular-nums; padding: 2px 0; }
   details.traffic[open] > summary { opacity: 1; }
@@ -119,14 +138,16 @@
 <body>
 <main>
   <header>
-    <h1>Pi Cluster</h1>
+    <h1>Cluster</h1>
     <span id="buildInfo"></span>
-    <button id="phoneAppsBtn" hidden title="Pi Cluster and this phone's other Hand Tracker apps: updated or installed from GitHub's newest build">This phone's apps</button>
+    <button id="phoneAppsBtn" hidden title="Cluster and this phone's other Hand Tracker apps: updated or installed from GitHub's newest build">This phone's apps</button>
     <button id="updateAll" title="Every Pi that's on updates Hand Tracker (a Pi that's recording waits until it stops)">Update all Pis</button>
     <button id="addPi" class="main">Add a Pi</button>
   </header>
   <div id="appNotice" class="card notice" hidden></div>
   <section id="phoneAppsBox" class="card" hidden></section>
+  <section id="memberBox" class="card" hidden></section>
+  <section id="filesBox" class="card" hidden></section>
   <div class="tabs" role="tablist">
     <button role="tab" id="tabPis" aria-selected="true">Pis</button>
     <button role="tab" id="tabRigs" aria-selected="false">Camera rigs</button>
@@ -146,6 +167,7 @@
         <label><input type="radio" name="kind" value="animals" checked /> Find animals in clips: label check proposals (a picture a second with the model's boxes), and a list of the animals in each clip</label>
         <label><input type="radio" name="kind" value="convert" /> Convert videos to <select id="format"></select></label>
         <label><input type="radio" name="kind" value="command" /> A command for each file</label>
+        <label><input type="radio" name="kind" value="run" /> Any command or script, across the cluster</label>
       </div>
       <div id="animalsOpts" class="field">
         <label>A picture every <input id="every" type="number" min="0.2" max="60" step="0.1" value="1" /> seconds</label>
@@ -155,7 +177,27 @@
         <input id="command" type="text" style="width:100%" placeholder="ffmpeg -i {in} -vf scale=640:-1 {out}/{name}.mp4" />
         <div class="hint">{in}: the file · {out}: the folder for what it makes (what's in it comes back) · {name}: the file's name without its ending · {file}: with it. It runs on whichever Pi takes the file, as your account.</div>
       </div>
-      <div class="field"><b>Files</b>
+      <div id="runOpts" class="field" hidden>
+        <input id="runCommand" type="text" style="width:100%" placeholder="echo hello from {member} &gt; {out}/hello.txt" />
+        <div class="buttons"><button id="runScript">Or a script file…</button> <span id="runScriptName" class="hint"></span> <button id="runNoScript" hidden>Use the command instead</button></div>
+        <b>On</b>
+        <label><input type="radio" name="runHow" value="each" checked /> Once on each of: <span id="runMembers"></span></label>
+        <label><input type="radio" name="runHow" value="files" /> Each file (chosen below), on whichever member is free</label>
+        <label><input type="radio" name="runHow" value="lines" /> Each line of this, on whichever member is free</label>
+        <textarea id="runLines" rows="4" style="width:100%" placeholder="One line each: a word, a name, an address…"></textarea>
+        <label><input type="radio" name="runHow" value="count" /> The numbers 1 to <input id="runCount" type="number" min="1" max="10000" value="10" />, on whichever member is free</label>
+        <label><input id="runRoot" type="checkbox" /> As root, with the cluster password <input id="runPassword" type="password" autocomplete="off" placeholder="cluster password" /></label>
+        <div class="buttons"><button id="clusterPassword">Cluster password…</button> <span id="passwordState" class="hint"></span></div>
+        <div id="pwBox" class="pick-list" hidden>
+          <label>The one set before (if there is one) <input id="pwOld" type="password" autocomplete="off" /></label>
+          <label>New cluster password (8 characters or more) <input id="pwNew" type="password" autocomplete="new-password" /></label>
+          <label>The new one again <input id="pwAgain" type="password" autocomplete="new-password" /></label>
+          <div class="buttons"><button id="pwSet">Set it on every member</button></div>
+          <div id="pwSaid" class="hint"></div>
+        </div>
+        <div class="hint">{in}, {out}, {name}, {file}: the file, the folder for what it makes (what's in it comes back), its name without and with its ending · {input}: the line or number · {i}, {n}: the part's place and how many there are · {member}: the member running it. A script gets the file, line or number as $1, and all of them as IN, OUT, NAME, INPUT, INDEX, COUNT and MEMBER; it runs by its #! line, else by its ending (bash, python3, node, perl). The Pis and this PC (in its own Linux) run them, as their own user; as root only with the cluster password, which each member checks itself.</div>
+      </div>
+      <div class="field" id="filesField"><b>Files</b>
         <div class="buttons"><button id="showRecordings">Recordings on the Pis…</button> <button id="pickFiles">Files from this computer…</button> <button id="browseHome">A folder on <span class="homeName">the Pi that keeps the jobs</span>…</button></div>
         <div id="recordingsBox" class="pick-list" hidden></div>
         <div id="browseBox" class="pick-list" hidden></div>
@@ -197,7 +239,30 @@
           <div class="buttons"><button id="trBrowse">Choose a folder…</button></div>
           <div id="trFolders" class="pick-list" hidden></div>
         </div>
+        <div class="field" id="trOnField"><b>Download it on</b>
+          <select id="trOn"></select>
+          <div id="trOnNote" class="hint"></div>
+        </div>
+        <div class="field" id="trSplitField" hidden><b>Split it between computers</b>
+          <select id="trSplit">
+            <option value="">No: one computer downloads all of it</option>
+            <option value="files">By files: its files shared out between them</option>
+            <option value="pieces">By pieces: one big file shared out (libtorrent on each)</option>
+          </select>
+        </div>
+        <div class="field" id="trAfterField" hidden><b id="trAfterTitle">Once it's copied over</b>
+          <label><input type="radio" name="trAfter" value="home" checked /> <span id="trAfterHome">It's handed over</span></label>
+          <label><input type="radio" name="trAfter" value="keep" /> <span>The computer keeps seeding it (a copy is kept there too)</span></label>
+        </div>
         <div class="buttons"><button id="trAdd" class="main">Add it</button></div>
+      </div>
+      <div id="dlBox" hidden>
+        <h2 style="font-size:15px;margin:14px 0 8px">Downloading on other computers</h2>
+        <div id="dlList"></div>
+      </div>
+      <div class="sort-row" id="trSortRow">
+        <label>Sort <select id="trSort"><option value="name">Alphabetical</option><option value="activity">Activity</option><option value="age">Age</option><option value="queue">Queue</option></select></label>
+        <label><input type="checkbox" id="trReverse" /> Reverse</label>
       </div>
       <div id="trList"></div>
       <div class="buttons" style="margin-top:10px"><button id="trGiveBack">Give the torrents back to the window app</button></div>
@@ -228,6 +293,6 @@
 <script src="video-formats.js"></script>
 <script src="sentry-models.js"></script>
 <script src="models/kinds.js"></script>
-<script src="pi-cluster.js"></script>
+<script src="cluster.js"></script>
 </body>
 </html>

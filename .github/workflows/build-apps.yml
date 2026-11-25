@@ -35,7 +35,7 @@ jobs:
 
       - run: npm run dist
 
-      # Hand Mouse, Remote Recording, Recording Converter and Pi Cluster: the same app, each with
+      # Hand Mouse, Remote Recording, Recording Converter and Cluster: the same app, each with
       # its own name, ID and page (scripts/dist.js --app).
       - run: node scripts/dist.js portable --app mouse
       - run: node scripts/dist.js portable --app remote
@@ -103,16 +103,16 @@ jobs:
           path: kinect/bin/linux-arm64
       - run: chmod +x kinect/bin/linux-*/kinect2-helper kinect/bin/linux-*/kinect360-helper
 
-      # Pi Cluster's service (cluster/node), on Linux: everything its checks cover, its own update's
+      # Cluster's service (cluster/node), on Linux: everything its checks cover, its own update's
       # folder switch included (a symbolic link).
-      - name: Pi Cluster's service checks
+      - name: Cluster's service checks
         run: |
           python3 cluster/test_cluster.py
           python3 cluster/test_jobs.py
           python3 cluster/test_apps.py
 
       - run: npm run dist:deb
-      # Hand Mouse, Remote Recording, Recording Converter and Pi Cluster (scripts/dist.js --app):
+      # Hand Mouse, Remote Recording, Recording Converter and Cluster (scripts/dist.js --app):
       # packages of their own.
       - run: node scripts/dist.js deb --app mouse
       - run: node scripts/dist.js deb --app remote
@@ -135,11 +135,11 @@ jobs:
       - name: Install and remove the packages
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q ./dist/hand-tracker_*_amd64.deb ./dist/hand-mouse_*_amd64.deb ./dist/remote-recording_*_amd64.deb ./dist/recording-converter_*_amd64.deb ./dist/pi-cluster_*_amd64.deb
-          test -L /usr/bin/pi-cluster
-          test -z "$(ls /lib/udev/rules.d | grep pi-cluster)"
-          sudo apt-get remove -y -q pi-cluster
-          test ! -e "/opt/Pi Cluster/resources"
+          sudo apt-get install -y -q ./dist/hand-tracker_*_amd64.deb ./dist/hand-mouse_*_amd64.deb ./dist/remote-recording_*_amd64.deb ./dist/recording-converter_*_amd64.deb ./dist/hand-tracker-cluster_*_amd64.deb
+          test -L /usr/bin/hand-tracker-cluster
+          test -z "$(ls /lib/udev/rules.d | grep hand-tracker-cluster)"
+          sudo apt-get remove -y -q hand-tracker-cluster
+          test ! -e "/opt/Cluster/resources"
           grep -q 'idVendor}=="03e7"' /lib/udev/rules.d/80-hand-tracker-oak.rules
           test -L /usr/bin/hand-tracker
           test -f "/opt/Hand Tracker/resources/app.asar.unpacked/oak/oak_bridge.py"
@@ -232,7 +232,7 @@ jobs:
           : > mac-build.log
           for cpu in "arm64:mac-arm64:arm64" "x64:mac:x86_64"; do
             flag="--${cpu%%:*}"; rest="${cpu#*:}"; dir="${rest%%:*}"; arch="${rest##*:}"
-            for app in ":Hand Tracker:com.handtracker.app" "mouse:Hand Mouse:com.handtracker.mouse" "remote:Remote Recording:com.handtracker.remote" "converter:Recording Converter:com.handtracker.converter" "cluster:Pi Cluster:com.handtracker.cluster"; do
+            for app in ":Hand Tracker:com.handtracker.app" "mouse:Hand Mouse:com.handtracker.mouse" "remote:Remote Recording:com.handtracker.remote" "converter:Recording Converter:com.handtracker.converter" "cluster:Cluster:com.handtracker.cluster"; do
               kind="${app%%:*}"; rest="${app#*:}"; name="${rest%%:*}"; id="${rest##*:}"
               node scripts/dist.js mac "$flag" ${kind:+--app "$kind"} 2>&1 | tee -a mac-build.log
               check "$dir" "$name" "$arch" "$id" "${cpu%%:*}"
@@ -313,8 +313,8 @@ jobs:
           echo "The hand browser opened a page and the hand mouse clicked its link"
           # Hand Mouse (its hand browser, the same check), Remote Recording (its rig: the same
           # check, remote recording's part included), Recording Converter (its own: a recording
-          # converted to every motion format and read back, viewer.js) and Pi Cluster (a Pi
-          # simulated here, cluster/node, reached through the app's Cluster plugin: pi-cluster.js).
+          # converted to every motion format and read back, viewer.js) and Cluster (a Pi
+          # simulated here, cluster/node, reached through the app's Cluster plugin: cluster.js).
           python3 cluster/node/ht_cluster.py --simulate --port 47830 > cluster-sim.log 2>&1 &
           for kind in mouse remote converter cluster; do
             node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app "$kind" "build/ios-sim-$kind"
@@ -341,12 +341,15 @@ jobs:
           mkdir -p Payload dist
           cp -R "$app" Payload/
           zip -qr "dist/HandTracker-$version-ios-unsigned.ipa" Payload
-          # Hand Mouse, Remote Recording, Recording Converter and Pi Cluster, made from it.
-          for both in mouse:HandMouse remote:RemoteRecording converter:RecordingConverter cluster:PiCluster; do
+          # Hand Mouse, Remote Recording, Recording Converter and Cluster, made from it.
+          for both in mouse:HandMouse remote:RemoteRecording converter:RecordingConverter cluster:Cluster; do
             node scripts/ios-variant.js "$app" "${both%%:*}" "build/ios-${both%%:*}"
             rm -rf Payload && mkdir Payload && cp -R "build/ios-${both%%:*}/App.app" Payload/
             zip -qr "dist/${both##*:}-$version-ios-unsigned.ipa" Payload
           done
+          # (Cluster's under its name from before the rename too, 2026-11-25: an iPhone's Cluster app from before
+          # looks for PiCluster-*.ipa to say there's a new build)
+          cp "dist/Cluster-$version-ios-unsigned.ipa" "dist/PiCluster-$version-ios-unsigned.ipa"
 
       - name: Why the build failed
         if: failure()
@@ -407,6 +410,18 @@ jobs:
           java-version: 21
           cache: gradle
 
+      # The Cluster app's Python (Chaquopy) is made with the same Python on the build machine: python3.13.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # The Cluster app's own Transmission (scripts/build-transmission-android.js: its library with curl and
+      # mbedTLS, built with the runner's NDK), kept from the last build while its sources and script are the same.
+      - uses: actions/cache@v4
+        with:
+          path: android/app/src/cluster/jniLibs
+          key: transmission-android-${{ hashFiles('scripts/build-transmission-android.js', 'android/app/src/cluster/cpp/**') }}
+
       # Every build is signed with the same key, so each APK installs over the last one.
       # Best: a key saved as the repository secret ANDROID_DEBUG_KEYSTORE (a debug.keystore,
       # base64), kept for good; the same as a PC's key, the two install over each other too.
@@ -444,6 +459,14 @@ jobs:
       # Uses the runner's Android SDK (ANDROID_HOME) and the JDK above (JAVA_HOME).
       - run: npm run android:apk
 
+      # The Cluster app's APK under its name from before the rename too (2026-11-25: "Pi Cluster" became
+      # "Cluster"), for phones whose app looks for PiCluster-*.apk still, until they've updated to one that
+      # knows the new name (AppUpdates.java takes either).
+      - name: Cluster's APK under its old name too
+        run: |
+          version=$(node -p "require('./package.json').version")
+          cp "dist/Cluster-$version.apk" "dist/PiCluster-$version.apk"
+
       - uses: actions/upload-artifact@v4
         with:
           name: android
@@ -470,4 +493,4 @@ jobs:
         run: |
           gh release delete latest-build --yes --cleanup-tag || true
           gh release create latest-build dist/* --target "$GITHUB_SHA" --prerelease --title "Latest build" \
-            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID). Chrome (the hand mouse for web pages): HandTracker-*-chrome-extension.zip, unzipped and loaded in chrome://extensions with Developer mode on (Load unpacked). Apps of their own, for each of these the same way: Hand Mouse (the hand mouse alone): HandMouse-*; Remote Recording (controlling camera rigs, or being one): RemoteRecording-*; Recording Converter (opening and converting recordings and videos): RecordingConverter-*; Pi Cluster (your Raspberry Pis in one place: health, camera rigs, updates; each Pi joins with cluster/setup.sh): PiCluster-* (Windows, Mac, Linux, Android, iPhone); on Linux hand-mouse_*.deb, remote-recording_*.deb, recording-converter_*.deb and pi-cluster_*.deb."
+            --notes "Built from $(echo "$GITHUB_SHA" | cut -c1-7) on main. Windows: HandTracker-*-portable.exe (no install). Mac: HandTracker-*-mac-arm64.dmg (Apple silicon) or HandTracker-*-mac-x64.dmg (Intel); the first time, open it from System Settings → Privacy & Security → Open Anyway. Linux: hand-tracker_*_amd64.deb (sudo apt install ./hand-tracker_*_amd64.deb). Raspberry Pi 4/5 and other 64-bit ARM Linux: hand-tracker_*_arm64.deb. Android: HandTracker-*.apk. iPhone and iPad: HandTracker-*-ios-unsigned.ipa, installed with Sideloadly or AltStore and your Apple ID (re-install every 7 days with a free Apple ID). Chrome (the hand mouse for web pages): HandTracker-*-chrome-extension.zip, unzipped and loaded in chrome://extensions with Developer mode on (Load unpacked). Apps of their own, for each of these the same way: Hand Mouse (the hand mouse alone): HandMouse-*; Remote Recording (controlling camera rigs, or being one): RemoteRecording-*; Recording Converter (opening and converting recordings and videos): RecordingConverter-*; Cluster (your Raspberry Pis in one place: health, camera rigs, updates; each Pi joins with cluster/setup.sh): Cluster-* (Windows, Mac, Linux, Android, iPhone; PiCluster-*.apk and .ipa are the same, for phones whose Cluster app is from before its rename); on Linux hand-mouse_*.deb, remote-recording_*.deb, recording-converter_*.deb and hand-tracker-cluster_*.deb."

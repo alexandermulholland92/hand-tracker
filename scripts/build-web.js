@@ -6,7 +6,7 @@
  * vendor/. index.html gets a "hand-tracker-bundle" meta tag so the page knows it
  * is running from this bundle.
  *   npm run build:web
- *   node scripts/build-web.js --cluster --out <dir>      # Pi Cluster on a phone: pi-cluster.html as
+ *   node scripts/build-web.js --cluster --out <dir>      # Cluster on a phone: cluster.html as
  *                                                       # index.html, and only the files it loads
  *   node scripts/build-web.js --hand-mouse --out <dir>   # Hand Mouse (the app with only the hand
  *                                                       # mouse): its page as index.html, and only
@@ -32,7 +32,7 @@ const APP_FILES = [
   "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
   "sentry.js", "camera-video.js", "sentry-models.js", "models/kinds.js", "object-finder.js", "object-finder-worker.js", "second-look.js", "second-look-worker.js", "web-pc.js", "hid-core.js",
   "remote-recording.html", "remote-recording.js", "recording-converter.html", "recording-converter.js",
-  "pi-cluster.html", "pi-cluster.js", // (Pi Cluster's own app, on phones too)
+  "cluster.html", "cluster.js", // (Cluster's own app, on phones too)
   // (camera-tile.html loads them; a Kinect only runs in the computer apps)
   "kinect-view.js", "body-tracker.js",
   "camera-settings.js", "annotate-core.js", "annotate-ui.js", "take-names.js", "download-menu.js",
@@ -45,10 +45,10 @@ const HAND_MOUSE_FILES = [
   "favicon.png", "apple-touch-icon.png", "hand-mouse.js", "hand-tracker.js", "custom-gestures.js", "gestures.js", "phone-link-protocol.js", "hid-core.js", "mobile-bridge.js",
   "pc-control.js", "phone-link-ui.js", "phone-control.html", "phone-control.js", "web-pc.js", "qr-code.js",
 ];
-// Pi Cluster on a phone (the Android app's "cluster" flavor, the iPhone's ios-variant.js cluster): its
+// Cluster on a phone (the Android app's "cluster" flavor, the iPhone's ios-variant.js cluster): its
 // page as index.html and the few files it loads, no libraries.
 const CLUSTER = process.argv.includes("--cluster");
-const CLUSTER_FILES = ["favicon.png", "apple-touch-icon.png", "pi-cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js"];
+const CLUSTER_FILES = ["favicon.png", "apple-touch-icon.png", "cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js"];
 const HAND_MOUSE_LIBRARIES = (list) => list.filter((rel) => rel.startsWith("node_modules/@mediapipe/hands/") || rel === "node_modules/@mediapipe/drawing_utils/drawing_utils.js");
 
 const LIBRARY_FILES = [
@@ -112,14 +112,14 @@ function write(rel, data) {
 // Shown in the page header, so it's clear which copy a phone or browser is running.
 const BUILT = new Date().toISOString();
 const VERSION = require("../package.json").version;
-// The commit a GitHub build is made from (empty for one made here): a phone's Pi Cluster tells from it
-// whether the "Latest build" release is newer than this copy (pi-cluster.js).
+// The commit a GitHub build is made from (empty for one made here): a phone's Cluster tells from it
+// whether the "Latest build" release is newer than this copy (cluster.js).
 const COMMIT = /^[0-9a-f]{40}$/.test(process.env.GITHUB_SHA || "") ? process.env.GITHUB_SHA : "";
 
 fs.rmSync(OUT, { recursive: true, force: true });
 // [from, to]: Hand Mouse's page is its index.html.
 const pages = HAND_MOUSE ? [["hand-mouse.html", "index.html"], ...HAND_MOUSE_FILES.map((f) => [f, f])]
-  : CLUSTER ? [["pi-cluster.html", "index.html"], ...CLUSTER_FILES.map((f) => [f, f])]
+  : CLUSTER ? [["cluster.html", "index.html"], ...CLUSTER_FILES.map((f) => [f, f])]
   : APP_FILES.map((f) => [f, f]);
 for (const [from, rel] of pages) {
   // Pictures byte for byte: read as text, every byte over 127 became three (U+FFFD), which broke the
@@ -141,7 +141,7 @@ for (const [from, rel] of pages) {
 }
 for (const rel of HAND_MOUSE ? HAND_MOUSE_LIBRARIES(LIBRARY_FILES) : CLUSTER ? [] : LIBRARY_FILES) write(vendorPath(rel), read(rel));
 if (HAND_MOUSE || CLUSTER) {
-  console.log(`${path.relative(ROOT, OUT)}/ ready (${HAND_MOUSE ? "Hand Mouse" : "Pi Cluster"}): ${count} files, ${(bytes / 1024 / 1024).toFixed(1)} MB`);
+  console.log(`${path.relative(ROOT, OUT)}/ ready (${HAND_MOUSE ? "Hand Mouse" : "Cluster"}): ${count} files, ${(bytes / 1024 / 1024).toFixed(1)} MB`);
   process.exit(0);
 }
 for (const rel of GUNZIP_FILES) write(vendorPath(rel).replace(/\.gz$/, ""), zlib.gunzipSync(read(rel)));

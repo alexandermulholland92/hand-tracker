@@ -10,7 +10,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark light" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob: 'self'; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'" />
-<title>Hand Tracker remote</title>
+<title>Remote Recording</title>
 <style>
   :root { --bg: #111216; --card: #1b1c22; --line: #2c2e36; --text: #e9ecef; --muted: #a3a9b1; --red: #e03131; --green: #2b8a3e; --err: #ff8787; --ok: #69db7c; --accent: #74c0fc; }
   @media (prefers-color-scheme: light) {
@@ -112,7 +112,8 @@
   .cam .pic { cursor: zoom-in; }
   #full { position: fixed; inset: 0; z-index: 20; background: #000; display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
   #fullBox { position: relative; display: inline-block; line-height: 0; }
-  #full img { max-width: 100vw; max-height: 100vh; object-fit: contain; }
+  #full img, #full canvas { max-width: 100vw; max-height: 100vh; object-fit: contain; }
+  #full canvas[hidden], #full img[hidden] { display: none; }
   /* Sentry mode's boxes over a camera's picture: tap one to leave it out (dark, dashed), again to
      watch it; red while it moves. */
   .boxes { position: absolute; inset: 0; display: grid; gap: 2px; padding: 2px; z-index: 2; }
@@ -201,7 +202,7 @@
 <body>
 <main id="mainPage">
   <p id="back" hidden><a href="remote.html">← Computers</a></p>
-  <h1 id="title">Hand Tracker</h1>
+  <h1 id="title">Remote Recording</h1>
   <div id="status">Connecting…</div>
   <div id="room" class="muted" hidden></div>
   <div id="sensors" class="muted" hidden></div>
@@ -306,7 +307,7 @@
   </section>
 
   <div id="full" role="dialog" aria-label="One camera, full screen" hidden>
-    <div id="fullBox"><img id="fullImg" alt="" /><div class="boxes" id="fullBoxes" hidden></div></div>
+    <div id="fullBox"><img id="fullImg" alt="" /><canvas id="fullVideo" hidden></canvas><div class="boxes" id="fullBoxes" hidden></div></div>
     <div class="fullbar"><span id="fullName"></span><span id="fullRate"></span><button type="button" id="fullClose" aria-label="Back to every camera">✕</button></div>
   </div>
 

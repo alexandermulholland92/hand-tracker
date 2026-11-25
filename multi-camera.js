@@ -39,6 +39,7 @@
  *   MultiCamera.keyOf(camera)                // a webcam's id for remembering it (see keyOf)
  *   MultiCamera.close();
  *   await MultiCamera.startRecording() / MultiCamera.stopRecording(show, extra)   // -> { ok, message } / the take (or null; extra: added to it)
+ *     the take's camera_devices: each camera's role, serial and USB port as it started (deviceRecord)
  *   MultiCamera.remoteState(); MultiCamera.previewSources();           // for remote recording (remote-record-ui.js)
  *   MultiCamera.isTracking()                                           // any of the tiles tracks hands now
  *   MultiCamera.sentryViews()                                          // each camera, for Sentry mode (sentry.js)
@@ -47,6 +48,8 @@
  *   MultiCamera.setRole(i, role); MultiCamera.setView(i, { rotation, mirror })
  *   MultiCamera.setScreenPictures(on); MultiCamera.screenPictures()   // OAK pictures on this screen (remembered)
  *   MultiCamera.setPreviewWant({ on, focus, ms, focusMs })             // remote recording's previews: how often each is made
+ *   MultiCamera.cameraVideo(id) / setCameraVideo(id, on)                // a webcam's own switch: full screen as video (H.264 made here)
+ *   MultiCamera.setVideoWant(ids)                                       // the cameras whose video pages are playing (webcams' made then)
  * A Kinect for Xbox One can be among them too (Linux and Windows app), and a Kinect for Xbox 360
  * (Linux, Mac and Windows app: "kinect:360-<serial>", with its tilt motor, light and tilt sensor):
  * the picker lists each one plugged in ("kinect:<id>"), a helper each streams its pictures with their depth (electron/kinect.js),
@@ -422,7 +425,8 @@
   function oakStart(t) {
     const hands = tracking(t), o = oakSettingsOf(t.deviceId), main = tileOptions.oak || {};
     const options = OakSource.cameraOptions({ ...main, fps: o.fps, detect: o.detect || !!main.needObjects, picture: o.picture, night: o.night, dots: o.dots });
-    return { lm: o.model, twoHands: o.hands !== 1, xyz: o.depth, ...(hands ? oakFar(tileOptions.far) : { far: null, allHands: false }), ...options, hands, imu: !!o.imu };
+    // (h264: its colour picture as H.264 too, from the camera's own encoder: remote recording's full screen plays it)
+    return { lm: o.model, twoHands: o.hands !== 1, xyz: o.depth, ...(hands ? oakFar(tileOptions.far) : { far: null, allHands: false }), ...options, hands, imu: !!o.imu, h264: true };
   }
   // An OAK camera keeps what it was started with: one that's running (or failed) is started
   // again when that changes (the hands, with hand tracking off or on; far-away hands; its
@@ -492,6 +496,47 @@
     if (on && global.SecondLook) SecondLook.prepare(true);
   }
 
+  // Remote recording's full screen as video for a webcam (its own switch, under its ⚙: off unless turned
+  // on there): its picture made into H.264 here (camera-tile.js startVideo: this computer's processor,
+  // where it has no encoder chip, a Raspberry Pi's say), only while a page plays it. An OAK camera's comes
+  // from the camera itself; a Kinect's and a PS4 camera's not at all (their pictures, as before).
+  const isWebcam = (t) => !!t && !t.oak && !t.kinect && !t.ps4;
+  const ownVideo = (id) => !/^(oak|kinect|ps4):/.test(String(id)) && ((prefs && prefs.cameraVideo) || {})[id] === true;
+  function setCameraVideo(id, on) {
+    const all = { ...((prefs && prefs.cameraVideo) || {}) };
+    if (on && !/^(oak|kinect|ps4):/.test(String(id))) all[id] = true;
+    else delete all[id];
+    setPref("cameraVideo", all);
+    for (const t of tiles) if (t.deviceId === id) t.videoCant = false; // (tried again, when next asked for)
+    applyVideoWant();
+  }
+  // The cameras whose video pages are playing now (remote recording's server says): each such webcam's made
+  // (once its tile's started), the others' stopped.
+  let videoWant = [];
+  function setVideoWant(ids) {
+    videoWant = Array.isArray(ids) ? ids.filter((x) => typeof x === "string") : [];
+    applyVideoWant();
+  }
+  function applyVideoWant() {
+    for (const t of tiles) {
+      if (!isWebcam(t)) continue;
+      const api = tileApi(t);
+      if (!api || !api.startVideo) continue;
+      const want = ownVideo(t.deviceId) && !t.videoCant && videoWant.includes(t.deviceId);
+      if (want && !t.videoStarting && !(api.video && api.video())) {
+        t.videoStarting = true;
+        const id = t.deviceId;
+        api.startVideo(({ u, key, data, hands }) => desktop.remote && desktop.remote.sendVideo && desktop.remote.sendVideo({ id, u, key, data, hands }))
+          .then((ok) => {
+            if (!ok) t.videoCant = true; // (this computer can't make it: its pictures, and not offered again until its switch is)
+          }, () => (t.videoCant = true))
+          .finally(() => (t.videoStarting = false));
+      } else if (!want && api.video && api.video()) {
+        api.stopVideo();
+      }
+    }
+  }
+
   const tileApi = (t) => {
     try {
       return t.frame.contentWindow && t.frame.contentWindow.Tile;
@@ -501,6 +546,7 @@
   };
 
   function showStatus() {
+    if (videoWant.length) applyVideoWant(); // (a webcam whose tile is ready only now)
     for (const t of tiles) {
       const api = tileApi(t);
       const st = api ? api.status() : null;
@@ -1152,6 +1198,21 @@
     const m = /\(([0-9a-f]{4}):([0-9a-f]{4})\)\s*$/i.exec(t.label || "");
     return m ? { usb: `${m[1]}:${m[2]}`.toLowerCase() } : null;
   }
+  // A camera's record in a take (camera_devices): its name and role, what it is, its serial (an OAK camera's or
+  // a Kinect's id, else the USB's), its USB port ("1-1.2": bus 1, then each hub's port; on a Linux computer, a
+  // Raspberry Pi; null elsewhere or not found) and its USB ids. Cameras alike on the USB (the same ids and no
+  // serial to tell them apart): usb_port null, usb_ports_alike every one's.
+  function deviceRecord(t, u = null) {
+    return { camera: nameOf(t), role: t.role || null, label: t.label || "", kind: t.oak ? "oak" : t.kinect ? "kinect" : t.ps4 ? "ps4" : "webcam", ...usbFields(t, u) };
+  }
+  // u: where this computer found it on the USB (system-control.js's cameraUsb), or null.
+  function usbFields(t, u) {
+    const own = usbOf(t) || {};
+    const at = u || {};
+    const out = { serial: at.serial || own.serial || null, usb_port: at.port || null, usb_id: at.usb || (own.usb && !own.usb.includes(",") ? own.usb : null) };
+    if (Array.isArray(at.ports) && at.ports.length > 1) out.usb_ports_alike = at.ports;
+    return out;
+  }
   const switchedWith = (t, others) => {
     const own = usbOf(t);
     return !!own && others.some((o) => (own.serial && o.serial === own.serial) || (own.dev && o.dev === own.dev) || (!own.serial && !own.dev && own.usb && own.usb.split(",").includes(o.usb)));
@@ -1425,6 +1486,13 @@
       t.takeHands = tracking(t);
       t.imuReadings = t.oak ? [] : null; // (an OAK camera's motion sensor, while the take records)
       t.bodyRows = t.body ? [] : null; // (and its posture)
+      // Its role as the take starts (its video's named after it) and where it is on the USB (its port and
+      // serial), kept with the take: camera_devices.
+      const rec = (t.deviceAtTake = deviceRecord(t));
+      const match = usbOf(t);
+      if (match && global.desktop && desktop.remote && desktop.remote.cameraUsb) {
+        desktop.remote.cameraUsb(match).then((u) => Object.assign(rec, usbFields(t, u)), () => {});
+      }
     }
     for (const s of liveSensors()) {
       s.raw = [];
@@ -1489,6 +1557,8 @@
       return null;
     }
     if (extra) Object.assign(merged, extra);
+    // Each camera in the take: its role, and where it was on the USB (its port and serial).
+    merged.camera_devices = parts.map((p) => p.tile.deviceAtTake || deviceRecord(p.tile));
     // Each OAK camera's motion sensor, on the take's clock (t: seconds, as the hands'): the
     // readings from its first frame on.
     const origin = Date.parse(merged.recorded_at);
@@ -1596,7 +1666,12 @@
         return {
           index: i, name: t.name, roleId: t.role || "", role: CameraRoles.label(t.role) || "", label: t.label, rotation: t.view.rotation, mirror: t.view.mirror,
           fps: st ? st.fps : 0, hands: st ? st.hands : [], tracking: st ? st.tracking !== false : tracking(t), error: st ? st.error || "" : "", restarting: !!t.byHand,
-          ...(t.oak ? { oak: true, night: !!t.night, chipC: typeof t.chipC === "number" ? t.chipC : null } : {}),
+          // (videoId: which camera's H.264 is this one's, for remote recording's full screen, which keeps it to
+          // itself: an OAK camera's own, or a webcam's made here once a page asks for it (videoOnDemand, its own
+          // switch on and this computer able to make it); showObjects: whether its objects are drawn over that
+          // video, as on its tile)
+          ...(t.oak ? { oak: true, night: !!t.night, chipC: typeof t.chipC === "number" ? t.chipC : null, videoId: t.oak, showObjects: oakSettingsOf(t.deviceId).showObjects !== false } : {}),
+          ...(isWebcam(t) && ownVideo(t.deviceId) && !t.videoCant ? { videoId: t.deviceId, videoOnDemand: true } : {}),
           ...(t.body ? { body: bodyState(t) } : {}),
           ...(t.kinect ? { kinect: true, night: !!t.night, bodies: st && st.bodies ? st.bodies : 0, sound: t.audio ? { angle: t.audio.angle, level: Math.max(...(t.audio.level || [0])), active: t.audio.active } : null } : {}),
           ...(t.ps4 ? { ps4: true, night: !!t.night } : {}),
@@ -1759,6 +1834,7 @@
 
   global.MultiCamera = {
     init, openPicker, start, close, keyOf, setOptions, options: () => ({ ...tileOptions }), startRecording, stopRecording, remoteState, setUpright, setForward, tracking: ownTracking, setTracking, timingCheck, timingState, previewSources, sentryViews, setRole, setView, setScreenPictures, screenPictures, setPreviewWant,
+    cameraVideo: ownVideo, setCameraVideo, setVideoWant,
     oakSettings, setOakSettings, kinectSettings, setKinectSettings, saveKinect, kinectAvailable, ps4Settings, setPs4Settings, restartCamera,
     _restart: RESTART, // (the checks shorten its wait)
     isActive: () => tiles.length > 0, runningIds: () => tiles.map((t) => t.deviceId), isRecording: () => recording, isTracking: () => tiles.some((t) => tracking(t)),

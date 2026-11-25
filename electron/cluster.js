@@ -1,9 +1,9 @@
 /**
- * cluster.js — the Pi Cluster app's side in the main process (its own app: APP.kind "cluster").
- * It finds the Pis running Pi Cluster's service (cluster/node: port 47830) among the Linux
- * computers on this computer's Tailscale network, and passes the page's requests on to them. (The
- * page can't ask them itself: it's served from app://, and the service only answers requests
- * that carry its own header.)
+ * cluster.js — the Cluster app's side in the main process (its own app: APP.kind "cluster").
+ * It finds the Pis running Cluster's service (cluster/node: port 47830) among the Linux
+ * and Windows computers on this computer's Tailscale network (this one too: a Windows PC can be a
+ * member), and passes the page's requests on to them. (The page can't ask them itself: it's
+ * served from app://, and the service only answers requests that carry its own header.)
  *
  *   const c = new Cluster({ file });  // file: the Pis seen before, shown while they're away
  *   await c.list()      -> { nodes: [{ name, target, online, answering, seen, node, error }], tailscale, at }
@@ -37,17 +37,21 @@ function tailscaleCli() {
   return "tailscale";
 }
 
-// The Linux computers on this Tailscale network: [{ name, ip, online }], or null (no Tailscale here).
+// The Linux and Windows computers on this Tailscale network, this one too (a Windows PC can be a member of the
+// cluster itself: cluster/node/windows), and the phones (members too, in the Cluster app: phone true): [{ name, ip,
+// online, phone? }], or null (no Tailscale here).
 function tailscalePeers() {
   return new Promise((resolve) => {
     execFile(tailscaleCli(), ["status", "--json"], { timeout: 8000, windowsHide: true, maxBuffer: 8 << 20 }, (err, stdout) => {
       if (err) return resolve(null);
       try {
-        const peers = Object.values(JSON.parse(stdout).Peer || {});
+        const status = JSON.parse(stdout);
+        const peers = Object.values(status.Peer || {}).concat(status.Self ? [Object.assign({ Online: true }, status.Self)] : []);
         resolve(
           peers
-            .filter((p) => String(p.OS || "").toLowerCase() === "linux")
-            .map((p) => ({ name: String(p.HostName || ""), ip: (p.TailscaleIPs || []).find((a) => !String(a).includes(":")), online: !!p.Online }))
+            .filter((p) => ["linux", "windows", "android", "ios"].includes(String(p.OS || "").toLowerCase()))
+            .map((p) => ({ name: String(p.HostName || ""), ip: (p.TailscaleIPs || []).find((a) => !String(a).includes(":")), online: !!p.Online,
+              ...(["android", "ios"].includes(String(p.OS || "").toLowerCase()) ? { phone: true } : {}) }))
             .filter((p) => p.ip),
         );
       } catch {
@@ -59,8 +63,8 @@ function tailscalePeers() {
 
 // One request to a Pi's service: target is "100.x.y.z" (its port is the service's) or "host:port".
 // body: JSON; raw: bytes as they are (a piece of a file). An answer that isn't JSON comes back as
-// { status, bytes }.
-function ask(target, method, urlPath, body, { raw = null, timeout = ASK_MS } = {}) {
+// { status, bytes }. to: a phone of the cluster, asked through that Pi (X-HT-Cluster-To: it has the phone's key).
+function ask(target, method, urlPath, body, { raw = null, timeout = ASK_MS, to = null } = {}) {
   const [host, port] = target.includes(":") ? [target.split(":")[0], Number(target.split(":")[1])] : [target, PORT];
   const data = raw || (body === undefined ? null : Buffer.from(JSON.stringify(body)));
   const type = raw ? "application/octet-stream" : "application/json";
@@ -68,7 +72,7 @@ function ask(target, method, urlPath, body, { raw = null, timeout = ASK_MS } = {
     const req = http.request(
       {
         host, port, path: urlPath, method,
-        headers: { "X-HT-Cluster": "1", Host: `${host}:${port}`, ...(data ? { "Content-Type": type, "Content-Length": data.length } : {}) },
+        headers: { "X-HT-Cluster": "1", Host: `${host}:${port}`, ...(to ? { "X-HT-Cluster-To": to } : {}), ...(data ? { "Content-Type": type, "Content-Length": data.length } : {}) },
         timeout,
       },
       (res) => {
@@ -101,6 +105,9 @@ class Cluster {
     this.extra = String(extra || "").split(",").map((s) => s.trim()).filter(Boolean);
     this.known = {}; // name -> { target, seen, node }
     this.notOne = new Map(); // target -> until when it isn't asked again
+    this.phoneVia = new Map(); // a phone's address -> the Pi it's asked through (the Pis have its key)
+    // (the checks: phones at these addresses, as Tailscale would list them)
+    this.phoneTargets = String(process.env.HT_CLUSTER_PHONES || "").split(",").map((t) => t.trim()).filter(Boolean);
     try {
       const saved = JSON.parse(fs.readFileSync(file, "utf8"));
       if (saved && typeof saved === "object") this.known = saved;
@@ -123,8 +130,20 @@ class Cluster {
     // (Pis seen before that Tailscale doesn't list now: asked anyway, in case it's only the list)
     for (const k of Object.values(this.known)) if (!online.has(k.target) && !offline.has(k.target) && !peers) online.set(k.target, k.target);
     const knownTarget = new Set(Object.values(this.known).map((k) => k.target));
+    const phones = new Set((peers || []).filter((p) => p.phone).map((p) => p.ip));
+    for (const t of this.phoneTargets) {
+      phones.add(t);
+      online.set(t, t);
+    }
     const targets = [...online.keys()].filter((t) => knownTarget.has(t) || !(this.notOne.get(t) > now));
-    const answers = await Promise.all(targets.map((t) => ask(t, "GET", "/api/node").then((a) => [t, a])));
+    // The computers first, then the phones through one of them that answered.
+    const answers = await Promise.all(targets.filter((t) => !phones.has(t)).map((t) => ask(t, "GET", "/api/node").then((a) => [t, a])));
+    const via = (answers.find(([t, a]) => a.status === 200 && a.name && a.platform !== "android" && a.platform !== "ios") || [])[0];
+    for (const t of phones) {
+      if (via) this.phoneVia.set(t, via);
+      else this.phoneVia.delete(t);
+    }
+    answers.push(...await Promise.all(targets.filter((t) => phones.has(t) && via).map((t) => this.ask(t, "GET", "/api/node").then((a) => [t, a]))));
     const nodes = new Map();
     for (const [target, a] of answers) {
       if (a.status === 200 && a.name && Array.isArray(a.modules)) {
@@ -152,6 +171,12 @@ class Cluster {
     return { nodes: [...nodes.values()].sort((a, b) => a.name.localeCompare(b.name)), tailscale: !!peers, at: now };
   }
 
+  // A request to one of the cluster's computers, a phone through a Pi (ask's to).
+  ask(target, method, urlPath, body, opts = {}) {
+    const via = this.phoneVia.get(target);
+    return via ? ask(via, method, urlPath, body, { ...opts, to: target }) : ask(target, method, urlPath, body, opts);
+  }
+
   // (only to a Pi this has found: never an address the page made up)
   target(t) {
     const target = String(t || "");
@@ -163,11 +188,11 @@ class Cluster {
     const body = { module: String(module || "") };
     if (typeof on === "boolean") body.on = on;
     if (key !== undefined) Object.assign(body, { key: String(key), value });
-    return ask(this.target(target), "POST", "/api/settings", body);
+    return this.ask(this.target(target), "POST", "/api/settings", body);
   }
 
   action({ target, module, action, args } = {}) {
-    return ask(this.target(target), "POST", "/api/action", { module: String(module || ""), action: String(action || ""), args: args && typeof args === "object" ? args : {} });
+    return this.ask(this.target(target), "POST", "/api/action", { module: String(module || ""), action: String(action || ""), args: args && typeof args === "object" ? args : {} });
   }
 
   forget(name) {
@@ -190,7 +215,7 @@ class Cluster {
           const { bytesRead } = await fh.read(buf, 0, buf.length, at);
           const last = at + bytesRead >= size ? 1 : 0;
           const q = `job=${encodeURIComponent(job)}&name=${encodeURIComponent(f.name)}&at=${at}&last=${last}`;
-          const a = await ask(t, "PUT", `/api/jobs/upload?${q}`, undefined, { raw: buf.subarray(0, bytesRead), timeout: 120000 });
+          const a = await this.ask(t, "PUT", `/api/jobs/upload?${q}`, undefined, { raw: buf.subarray(0, bytesRead), timeout: 120000 });
           if (a.status !== 200) throw new Error(`${f.name}: ${a.error || `it answered ${a.status}`}`);
           at += bytesRead;
           onProgress({ name: f.name, sent: at, size });
@@ -206,7 +231,7 @@ class Cluster {
   // onProgress({ name, got, files, done }).
   async download({ target, job, dir } = {}, onProgress = () => {}) {
     const t = this.target(target);
-    const list = await ask(t, "POST", "/api/action", { module: "jobs", action: "results", args: { job } });
+    const list = await this.ask(t, "POST", "/api/action", { module: "jobs", action: "results", args: { job } });
     if (list.status !== 200) throw new Error(list.error || "Couldn't list its results.");
     const folder = path.join(dir, String(list.title || job).replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || job);
     let done = 0;
@@ -218,7 +243,7 @@ class Cluster {
       try {
         let at = 0;
         for (;;) {
-          const a = await ask(t, "GET", `/api/jobs/result-file?job=${encodeURIComponent(job)}&path=${encodeURIComponent(f.path)}&at=${at}`, undefined, { timeout: 120000 });
+          const a = await this.ask(t, "GET", `/api/jobs/result-file?job=${encodeURIComponent(job)}&path=${encodeURIComponent(f.path)}&at=${at}`, undefined, { timeout: 120000 });
           if (a.status !== 200 || !a.bytes) throw new Error(`${f.path}: ${a.error || `it answered ${a.status}`}`);
           await fh.write(a.bytes, 0, a.bytes.length, at);
           at += a.bytes.length;

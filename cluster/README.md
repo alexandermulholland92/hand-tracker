@@ -1,8 +1,8 @@
-# Pi Cluster
+# Cluster
 
 Your Raspberry Pis in one place, over Tailscale: how each one is doing, its camera rig, its updates
-and its jobs. Each Pi runs Pi Cluster's service (`node/`). The **Pi Cluster** app shows them all.
-It's an app of its own, built from Hand Tracker's code, on page `pi-cluster.html`:
+and its jobs. Each Pi runs Cluster's service (`node/`). The **Cluster** app shows them all.
+It's an app of its own, built from Hand Tracker's code, on page `cluster.html`:
 - **Windows, Mac and Linux:** `scripts/dist.js --app cluster`.
 - **Android:** the `cluster` flavor.
 - **iPhone:** `scripts/ios-variant.js … cluster`.
@@ -24,16 +24,16 @@ Tailscale, and does everything the app does.
 - **Kept safe from other websites:** another site's page can't use the service, because the page's
   requests carry the app's header and only the Pi's own page can send that. The page never opens
   inside another site's page either (`frame-ancestors 'none'`).
-- **Where the page's files come from:** `pi-cluster.html` and the few files it loads, copied beside
+- **Where the page's files come from:** `cluster.html` and the few files it loads, copied beside
   the service in `web/` by its update. The first update to a version that serves the page is done by
   the root helper from before it, so the service then has its new root helper fetch them for its own
   version (`ht-cluster-root page`).
 
 **This phone's apps** (phones only), from GitHub's **Latest build**, the release the Pis update from:
-- **Android:** Pi Cluster and this phone's other Hand Tracker apps (Hand Tracker, Hand Mouse, Remote
+- **Android:** Cluster and this phone's other Hand Tracker apps (Hand Tracker, Hand Mouse, Remote
   Recording, Recording Converter) update by themselves.
-  - **When:** usually within a few hours of a new build, on Wi-Fi (a build is over 200 MB), even while Pi Cluster
-    is closed (`AppUpdateJob.java`). Pi Cluster updates itself only while it isn't open.
+  - **When:** usually within a few hours of a new build, on Wi-Fi (a build is over 200 MB), even while Cluster
+    is closed (`AppUpdateJob.java`). Cluster updates itself only while it isn't open.
   - **Not while the phone records:** nothing updates while it's recording or saving a take (cameras
     on alone don't hold it). Hand Tracker and Remote Recording say so (the page every 30 seconds
     meanwhile, `remote-record-ui.js`; `AppStateProvider.java`, which only Hand Tracker's own apps may
@@ -41,16 +41,16 @@ Tailscale, and does everything the app does.
   - **Update** does it now, and **Install** puts on an app that isn't on the phone yet.
   - A notice at the top names the apps that have a newer build.
   - Each APK is checked against GitHub's size and SHA-256, then installed through Android's
-    PackageInstaller (`AppUpdates.java`, `AppUpdatePlugin.java`). With **Update**, Pi Cluster updates
+    PackageInstaller (`AppUpdates.java`, `AppUpdatePlugin.java`). With **Update**, Cluster updates
     itself last, and closes then.
-  - **Android asks first:** once to allow Pi Cluster to install apps, and before it updates an app it
+  - **Android asks first:** once to allow Cluster to install apps, and before it updates an app it
     didn't install itself, or installs one. Until then, those apps wait for **Update**, with a
-    notification once for each build. From Android 12, an app Pi Cluster installed updates without
+    notification once for each build. From Android 12, an app Cluster installed updates without
     asking after that.
   - Each app's build is in its manifest (`com.handtracker.build`, the GitHub commit it was made from;
     `android/app/build.gradle`). An app from before that shows as "an older build".
 - **iPhone:** an app can't install apps there, so only a notice that a newer build is out (one with
-  Pi Cluster's iPhone app in it). Installing it stays with AltServer. The page knows its own build
+  Cluster's iPhone app in it). Installing it stays with AltServer. The page knows its own build
   from the meta tag `scripts/build-web.js` writes.
 
 ## Putting a Pi in
@@ -62,7 +62,7 @@ Pi, from your own account (not root):
 curl -fsSL https://raw.githubusercontent.com/alexandermulholland92/hand-tracker/main/cluster/setup.sh | sudo bash
 ```
 
-The Pi shows in the Pi Cluster app within a minute. To take it out again, unplug it and press
+The Pi shows in the Cluster app within a minute. To take it out again, unplug it and press
 **Forget** in the app, or remove the service:
 
 ```bash
@@ -71,6 +71,49 @@ curl -fsSL https://raw.githubusercontent.com/alexandermulholland92/hand-tracker/
 
 Pis come and go freely. A Pi that's unplugged, out of battery or off the Wi-Fi stays in the app,
 faded, until it's back.
+
+## Putting a Windows PC in
+
+A Windows PC can be a member too, beside the Pis: it takes conversions (**Convert videos** and
+**Convert for every device**) and the animal model's jobs, at a priority of its own. It needs
+Tailscale logged in to your account and Python 3. In the repository's folder:
+
+```powershell
+python cluster/node/windows/setup.py --python <the Python to run it with> --tools-python <a Python onnxruntime has wheels for>
+```
+
+- **Where it lives:** `%LOCALAPPDATA%\Cluster`: the service for GitHub's latest build (checked
+  file by file, as a Pi's own update does), its settings, and the jobs' files. A PC set up before
+  the rename has it in `%LOCALAPPDATA%\Pi Cluster`, used as it is until `setup.py` runs again,
+  which moves it (`Cluster-Linux`'s disk too, by WSL) and names its Startup shortcut again.
+- **When it runs:** from now on, and at each sign-in (a shortcut in the Startup folder; no
+  administrator needed). Its launcher (`node/windows/launcher.py`) starts it again whenever it ends,
+  as systemd does on a Pi, so it updates itself the same way.
+- **Its jobs' priority:** Low, Below normal (at first), Normal, Above normal or High, chosen in the
+  app, and changed for a job that's already running too. **Take jobs** turns it on or off. It takes
+  no command jobs (written for a Pi's Linux).
+- **ffmpeg:** the one on the path, else a build in Documents (`--ffmpeg` to name one).
+- **Windows Firewall:** the Python it runs with needs leave to answer on a private network
+  (Tailscale's is one), or Windows asks the first time.
+- **A Pi's shared folders as drives:** `--drive P=\\<the Pi>\home\<you>\Downloads` (as many as you
+  like), with Windows' Client for NFS turned on (Windows Features). Its launcher connects them at
+  sign-in, and again every few minutes if one's missing. While that Pi is slow or away, anything
+  that looks at those drives waits for it.
+- **Transmission:** run in a Linux of its own under WSL, `Cluster-Linux` (WSL first: as
+  administrator, `wsl --install --no-distribution`). `setup.py --linux` downloads Debian 13 (the
+  Pis' release, its SHA-256 checked against Docker's official image's manifest) into
+  `%LOCALAPPDATA%\Cluster\linux` and installs the Pis' own `transmission-daemon` and the NFS
+  client in it. Then it's a place Transmission can run like any Pi (**Can run Transmission**; it never
+  keeps Transmission's files): `node/windows/transmission.sh` mounts the home's folders at their own
+  paths and runs it there, in the foreground of the `wsl.exe` the service starts (which keeps that
+  Linux up, through the service's own restarts too). WSL's connections reach the home from ports
+  above 1023, which the home's share turns away, so the service passes them on from below 1024 (its
+  NFS relay, on Windows' side of WSL's network only). The home reaches Transmission at this PC's
+  Tailscale address, passed on to WSL's. Its speed limits are Transmission's own (no nft here). A PC
+  that was asleep stops it at once on waking, in case the home started it elsewhere meanwhile.
+- **Not on Windows:** the Pi fixes, and Hand Tracker's and the system's updates (its Hand Tracker
+  isn't Cluster's to put in).
+- **Taking it out:** `python cluster/node/windows/setup.py --remove` (its folder stays).
 
 ## Modules
 
@@ -144,6 +187,21 @@ for that Pi.
     - **Convert videos:** to any of the Recording Converter's formats, with its own ffmpeg settings.
     - **A command for each file:** `{in}` is the file, `{out}` the folder whose contents come back,
       and `{name}` / `{file}` its name without and with its ending.
+    - **Any command or script, across the cluster** (`run`): a command line, or a script file sent
+      with the job, run either **once on each chosen member** (each one's results in a folder of its
+      name), or **split over a list**: files, lines of text, or the numbers 1 to N, each part done by
+      whichever member is free (in a numbered folder). In a command line, `{input}` is the line or
+      number, `{i}` / `{n}` the part's place and how many there are, and `{member}` the member
+      running it, besides `{in}`, `{out}`, `{name}` and `{file}`. A script gets the file, line or
+      number as `$1`, and all of them as `IN`, `OUT`, `NAME`, `INPUT`, `INDEX`, `COUNT` and
+      `MEMBER`; it runs by its `#!` line, else by its ending (bash, python3, node, perl), only on
+      members that have that language. The Pis and a Windows PC (in its Cluster-Linux) run them as
+      their own user. **As root** only with the **cluster password**: set once from the Jobs tab
+      (**Cluster password…**) on every member, each of which keeps only a salted check of it (its
+      root helper's `cluster-password`, readable by root alone) and runs root jobs through its root
+      helper (`run-as-root`), which checks the password itself. The password goes with the job in
+      memory only, never into the job list or a log; the Pi keeping the list asks for it again if it
+      restarts meanwhile.
     - **A copy every device plays** (`playable`, made by **Convert for every device** below): each
       file with its own plan, put beside its video as it comes back, never over a file.
   - **Files for a job:** recordings on any Pi (a Pi works on its own recordings first, so they
@@ -226,6 +284,42 @@ for that Pi.
   - **On the Pis:** Debian's `transmission-daemon` runs as your account (`ht-cluster-transmission`,
     started by the root helper), with its settings in `~/.local/share/ht-cluster/transmission`.
 
+- **Downloads** (`modules/downloads.py`): torrents downloaded by any computer in the cluster on its own
+  disk, then copied to the Pi that keeps Transmission's files (the home), on the **Transmission** tab.
+  - **Where a new download goes**, chosen each time (**Download it on**): the home (its Transmission,
+    as before), a computer by name, or **the computer with the most free network**: the least busy
+    network right now (what its own Wi-Fi or Ethernet received and sent over the last minute), among
+    those free with room for it on their disk. The home is one of them: then it goes straight into
+    its Transmission (and networks within 50 KB/s of the home's count as as free: the home is
+    chosen then, as nothing has to be copied).
+  - **Split between computers**, if chosen: **by files** (each computer's Transmission downloads only
+    its own files: the biggest first, each to the one with the least so far), or **by pieces** for
+    one big file (pieces.py with libtorrent on each computer, as Transmission can't choose pieces).
+    A magnet link's file list is fetched first, on one computer. Up to 4 computers.
+  - **Once it's copied to the home**, chosen each time too: the home **takes it over** (its
+    Transmission checks its copy and seeds it; once it has all of it, the computers' copies are
+    deleted), or the computers **keep seeding it** (the home has its copy, which it doesn't seed);
+    **Let the home take it over** hands it over later.
+  - **Each computer's own Transmission** (its address 127.0.0.1:9094, peers on 51415): started while
+    it has any of these, stopped 5 minutes after the last. Few peers (40 in all, 20 a torrent, 2
+    downloading at once: the home router hung at 200), uTP, DHT and local peer discovery off, as on
+    the home. Its downloads are in `~/ht-cluster-downloads` (a Pi) or
+    `%LOCALAPPDATA%\Cluster\downloads` (the PC, in its Linux), each in a folder of its own.
+  - **Copying to the home:** one computer at a time (the home's Wi-Fi), in 4 MB pieces, each tried
+    again after a stall; a copy that stops goes on from where it got to. Files arrive as
+    `<name>.part`, renamed once every part is there. The home never overwrites a file it has: such a
+    download is refused, or stops, saying so.
+  - **When a computer downloads:** its **Downloads** on; not while it records (**Download while its
+    cameras run** off), is too hot or short of memory, or is on battery (**Download on battery**
+    off; never under 30 %): its downloads wait, paused, meanwhile, and so does its copying.
+  - **How:** each computer says how it is to the home every 5 seconds (free or not, its room, how
+    busy its network is, its torrents); the home answers with what it should have (each torrent,
+    which of its files, paused or not, its turn to copy) and what to remove.
+  - **On the Pis:** its Transmission runs as your account (`ht-cluster-own-transmission`, started by
+    the root helper), with its settings in `~/.local/share/ht-cluster/own-transmission`. On the PC:
+    in Cluster-Linux, through `node/windows/transmission.sh own-start`. **Get libtorrent** (under
+    each computer's Downloads) puts Debian's `python3-libtorrent` there, for splitting by pieces.
+
 A new module is a new file in `node/modules/` (what it needs is described in `node/ht_cluster.py`).
 It reaches every Pi with the service's own updates. The app shows a module it doesn't know yet
 too: its summary, its warnings, its buttons and its settings.
@@ -237,7 +331,7 @@ too: its summary, its warnings, its buttons and its settings.
   - It answers only your own Tailscale account (checked with `tailscale whois`).
   - Requests from the Pi itself can only read, not change anything.
   - Every request must carry the app's header and name the Pi in its Host. Another site's page can't
-    send either; only the Pi Cluster page the Pi serves itself sends the header (see **In a
+    send either; only the Cluster page the Pi serves itself sends the header (see **In a
     browser** above).
   - What each Pi was set to, and what happened lately: `~/.local/state/ht-cluster/`.
 - **The root helper** (`node/ht-cluster-root`, installed as `/usr/local/sbin/ht-cluster-root`): the
@@ -248,11 +342,14 @@ too: its summary, its warnings, its buttons and its settings.
     (`/etc/sudoers.d/ht-cluster`).
   - It takes no file or address from the service. It downloads what it installs itself and checks
     it against GitHub: the size and SHA-256 of the `.deb`, and the service's files (with the Pi
-    fixes and the Pi Cluster page) against the commit's file list.
+    fixes and the Cluster page) against the commit's file list.
   - Its log: `/var/log/ht-cluster-root.log`.
-- **The app** (`electron/cluster.js`): finds the Pis among the Linux computers on this computer's
-  Tailscale network, and asks each one's service.
-- **The page in a browser** (`pi-cluster.js`, browser mode): asks the Pi that served it, which lists
+- **On a Windows PC:** the same service (`node/winsys.py` gives it Windows' own readings), run by its
+  launcher from `%LOCALAPPDATA%\Cluster\versions\<commit>` (`current.txt` names the one in use).
+  The root helper's Windows part runs as you and does only the service's own update and the page.
+- **The app** (`electron/cluster.js`): finds the Pis among the Linux and Windows computers on this
+  computer's Tailscale network (this one too), and asks each one's service.
+- **The page in a browser** (`cluster.js`, browser mode): asks the Pi that served it, which lists
   the other Pis on its Tailscale and passes requests on to them.
 
 ## Checks
@@ -279,6 +376,16 @@ python3 cluster/test_apps.py
 
 This checks Transmission moving in, moving between two simulated Pis, its old address, new
 downloads and giving the torrents back, with a stand-in Transmission and root helper.
+
+```bash
+python3 cluster/test_downloads.py
+```
+
+This checks downloads on other computers with three simulated (the home and two others): the most
+free network chosen, a download copied to the home and taken over there, splitting by files and by
+pieces (and a magnet link's file list first), keeping on seeding then handing over, pausing,
+recording, removing, and what's refused. Its stand-in Transmissions and pieces.py "download" from
+a folder at a steady pace.
 
 ```bash
 npm run check:cluster

@@ -1,15 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Pi Cluster (the "cluster" flavor: your Raspberry Pis in one place, pi-cluster.html) has neither
+<!-- Cluster (the "cluster" flavor: your Raspberry Pis in one place, cluster.html) has neither
      the hand mouse nor remote recording: this phone's control (its camera window and its
      accessibility service) and Sentry mode's alerts (their watcher and its start after a restart)
      aren't in it. It updates this phone's Hand Tracker apps, itself too, from GitHub's "Latest
      build" (AppUpdates.java): it installs them (Android lets it once you allow it; from Android 12
      an app it installed updates without asking again), sees which of them are here and whether
      Hand Tracker or Remote Recording is recording (their AppStateProvider, a signature permission),
-     and updates them by itself every hour on Wi-Fi unless one is (AppUpdateJob.java). -->
+     and updates them by itself every hour on Wi-Fi unless one is (AppUpdateJob.java). It can also be a member of
+     the cluster itself (its own switch: MemberService.java runs Cluster's service here, in its own Python), on
+     after a restart if it was on (MemberBoot.java). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- This phone's Hand Tracker takes (Documents/Hand Tracker, written by its other apps), shared with the cluster as a
+         Pi's recordings are: Android 11+ lets another app's files there be read only with All files access, which the
+         user turns on for this app in Settings (the user, 2026-11-25: "All files access"). -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <queries>
         <package android:name="com.handtracker.app" />
@@ -31,5 +37,21 @@
         <receiver
             android:name=".AppUpdateResult"
             android:exported="false" />
+        <service
+            android:name=".MemberService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="This phone as a member of your own computers' cluster (its health, jobs and downloads), while you have it on" />
+        </service>
+        <receiver
+            android:name=".MemberBoot"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

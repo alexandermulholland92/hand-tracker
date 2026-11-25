@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-ht_cluster.py - Pi Cluster's service on each Raspberry Pi in the cluster (cluster/README.md).
+ht_cluster.py - Cluster's service on each Raspberry Pi in the cluster (cluster/README.md).
 
-It answers the Pi Cluster app over Tailscale (port 47830) and runs the cluster's modules: each one
+It answers the Cluster app over Tailscale (port 47830) and runs the cluster's modules: each one
 a file in modules/ (health, rig, updates; later jobs and apps), turned on or off for this Pi from
 the app, with its own settings for this Pi. A new module is a new file there: the app shows a
 module it doesn't know yet as its one-line summary, its warnings, its switches and its buttons.
@@ -12,7 +12,7 @@ looked up with `tailscale whois`), and this Pi itself (readings only). Every req
 X-HT-Cluster: 1 and names this Pi in its Host (so a web page in a browser can't send one), and a
 change is JSON.
 
-The Pi Cluster page in a browser: http://<this Pi>:47830/ serves the app's own page (PAGE_FILES, from
+The Cluster page in a browser: http://<this Pi>:47830/ serves the app's own page (PAGE_FILES, from
 web/: the root helper puts the build's copies there), to the same Tailscale account only, never in
 another site's frame. Its requests come from the page itself (same origin, so they can carry the
 header); one for another Pi of the cluster names it in X-HT-Cluster-To, and this Pi passes it on as it
@@ -29,6 +29,7 @@ This Pi's settings, and what the modules remember: ~/.local/state/ht-cluster/ (H
 
 A module (modules/<name>.py) has:
   TITLE = "Health"; ORDER = 10 (its place in the app); ON = True (for a Pi that hasn't said);
+  PLATFORMS = ("linux",) (optional: not loaded on a Windows PC; both by default)
   EVERY = 5 (seconds between tick()s while it's on)
   SETTINGS = [{"key", "title", "default", "choices"?: [[value, title], ...]}]  (no choices: on/off)
   start(node)         once, as the service starts (optional)
@@ -41,11 +42,27 @@ A module (modules/<name>.py) has:
                       (node.send for JSON, node.send_bytes for anything else): the same checks first
 
 Pis ask each other the same way the app asks them (node.ask), and find each other with node.cluster()
-(the other Linux computers on Tailscale whose service answers).
+(the other Linux and Windows computers on Tailscale whose service answers).
+
+On a phone (the user, 2026-11-23: "Have phone's able to join the cluster as a member too"; Android and iPhone, in the
+Cluster app, its own switch): the same service, run by the app (HT_CLUSTER_PLATFORM=android or ios; node.phone), its
+name, Tailscale address and the Pis it knows given by the app (HT_CLUSTER_NAME, HT_CLUSTER_TS_IP, HT_CLUSTER_SEEDS:
+it can't ask Tailscale itself, which other apps can't), its readings from the phone (phonesys.py), and only the
+modules made for phones (their PLATFORMS). Who may use it: a phone can't tell who's asking (Tailscale's own app keeps
+that to itself), so it makes a key of its own (PHONE_KEY_FILE in its state) and gives it to each Pi it reaches
+(POST /api/phone: a Pi takes it only from this account's devices, as everything); a request to it must carry that
+key (X-HT-Cluster-Key), which the Pis add when they ask it or pass a request on to it (the page reaches phones
+through a Pi). The Pis list phones among their Tailscale peers (phone: true).
+
+On a Windows PC (the user, 2026-11-22: "this PC joins as a member"): the same service, started at sign-in by
+its launcher (windows/launcher.py, which starts it again when it ends, as systemd does on a Pi), its state in
+%LOCALAPPDATA%/Cluster/state, the root helper's Windows part run as the user (its own update, the page),
+and the modules' readings from Windows (winsys.py). node.windows says so (HT_CLUSTER_PLATFORM=windows).
 """
 
 import argparse
 import collections
+import hmac
 import html
 import http.client
 import http.server
@@ -55,6 +72,8 @@ import json
 import os
 import re
 import secrets
+import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -67,18 +86,22 @@ PORT = 47830
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODULES_DIR = os.path.join(HERE, "modules")
 ROOT_HELPER = "/usr/local/sbin/ht-cluster-root"
+NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # (on Windows: the commands it runs open no window, under pythonw)
 MAX_BODY = 1 << 20  # (a job's list of files can be long)
 KEEP_EVENTS = 60
-# The Pi Cluster page and the files it loads (the same list as ht-cluster-root's PAGE), served from web/
+# The Cluster page and the files it loads (the same list as ht-cluster-root's PAGE), served from web/
 # beside this file; a copy of the code run as it is (dev, or --simulate) serves them from the folder
 # they're in, two up.
-PAGE_FILES = ("pi-cluster.html", "pi-cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png")
+PAGE_FILES = ("cluster.html", "cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png")
 PAGE_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".png": "image/png"}
 RELAY_MAX = 32 << 20  # (a piece of a file going to another Pi through this one: the jobs take up to 16 MB)
 RELAY_CONNECT_S = 6
 RELAY_S = 300  # (packing a job's results as one zip can take minutes)
 TICKET_S = 120
 TS_V4 = ipaddress.ip_network("100.64.0.0/10")
+PHONE_KEY_FILE = "phone-key"  # (a phone's own key, in its state folder)
+PHONE_TELL_S = 60  # (how often a phone gives its key to the Pis it finds: a Pi new to the cluster learns it then)
+PHONE_OSES = ("android", "ios")  # (Tailscale's names for the phones' systems, lower-cased)
 TS_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
 
@@ -102,13 +125,23 @@ def is_loopback(addr):
     return bool(ip) and ip.is_loopback
 
 
-def run(cmd, timeout=20, env=None):
-    """A command's (exit code, output, errors); (None, "", why) when it couldn't be run."""
+def run(cmd, timeout=20, env=None, stdin=None):
+    """A command's (exit code, output, errors); (None, "", why) when it couldn't be run. stdin: text given to it (a
+    password, say: never on its command line, which other programs can read)."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, creationflags=NO_WINDOW,
+                           input=stdin if stdin is not None else None, stdin=None if stdin is not None else subprocess.DEVNULL)
         return p.returncode, p.stdout or "", p.stderr or ""
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, "", str(e)
+
+
+def windows_folder():
+    """A Windows PC's folder for the service (its launcher names it with HT_CLUSTER_INSTALL): %LOCALAPPDATA%/Cluster,
+    or the folder from before the rename (2026-11-25: Pi Cluster) while only that one is there (setup.py moves it)."""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    new, old = os.path.join(base, "Cluster"), os.path.join(base, "Pi Cluster")
+    return old if os.path.isdir(old) and not os.path.isdir(new) else new
 
 
 def read(path, default=None):
@@ -117,6 +150,15 @@ def read(path, default=None):
             return f.read()
     except OSError:
         return default
+
+
+def tailscale_cmd():
+    """Tailscale's command (on Windows, where it's put if it isn't on the path)."""
+    found = shutil.which("tailscale")
+    if not found and os.name == "nt":
+        default = os.path.join(os.environ.get("ProgramFiles") or r"C:\Program Files", "Tailscale", "tailscale.exe")
+        found = default if os.path.exists(default) else None
+    return found or "tailscale"
 
 
 class Tailscale:
@@ -132,7 +174,7 @@ class Tailscale:
         with self.lock:
             if self.me_info and time.time() - self.me_at < 300:
                 return self.me_info
-        code, out, _ = run(["tailscale", "status", "--json", "--peers=false"], timeout=10)
+        code, out, _ = run([tailscale_cmd(), "status", "--json", "--peers=false"], timeout=10)
         info = None
         if code == 0:
             try:
@@ -157,7 +199,7 @@ class Tailscale:
             hit = self.whois_cache.get(addr)
             if hit and now - hit[1] < (600 if hit[0] is not None else 60):
                 return hit[0]
-        code, out, _ = run(["tailscale", "whois", "--json", addr], timeout=10)
+        code, out, _ = run([tailscale_cmd(), "whois", "--json", addr], timeout=10)
         user = None
         if code == 0:
             try:
@@ -169,8 +211,9 @@ class Tailscale:
         return user
 
     def peers(self):
-        """The other Linux computers on this Tailscale network: [{name, ip, online}]."""
-        code, out, _ = run(["tailscale", "status", "--json"], timeout=10)
+        """The other Linux and Windows computers, and the phones (phone: true), on this Tailscale network:
+        [{name, ip, online, phone?}]."""
+        code, out, _ = run([tailscale_cmd(), "status", "--json"], timeout=10)
         if code != 0:
             return []
         try:
@@ -179,12 +222,60 @@ class Tailscale:
             return []
         out_list = []
         for p in peers:
-            if str(p.get("OS") or "").lower() != "linux":
+            os_name = str(p.get("OS") or "").lower()
+            if os_name not in ("linux", "windows") + PHONE_OSES:
                 continue
             ips = [str(a) for a in p.get("TailscaleIPs") or [] if ":" not in str(a)]
             if ips:
-                out_list.append({"name": str(p.get("HostName") or ips[0]), "ip": ips[0], "online": bool(p.get("Online"))})
+                out_list.append({"name": str(p.get("HostName") or ips[0]), "ip": ips[0], "online": bool(p.get("Online"))}
+                                | ({"phone": True} if os_name in PHONE_OSES else {}))
         return out_list
+
+
+class PhoneTailscale:
+    """On a phone, what Tailscale would say, from what the Cluster app knows (other apps can't ask Tailscale): this
+    phone's name and Tailscale address, and the other computers, as the Pis it knows (HT_CLUSTER_SEEDS) list them
+    (theirs: no phones, which only the Pis can reach)."""
+
+    def __init__(self, node):
+        self.node = node
+        self.lock = threading.Lock()
+        self.cache = {"at": 0, "list": []}
+
+    def me(self):
+        ip = os.environ.get("HT_CLUSTER_TS_IP") or ""
+        return {"user": None, "names": {self.node.name.lower()}, "ips": [ip] if is_tailscale(ip) else []}
+
+    def user_of(self, addr):
+        return None
+
+    def seeds(self):
+        out = []
+        for t in (os.environ.get("HT_CLUSTER_SEEDS") or "").split(","):
+            t = t.strip()
+            if t and re.fullmatch(r"[A-Za-z0-9.:-]{1,80}", t) and t not in out:
+                out.append(t)
+        return out
+
+    def peers(self):
+        with self.lock:
+            if time.time() - self.cache["at"] < 60:
+                return list(self.cache["list"])
+        found = {}
+        for seed in self.seeds():
+            code, d = self.node.ask(seed, "GET", "/api/peers", timeout=8)
+            if code != 200 or not isinstance(d, dict):
+                continue
+            host = seed.rsplit(":", 1)[0] if seed.count(":") == 1 else seed
+            if is_tailscale(host):
+                found.setdefault(host, {"name": host, "ip": host, "online": True})
+            for p in d.get("peers") or []:
+                if isinstance(p, dict) and not p.get("phone") and is_tailscale(p.get("ip")) and p.get("ip") not in self.me()["ips"]:
+                    found[p["ip"]] = {"name": str(p.get("name") or p["ip"]), "ip": p["ip"], "online": bool(p.get("online"))}
+        with self.lock:
+            if found or time.time() - self.cache["at"] > 600:
+                self.cache = {"at": time.time(), "list": list(found.values())}
+            return list(self.cache["list"])
 
 
 class Memory(dict):
@@ -202,10 +293,14 @@ class Memory(dict):
             pass
 
     def save(self):
+        # (on its drive before it takes the old one's place: a power cut leaves the old file or the new, never an
+        # empty one; the user, 2026-11-22, from a capture rig's own fix)
         tmp = self.path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self, f)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, self.path)
         except OSError:
             pass
@@ -223,6 +318,7 @@ class Module:
         self.order = int(getattr(mod, "ORDER", 100))
         self.default_on = bool(getattr(mod, "ON", True))
         self.every = max(1.0, float(getattr(mod, "EVERY", 10)))
+        self.platforms = tuple(getattr(mod, "PLATFORMS", ("linux", "windows")))
         self.settings = [s for s in getattr(mod, "SETTINGS", []) if isinstance(s, dict) and s.get("key")]
         self.actions = dict(getattr(mod, "ACTIONS", {}))
         # (its own requests: only under /api/<its name>/)
@@ -236,7 +332,12 @@ class Node:
     def __init__(self, simulate=False, state_dir=None, port=PORT):
         self.simulate = simulate
         self.port = port
-        self.name = socket.gethostname().split(".")[0]
+        self.platform = os.environ.get("HT_CLUSTER_PLATFORM") or ("windows" if os.name == "nt" and not simulate else "linux")
+        self.windows = self.platform == "windows"
+        self.phone = self.platform in ("android", "ios")
+        self.name = socket.gethostname().split(".")[0].lower()
+        if self.phone and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", os.environ.get("HT_CLUSTER_NAME") or ""):
+            self.name = os.environ["HT_CLUSTER_NAME"]
         if simulate and os.environ.get("HT_CLUSTER_SIM_NAME"):
             self.name = os.environ["HT_CLUSTER_SIM_NAME"]
         self.peers_cache = {"at": 0, "list": []}
@@ -244,13 +345,16 @@ class Node:
         self.tickets = {}  # one-time download links: token -> {target, path, addr, until}
         self.page_asked = 0
         self.started = time.time()
-        self.state_dir = state_dir or os.environ.get("HT_CLUSTER_STATE") or os.path.join(os.path.expanduser("~"), ".local", "state", "ht-cluster")
+        default_state = (os.path.join(windows_folder(), "state") if self.windows
+                         else os.path.join(os.path.expanduser("~"), ".local", "state", "ht-cluster"))
+        self.state_dir = state_dir or os.environ.get("HT_CLUSTER_STATE") or default_state
         os.makedirs(self.state_dir, exist_ok=True)
         self.version = (read(os.path.join(HERE, "VERSION"), "") or "").strip() or "dev"
         if simulate and os.environ.get("HT_CLUSTER_SIM_VERSION"):
             self.version = os.environ["HT_CLUSTER_SIM_VERSION"]
         self.lock = threading.RLock()
-        self.tailscale = Tailscale()
+        self.tailscale = PhoneTailscale(self) if self.phone else Tailscale()
+        self.phone_key = self.own_key() if self.phone else None
         self.config = Memory(os.path.join(self.state_dir, "settings.json"))
         self.memories = {}
         saved = Memory(os.path.join(self.state_dir, "events.json"))
@@ -262,12 +366,65 @@ class Node:
             if f.endswith(".py") and not f.startswith("_"):
                 try:
                     m = Module(os.path.join(MODULES_DIR, f))
+                    if self.platform not in m.platforms:
+                        continue  # (one for the Pis only: the Pi fixes; a phone's only those made for it)
                     self.modules[m.name] = m
                 except Exception as e:  # (one broken module doesn't stop the rest)
                     self.log("Module %s didn't load: %s" % (f, e))
 
+    # ----- phones -----
+    def own_key(self):
+        """A phone's own key (made once, kept in its state folder): what a request to it must carry."""
+        path = os.path.join(self.state_dir, PHONE_KEY_FILE)
+        key = (read(path, "") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{32,64}", key):
+            key = secrets.token_urlsafe(32)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(key)
+        return key
+
+    def phone_key_for(self, target):
+        """The key a phone gave this Pi, for a request to it (by its address, as node.ask takes it), or None."""
+        host = str(target).rsplit(":", 1)[0] if str(target).count(":") == 1 else str(target)
+        phones = self.config.get("phones") or {}
+        entry = phones.get(str(target)) or phones.get(host)  # (simulated: by address and port)
+        return entry.get("key") if isinstance(entry, dict) else None
+
+    def take_phone(self, addr, body):
+        """A phone's key, from the phone itself (its own Tailscale address: this account's, as every request is)."""
+        key = str(body.get("key") or "")
+        if self.phone or not re.fullmatch(r"[A-Za-z0-9_-]{32,64}", key) or not (is_tailscale(addr) or self.simulate):
+            return 400, {"error": "Not a phone's key."}
+        name = str(body.get("name") or "")[:40]
+        target = str(body.get("target") or "") if self.simulate else str(_ip(addr))
+        with self.lock:
+            phones = self.config.setdefault("phones", {})
+            known = phones.get(target)
+            phones[target] = {"key": key, "name": name, "at": int(time.time())}
+            if not known or known.get("key") != key:
+                self.config.save()
+                self.peers_cache = {"at": 0, "list": []}  # (found at the next look)
+            elif time.time() - known.get("at", 0) > 3600:
+                self.config.save()
+        return 200, {"ok": True}
+
+    def tell_pis(self):
+        """A phone: its key to each Pi it can reach (every PHONE_TELL_S), so they can ask it."""
+        while not self.stopping.is_set():
+            for p in self.tailscale.peers():
+                t = p["ip"] if self.port == PORT else "%s:%d" % (p["ip"], self.port)
+                self.ask(t, "POST", "/api/phone", {"key": self.phone_key, "name": self.name}, timeout=8)
+            for seed in self.tailscale.seeds():  # (simulated: the Pis as the app gave them)
+                if self.simulate:
+                    self.ask(seed, "POST", "/api/phone", {"key": self.phone_key, "name": self.name, "target": self.target()}, timeout=8)
+            self.stopping.wait(PHONE_TELL_S)
+
     # ----- for the modules -----
     def run(self, cmd, timeout=20, env=None):
+        if self.phone and isinstance(cmd, (list, tuple)) and cmd and os.path.basename(str(cmd[0])) in ("ffmpeg", "ffprobe"):
+            import phonetools  # (a phone: the app's own ffmpeg)
+
+            return phonetools.run(cmd, timeout)
         return run(cmd, timeout=timeout, env=env)
 
     def read(self, path, default=None):
@@ -322,18 +479,25 @@ class Node:
             return None
         return getattr(m.mod, fn)(self, *args)
 
-    def root(self, action, *words, timeout=1800):
+    def root(self, action, *words, timeout=1800, stdin=None):
         """One of the root helper's jobs (cluster/node/ht-cluster-root), with its words if it takes
-        any (it checks them itself): its JSON answer."""
+        any (it checks them itself): its JSON answer. stdin: text for it (a password: never in its words)."""
         words = [str(w) for w in words]
+        env = None
         if self.simulate:
             helper = os.environ.get("HT_CLUSTER_ROOT_HELPER")
             if not helper:
                 return {"ok": False, "error": "No root helper while simulated."}
             cmd = [sys.executable, helper, action] + words
+        elif self.windows:  # (its Windows part, as the user: this service's own update and the page)
+            py = sys.executable
+            if os.path.basename(py).lower() == "pythonw.exe":
+                py = os.path.join(os.path.dirname(py), "python.exe")
+            cmd = [py, os.path.join(HERE, "ht-cluster-root"), action] + words
+            env = dict(os.environ, HT_CLUSTER_WINDOWS="1")
         else:
             cmd = ["sudo", "-n", ROOT_HELPER, action] + words
-        code, out, err = run(cmd, timeout=timeout)
+        code, out, err = run(cmd, timeout=timeout, env=env, stdin=stdin)
         lines = [l for l in out.strip().splitlines() if l.strip().startswith("{")]
         try:
             answer = json.loads(lines[-1]) if lines else None
@@ -358,6 +522,9 @@ class Node:
         host, _, port = str(target).partition(":")
         port = int(port or PORT)
         headers = {"X-HT-Cluster": "1", "Host": "%s:%d" % (host, port)}
+        key = self.phone_key_for(target)
+        if key:
+            headers["X-HT-Cluster-Key"] = key  # (a phone's: it takes only requests that carry it)
         payload = None
         if body is not None:
             payload = json.dumps(body).encode("utf-8")
@@ -409,22 +576,33 @@ class Node:
             self.peers_cache = {"at": time.time(), "list": found}
         return list(found)
 
+    def notify_stop(self):
+        """Asked to end (systemd's TERM): each module that wants to notes something first (health: whether the system
+        itself is shutting down), a few seconds at most each. (Not named stopping: that's the Event the threads watch.)"""
+        for m in list(self.modules.values()):
+            fn = getattr(m.mod, "stopping", None)
+            if not fn:
+                continue
+            th = threading.Thread(target=fn, args=(self,), daemon=True)
+            th.start()
+            th.join(5)
+
     def restart_soon(self):
-        """This service ends; systemd starts it again (with what's now in its folder)."""
+        """This service ends; systemd (on Windows, its launcher) starts it again (with what's now in its folder)."""
         def go():
             time.sleep(1.5)
             os._exit(0)
         threading.Thread(target=go, daemon=True).start()
 
-    # ----- the Pi Cluster page -----
+    # ----- the Cluster page -----
     def page_dir(self):
         """Where the page's files are: web/ beside this file (as a build puts them in), or, for a copy of
         the code run as it is, the folder they're in; None while they aren't here."""
         web = os.path.join(HERE, "web")
-        if os.path.isfile(os.path.join(web, "pi-cluster.html")):
+        if os.path.isfile(os.path.join(web, "cluster.html")):
             return web
         repo = os.path.normpath(os.path.join(HERE, "..", ".."))
-        if (self.simulate or self.version == "dev") and os.path.isfile(os.path.join(repo, "pi-cluster.html")):
+        if (self.simulate or self.version == "dev") and os.path.isfile(os.path.join(repo, "cluster.html")):
             return repo
         return None
 
@@ -441,7 +619,7 @@ class Node:
 
         def go():
             answer = self.root("page", timeout=600)
-            self.log("The Pi Cluster page's files: %s" % ("here" if answer.get("ok") else answer.get("error")))
+            self.log("The Cluster page's files: %s" % ("here" if answer.get("ok") else answer.get("error")))
         threading.Thread(target=go, daemon=True, name="page").start()
 
     # ----- running -----
@@ -455,7 +633,10 @@ class Node:
                     self.log("%s: %s" % (m.name, traceback.format_exc()))
             if hasattr(m.mod, "tick"):
                 threading.Thread(target=self._ticks, args=(m,), daemon=True, name="tick-" + m.name).start()
-        self.fetch_page_soon()
+        if self.phone:
+            threading.Thread(target=self.tell_pis, daemon=True, name="tell-pis").start()
+        else:
+            self.fetch_page_soon()
 
     def _ticks(self, m):
         last_error = ""
@@ -491,7 +672,7 @@ class Node:
             })
         with self.lock:
             events = list(self.events)[-20:]
-        return {"name": self.name, "version": self.version, "time": int(time.time() * 1000),
+        return {"name": self.name, "version": self.version, "platform": self.platform, "time": int(time.time() * 1000),
                 "up": int(time.time() - self.started), "simulated": self.simulate, "modules": mods, "events": events}
 
     def change(self, body):
@@ -550,7 +731,10 @@ class Node:
             names.update(ip.lower() for ip in me["ips"])
         return host in names
 
-    def allowed(self, addr):
+    def allowed(self, addr, h=None):
+        if self.phone:  # (only with its own key: see PhoneTailscale)
+            given = str((h.headers.get("X-HT-Cluster-Key") if h is not None else "") or "")
+            return bool(given) and hmac.compare_digest(given.encode("utf-8"), self.phone_key.encode("utf-8")) and (self.simulate or is_tailscale(addr))
         if self.simulate:
             return is_loopback(addr)
         me = self.tailscale.me()
@@ -570,13 +754,13 @@ class Node:
             # (a one-time download link is followed by the browser itself, which can't add the header: the
             # link stands for it, given only to a request that had it)
             if h.headers.get("X-HT-Cluster") != "1" and not (method == "GET" and path == "/api/download"):
-                return self.send(h, 403, {"error": "Only the Pi Cluster app can ask that."})
+                return self.send(h, 403, {"error": "Only the Cluster app can ask that."})
             if not self.own_host(h.headers.get("Host")):
                 return self.send(h, 403, {"error": "That isn't one of this Pi's names."})
-            if local and not self.simulate:
+            if local and not self.simulate and not self.phone:
                 if method != "GET":
                     return self.send(h, 403, {"error": "From this Pi itself: readings only."})
-            elif not self.allowed(addr):
+            elif not self.allowed(addr, h):
                 return self.send(h, 403, {"error": "Only your own Tailscale account can use this Pi's cluster service."})
             if method == "GET" and path == "/api/download":
                 return self.download(h, addr)
@@ -610,6 +794,8 @@ class Node:
                     sim = [t.strip() for t in os.environ.get("HT_CLUSTER_SIM_PEERS", "").split(",") if t.strip()]
                     return self.send(h, 200, {"peers": [{"name": t, "ip": t, "online": True} for t in sim]})
                 return self.send(h, 200, {"peers": self.tailscale.peers()})
+            if method == "POST" and path == "/api/phone":
+                return self.send(h, *self.take_phone(addr, body))
             if method == "POST" and path == "/api/settings":
                 return self.send(h, *self.change(body))
             if method == "POST" and path == "/api/action":
@@ -637,11 +823,19 @@ class Node:
         return False
 
     def page(self, h, method, addr, local, path):
-        """The Pi Cluster page and the files it loads, for a browser on this Tailscale account (never inside
+        """The Cluster page and the files it loads, for a browser on this Tailscale account (never inside
         another site's page: it has buttons)."""
         def say(code, text):
             return self.send_bytes(h, code, text.encode("utf-8"), "text/plain; charset=utf-8")
         if method != "GET":
+            # (its body read first, if it's small: a reply with it unread can reach the asker as a reset instead)
+            try:
+                n = int(h.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = -1
+            if 0 < n <= 65536:
+                h.rfile.read(n)
+            h.close_connection = True
             return say(405, "Only the page is here.")
         if not local and not is_tailscale(addr):
             return say(403, "Only over Tailscale.")
@@ -649,13 +843,14 @@ class Node:
             return say(403, "That isn't one of this Pi's names.")
         if not local and not self.allowed(addr):
             return say(403, "Only your own Tailscale account can use this Pi's cluster service.")
-        name = "pi-cluster.html" if path in ("/", "/index.html") else urllib.parse.unquote(path[1:])
+        # (/pi-cluster.html: the page's name before the rename, 2026-11-25, as a bookmark may have it)
+        name = "cluster.html" if path in ("/", "/index.html", "/pi-cluster.html") else urllib.parse.unquote(path[1:])
         if name not in PAGE_FILES:
             return say(404, "Not found.")
         where = self.page_dir()
         if not where:
             self.fetch_page_soon()
-            return say(503, "This Pi's copy of the Pi Cluster page isn't here yet: it's being fetched for the version of the "
+            return say(503, "This Pi's copy of the Cluster page isn't here yet: it's being fetched for the version of the "
                             "service it runs. Try again in a minute.")
         try:
             with open(os.path.join(where, *name.split("/")), "rb") as f:
@@ -664,7 +859,7 @@ class Node:
             return say(404, "Not found.")
         extra = {"Referrer-Policy": "no-referrer"}
         if name.endswith(".html"):
-            # (how the page knows it came from a Pi: pi-cluster.js asks this Pi, and the others through it)
+            # (how the page knows it came from a Pi: cluster.js asks this Pi, and the others through it)
             data = data.replace(b"<head>", b'<head>\n<meta name="ht-cluster-page" content="%s" />' % html.escape(self.name).encode("utf-8"), 1)
             extra.update({"Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY"})
         return self.send_bytes(h, 200, data, PAGE_TYPES.get(os.path.splitext(name)[1], "application/octet-stream"), extra)
@@ -715,6 +910,9 @@ class Node:
             conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
             conn.putheader("Host", "%s:%d" % (host, port))
             conn.putheader("X-HT-Cluster", "1")
+            key = self.phone_key_for(target)
+            if key:
+                conn.putheader("X-HT-Cluster-Key", key)
             if h.headers.get("Content-Type"):
                 conn.putheader("Content-Type", h.headers["Content-Type"])
             if n or method != "GET":
@@ -876,10 +1074,12 @@ class Server(http.server.ThreadingHTTPServer):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Pi Cluster's service on a Raspberry Pi")
+    p = argparse.ArgumentParser(description="Cluster's service on a Raspberry Pi (or a Windows PC)")
     p.add_argument("--port", type=int, default=PORT)
     p.add_argument("--simulate", action="store_true")
     args = p.parse_args()
+    if os.name == "nt" and not args.simulate:  # (the modules read it as they load)
+        os.environ.setdefault("HT_CLUSTER_PLATFORM", "windows")
     node = Node(simulate=args.simulate, port=args.port)
     Handler.node = node
     if args.simulate:
@@ -888,7 +1088,13 @@ def main():
     else:
         server = Server(("::", args.port), Handler)
     node.start()
-    node.log("Pi Cluster service %s on %s, port %d, modules: %s" % (node.version[:7], node.name, server.server_address[1], ", ".join(node.modules) or "none"))
+
+    def on_term(signum, frame):
+        node.notify_stop()
+        os._exit(0)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, on_term)
+    node.log("Cluster service %s on %s, port %d, modules: %s" % (node.version[:7], node.name, server.server_address[1], ", ".join(node.modules) or "none"))
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

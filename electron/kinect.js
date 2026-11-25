@@ -562,6 +562,8 @@ class KinectTake {
     this.want = { depth: want.depth !== false, ir: want.ir !== false, color: !!want.color, sound: want.sound !== false };
     this.streams = {};
     this.errors = [];
+    // (its videos, which ffmpeg writes, and its sound: on the drive every 2 s; flush-often.js)
+    this.flush = require("./flush-often.js").watch(() => Object.values(this.streams).filter((s) => s && s.file).map((s) => s.file));
   }
 
   video(kind, args) {
@@ -617,6 +619,7 @@ class KinectTake {
   }
 
   async finish() {
+    if (this.flush) this.flush.stop();
     const out = [];
     for (const s of Object.values(this.streams)) {
       if (!s || !s.kind) continue;
@@ -653,6 +656,7 @@ class KinectTake {
   }
 
   abort() {
+    if (this.flush) this.flush.stop();
     for (const s of Object.values(this.streams)) {
       if (s && s.proc) s.proc.kill();
       if (s && s.fd !== undefined) fs.closeSync(s.fd);

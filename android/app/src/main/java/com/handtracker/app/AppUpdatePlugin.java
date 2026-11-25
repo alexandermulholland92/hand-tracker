@@ -22,18 +22,18 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * AppUpdates — Pi Cluster's own app on Android (the "cluster" flavor) updating this phone's Hand
- * Tracker apps, itself too, from GitHub's "Latest build" release (AppUpdates.java; pi-cluster.js:
+ * AppUpdates — Cluster's own app on Android (the "cluster" flavor) updating this phone's Hand
+ * Tracker apps, itself too, from GitHub's "Latest build" release (AppUpdates.java; cluster.js:
  * This phone's apps). They also update by themselves every hour on Wi-Fi, unless the phone is
  * recording (AppUpdateJob.java).
  *   apps() -> { apps: [{ pkg, name, installed, commit, updated, self, ours }], canInstall,
  *       recording (an app's name, or null), auto (what the hourly look did last), silent (Android 12+) }
  *   latest() -> { commit, published, apps: { pkg: { asset, size, sha256, url } } }
  *   install({ pkgs, force? }) -> { done: [pkg], failed: [{ pkg, error }], asks: [pkg] }: each
- *       downloaded, checked and installed in turn, Pi Cluster itself last (updating itself closes it);
+ *       downloaded, checked and installed in turn, Cluster itself last (updating itself closes it);
  *       refused while the phone records, unless force; "progress" { pkg, name, stage: "download" |
  *       "install" | "done" | "failed" | "asks", got, size, error } as it goes
- *   allowInstalls(): Android's page where Pi Cluster is allowed to install apps
+ *   allowInstalls(): Android's page where Cluster is allowed to install apps
  *   notices() -> { granted }: notifications allowed (Android 13 and later ask), for the hourly look's
  * When it opens, the hourly look is scheduled.
  */

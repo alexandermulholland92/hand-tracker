@@ -9,7 +9,7 @@
 #    as a 5 A one, so no warning (and the USB ports' 1.6 A by itself).
 # Both take effect at the next restart. Only for a supply that can give that much: on a weaker one (a phone charger,
 # a battery), USB devices drawing more can make the Pi lose power (cloud: on a battery, the user's choice, as a
-# switch in Pi Cluster's Fixes). Keep the Pi's power steady while this runs and while it restarts after: the
+# switch in Cluster's Fixes). Keep the Pi's power steady while this runs and while it restarts after: the
 # bootloader's settings are written then. Run it once:
 #     sudo bash usb-current.sh            # set up (then restart the Pi)
 #     sudo bash usb-current.sh --remove   # take it away (then restart the Pi)

@@ -3,7 +3,8 @@
  * Converts a recorded master clip (WebM from MediaRecorder), or any video file,
  * into the formats the user picked (see video-formats.js), and converts imported
  * videos the app can't play directly (AVI, MPEG, WMV, FLV…) into MP4 — using the
- * ffmpeg binary bundled via ffmpeg-static (or one on PATH as a fallback).
+ * ffmpeg binary bundled via ffmpeg-static (or one on PATH as a fallback). Also puts a take's
+ * camera videos side by side in one video (gridVideo: the Recording Converter's Grid video).
  */
 
 const { spawn } = require("child_process");
@@ -253,6 +254,67 @@ async function convertFile(job, onProgress) {
   return { results, canceled: cancelRequested };
 }
 
+// A take's camera videos as one 1080p MP4 (the Recording Converter's Grid video): an even grid, 2 × 2 for
+// up to 4 cameras and 3 × 2 for 5 or 6, filled in the order given, each picture fitted in its block (black
+// around it) with its label (a PNG the page drew, in its top left corner); on the take's clock: each video
+// started start seconds after the take (before it, if less than 0: that bit is left out), black before it
+// starts and after it ends; the sound of the first one that has any. Its length: the take's (length, in
+// seconds), else as long as the videos go.
+//   job = { videos: [{ path, start, label (a PNG's path, or none) }], length, out } -> { path, size, layout, sound }
+const GRID = { w: 1920, h: 1080, fps: 30, most: 6 };
+function gridLayout(n) {
+  const cols = n <= 4 ? 2 : 3;
+  return { cols, rows: 2, w: GRID.w / cols, h: GRID.h / 2 };
+}
+async function gridVideo(job, onProgress = () => {}) {
+  if (!(await isAvailable())) throw new Error("ffmpeg isn't available, so videos can't be put together.");
+  const videos = (job.videos || []).slice(0, GRID.most);
+  if (videos.length < 2) throw new Error("A grid needs two videos or more.");
+  const infos = [];
+  for (const v of videos) infos.push(await probe(v.path));
+  const { cols, rows, w, h } = gridLayout(videos.length);
+  const sec = (x) => Math.max(0, x).toFixed(3);
+  const length = Number(job.length) > 0 ? Number(job.length) : Math.max(...videos.map((v, i) => (Number(v.start) || 0) + (infos[i].duration || 0)));
+  if (!(length > 0)) throw new Error("These videos have no length.");
+  const args = ["-hide_banner", "-nostdin", "-y"];
+  for (const v of videos) args.push("-i", v.path);
+  const labels = [];
+  for (const v of videos) {
+    if (v.label) {
+      labels.push(videos.length + labels.length);
+      args.push("-i", v.label);
+    } else labels.push(-1);
+  }
+  const graph = [];
+  videos.forEach((v, i) => {
+    const s = Number(v.start) || 0;
+    graph.push(`[${i}:v:0]setpts=PTS-STARTPTS,trim=start=${sec(-s)},setpts=PTS-STARTPTS,fps=${GRID.fps},` +
+      `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p,` +
+      `tpad=start_duration=${sec(s)}:stop=-1:color=black` + (labels[i] >= 0 ? `[p${i}];[p${i}][${labels[i]}:v]overlay=x=16:y=16:eof_action=repeat[c${i}]` : `[c${i}]`));
+  });
+  for (let k = videos.length; k < cols * rows; k++) graph.push(`color=c=black:s=${w}x${h}:r=${GRID.fps}[c${k}]`);
+  const layout = Array.from({ length: cols * rows }, (_, k) => `${(k % cols) * w}_${Math.floor(k / cols) * h}`).join("|");
+  graph.push(`${Array.from({ length: cols * rows }, (_, k) => `[c${k}]`).join("")}xstack=inputs=${cols * rows}:layout=${layout}[grid]`);
+  const sound = infos.findIndex((x) => x.hasAudio);
+  if (sound >= 0) {
+    const s = Number(videos[sound].start) || 0;
+    graph.push(`[${sound}:a:0]asetpts=PTS-STARTPTS,atrim=start=${sec(-s)},asetpts=PTS-STARTPTS,adelay=${Math.round(Math.max(0, s) * 1000)}:all=1,apad[sound]`);
+  }
+  args.push("-filter_complex", graph.join(";"), "-map", "[grid]");
+  if (sound >= 0) args.push("-map", "[sound]", "-c:a", "aac", "-b:a", "160k");
+  args.push("-t", length.toFixed(3), "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", String(GRID.fps),
+    "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", job.out);
+  cancelRequested = false;
+  try {
+    await runFfmpeg(args, length, onProgress);
+  } catch (err) {
+    await fs.promises.rm(job.out, { force: true }).catch(() => {});
+    throw err;
+  }
+  const { size } = await fs.promises.stat(job.out);
+  return { path: job.out, size, layout: `${cols} × ${rows}`, sound };
+}
+
 function cancel() {
   cancelRequested = true;
   if (current) {
@@ -283,4 +345,4 @@ async function convertForPlayback(inputPath, outDir, onProgress) {
   return out;
 }
 
-module.exports = { FORMATS, exportVideo, convertFile, probe, convertForPlayback, finishClip, cancel, isAvailable, sanitizeBaseName, uniquePath, ffmpegPath };
+module.exports = { FORMATS, exportVideo, convertFile, probe, convertForPlayback, finishClip, gridVideo, gridLayout, cancel, isAvailable, sanitizeBaseName, uniquePath, ffmpegPath };

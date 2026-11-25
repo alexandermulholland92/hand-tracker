@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_cluster.py - checks Pi Cluster's service (cluster/node) on any computer:  python3 cluster/test_cluster.py
+test_cluster.py - checks Cluster's service (cluster/node) on any computer:  python3 cluster/test_cluster.py
 
 The service runs --simulate against stand-ins: a Hand Tracker (its remote recording API), GitHub (the
 "Latest build" release, its files and downloads) and a root helper that only notes what it was
@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import urllib.error
 import urllib.request
 
@@ -85,7 +86,9 @@ class FakeHT(Quiet):
         if self.path == "/api/state":
             return self.reply(200, {"recording": HT["recording"], "saving": HT["saving"], "elapsed_s": 61,
                                     "cameras": [{"name": "OAK-D-W", "role": "Head", "fps": 30, "oak": True}],
-                                    "sentry": {"armed": HT["armed"], "shown": False}})
+                                    "sentry": {"armed": HT["armed"], "shown": False},
+                                    "storage": {"free": 4e10, "total": 5e11, "hours": 0.7, "low": True,
+                                                "text": "40 GB free of 500 GB · about 40 minutes of takes (1 camera, standard video)"}})
         self.reply(404, {"error": "Not found"})
 
     def do_POST(self):
@@ -117,15 +120,15 @@ def node_files():
     return out
 
 
-FIX_SCRIPTS = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current")
+FIX_SCRIPTS = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current", "wifi-autoconnect")
 
 
-PAGE = ("pi-cluster.html", "pi-cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png")
+PAGE = ("cluster.html", "cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png")
 
 
 def repo_files():
     """The build's files the service's update looks at: cluster/node's, the Pi fixes in pi/ (with one of
-    pi/'s other scripts, which isn't taken), and the Pi Cluster page's (with one of the top folder's other
+    pi/'s other scripts, which isn't taken), and the Cluster page's (with one of the top folder's other
     files, which isn't)."""
     out = node_files()
     for f in FIX_SCRIPTS:
@@ -135,7 +138,7 @@ def repo_files():
     for f in PAGE:
         with open(os.path.join(HERE, "..", *f.split("/")), "rb") as fh:
             out.append((f, fh.read()))
-    out.append(("index.html", b"<!-- not the Pi Cluster page: never taken -->\n"))
+    out.append(("index.html", b"<!-- not the Cluster page: never taken -->\n"))
     return out
 
 
@@ -163,6 +166,8 @@ class FakeGitHub(Quiet):
                     return self.reply(200, d + (b"#" if GH["tamper"] and p.endswith("ht_cluster.py") else b""), "application/octet-stream")
         if self.path == "/dl/hand-tracker_1.1.0_arm64.deb":
             return self.reply(200, DEB, "application/octet-stream")
+        if self.path == "/repos/%s/compare/%s...%s" % (REPO, OLD, NEW):
+            return self.reply(200, {"status": "ahead", "ahead_by": 3, "behind_by": 0})
         self.reply(404, {"message": "Not Found"})
 
 
@@ -443,7 +448,7 @@ def raw(port, path, headers=None, method="GET", data=None):
 
 
 def check_page(tmp, gh, ht):
-    """The Pi Cluster page in a browser: the Pi serves it itself (only its own files, never in another site's
+    """The Cluster page in a browser: the Pi serves it itself (only its own files, never in another site's
     frame), passes the page's requests for another Pi of the cluster on, and gives one-time download links."""
     a_port, b_port = free_port(), free_port()
     a, _ = start_node(tmp, gh, ht, port=a_port, extra={"HT_CLUSTER_SIM_NAME": "alpha", "HT_CLUSTER_SIM_PEERS": "127.0.0.1:%d" % b_port,
@@ -452,14 +457,16 @@ def check_page(tmp, gh, ht):
                                                        "HT_CLUSTER_STATE": os.path.join(tmp, "state-beta"), "HT_CLUSTER_JOBS_DIR": os.path.join(tmp, "jobs-beta")})
     try:
         code, hd, body = raw(a_port, "/")
-        check("The Pi serves the Pi Cluster page to a browser (no app header needed for the page)",
-              code == 200 and hd.get("Content-Type", "").startswith("text/html") and b"<title>Pi Cluster</title>" in body, (code, hd.get("Content-Type")))
+        check("The Pi serves the Cluster page to a browser (no app header needed for the page)",
+              code == 200 and hd.get("Content-Type", "").startswith("text/html") and b"<title>Cluster</title>" in body, (code, hd.get("Content-Type")))
         check("...saying which Pi served it", b'<meta name="ht-cluster-page" content="alpha" />' in body, body[:300])
+        code, _, old = raw(a_port, "/pi-cluster.html")
+        check("...at its name from before the rename too (/pi-cluster.html, as a bookmark may have it)", code == 200 and old == body, code)
         check("...never inside another site's page", "frame-ancestors 'none'" in (hd.get("Content-Security-Policy") or "") and hd.get("X-Frame-Options") == "DENY",
               dict(hd))
-        with open(os.path.join(HERE, "..", "pi-cluster.js"), "rb") as f:
+        with open(os.path.join(HERE, "..", "cluster.js"), "rb") as f:
             want = f.read()
-        code, hd, body = raw(a_port, "/pi-cluster.js")
+        code, hd, body = raw(a_port, "/cluster.js")
         check("...and the files it loads", code == 200 and body == want and hd.get("Content-Type", "").startswith("text/javascript") and
               raw(a_port, "/models/kinds.js")[0] == 200 and raw(a_port, "/favicon.png")[1].get("Content-Type") == "image/png", (code, hd.get("Content-Type")))
         others = [raw(a_port, p)[0] for p in ("/ht_cluster.py", "/README.md", "/../README.md", "/%2e%2e/README.md", "/node/ht_cluster.py", "/index.js")]
@@ -543,11 +550,16 @@ def main():
         check("The rig module sees Hand Tracker recording, its camera and Sentry",
               bool(rig) and rig["status"].get("recording") and rig["status"].get("sentry") and len(rig["status"].get("cameras", [])) == 1,
               rig and rig.get("status"))
+        check("...and its room as Hand Tracker works it out: free space and the time of takes it leaves (a warning when that's low)",
+              bool(rig) and "about 40 minutes of takes" in (rig["status"].get("space") or "") and any("Little room left" in w for w in rig["status"].get("warnings") or []),
+              rig and rig.get("status"))
 
         # Hand Tracker's update waits while it records, then goes in
         waiting = wait_for(lambda: (module(port, "updates").get("status") or {}).get("handTracker", {}).get("state") == "Waiting: recording", 20)
         check("A new Hand Tracker waits while it's recording", bool(waiting), (module(port, "updates").get("status") or {}).get("handTracker"))
         check("Nothing was installed while it recorded", "install-hand-tracker" not in helper_log(tmp), helper_log(tmp))
+        summary = (module(port, "updates").get("status") or {}).get("summary") or ""
+        check("...and its summary says how many commits behind Hand Tracker is (GitHub's compare)", "waiting: recording (3 commits behind)" in summary, summary)
         HT["recording"] = False
         ask(port, "POST", "/api/action", {"module": "updates", "action": "check"})
         done = wait_for(lambda: (module(port, "updates").get("status") or {}).get("handTracker", {}).get("state") == "Up to date", 60)
@@ -591,7 +603,7 @@ def main():
     # The Pi fixes
     check_fixes(tmp, gh, ht)
 
-    # The Pi Cluster page in a browser
+    # The Cluster page in a browser
     check_page(tmp, gh, ht)
 
     # The real root helper's downloads (as a user other than root: pointed at the stand-in GitHub)
@@ -609,7 +621,7 @@ def main():
             check("A download with the wrong %s is thrown away" % what, False, "kept")
         except helper.Failed:
             check("A download with the wrong %s is thrown away" % what, not os.path.exists(dest + what) and not os.path.exists(dest + what + ".part"))
-    # The Pi Cluster page's files: the same list in the service and its root helper; fetched for a version
+    # The Cluster page's files: the same list in the service and its root helper; fetched for a version
     # put in by the helper from before (any system: no folder switch)
     spec = importlib.util.spec_from_file_location("ht_cluster_service", os.path.join(NODE, "ht_cluster.py"))
     service = importlib.util.module_from_spec(spec)
@@ -669,7 +681,7 @@ def main():
                         page_same = page_same and a.read() == b.read()
                 except OSError:
                     page_same = False
-        check("...and the Pi Cluster page's files in web/ (and none of the top folder's others)", page_same and not os.path.exists(os.path.join(cur, "web", "index.html")))
+        check("...and the Cluster page's files in web/ (and none of the top folder's others)", page_same and not os.path.exists(os.path.join(cur, "web", "index.html")))
         check("...and installs its new self", os.path.exists(os.path.join(tmp, "root", "usr", "local", "sbin", "ht-cluster-root")))
         try:
             helper.fix_install("wifi-watchdog")
@@ -693,9 +705,293 @@ def main():
     else:
         print("SKIP  update-cluster's folder switch (symbolic links: Linux and Macs)")
 
+
+    # A Windows PC in the cluster (the user, 2026-11-22: "this PC joins as a member"), simulated: its modules
+    GH["tamper"] = False
+    p, port = start_node(tmp, gh, ht, extra={"HT_CLUSTER_PLATFORM": "windows"})
+    try:
+        _, d = ask(port)
+        mods = {m["name"]: m for m in d.get("modules", [])}
+        check("A Windows PC's service has the modules but the Pi fixes", "fixes" not in mods and {"health", "rig", "updates", "jobs", "apps"} <= set(mods), sorted(mods))
+        js = (mods.get("jobs") or {}).get("settings", [])
+        pr = next((s for s in js if s["key"] == "priority"), {})
+        check("...its jobs' priority a choice of its own (Low to High; Below normal at first), not the Pis' high-priority switch",
+              [s["key"] for s in js] == ["take", "priority", "withCameras", "onBattery", "home"] and pr.get("value") == "belowNormal"
+              and [c[0] for c in pr.get("choices", [])] == ["low", "belowNormal", "normal", "aboveNormal", "high"], js)
+        code, _ = ask(port, "POST", "/api/settings", {"module": "jobs", "key": "priority", "value": "aboveNormal"})
+        code2, _ = ask(port, "POST", "/api/settings", {"module": "jobs", "key": "priority", "value": "realtime"})
+        check("...which takes any of them, and nothing else", code == 200 and code2 == 400
+              and next((s["value"] for s in module(port, "jobs")["settings"] if s["key"] == "priority"), None) == "aboveNormal", (code, code2))
+        up = mods.get("updates") or {}
+        check("...only its own service updated by itself (not Hand Tracker or the system), their buttons hidden",
+              [s["key"] for s in up.get("settings", [])] == ["cluster"]
+              and all(a["hidden"] for a in up.get("actions", []) if a["name"] in ("updateHandTracker", "updateOS", "reboot"))
+              and (up.get("status") or {}).get("summary", "").startswith("This service:"), up)
+        st = (mods.get("apps") or {}).get("status") or {}
+        check("...and no Transmission until its Linux for it is set up", st.get("canRun") is False and "isn't set up" in st.get("summary", ""), st)
+    finally:
+        p.terminate()
+        p.wait(10)
+
+    # The root helper's Windows part: the service's own update into versions/<commit>, named in current.txt
+    if os.name == "nt":
+        win_install = os.path.join(tmp, "win-install")
+        os.environ.update(HT_CLUSTER_WINDOWS="1", HT_CLUSTER_INSTALL=win_install)
+        wl = importlib.machinery.SourceFileLoader("ht_cluster_root_win", os.path.join(NODE, "ht-cluster-root"))
+        winhelper = importlib.util.module_from_spec(importlib.util.spec_from_loader("ht_cluster_root_win", wl))
+        wl.exec_module(winhelper)
+        for k in ("HT_CLUSTER_WINDOWS", "HT_CLUSTER_INSTALL"):
+            os.environ.pop(k, None)
+        before, older = "0" * 40, "1" * 40
+        for v in (before, older):
+            os.makedirs(os.path.join(win_install, "versions", v))
+        with open(os.path.join(win_install, "current.txt"), "w") as fh:
+            fh.write(before + "\n")
+        got = winhelper.update_cluster()
+        cur = os.path.join(win_install, "versions", NEW)
+        with open(os.path.join(win_install, "current.txt")) as fh:
+            named = fh.read().strip()
+        check("On a Windows PC, update-cluster puts the build's files in versions/<commit> and names it in current.txt",
+              got.get("commit") == NEW and named == NEW and os.path.exists(os.path.join(cur, "windows", "launcher.py"))
+              and os.path.exists(os.path.join(cur, "winsys.py")) and os.path.exists(os.path.join(cur, "web", "cluster.html")), (got, named))
+        check("...keeping the one before, and only that", sorted(os.listdir(os.path.join(win_install, "versions"))) == sorted([before, NEW]),
+              os.listdir(os.path.join(win_install, "versions")))
+        check("...asked again: nothing to do", winhelper.update_cluster().get("unchanged") is True)
+        shutil.rmtree(os.path.join(cur, "web"))
+        check("...its page's files fetched again for that commit when they're missing", winhelper.fetch_page().get("files") == len(PAGE))
+        # (after a start: its files checked against GitHub's list for its commit, a damaged or missing one put back)
+        with open(os.path.join(cur, "modules", "rig.py"), "rb") as fh:
+            rig_was = fh.read()
+        with open(os.path.join(cur, "modules", "rig.py"), "wb") as fh:
+            fh.write(rig_was[:100])  # (cut short, as by a power cut)
+        os.remove(os.path.join(cur, "winsys.py"))
+        got = winhelper.verify_cluster()
+        with open(os.path.join(cur, "modules", "rig.py"), "rb") as fh:
+            back = fh.read() == rig_was
+        check("verify-cluster: a file cut short and one missing are put back as GitHub lists them, the rest left as they are",
+              sorted(got.get("repaired") or []) == ["modules/rig.py", "winsys.py"] and back and os.path.exists(os.path.join(cur, "winsys.py"))
+              and got.get("checked", 0) > 20, got)
+        check("...and asked again: nothing to put back", winhelper.verify_cluster().get("repaired") == [])
+        r = subprocess.run([sys.executable, os.path.join(NODE, "ht-cluster-root"), "reboot"], capture_output=True, text=True,
+                           env=dict(os.environ, HT_CLUSTER_WINDOWS="1", HT_CLUSTER_INSTALL=win_install))
+        check("...and does nothing else there (restarting the PC, say)", r.returncode == 1 and "Not on Windows" in r.stdout, r.stdout)
+
+        # Its launcher: the version current.txt names, as a Windows PC's, started again when it ends; one launcher at a time
+        lt = os.path.join(tmp, "launcher-test")
+        os.makedirs(os.path.join(lt, "versions", "dev", "windows"))
+        for where in (os.path.join(lt, "launcher.py"), os.path.join(lt, "versions", "dev", "windows", "launcher.py")):
+            shutil.copyfile(os.path.join(NODE, "windows", "launcher.py"), where)
+        with open(os.path.join(lt, "versions", "dev", "ht_cluster.py"), "w") as fh:
+            fh.write("import os, time\nwith open(os.path.join(os.environ['HT_CLUSTER_INSTALL'], 'runs.txt'), 'a') as f:\n"
+                     "    f.write(os.environ['HT_CLUSTER_PLATFORM'] + ' ' + os.environ['HT_CLUSTER_STATE'] + '\\n')\ntime.sleep(0.5)\n")
+        with open(os.path.join(lt, "current.txt"), "w") as fh:
+            fh.write("dev\n")
+        runs = os.path.join(lt, "runs.txt")
+        lp = subprocess.Popen([sys.executable, os.path.join(lt, "launcher.py")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            twice = wait_for(lambda: os.path.exists(runs) and len(open(runs).read().splitlines()) >= 2, 25)
+            second = subprocess.run([sys.executable, os.path.join(lt, "launcher.py")], capture_output=True, timeout=20)
+            lines = open(runs).read().splitlines() if os.path.exists(runs) else []
+            check("The launcher starts the service as a Windows PC's, with its state in its folder, and again when it ends",
+                  bool(twice) and all(l == "windows " + os.path.join(lt, "state") for l in lines), lines)
+            check("...one launcher at a time (a second ends at once)", second.returncode == 0 and lp.poll() is None, second.returncode)
+        finally:
+            lp.kill()
+            lp.wait(10)
+    else:
+        print("SKIP  the root helper's Windows part and the launcher (Windows)")
+
+    check_health_units()
+    check_update_trial_units()
     shutil.rmtree(tmp, ignore_errors=True)
     print("%d/%d checks passed." % (sum(results), len(results)))
     return 0 if all(results) else 1
+
+
+def check_update_trial_units():
+    """updates.py's choice of the Pi that tries a new build first, and the others following (the user, 2026-11-22:
+    an idle Pi, no cameras; the others 30 minutes after its check passed), with stand-in Pis."""
+    spec = importlib.util.spec_from_file_location("updates_unit", os.path.join(NODE, "modules", "updates.py"))
+    U = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(U)
+
+    class Mem(dict):
+        def save(self):
+            pass
+
+    class Node:
+        simulate = True
+
+        def __init__(self, name, peers=(), version=OLD):
+            self.name, self.version, self.peers, self.mem, self.events = name, version, list(peers), Mem(), []
+            self.modules = {}
+
+        def memory(self, module):
+            return self.mem
+
+        def cluster(self, fresh=False):
+            return [{"name": n, "node": {"modules": [{"name": "updates", "on": True, "status": st}]}} for n, st in self.peers]
+
+        def setting(self, module, key):
+            return True
+
+        def event(self, module, text, bad=False):
+            self.events.append(text)
+
+    old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 10 * 86400))
+    new = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 600))
+    rel = {"commit": NEW, "at": new}
+    U.recording = lambda node: getattr(node, "rec", False)
+    U._state["idle"] = True
+    a = Node("alpha", [("beta", {"idle": True})])
+    go_a = U.plan(a, rel)
+    b = Node("beta", [("alpha", {"idle": True})])
+    go_b = U.plan(b, rel)
+    check("A new build: of two idle Pis, the first by name tries it first (and says so); the other waits for it",
+          go_a == (True, None) and a.mem["trial"]["state"] == "updating" and go_b[0] is False and "alpha tries it first" in go_b[1], (go_a, go_b))
+    b.peers = [("alpha", {"idle": True, "trial": dict(a.mem["trial"])})]
+    U._state["idle"] = True
+    check("...while it's trying, the other doesn't go first itself", U.plan(b, rel)[1] == "alpha tries it first", U.plan(b, rel))
+    b.peers = [("alpha", {"trial": {"commit": NEW, "state": "passed", "at": time.time() - 60}})]
+    waits = U.plan(b, rel)
+    b.peers = [("alpha", {"trial": {"commit": NEW, "state": "passed", "at": time.time() - 31 * 60}})]
+    check("...once its check passed, the others put it in 30 minutes later",
+          waits[0] is False and "the others follow at" in waits[1] and U.plan(b, rel) == (True, None), (waits, U.plan(b, rel)))
+    b.peers = [("alpha", {"trial": {"commit": NEW, "state": "failed", "at": time.time() - 3 * 3600, "error": "Hand Tracker didn't answer"}})]
+    nope = U.plan(b, rel)
+    check("...if its check failed, the others don't put it in by themselves", nope[0] is False and "check of this build failed" in nope[1], nope)
+    U._state["idle"] = False
+    c = Node("gamma", [("alpha", {"idle": False}), ("pc", {"idle": True, "windows": True})])
+    young = U.plan(c, rel)
+    check("No idle Pi (a Windows PC never goes first): a new build waits", young[0] is False and "idle Pi" in young[1] and "trial" not in c.mem, young)
+    aged = U.plan(c, {"commit": NEW, "at": old})
+    c.rec = True
+    rec = U.plan(c, {"commit": NEW, "at": old})
+    check("...an older one goes in on a Pi that isn't recording, not on one that is", aged == (True, None) and rec[0] is False, (aged, rec))
+
+    # The first Pi's check: once both parts are in, passed; a module that didn't start fails it
+    U.needs = lambda node, r: False
+    U.rig = lambda node: None
+    a.modules = {"health": types.SimpleNamespace(name="health", error=None)}
+    a.version = NEW
+    a.mem["trial"] = {"commit": NEW, "state": "updating", "at": time.time()}
+    U.trial_progress(a, rel)
+    passed = dict(a.mem["trial"])
+    a.mem["trial"] = {"commit": NEW, "state": "updating", "at": time.time()}
+    a.modules["jobs"] = types.SimpleNamespace(name="jobs", error="ImportError")
+    U.trial_progress(a, rel)
+    check("The first Pi checks the build once it's in: passed; a module of the service that didn't start fails it",
+          passed["state"] == "passed" and a.mem["trial"]["state"] == "failed" and "jobs" in a.mem["trial"]["error"], (passed, a.mem["trial"]))
+
+
+def check_health_units():
+    """health.py on its own (the user, 2026-11-22): its starts and why, and a Pi on battery at 10% saving its
+    recording and then shutting down. With a stand-in node (simulated readings, set through the environment)."""
+    spec = importlib.util.spec_from_file_location("health_unit", os.path.join(NODE, "modules", "health.py"))
+    H = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(H)
+
+    class Mem(dict):
+        def save(self):
+            pass
+
+    class Rig:
+        def __init__(self):
+            self.recording, self.asked = False, []
+
+        def busy(self, node):
+            return self.recording
+
+        def ht(self, node, method, path, body=None, timeout=6):
+            self.asked.append(body)
+            if body == {"action": "stop"}:
+                threading.Timer(0.5, lambda: setattr(self, "recording", False)).start()  # (saved half a second later)
+            return 200, {"ok": True}
+
+    class Node:
+        simulate = True
+
+        def __init__(self):
+            self.mem, self.events, self.jobs, self.rig = Mem(), [], [], Rig()
+            self.settings = {"power": "auto", "lowBattery": True}
+            self.modules = {"rig": types.SimpleNamespace(mod=self.rig)}
+
+        def memory(self, name):
+            return self.mem
+
+        def setting(self, module, key):
+            return self.settings.get(key)
+
+        def event(self, module, text, bad=False):
+            self.events.append((text, bad))
+
+        def root(self, action, *words, timeout=0):
+            self.jobs.append(action)
+            return {"ok": True}
+
+    saved = {k: os.environ.get(k) for k in ("HT_CLUSTER_SIM_BOOT_ID", "HT_CLUSTER_SIM_RSTS", "HT_CLUSTER_SIM_SHUTDOWN", "HT_CLUSTER_SIM_BATTERY", "HT_CLUSTER_SIM_UPTIME")}
+    try:
+        n = Node()
+        os.environ["HT_CLUSTER_SIM_UPTIME"] = "600"
+
+        def start(bid, rsts=None):
+            os.environ["HT_CLUSTER_SIM_BOOT_ID"] = bid
+            if rsts is None:
+                os.environ.pop("HT_CLUSTER_SIM_RSTS", None)
+            else:
+                os.environ["HT_CLUSTER_SIM_RSTS"] = rsts
+            H.readings(n)
+            H.boot_tick(n)
+        start("b1")
+        os.environ["HT_CLUSTER_SIM_SHUTDOWN"] = "restart"
+        H.stopping(n)
+        os.environ.pop("HT_CLUSTER_SIM_SHUTDOWN")
+        start("b2", "0x1020")  # (power-on flags too: the note wins)
+        start("b3", "0x1020")  # (no note, from power-on)
+        start("b4", "0x20")  # (no note, a warm start)
+        causes = [b["cause"] for b in n.mem["boots"]]
+        check("Its starts: the first, then after a restart (its note), a power cut (power-on, no note) and a freeze (a warm start, no note)",
+              causes == ["first", "restart", "power", "froze"], causes)
+        st = H.status(n)
+        check("...newest first in its status, with when it was last heard from, and an unexpected one in the last day a warning",
+              [b["cause"] for b in st["boots"]] == ["froze", "power", "restart", "first"] and st["boots"][0]["lastSeen"] and
+              any("froze" in w for w in st["warnings"]), (st["boots"], st["warnings"]))
+        check("...said in its events when it wasn't expected", [bad for text, bad in n.events] == [True, True] and "power was cut" in n.events[0][0], n.events)
+
+        # Low battery: 9% on battery, recording -> stopped, saved, then shut down
+        n2 = Node()
+        n2.rig.recording = True
+        os.environ["HT_CLUSTER_SIM_BATTERY"] = "9"
+        for _ in range(2):
+            H.readings(n2)
+            H.battery_guard(n2)
+        done = wait_for(lambda: "poweroff" in n2.jobs, 15)
+        check("On battery at 9%: the recording stopped and saved, then the Pi shut down",
+              bool(done) and n2.rig.asked == [{"action": "stop"}] and not n2.rig.recording and any("saved" in t for t, _ in n2.events), (n2.jobs, n2.rig.asked, n2.events))
+        H._guard.update(doing=False, low=0)
+        for label, setup in (("charging", lambda n: None), ("in its first 3 minutes", lambda n: os.environ.update(HT_CLUSTER_SIM_UPTIME="60")),
+                             ("its switch off", lambda n: n.settings.update(lowBattery=False)), ("at 11%", lambda n: os.environ.update(HT_CLUSTER_SIM_BATTERY="11"))):
+            n3 = Node()
+            os.environ.update(HT_CLUSTER_SIM_BATTERY="9", HT_CLUSTER_SIM_UPTIME="600")
+            setup(n3)
+            orig = H.simulated
+            if label == "charging":
+                H.simulated = lambda: dict(orig(), pisugar={"level": 9, "plugged": True, "charging": True})
+            try:
+                for _ in range(3):
+                    H.readings(n3)
+                    H.battery_guard(n3)
+            finally:
+                H.simulated = orig
+            time.sleep(0.2)
+            check("...but not %s" % label, not n3.jobs and not H._guard["doing"], (n3.jobs, H._guard))
+            H._guard.update(doing=False, low=0)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 if __name__ == "__main__":

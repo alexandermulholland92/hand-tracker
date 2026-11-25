@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_jobs.py - checks Pi Cluster's jobs (cluster/node/modules/jobs.py) on any computer:  python3 cluster/test_jobs.py
+test_jobs.py - checks Cluster's jobs (cluster/node/modules/jobs.py) on any computer:  python3 cluster/test_jobs.py
 
 Two Pis are simulated here: "pi", which keeps the job list, and "pie", whose recordings folder has a
 clip. Each has a stand-in Hand Tracker (pie's cameras can be turned on). Checked:
@@ -365,6 +365,90 @@ def unit_checks(tmp):
         check("...and its next failure counts its day from then", files["/v/bad.avi"].get("failedAt") is None and files["/v/bad.avi"]["state"] == "queued",
               files["/v/bad.avi"])
 
+
+        # A Windows PC in the cluster (the user, 2026-11-22): it takes conversions and the animal model's jobs, not commands
+        J._book["jobs"] = [job("cmd", "command", 1, "c1"), job("conv", "playable", 2, "v1")]
+        got_pc = J.pick(node, "alex", ["pi"], list(J.TAKES))
+        got_pi = J.pick(node, "pie", ["pi"])
+        check("A Windows PC (saying which kinds it takes) gets a conversion, not a command job before it",
+              got_pc is not None and got_pc[1]["id"] == "v1" and got_pi is not None and got_pi[1]["id"] == "c1",
+              (got_pc and got_pc[1]["id"], got_pi and got_pi[1]["id"]))
+        os.environ["HT_CLUSTER_PLATFORM"] = "windows"
+        try:
+            spec_w = importlib.util.spec_from_file_location("jobs_unit_windows", os.path.join(NODE, "modules", "jobs.py"))
+            JW = importlib.util.module_from_spec(spec_w)
+            spec_w.loader.exec_module(JW)
+        finally:
+            os.environ.pop("HT_CLUSTER_PLATFORM", None)
+        check("...its switches: Take jobs, then its jobs' priority (Below normal at first), not the Pis' high-priority one",
+              [s["key"] for s in JW.SETTINGS] == ["take", "priority", "withCameras", "onBattery", "home"]
+              and next(s for s in JW.SETTINGS if s["key"] == "priority")["default"] == "belowNormal")
+        if os.name == "nt":
+            import ctypes
+
+            class PC:
+                name, simulate, state_dir = "alex", False, tmp
+                priority = "low"
+
+                def setting(self, module, key):
+                    return self.priority if key == "priority" else key == "take"
+            pc = PC()
+            proc = JW.launch(pc, [sys.executable, "-c", "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); time.sleep(60)"], False)
+            time.sleep(1.5)
+            k32 = ctypes.WinDLL("kernel32")
+            k32.OpenProcess.restype = ctypes.c_void_p
+            k32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+            k32.GetPriorityClass.argtypes = [ctypes.c_void_p]
+            k32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+            def priority_class(pid):
+                h = k32.OpenProcess(0x1000, False, pid)  # (PROCESS_QUERY_LIMITED_INFORMATION)
+                try:
+                    return k32.GetPriorityClass(h)
+                finally:
+                    k32.CloseHandle(h)
+            family = JW.winsys().tree(proc.pid)
+            check("...its job's programs at its chosen priority (Low), with no window of their own", priority_class(proc.pid) == 0x40 and len(family) >= 2,
+                  (hex(priority_class(proc.pid)), family))
+            JW.pause(True)
+            JW.pause(False)
+            pc.priority = "aboveNormal"
+            JW._run.update(paused=False, why="")
+            JW.winsys().set_priority(proc.pid, pc.priority)
+            check("...changed while they run: all of them at the new one", all(priority_class(x) == 0x8000 for x in family if x == proc.pid), hex(priority_class(proc.pid)))
+            JW.stop_proc()
+            time.sleep(1)
+            left = [x for x in family if subprocess.run(["tasklist", "/FI", "PID eq %d" % x, "/NH"], capture_output=True, text=True).stdout.strip().lower().startswith("python")]
+            check("...and stopped, each with the programs it started", proc.poll() is not None and not left, left)
+            W = JW.winsys()
+            wifi = W.parse_netsh_wifi("\n    Name                   : Wi-Fi\n    State                  : connected\n    SSID                   : Home\n"
+                                      "    BSSID                  : aa:bb:cc:dd:ee:ff\n    Radio type             : 802.11ac\n    Channel                : 157\n"
+                                      "    Signal                 : 90%\n")
+            check("Windows' Wi-Fi as netsh says it: its name, band and strength", wifi == {"iface": "Wi-Fi", "ssid": "Home", "mhz": 5785, "signal": 90, "dbm": -55}, wifi)
+
+        # Any command or script (the run kind): a member's own part, a language a member hasn't got, a root job's password
+        def run_job(jid, how, *parts, **params):
+            return {"id": jid, "kind": "run", "title": jid, "state": "waiting", "created": 9, "high": False, "params": dict(how=how, **params),
+                    "items": [dict({"id": "p%d" % i, "name": n, "state": "waiting", "lease": None, "worker": None, "tries": 0,
+                                    "source": {"node": None, "path": None}}, **({"only": n} if how == "each" else {"input": n})) for i, n in enumerate(parts)]}
+        J._book["jobs"] = [run_job("each", "each", "pie")]
+        mine_pi, mine_pie = J.pick(node, "pi", ["pie"]), J.pick(node, "pie", ["pi"])
+        check("A run job's part for one member goes to that member alone", mine_pi is None and mine_pie and mine_pie[1]["only"] == "pie", (mine_pi, mine_pie))
+        J._book["jobs"] = [run_job("js", "split", "1", "2", needs="node")]
+        check("...a script in a language a member hasn't got isn't given to it (one that doesn't say takes any)",
+              J.pick(node, "pc", [], None, ["bash", "perl"]) is None and J.pick(node, "pc", [], None, ["node"]) and J.pick(node, "pi", [])
+              and J.pick(node, "pc", [], ["convert", "run"], ["bash", "node"]), J._book["jobs"])
+        J._book["jobs"] = [run_job("root", "split", "1", root=True)]
+        J._secrets.pop("root", None)
+        waits = J.pick(node, "pi", []) is None and J.brief(J._book["jobs"][0])["needsPassword"] is True
+        J._secrets["root"] = "pw"
+        check("...a job run as root waits while the Pi keeping the list hasn't its password (it forgets it when it restarts)",
+              waits and J.pick(node, "pi", []) and J.brief(J._book["jobs"][0])["needsPassword"] is False)
+        J._secrets.pop("root", None)
+        parts = J.run_parts({"how": "split", "lines": ["a", "", "b\r"]}) + J.run_parts({"how": "split", "count": 3}) + J.run_parts({"how": "each", "members": ["pi", "pi", "pie"]})
+        check("...its parts: a line each (none blank), the numbers 1 to N, a member each (once each)",
+              [p.get("input") for p in parts[:5]] == ["a", "b", "1", "2", "3"] and [p.get("only") for p in parts[5:]] == ["pi", "pie"], parts)
+
         # A Pi not heard from: its file stays its own for LEASE_S (the Pi keeping the list may not be answering)
         at(100)
         J._book["jobs"] = [job("j2", "playable", 3, "v1")]
@@ -383,6 +467,36 @@ def unit_checks(tmp):
               it["state"] == "waiting" and it.get("tries") == 1 and not it.get("lease") and it.get("first"), it)
     finally:
         os.environ.pop("HT_CLUSTER_JOBS_DIR", None)
+
+# The checks' stand-in for the root helper, for the run kind: its cluster password the real helper's own way, in a
+# folder standing in for / (HT_TEST_ROOT_DIR); a part run as root run as this user once that password's right.
+RUN_HELPER = r"""
+import importlib.machinery, importlib.util, json, os, subprocess, sys
+os.environ["HT_CLUSTER_ROOT_DIR"] = os.environ["HT_TEST_ROOT_DIR"]
+os.environ.pop("HT_CLUSTER_WINDOWS", None)
+loader = importlib.machinery.SourceFileLoader("ht_cluster_root", os.environ["HT_TEST_REAL_HELPER"])
+h = importlib.util.module_from_spec(importlib.util.spec_from_loader("ht_cluster_root", loader))
+loader.exec_module(h)
+job = sys.argv[1]
+try:
+    if job == "cluster-password":
+        print(json.dumps(dict(h.cluster_password(), ok=True)))
+    elif job == "run-as-root":
+        d = h.stdin_json()
+        right = h.password_right(d.get("password") or "")
+        if not right:
+            print(json.dumps({"ok": False, "error": "No cluster password is set on this Pi yet." if right is None else "That isn't this Pi's cluster password."}))
+            sys.exit(1)
+        argv = d["argv"]
+        sys.stdout.flush()
+        code = subprocess.call(argv, cwd=d["cwd"], env=dict(os.environ, **(d.get("env") or {})), shell=isinstance(argv, str))
+        print(json.dumps({"ok": True, "code": code}))
+    else:
+        print(json.dumps({"ok": True}))
+except h.Failed as e:
+    print(json.dumps({"ok": False, "error": str(e)}))
+"""
+
 
 def main():
     ff = find_ffmpeg()
@@ -430,9 +544,14 @@ def main():
     pi_port, pie_port = free_port(), free_port()
     procs = []
 
+    with open(os.path.join(tmp, "root-helper.py"), "w", encoding="utf-8") as fh:
+        fh.write(RUN_HELPER)
+
     def start(name, port, peer, ht, extra):
         env = dict(os.environ, HT_CLUSTER_SIM_NAME=name, HT_CLUSTER_SIM_PEERS="127.0.0.1:%d" % peer, HT_CLUSTER_STATE=os.path.join(tmp, name + "-state"),
-                   HT_CLUSTER_JOBS_DIR=os.path.join(tmp, name + "-jobs"), HT_CLUSTER_FFMPEG=ff, HT_CLUSTER_HT_URL=ht, PYTHONDONTWRITEBYTECODE="1", **extra)
+                   HT_CLUSTER_JOBS_DIR=os.path.join(tmp, name + "-jobs"), HT_CLUSTER_FFMPEG=ff, HT_CLUSTER_HT_URL=ht, PYTHONDONTWRITEBYTECODE="1",
+                   HT_CLUSTER_ROOT_HELPER=os.path.join(tmp, "root-helper.py"), HT_TEST_ROOT_DIR=os.path.join(tmp, name + "-root"),
+                   HT_TEST_REAL_HELPER=os.path.join(NODE, "ht-cluster-root"), **extra)
         if os.environ.get("HT_TEST_ANIMALS_PY"):
             env["HT_CLUSTER_SIM_ANIMALS_PY"] = os.environ["HT_TEST_ANIMALS_PY"]
         model = os.environ.get("HT_TEST_MODEL")
@@ -487,7 +606,7 @@ def main():
         except zipfile.BadZipFile:
             inside_zip = []
         check("Its results as one zip (for a phone)", z.get("name") == "Smaller MP4s.zip" and inside_zip == names, (z, inside_zip))
-        # The Pi Cluster page in a browser, served by pie: the zip saved whole through a one-time link, from pi through pie
+        # The Cluster page in a browser, served by pie: the zip saved whole through a one-time link, from pi through pie
         code, t = ask(pie_port, "POST", "/api/ticket", {"to": "127.0.0.1:%d" % pi_port, "path": "/api/jobs/zip-file?job=%s&whole=1" % jid})
         req = urllib.request.Request("http://127.0.0.1:%d%s" % (pie_port, t.get("url", "/x") if isinstance(t, dict) else "/x"), headers={"Host": "127.0.0.1:%d" % pie_port})
         try:
@@ -524,6 +643,54 @@ def main():
         check("...the command ran on it and its copy came back", bool(done2) and names2 == ["letter.txt", "log.txt"], (job_state(pi_port, jid2), names2))
         code, copy = ask(pi_port, "GET", "/api/jobs/result-file?job=%s&path=letter.txt&at=0" % jid2)
         check("...the file as sent: the broken-off try gone, nothing twice", code == 200 and copy == payload, (code, len(copy) if isinstance(copy, bytes) else copy, len(payload)))
+
+        # Any command or script across the cluster (the user, 2026-11-24: "make the cluster do anything together")
+        py = sys.executable
+        who = '%s -c "import os,sys; open(os.path.join(sys.argv[1], \'who.txt\'), \'w\').write(sys.argv[2])" {out} {member}' % py
+        code, made = act(pi_port, "create", {"kind": "run", "title": "Who's there", "params": {"how": "each", "members": ["pi", "pie"], "command": who}})
+        jr1 = made.get("job")
+        done = wait_for(lambda: (job_state(pi_port, jr1) or {}).get("state") == "done", 90)
+        code, res = act(pi_port, "results", {"job": jr1})
+        names = sorted(f["path"] for f in res.get("files", []))
+        code, said = ask(pi_port, "GET", "/api/jobs/result-file?job=%s&path=pie/who.txt&at=0" % jr1)
+        check("Any command, once on each member: each did its own (each one's results in a folder of its name)",
+              bool(done) and names == ["pi/log.txt", "pi/who.txt", "pie/log.txt", "pie/who.txt"] and said == b"pie", (job_state(pi_port, jr1), names, said))
+        upper = '%s -c "import os,sys; open(os.path.join(sys.argv[1], \'it.txt\'), \'w\').write(sys.argv[2].upper())" {out} {input}' % py
+        code, made = act(pi_port, "create", {"kind": "run", "title": "Lines", "params": {"how": "split", "lines": ["alpha", "beta", "gamma"], "command": upper}})
+        jr2 = made.get("job")
+        done = wait_for(lambda: (job_state(pi_port, jr2) or {}).get("state") == "done", 90)
+        code, said = ask(pi_port, "GET", "/api/jobs/result-file?job=%s&path=2/it.txt&at=0" % jr2)
+        check("...split over lines of text: a part a line, whichever member was free", bool(done) and said == b"BETA" and job_state(pi_port, jr2)["counts"]["done"] == 3,
+              (job_state(pi_port, jr2), said))
+        script = b"import os, sys\r\nn = int(sys.argv[1])\r\nopen(os.path.join(os.environ['OUT'], 'square.txt'), 'w').write(str(n * n))\r\n"
+        code, made = act(pi_port, "create", {"kind": "run", "title": "Squares", "params": {"how": "split", "count": 4, "script": {"upload": "square.py"}}})
+        jr3 = made.get("job")
+        waiting = (job_state(pi_port, jr3) or {}).get("state") == "uploading"
+        ask(pi_port, "PUT", "/api/jobs/upload?job=%s&name=square.py&at=0&last=1" % jr3, data=script)
+        code, a = act(pi_port, "start", {"job": jr3})
+        done = wait_for(lambda: (job_state(pi_port, jr3) or {}).get("state") == "done", 90)
+        squares = [ask(pi_port, "GET", "/api/jobs/result-file?job=%s&path=%d/square.txt&at=0" % (jr3, i))[1] for i in range(1, 5)]
+        check("...an uploaded script (Python, written on Windows) over the numbers 1 to 4, after it arrived",
+              waiting and bool(done) and squares == [b"1", b"4", b"9", b"16"], (job_state(pi_port, jr3), squares))
+        # As root: only with the cluster password, set on each member; never kept in the job list
+        root_cmd = '%s -c "import os,sys; open(os.path.join(sys.argv[1], \'root.txt\'), \'w\').write(\'ok\')" {out}' % py
+        code, a = act(pi_port, "create", {"kind": "run", "title": "As root", "params": {"how": "each", "members": ["pie"], "command": root_cmd, "root": True}, "password": "x"})
+        check("As root: refused while no cluster password is set", code != 200 and "No cluster password is set" in a.get("error", ""), a)
+        set_pi = act(pi_port, "setPassword", {"new": "correct horse 42"})
+        set_pie = act(pie_port, "setPassword", {"new": "correct horse 42"})
+        short = act(pi_port, "setPassword", {"new": "short"})
+        changed = act(pi_port, "setPassword", {"new": "another password", "old": "not it"})
+        check("...the cluster password set on each member (8 characters at least; changed only with the one before)",
+              set_pi[0] == 200 and set_pie[0] == 200 and short[0] != 200 and changed[0] != 200 and "set before" in changed[1].get("error", ""), (set_pi, set_pie, short, changed))
+        code, a = act(pi_port, "create", {"kind": "run", "title": "As root", "params": {"how": "each", "members": ["pie"], "command": root_cmd, "root": True}, "password": "wrong one!"})
+        check("...a wrong one refused", code != 200 and "isn't the cluster password" in a.get("error", ""), a)
+        code, made = act(pi_port, "create", {"kind": "run", "title": "As root", "params": {"how": "each", "members": ["pie"], "command": root_cmd, "root": True}, "password": "correct horse 42"})
+        jr4 = made.get("job")
+        done = wait_for(lambda: (job_state(pi_port, jr4) or {}).get("state") == "done", 90)
+        code, said = ask(pi_port, "GET", "/api/jobs/result-file?job=%s&path=pie/root.txt&at=0" % jr4)
+        kept = open(os.path.join(tmp, "pi-jobs", "jobs.json"), encoding="utf-8").read()
+        check("...with the right one it runs, through the member's root helper (which checks it too); the password isn't in the job list",
+              bool(done) and said == b"ok" and "correct horse 42" not in kept, (job_state(pi_port, jr4), said))
 
         # The animal model
         if os.environ.get("HT_TEST_ANIMALS_PY") and os.environ.get("HT_TEST_MODEL"):

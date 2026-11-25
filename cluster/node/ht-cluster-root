@@ -1,19 +1,19 @@
 #!/usr/bin/python3 -I
 """
-ht-cluster-root - the Pi Cluster service's few root jobs. sudo lets the account the service runs as
+ht-cluster-root - the Cluster service's few root jobs. sudo lets the account the service runs as
 run this, and only this, without a password (/etc/sudoers.d/ht-cluster, made by cluster/setup.sh).
 It takes nothing from that account but the job's name: whatever it installs, it downloads itself
 from this project's GitHub "Latest build" release and checks first.
 
   ht-cluster-root install-hand-tracker   the latest build's Hand Tracker .deb for this Pi, put in
   ht-cluster-root update-cluster         the latest build's cluster/node files, into /opt/ht-cluster (with the
-                                         Pi Cluster page's files, which the service serves itself, in web/)
-  ht-cluster-root page                   the Pi Cluster page's files for the version of the service that's here,
+                                         Cluster page's files, which the service serves itself, in web/)
+  ht-cluster-root page                   the Cluster page's files for the version of the service that's here,
                                          when its update didn't bring them (done by the helper from before)
   ht-cluster-root os-check              apt-get update, then which packages have updates
   ht-cluster-root os-upgrade             those updates (no package removed); whether a restart is needed
   ht-cluster-root reboot                 restarts this Pi
-  ht-cluster-root renice-jobs            the jobs running at high priority (Pi Cluster's) ahead of everything
+  ht-cluster-root renice-jobs            the jobs running at high priority (Cluster's) ahead of everything
   ht-cluster-root install-transmission   Debian's transmission-daemon (its own background service off) and NFS's tools
   ht-cluster-root nfs-share FOLDER...    those folders of your home, and Transmission's settings, shared over NFS
                                          to Tailscale's addresses only (on the Pi that keeps Transmission's files)
@@ -24,6 +24,11 @@ from this project's GitHub "Latest build" release and checks first.
                                          own paths for Transmission alone
   ht-cluster-root transmission-stop      stopped, and those folders unmounted
   ht-cluster-root transmission-cap DOWN UP   its speeds (kB/s, or none) kept on the Wi-Fi by Linux
+  ht-cluster-root own-transmission-start this Pi's own Transmission for the cluster's downloads (downloads.py), as your
+                                         account, its settings in ~/.local/share/ht-cluster/own-transmission
+  ht-cluster-root own-transmission-stop  stopped
+  ht-cluster-root install-libtorrent     Debian's python3-libtorrent (for a download split by pieces: pieces.py)
+  ht-cluster-root install-pyftpdlib      Debian's python3-pyftpdlib (the phones' FTP link to this Pi's shared folders: modules/ftp.py)
   ht-cluster-root fix-install FIX        one of the Pi fixes (pi/FIX.sh: wifi-watchdog, tailscale-watchdog,
                                          network-tuning, freeze-restart, usb-current) set up, as the service's own update
                                          brought it (/opt/ht-cluster/current/fixes, checked against GitHub's list)
@@ -36,6 +41,7 @@ HT_CLUSTER_ROOT_DIR (a folder standing in for /) point it elsewhere; as root, no
 """
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -69,13 +75,35 @@ RECORD = at("/var/lib/ht-cluster/hand-tracker.json")
 HELPER = at("/usr/local/sbin/ht-cluster-root")
 LOCK = at("/run/ht-cluster-root.lock")
 LOG = at("/var/log/ht-cluster-root.log")
+# On a Windows PC (ht_cluster.py's node.root there, run as the user with HT_CLUSTER_WINDOWS=1): only this service's
+# own update and the page, into its folder (HT_CLUSTER_INSTALL, else %LOCALAPPDATA%/Cluster, or the folder from
+# before the rename, %LOCALAPPDATA%/Pi Cluster, while that's the one there), where the version in use is named in
+# current.txt (no symbolic link), which its launcher (windows/launcher.py) reads.
+WINDOWS = os.name == "nt" and os.environ.get("HT_CLUSTER_WINDOWS") == "1"
+WINDOWS_JOBS = ("update-cluster", "verify-cluster", "page", "cluster-password")
+
+
+def windows_folder():
+    """%LOCALAPPDATA%/Cluster, or the PC's folder from before the rename (2026-11-25: Pi Cluster) while only that one
+    is there (setup.py moves it)."""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    new, old = os.path.join(base, "Cluster"), os.path.join(base, "Pi Cluster")
+    return old if os.path.isdir(old) and not os.path.isdir(new) else new
+
+
+if WINDOWS:
+    INSTALL = os.environ.get("HT_CLUSTER_INSTALL") or windows_folder()
+    LOG = os.path.join(INSTALL, "root.log")
 SAFE_PATH = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 # The Pi fixes (modules/fixes.py): pi/<name>.sh in the repository, brought with the service's own update
 # into its fixes/ folder.
-FIXES = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current")
-# The Pi Cluster page and the files it loads, which the service serves itself (ht_cluster.py PAGE_FILES):
-# from the repository's top folder, brought with the service's own update into its web/ folder.
-PAGE = ("pi-cluster.html", "pi-cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png")
+FIXES = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current", "wifi-autoconnect")
+# The Cluster page and the files it loads, which the service serves itself (ht_cluster.py PAGE_FILES):
+# from the repository's top folder, brought with the service's own update into its web/ folder. (Named
+# pi-cluster.html and pi-cluster.js before the rename, 2026-11-25: the update to the first build with the new names is
+# done by the root helper from before, which looks for the old ones and so brings the rest; the page step then fetches
+# these, as for any version whose update didn't bring its page.)
+PAGE = ("cluster.html", "cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png")
 
 
 class Failed(Exception):
@@ -210,20 +238,25 @@ def install_hand_tracker():
     return {"commit": rel["commit"], "asset": asset["name"]}
 
 
-def update_cluster():
-    rel = release()
-    commit = rel["commit"]
-    current = os.path.join(INSTALL, "current")
+def current_dir():
+    """The version of the service in use: INSTALL/current (a link to it), or on Windows the one current.txt names."""
+    if not WINDOWS:
+        return os.path.join(INSTALL, "current")
     try:
-        with open(os.path.join(current, "VERSION"), "r", encoding="utf-8") as f:
-            if f.read().strip() == commit:
-                return {"commit": commit, "unchanged": True}
+        with open(os.path.join(INSTALL, "current.txt"), "r", encoding="utf-8") as f:
+            name = f.read().strip()
     except OSError:
-        pass
+        return None
+    return os.path.join(INSTALL, "versions", name) if re.fullmatch(r"[0-9a-f]{40}|dev", name) else None
+
+
+def files_of(commit):
+    """A build's files for the service, as GitHub lists them: [(path in the version's folder, path in the
+    repository, its git blob SHA)]: cluster/node's, the Pi fixes (fixes/) and the page (web/)."""
     try:
         tree = json.loads(fetch(API + "/repos/%s/git/trees/%s?recursive=1" % (REPO, commit)).decode("utf-8"))
     except (OSError, ValueError) as e:
-        raise Failed("Couldn't list the latest build's files: %s" % e)
+        raise Failed("Couldn't list the build's files: %s" % e)
     prefix = "cluster/node/"
     fixes = {"pi/%s.sh" % f: "fixes/%s.sh" % f for f in FIXES}
     page = {p: "web/" + p for p in PAGE}
@@ -235,7 +268,7 @@ def update_cluster():
         if path in fixes:  # (the Pi fixes, with the service: modules/fixes.py puts them in)
             files.append((fixes[path], path, str(e.get("sha") or "")))
             continue
-        if path in page:  # (the Pi Cluster page, which the service serves)
+        if path in page:  # (the Cluster page, which the service serves)
             files.append((page[path], path, str(e.get("sha") or "")))
             continue
         if not path.startswith(prefix):
@@ -246,7 +279,77 @@ def update_cluster():
             continue
         files.append((rel_path, path, str(e.get("sha") or "")))
     if not any(f[0] == "ht_cluster.py" for f in files):
-        raise Missing("The latest build has no Pi Cluster service in it yet.")
+        raise Missing("That build has no Cluster service in it yet.")
+    return files
+
+
+def verify_cluster():
+    """The service's files checked after a start (the user, 2026-11-22, from a capture rig's own fix: files a power
+    cut damaged put back): each of the version in use against GitHub's list for its commit, and one that isn't as
+    listed, or is missing, downloaded again (checked as an update's are); and the root helper's own copy against
+    the version's. -> {"commit", "checked", "repaired": [paths]}"""
+    current = current_dir()
+    try:
+        with open(os.path.join(current or os.path.join(INSTALL, "none"), "VERSION"), "r", encoding="utf-8") as f:
+            commit = f.read().strip()
+    except OSError:
+        commit = ""
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise Missing("This copy of the service (%s) has no build to check it against." % (commit or "no version"))
+    files = files_of(commit)
+    repaired = []
+    for rel_path, path, sha in files:
+        target = os.path.join(current, *rel_path.split("/"))
+        try:
+            with open(target, "rb") as f:
+                if git_blob_sha(f.read()) == sha:
+                    continue
+        except OSError:
+            pass
+        try:
+            data = fetch("%s/%s/%s/%s" % (RAW, REPO, commit, path))
+        except OSError as e:
+            raise Failed("Couldn't download %s again: %s" % (path, e))
+        if git_blob_sha(data) != sha:
+            raise Failed("%s didn't come out as GitHub lists it." % path)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target + ".new", "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(target + ".new", 0o755 if rel_path == "ht-cluster-root" else 0o644)
+        os.replace(target + ".new", target)
+        repaired.append(rel_path)
+    if not WINDOWS:
+        with open(os.path.join(current, "ht-cluster-root"), "rb") as f:
+            want = f.read()
+        try:
+            with open(HELPER, "rb") as f:
+                same = f.read() == want
+        except OSError:
+            same = False
+        if not same:
+            with open(HELPER + ".new", "wb") as f:
+                f.write(want)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(HELPER + ".new", 0o755)
+            os.replace(HELPER + ".new", HELPER)
+            repaired.append(HELPER)
+    return {"commit": commit, "checked": len(files), "repaired": repaired}
+
+
+def update_cluster():
+    rel = release()
+    commit = rel["commit"]
+    current = current_dir() or os.path.join(INSTALL, "none")
+    try:
+        with open(os.path.join(current, "VERSION"), "r", encoding="utf-8") as f:
+            if f.read().strip() == commit:
+                return {"commit": commit, "unchanged": True}
+    except OSError:
+        pass
+    files = files_of(commit)
     versions = os.path.join(INSTALL, "versions")
     dest = os.path.join(versions, commit)
     part = dest + ".part"
@@ -272,6 +375,17 @@ def update_cluster():
     os.chmod(part, 0o755)
     shutil.rmtree(dest, ignore_errors=True)
     os.replace(part, dest)
+    if WINDOWS:  # (the launcher starts it from there when this service ends: no link, no helper of its own to put in)
+        previous = current_dir()
+        with open(os.path.join(INSTALL, "current.txt.new"), "w", encoding="utf-8") as f:
+            f.write(commit + "\n")
+        os.replace(os.path.join(INSTALL, "current.txt.new"), os.path.join(INSTALL, "current.txt"))
+        keep = {os.path.realpath(dest), os.path.realpath(previous) if previous else None}
+        for name in os.listdir(versions):
+            p = os.path.join(versions, name)
+            if os.path.realpath(p) not in keep and name != "dev":
+                shutil.rmtree(p, ignore_errors=True)
+        return {"commit": commit}
     previous = os.path.realpath(current) if os.path.islink(current) else None
     link = current + ".new"
     if os.path.lexists(link):
@@ -340,8 +454,16 @@ def reboot():
     return {}
 
 
+def poweroff():
+    """This Pi shut down cleanly (modules/health.py: its battery nearly empty, any recording saved first)."""
+    code, out, err = run(["systemctl", "poweroff"], 60)
+    if code != 0:
+        raise Failed("Couldn't shut down: %s" % last_lines(err or out))
+    return {}
+
+
 def renice_jobs():
-    """Jobs at high priority (Pi Cluster's jobs.py): its account's job programs (marked HT_CLUSTER_JOB=1
+    """Jobs at high priority (Cluster's jobs.py): its account's job programs (marked HT_CLUSTER_JOB=1
     as it starts them) ahead of everything else: nice -10, and first for the drive."""
     uid = os.environ.get("SUDO_UID")
     if not AS_ROOT or not uid or not uid.isdigit():
@@ -429,7 +551,7 @@ def nfs_share(*names):
         if code != 0:
             raise Failed("The share didn't go in: %s" % apt_why(out, err))
     opts = "rw,sync,no_subtree_check,all_squash,anonuid=%d,anongid=%d" % (uid, gid)
-    lines = ["# Pi Cluster: Transmission's folders, to Tailscale's addresses only (ht-cluster-root nfs-share)"]
+    lines = ["# Cluster: Transmission's folders, to Tailscale's addresses only (ht-cluster-root nfs-share)"]
     for p in [os.path.join(home, n) for n in shared] + [os.path.join(home, TR_CONFIG)]:
         lines.append('"%s" 100.64.0.0/10(%s)' % (p, opts))
     os.makedirs(os.path.dirname(TR_EXPORTS), exist_ok=True)
@@ -484,7 +606,7 @@ def transmission_start(where, *names):
     group = TR_GROUP if run(["getent", "group", TR_GROUP], 10)[0] == 0 else str(gid)
     cmd = ["systemd-run", "--unit=" + TR_UNIT, "--collect", "-p", "User=" + name, "-p", "Group=" + group,
            "-p", "UMask=0022", "-p", "Restart=on-failure", "-p", "RestartSec=10", "-p", "Nice=5",
-           "-p", "Description=Pi Cluster's Transmission"]
+           "-p", "Description=Cluster's Transmission"]
     for b in binds:
         cmd += ["-p", "BindPaths=" + b]
     cmd += ["/usr/bin/transmission-daemon", "-f", "--log-level=error", "-g", os.path.join(home, TR_CONFIG)]
@@ -523,6 +645,165 @@ def transmission_cap(down, up):
     if p.returncode != 0:
         raise Failed("nft: %s" % last_lines(p.stderr, 1))
     return {"down": down, "up": up}
+
+
+# ----- this Pi's own Transmission, for the cluster's downloads (modules/downloads.py: each computer downloads on its
+# own disk, then copies to the Pi keeping the cluster's Transmission's files). Its settings are the service's (as your
+# account, written before it starts); it runs as your account, at low priority, until it's stopped.
+OWN_CONFIG = ".local/share/ht-cluster/own-transmission"
+OWN_UNIT = "ht-cluster-own-transmission"
+
+
+def own_transmission_start():
+    name, uid, gid, home = account()
+    config = os.path.join(home, OWN_CONFIG)
+    if not os.path.isfile(os.path.join(config, "settings.json")) or os.path.islink(config):
+        raise Failed("Its settings aren't written yet.")
+    if not os.path.exists("/usr/bin/transmission-daemon"):
+        raise Failed("Transmission isn't installed here.")
+    run(["systemctl", "stop", OWN_UNIT], 150)
+    run(["systemctl", "reset-failed", OWN_UNIT], 30)
+    cmd = ["systemd-run", "--unit=" + OWN_UNIT, "--collect", "-p", "User=" + name, "-p", "Group=%d" % gid, "-p", "UMask=0022",
+           "-p", "Restart=on-failure", "-p", "RestartSec=10", "-p", "Nice=10", "-p", "IOSchedulingClass=best-effort", "-p", "IOSchedulingPriority=7",
+           "-p", "Description=Cluster's downloads: this Pi's own Transmission",
+           "/usr/bin/transmission-daemon", "-f", "--log-level=error", "-g", config]
+    code, out, err = run(cmd, 60)
+    if code != 0:
+        raise Failed("It didn't start: %s" % last_lines(err or out, 1))
+    return {"started": True}
+
+
+def own_transmission_stop():
+    run(["systemctl", "stop", OWN_UNIT], 150)
+    return {}
+
+
+def install_libtorrent():
+    wanted = [p for p in ("python3-libtorrent",) if not installed(p)]
+    if wanted:
+        code, out, err = apt(["install", "-y", "-q", "--no-install-recommends"] + wanted, 1800, {"DEBIAN_FRONTEND": "noninteractive"})
+        if code != 0:
+            raise Failed("libtorrent didn't go in: %s" % apt_why(out, err))
+    return {"installed": wanted}
+
+
+def install_pyftpdlib():
+    wanted = [p for p in ("python3-pyftpdlib",) if not installed(p)]
+    if wanted:
+        code, out, err = apt(["install", "-y", "-q", "--no-install-recommends"] + wanted, 1800, {"DEBIAN_FRONTEND": "noninteractive"})
+        if code != 0:
+            raise Failed("The FTP server didn't go in: %s" % apt_why(out, err))
+    return {"installed": wanted}
+
+
+# ----- The cluster's own jobs as root (modules/jobs.py's "Any command or script"; the user, 2026-11-24: root only
+# with the cluster password, one set once in the app). Each computer keeps only a salted check of it, readable by
+# root alone; the password itself only ever comes on stdin, never in a command's words, and is never written down.
+PASSWORD_FILE = os.path.join(INSTALL, "cluster-password.json") if WINDOWS else at("/var/lib/ht-cluster/cluster-password.json")
+PASSWORD_ROUNDS = 200000
+
+
+def stdin_json():
+    try:
+        d = json.loads(sys.stdin.readline() or "{}")
+    except ValueError:
+        d = None
+    if not isinstance(d, dict):
+        raise Failed("Not JSON on stdin.")
+    return d
+
+
+def password_right(password):
+    """True or False, or None when no cluster password is set here."""
+    try:
+        with open(PASSWORD_FILE, "r", encoding="utf-8") as f:
+            s = json.load(f)
+        want = bytes.fromhex(s["hash"])
+        got = hashlib.pbkdf2_hmac("sha256", str(password).encode("utf-8"), bytes.fromhex(s["salt"]), int(s.get("rounds") or PASSWORD_ROUNDS))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return hmac.compare_digest(got, want)
+
+
+def cluster_password():
+    """{"check": password} -> {"set", "right"}; or {"new", "old" (the one set before, if there is one)} -> {"set": True}:
+    a salted check of the new one kept (PBKDF2-SHA256), readable by root alone."""
+    d = stdin_json()
+    if "check" in d:
+        r = password_right(d["check"])
+        return {"set": r is not None, "right": bool(r)}
+    new = str(d.get("new") or "")
+    if len(new) < 8:
+        raise Failed("A cluster password needs at least 8 characters.")
+    if password_right(d.get("old") or "") is False:
+        raise Failed("That isn't the cluster password set before on this computer.")
+    salt = os.urandom(16)
+    check = hashlib.pbkdf2_hmac("sha256", new.encode("utf-8"), salt, PASSWORD_ROUNDS)
+    os.makedirs(os.path.dirname(PASSWORD_FILE), exist_ok=True)
+    tmp = PASSWORD_FILE + ".new"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"salt": salt.hex(), "hash": check.hex(), "rounds": PASSWORD_ROUNDS, "at": int(time.time())}, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, PASSWORD_FILE)
+    return {"set": True}
+
+
+def run_as_root():
+    """One part of a cluster job as root: {"password", "argv", "cwd", "env"} on stdin, the password checked first.
+    The command's own output is passed on as it comes (this helper's answer, a JSON line, comes last); a ".pause" file
+    in cwd holds it still and a ".stop" file ends it (the service, not root, can't signal it itself); then what it
+    made there is given back to the service's account. cwd: one of the service's own job folders only."""
+    name, uid, gid, home = account()
+    d = stdin_json()
+    right = password_right(d.get("password") or "")
+    if right is None:
+        raise Failed("No cluster password is set on this Pi yet: set it in the Jobs tab.")
+    if not right:
+        raise Failed("That isn't this Pi's cluster password.")
+    argv = d.get("argv")
+    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
+        raise Failed("Which command?")
+    work = os.path.realpath(os.path.join(home, ".cache", "ht-cluster", "work"))
+    cwd = os.path.realpath(str(d.get("cwd") or "/"))
+    if not cwd.startswith(work + os.sep) or not os.path.isdir(cwd):
+        raise Failed("Only in one of the cluster's own job folders.")
+    env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LANG": "C.UTF-8", "HT_CLUSTER_JOB": "1"}
+    for k, v in (d.get("env") or {}).items():
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{0,40}", str(k)) and isinstance(v, str) and len(v) < 8192:
+            env[k] = v
+    sys.stdout.flush()
+    p = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, start_new_session=True)
+    held = False
+    while p.poll() is None:
+        try:
+            if os.path.exists(os.path.join(cwd, ".stop")):
+                os.killpg(p.pid, signal.SIGCONT)
+                os.killpg(p.pid, signal.SIGTERM)
+                try:
+                    p.wait(10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(p.pid, signal.SIGKILL)
+                break
+            pause = os.path.exists(os.path.join(cwd, ".pause"))
+            if pause != held:
+                os.killpg(p.pid, signal.SIGSTOP if pause else signal.SIGCONT)
+                held = pause
+        except OSError:
+            pass
+        try:
+            p.wait(1)
+        except subprocess.TimeoutExpired:
+            pass
+    code = p.wait()
+    for root_dir, dirs, files in os.walk(cwd):
+        for n in dirs + files:
+            try:
+                os.lchown(os.path.join(root_dir, n), uid, gid)
+            except OSError:
+                pass
+    return {"code": code}
 
 
 # ----- The Pi fixes (modules/fixes.py) -----
@@ -568,17 +849,17 @@ def fetch_fixes():
 
 
 def fetch_page():
-    """The Pi Cluster page's files for the version of the service that's here, when its update didn't bring
+    """The Cluster page's files for the version of the service that's here, when its update didn't bring
     them (the first update to a version that serves the page is done by the root helper from before): from
     GitHub, for that version's commit, checked against GitHub's list of its files, into its web/ folder."""
-    current = os.path.join(INSTALL, "current")
+    current = current_dir() or os.path.join(INSTALL, "none")
     try:
         with open(os.path.join(current, "VERSION"), "r", encoding="utf-8") as f:
             commit = f.read().strip()
     except OSError:
         commit = ""
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise Missing("This Pi's version of the service (%s) has no Pi Cluster page to fetch." % (commit or "?"))
+        raise Missing("This Pi's version of the service (%s) has no Cluster page to fetch." % (commit or "?"))
     folder = os.path.join(current, "web")
     if all(os.path.isfile(os.path.join(folder, *p.split("/"))) for p in PAGE):
         return {"commit": commit, "unchanged": True}
@@ -598,8 +879,8 @@ def fetch_page():
         if git_blob_sha(data) != str(e.get("sha") or ""):
             raise Failed("%s didn't come out as GitHub lists it." % path)
         got[path] = data
-    if "pi-cluster.html" not in got:
-        raise Missing("This version of the service has no Pi Cluster page.")
+    if "cluster.html" not in got:
+        raise Missing("This version of the service has no Cluster page.")
     part = folder + ".part"
     shutil.rmtree(part, ignore_errors=True)
     for path, data in got.items():
@@ -667,13 +948,18 @@ def wifi_test():
 # name: (what it does, how many words after it: 0, or None for "as many as it checks itself", which lock).
 # (Transmission's jobs have a lock of their own: they don't wait behind a long system update.)
 JOBS = {"install-hand-tracker": (install_hand_tracker, 0, "updates"), "update-cluster": (update_cluster, 0, "updates"),
+        "verify-cluster": (verify_cluster, 0, "updates"),
         "page": (fetch_page, 0, "updates"),
         "os-check": (os_check, 0, "updates"), "os-upgrade": (os_upgrade, 0, "updates"), "reboot": (reboot, 0, "updates"),
+        "poweroff": (poweroff, 0, None),
         "renice-jobs": (renice_jobs, 0, None),
         "install-transmission": (install_transmission, 0, "updates"), "nfs-share": (nfs_share, None, "transmission"),
         "nfs-unshare": (nfs_unshare, 0, "transmission"), "transmission-start": (transmission_start, None, "transmission"),
         "transmission-stop": (transmission_stop, 0, "transmission"), "transmission-cap": (transmission_cap, 2, None),
-        "fix-install": (fix_install, 1, "updates"), "fix-remove": (fix_remove, 1, "updates"), "wifi-test": (wifi_test, 0, None)}
+        "own-transmission-start": (own_transmission_start, 0, "own-transmission"), "own-transmission-stop": (own_transmission_stop, 0, "own-transmission"),
+        "install-libtorrent": (install_libtorrent, 0, "updates"), "install-pyftpdlib": (install_pyftpdlib, 0, "updates"),
+        "fix-install": (fix_install, 1, "updates"), "fix-remove": (fix_remove, 1, "updates"), "wifi-test": (wifi_test, 0, None),
+        "cluster-password": (cluster_password, 0, None), "run-as-root": (run_as_root, 0, None)}
 
 
 def main():
@@ -682,6 +968,9 @@ def main():
     if job not in JOBS or (JOBS[job][1] is not None and len(words) != JOBS[job][1]) or len(words) > 40:
         print(json.dumps({"ok": False, "error": "Jobs: " + ", ".join(JOBS)}))
         return 2
+    if WINDOWS and job not in WINDOWS_JOBS:
+        print(json.dumps({"ok": False, "error": "Not on Windows: there it does only %s." % ", ".join(WINDOWS_JOBS)}))
+        return 1
     fn, _, lock_name = JOBS[job]
     if AS_ROOT:
         os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

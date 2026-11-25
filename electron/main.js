@@ -31,6 +31,7 @@ const { RemoteRecordServer, RIG_HOST, RIG_PATH, cleanDetails } = require("./remo
 const { RigBluetooth } = require("./bluetooth");
 const systemControl = require("./system-control");
 const storage = require("./storage");
+const FlushOften = require("./flush-often.js");
 const busyNow = require("./busy").busy;
 const { RoomHistory } = require("./room-history");
 const { ImuIn } = require("./imu-in");
@@ -52,8 +53,8 @@ const APPS = {
   mouse: { name: "Hand Mouse", page: "hand-mouse.html", id: "com.handtracker.mouse", slug: "hand-mouse", size: { width: 600, height: 900 } },
   remote: { name: "Remote Recording", page: "remote-recording.html", id: "com.handtracker.remote", slug: "remote-recording", size: { width: 1320, height: 940 } },
   converter: { name: "Recording Converter", page: "viewer.html", id: "com.handtracker.converter", slug: "recording-converter", size: { width: 920, height: 960 } },
-  // (Pi Cluster: the Raspberry Pis running Pi Cluster's service, cluster/node: pi-cluster.html)
-  cluster: { name: "Pi Cluster", page: "pi-cluster.html", id: "com.handtracker.cluster", slug: "pi-cluster", size: { width: 1080, height: 920 } },
+  // (Cluster: the Raspberry Pis running Cluster's service, cluster/node: cluster.html)
+  cluster: { name: "Cluster", page: "cluster.html", id: "com.handtracker.cluster", slug: "hand-tracker-cluster", size: { width: 1080, height: 920 } },
 };
 const APP = (() => {
   const arg = process.argv.find((a) => a.startsWith("--app="));
@@ -68,6 +69,17 @@ const APP = (() => {
 })();
 // Its own settings, and its own single instance (a copy of Hand Tracker can run beside it).
 if (APP.kind !== "full" && !app.isPackaged) app.setName(APP.name);
+// Cluster's settings, its list of Pis and what its page remembers, kept before the rename (2026-11-25: "Pi Cluster"
+// became "Cluster") in a folder of that name: moved to the new name once, before anything opens them.
+if (APP.kind === "cluster") {
+  try {
+    const now = app.getPath("userData");
+    const was = path.join(path.dirname(now), "Pi Cluster");
+    if (path.basename(now) === "Cluster" && fs.existsSync(was) && !fs.existsSync(now)) fs.renameSync(was, now);
+  } catch (e) {
+    console.warn(`Cluster's folder from before the rename stays where it was: ${e.message}`);
+  }
+}
 // Pages a link can open as an app window of their own, and their size.
 const PAGES = new Map([
   ["index.html", { width: 920, height: 960 }],
@@ -141,6 +153,7 @@ const exportedPaths = new Set(); // files this session wrote; the only ones "sho
 // Opened at login for remote recording (remote-record.js): no camera until the phone asks.
 const remoteStandby = process.argv.includes("--remote-standby");
 let remoteRecord = null;
+let previewsWatched = false, videoWatched = false; // a page is looking at the previews / playing a camera's video (Transmission's turtle)
 let rigBluetooth = null; // remote recording over Bluetooth (bluetooth.js), on with it
 // Imported videos converted to MP4 for playback: id -> { file, owner: webContents id }, and a take's
 // own videos shown as they are (original: never deleted here; type: theirs). Only these are served under /__media/.
@@ -386,7 +399,7 @@ function handle(channel, fn) {
   });
 }
 
-// ---------- Pi Cluster (its own app): the Pis running Pi Cluster's service (cluster.js) ----------
+// ---------- Cluster (its own app): the Pis running Cluster's service (cluster.js) ----------
 if (APP.kind === "cluster") {
   const { Cluster } = require("./cluster");
   let cluster = null;
@@ -644,6 +657,7 @@ function registerOakIpc() {
     single.stop();
     single.start({ ...options, simulate: simulated }, (msg) => {
       if (viewer.isDestroyed()) return single.stop();
+      if (msg.video) return; // (only the tiles' cameras are asked for their H.264)
       if (msg.frame) {
         if (busy) return;
         busy = true;
@@ -687,6 +701,14 @@ function registerOakIpc() {
     stream.cam.start({ ...options, device: id }, (msg) => {
       if (oakStreams.get(id) !== stream && msg.status !== "stopped") return;
       if (viewer.isDestroyed()) return stopOakStream(id);
+      // Its own H.264 (h264: oak_bridge.py --h264): each picture to remote recording's full screen, kept
+      // there by its id (the state says which camera that is); its frames' hands and objects while a page
+      // plays it.
+      if (msg.video) {
+        if (remoteRecord && remoteRecord.server && msg.data) remoteRecord.setVideo(id, msg.video, msg.data);
+        return;
+      }
+      if (msg.frame && remoteRecord && remoteRecord.videoWatched(id)) remoteRecord.setOverlay(id, msg.frame);
       if (msg.frame) {
         if (stream.busy) return;
         stream.busy = true;
@@ -720,6 +742,42 @@ class SimulatedOak {
   static failedOnce = new Set();
   static frozeOnce = new Set();
   static usbReset = new Set(); // (the cameras whose USB was turned off and on: remote:reset-camera)
+  static clip = null; // (h264: its H.264, made once)
+
+  // As oak_bridge.py --h264 sends it: 2 s of H.264 (Main profile, a keyframe a second, no B-frames)
+  // of ffmpeg's moving test picture, 640 x 360 at 30 a second, made once by the app's ffmpeg, as its
+  // pictures (Annex B, each with its access unit delimiter: [{ key, data }]); null if it can't be made.
+  static h264() {
+    if (!SimulatedOak.clip) {
+      SimulatedOak.clip = new Promise((resolve) => {
+        const args = ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=2",
+          "-c:v", "libx264", "-profile:v", "main", "-pix_fmt", "yuv420p", "-g", "30", "-keyint_min", "30", "-sc_threshold", "0", "-bf", "0",
+          "-x264-params", "aud=1:repeat-headers=1", "-f", "h264", "pipe:1"];
+        let proc;
+        try {
+          proc = require("child_process").spawn(exporter.ffmpegPath, args, { windowsHide: true });
+        } catch {
+          return resolve(null);
+        }
+        const chunks = [];
+        proc.stdout.on("data", (c) => chunks.push(c));
+        proc.on("error", () => resolve(null));
+        proc.on("close", (code) => {
+          const all = Buffer.concat(chunks);
+          const aud = Buffer.from([0, 0, 0, 1, 9]);
+          const starts = [];
+          for (let at = all.indexOf(aud); at >= 0; at = all.indexOf(aud, at + 1)) starts.push(at);
+          const pictures = starts.map((at, k) => all.subarray(at, k + 1 < starts.length ? starts[k + 1] : all.length));
+          const key = (b) => {
+            for (let at = b.indexOf(Buffer.from([0, 0, 1])); at >= 0 && at + 3 < b.length; at = b.indexOf(Buffer.from([0, 0, 1]), at + 3)) if ([5, 7].includes(b[at + 3] & 0x1f)) return true;
+            return false;
+          };
+          resolve(code === 0 && pictures.length ? pictures.map((data) => ({ key: key(data), data: Buffer.from(data) })) : null);
+        });
+      });
+    }
+    return SimulatedOak.clip;
+  }
 
   start(options, onMessage) {
     // A camera whose id has STUCK doesn't start until its USB has been turned off and on (Restart's last step).
@@ -754,12 +812,17 @@ class SimulatedOak {
     };
     if (frozen) SimulatedOak.frozeOnce.add(options.device);
     this.onMessage = onMessage;
+    // h264: its colour picture's H.264 too (not for the other views), a picture with each frame, from a keyframe.
+    const video = { clip: null, at: 0 };
+    const h264 = !!options.h264 && !["depth", "blend", "side", "left", "right"].includes(options.picture) && options.night !== "on";
+    if (h264) SimulatedOak.h264().then((clip) => (video.clip = clip));
     onMessage({ status: "running", camera: options.device ? `Simulated OAK ${options.device}` : "Simulated OAK", width: w, height: h, depth: true, depthCameras: true, id: options.device || "SIMULATED-OAK", usb: "SUPER",
       far: options.far || null, // (the checks see which far-away mode it was started in)
       detect: !!options.detect, picture: ["depth", "blend", "side", "left", "right"].includes(options.picture) ? options.picture : "color", motion: !!options.motion, fps: options.fps || null, hands: options.hands !== false,
       // (an infrared camera, as an OAK-D Pro: night vision as asked, Automatic taken to be light)
       infrared: true, night: options.night === "on", nightMode: options.night || "off", dots: !!options.dots, lm: options.lm || "lite", twoHands: !!options.twoHands, xyz: !!options.xyz,
-      imu: !!options.imu, imuToCamera: options.imu ? [[1, 0, 0], [0, 1, 0], [0, 0, 1]] : null }); // (its motion sensor on its camera's own axes)
+      imu: !!options.imu, imuToCamera: options.imu ? [[1, 0, 0], [0, 1, 0], [0, 0, 1]] : null, // (its motion sensor on its camera's own axes)
+      h264 }); // (h264: its colour picture's H.264 too, when asked)
     this.timer = setInterval(() => {
       const t = (Date.now() - t0) / 1000;
       const cx = 0.5 + 0.2 * Math.sin(t), cy = 0.75;
@@ -780,6 +843,10 @@ class SimulatedOak {
       // A camera whose id has FREEZES sends nothing after its first second, the first time it
       // runs (for the checks' starting a frozen camera again).
       if (frozen && Date.now() - t0 > 1000) return;
+      if (video.clip) {
+        const pic = video.clip[video.at++ % video.clip.length];
+        onMessage({ video: { u: frame.u, key: pic.key }, data: pic.data });
+      }
       if (options.imu) {
         const now = Date.now();
         frame.imu = [];
@@ -1161,14 +1228,15 @@ const clips = {
     await fs.promises.mkdir(dir, { recursive: true });
     const id = `${process.pid}-${Date.now().toString(36)}-${++this.next}`;
     const file = path.join(dir, `.recording-${id}.${ext}.part`);
-    this.live.set(id, { file, handle: await fs.promises.open(file, "w"), size: 0, writing: Promise.resolve() });
+    this.live.set(id, { file, handle: await fs.promises.open(file, "w"), size: 0, writing: Promise.resolve(), flushed: {} });
     return id;
   },
   async write(id, data) {
     const c = this.live.get(String(id));
     if (!c) throw new Error("That clip isn't being recorded.");
     const buf = Buffer.from(data);
-    c.writing = c.writing.then(() => c.handle.write(buf, 0, buf.length, c.size)).then(() => (c.size += buf.length));
+    // (on the drive every 2 s, so a power cut loses seconds, not the take: flush-often.js)
+    c.writing = c.writing.then(() => c.handle.write(buf, 0, buf.length, c.size)).then(() => (c.size += buf.length)).then(() => FlushOften.handle(c.flushed, c.handle));
     await c.writing;
     return c.size;
   },
@@ -1177,6 +1245,7 @@ const clips = {
     if (!c) throw new Error("That clip isn't being recorded.");
     this.live.delete(String(id));
     await c.writing.catch(() => {});
+    await c.handle.datasync().catch(() => {});
     await c.handle.close().catch(() => {});
     return c;
   },
@@ -1356,7 +1425,8 @@ function registerRemoteIpc() {
     ask,
     onWantPreviews: (on) => {
       toWindow("remote:want-previews", on);
-      transmission.watching(!!(on && on.on));
+      previewsWatched = !!(on && on.on);
+      transmission.watching(previewsWatched || videoWatched);
     },
     wifi: createWifi(), // a phone on the hotspot (or over Tailscale) can change the Wi-Fi
     takes: () => remoteFolder(), // its takes: listed, downloaded, and deleted once downloaded
@@ -1395,6 +1465,11 @@ function registerRemoteIpc() {
     return imuWanted;
   });
   remoteRecord.on("status", (s) => toWindow("remote:status", s));
+  // (A page playing a camera's video wants the network as one looking at its pictures does.)
+  remoteRecord.on("video-watch", (on) => {
+    videoWatched = !!on;
+    transmission.watching(previewsWatched || videoWatched);
+  });
   rigBluetooth.on("status", (s) => toWindow("remote:bluetooth", s));
   const startBluetooth = () => (rigBluetooth.available() && remoteRecord.server ? rigBluetooth.start().catch(() => {}) : null);
   const fromApp = (event) => event.senderFrame && isAppUrl(event.senderFrame.url);
@@ -1497,6 +1572,20 @@ function registerRemoteIpc() {
     if (m.serial) SimulatedOak.usbReset.add(m.serial);
     return { ok: true, message: "Its USB was turned off and on (simulated).", how: "power", others: [] };
   });
+  // Where one camera is on the USB, for a take's record (multi-camera.js): { serial, usb, dev } as above ->
+  // { port, serial, usb, ports } or null (system-control.js's cameraUsb). The checks: each camera asked for
+  // in turn on ports 1-1.1, 1-1.2…
+  const simulatedPorts = new Map();
+  handle("remote:camera-usb", (event, match = {}) => {
+    const m = {};
+    for (const k of ["serial", "usb", "dev"]) if (match && typeof match[k] === "string" && /^[\w.,:-]{1,80}$/.test(match[k])) m[k] = match[k];
+    if (!simulateSystem) return systemControl.cameraUsb(m);
+    const key = m.dev || m.serial || m.usb;
+    if (!key) return null;
+    if (!simulatedPorts.has(key)) simulatedPorts.set(key, `1-1.${simulatedPorts.size + 1}`);
+    const port = simulatedPorts.get(key);
+    return { port, serial: m.serial || "", usb: m.serial ? "03e7:f63b" : (m.usb || "").split(",")[0], ports: [port] };
+  });
   handle("remote:new-key", () => remoteRecord.newKey());
   // The takes in the remote recording folder, on this computer's own screen too: listed, and
   // their details asked for and changed (their files renamed to match: remote-record.js).
@@ -1514,6 +1603,14 @@ function registerRemoteIpc() {
     if (!fromApp(event) || !Array.isArray(list)) return;
     for (const p of list) if (p && p.jpeg) remoteRecord.setPreview(Number(p.i), p.jpeg);
   });
+  // A webcam's H.264 for full screen (made in the window while a page plays it: camera-tile.js startVideo), one
+  // picture with its hands; and which cameras' video pages are playing, for the window.
+  ipcMain.on("remote:video", (event, p) => {
+    if (!fromApp(event) || !p || typeof p.id !== "string" || !(p.data instanceof Uint8Array) || p.data.length > 4 * 1024 * 1024) return;
+    remoteRecord.setVideo(p.id, { u: Number(p.u), key: !!p.key }, Buffer.from(p.data));
+    if (remoteRecord.videoWatched(p.id)) remoteRecord.setOverlay(p.id, { u: Number(p.u), hands: Array.isArray(p.hands) ? p.hands : [], objects: [] });
+  });
+  remoteRecord.on("video-want", (ids) => toWindow("remote:video-want", ids));
   ipcMain.on("remote:result", (event, { id, result } = {}) => {
     const done = fromApp(event) && pending.get(id);
     if (!done) return;
@@ -1924,6 +2021,88 @@ function registerIpc() {
     return input;
   }
   handle("video:probe", (_event, { path: inputPath }) => exporter.probe(videoFileArg(inputPath)));
+
+  // A take's camera videos, beside its JSON (the Recording Converter's Grid video): those its JSON lists, each
+  // with when it started on the take's clock (remote recording's takes, since 2026-11-24), else the videos named
+  // after it (<take>-video-<role>.mp4 or .webm: taken as started with it).
+  // -> { ok, name, videos: [{ file, camera, role, start, hasAudio }], length (s), timed } or { ok: false, message }
+  async function takeVideos(jsonPath) {
+    const file = String(jsonPath || "");
+    if (!/\.json$/i.test(file) || !fs.existsSync(file)) return { ok: false, message: "Open the take's JSON file: its videos are beside it." };
+    let data = null;
+    try {
+      data = JSON.parse(await fs.promises.readFile(file, "utf8"));
+    } catch {
+      return { ok: false, message: "That take's JSON can't be read." };
+    }
+    const dir = path.dirname(file);
+    const name = path.basename(file).replace(/\.json$/i, "");
+    let names = [];
+    try {
+      names = await fs.promises.readdir(dir);
+    } catch {
+      return { ok: false, message: "The take's folder can't be read." };
+    }
+    const here = new Set(names);
+    const timed = !!data && Array.isArray(data.videos) && data.videos.length > 0;
+    let list;
+    if (timed) {
+      list = data.videos
+        .filter((v) => v && typeof v.file === "string" && path.basename(v.file) === v.file && here.has(v.file) && /\.(mp4|webm|mkv|mov)$/i.test(v.file))
+        .map((v) => ({ file: v.file, camera: String(v.camera || "").slice(0, 60), role: typeof v.role === "string" ? v.role : "", start: Number.isFinite(Number(v.start_s)) ? Number(v.start_s) : 0 }));
+    } else {
+      const own = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-video-([a-z0-9-]+)\\.(mp4|webm)$`, "i");
+      list = names
+        .map((n) => [n, own.exec(n)])
+        .filter(([, m]) => m && m[1].toLowerCase() !== "grid")
+        .map(([n, m]) => ({ file: n, camera: m[1].replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase()), role: "", start: 0 }));
+    }
+    const videos = [];
+    for (const v of list) {
+      try {
+        videos.push({ ...v, hasAudio: !!(await exporter.probe(path.join(dir, v.file))).hasAudio });
+      } catch {
+        // (not a video ffmpeg can read: left out)
+      }
+    }
+    const length = Number(data && data.metadata && data.metadata.length_s) || 0;
+    return { ok: true, name, videos, length, timed };
+  }
+  handle("video:take-videos", (_event, { path: jsonPath } = {}) => takeVideos(jsonPath));
+  // The grid video: { path: the take's JSON, videos: [{ file, label: its label as a PNG }] in the grid's order } ->
+  // made beside the take as <take>-video-grid.mp4 (exporter.js's gridVideo; progress as a conversion's).
+  // -> { ok, path, size, layout, sound } or { ok: false, message }
+  handle("video:grid", async (event, job = {}) => {
+    const take = await takeVideos(job.path);
+    if (!take.ok) return take;
+    const byFile = new Map(take.videos.map((v) => [v.file, v]));
+    const chosen = (Array.isArray(job.videos) ? job.videos : []).filter((a) => a && byFile.has(a.file)).slice(0, 6);
+    if (chosen.length < 2) return { ok: false, message: "A grid needs two of the take's videos or more." };
+    const dir = path.dirname(String(job.path));
+    const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "hand-tracker-grid-"));
+    try {
+      const videos = [];
+      for (const [i, a] of chosen.entries()) {
+        const png = a.label instanceof Uint8Array ? Buffer.from(a.label) : null;
+        let label = null;
+        if (png && png.length < 1 << 20 && png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+          label = path.join(tmp, `label-${i}.png`);
+          await fs.promises.writeFile(label, png);
+        }
+        videos.push({ path: path.join(dir, a.file), start: byFile.get(a.file).start, label });
+      }
+      const out = exporter.uniquePath(dir, `${take.name}-video-grid`, "mp4");
+      const r = await exporter.gridVideo({ videos, length: take.length, out }, (progress) => {
+        if (!event.sender.isDestroyed()) event.sender.send("video:export-progress", { format: "grid", index: 0, total: 1, progress });
+      });
+      exportedPaths.add(r.path);
+      return { ok: true, ...r };
+    } catch (err) {
+      return { ok: false, message: err.canceled ? "Canceled." : `The grid video couldn't be made: ${err.message}` };
+    } finally {
+      fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
+  });
   // job.token: a folder already chosen (files:choose-folder), for converting a queue of videos
   // into one; job.trim: { start, length } seconds, for synced videos.
   handle("video:convert-file", async (event, job) => {

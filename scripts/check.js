@@ -150,6 +150,9 @@ const STEPS = [
   ["remote-recording", [], ({ js }) => checkRemoteRecording(js)],
   ["remote-oak-settings", [], ({ js }) => checkRemoteOakSettings(js)],
   ["remote-restart", [], ({ js }) => checkRemoteRestart(js)],
+  ["remote-video-server", [], () => checkRemoteVideoServer()],
+  ["remote-video", [], ({ js }) => checkRemoteVideo(js)],
+  ["remote-webcam-video", [], ({ js }) => checkRemoteWebcamVideo(js)],
   ["remote-launcher", ["remote-recording"], ({ js }) => checkRemoteLauncher(js)], // downloads the take it saved
   ["remote-hotspot-wifi", [], () => checkRemoteHotspotWifi()],
   ["remote-settings-page", [], () => checkRemoteSettingsPage()],
@@ -187,6 +190,7 @@ const STEPS = [
   ["optitrack", [], ({ js }) => checkOptiTrack(js)],
   ["viewer", ["capture", "optitrack"], checkViewerStep], // the capture's files, and Motive's markers
   ["viewer-video", [], () => checkViewerVideo()],
+  ["grid-video", [], () => checkGridVideo()],
   ["own-apps", [], () => checkOwnApps()],
 ];
 if (process.argv.includes("--list")) {
@@ -1301,7 +1305,7 @@ async function checkSentry(js) {
     Object.assign(out, await pjs(`(async () => {
       ${PAGE}
       Object.defineProperty(document, "hidden", { configurable: true, get: () => false }); // (a window that isn't shown)
-      await until(() => /Hand Tracker on/.test($("title").textContent));
+      await until(() => /Remote Recording on/.test($("title").textContent));
       const out = { hiddenAtStart: $("sentryPanel").hidden };
       for (let i = 0; i < 5; i++) $("title").click();
       out.shown = !!(await until(() => !$("sentryPanel").hidden && !$("sentrySettings").hidden));
@@ -1918,6 +1922,12 @@ async function checkBluetoothLink() {
     // A phone app's Bluetooth: one seen advertising but not taking connections is said so at once.
     const busy = BtLinkClient.capacitorBluetooth({ scan: async () => ({ devices: [{ id: "AA:BB:CC:DD:EE:FF", name: "Busy PC", connectable: false }] }) }, { prefer: "Busy PC" });
     out.busy = await busy.requestDevice().then(() => "picked", (err) => err.message);
+    // ...and connecting, it's asked to check Hand Tracker's three characteristics are there (the iPhone says how to
+    // see a rig's services anew when one isn't: it kept an older layout), but not a work rig's.
+    const asked = [];
+    const stub = { scan: async () => ({ devices: [{ id: "11:22:33:44:55:66", name: "Rig" }] }), addListener: async () => ({ remove() {} }), connect: async (o) => asked.push(o) };
+    for (const service of [BtLinkClient.SERVICE, require("../rig-ble.js").SERVICE]) await (await BtLinkClient.capacitorBluetooth(stub, { prefer: "Rig", service }).requestDevice()).gatt.connect();
+    out.characteristicsAsked = asked.map((o) => o.characteristics || "none");
     // The Linux helper (BlueZ) is carried outside app.asar (Python runs it) and compiles.
     const helper = path.join(__dirname, "..", "electron", "bluetooth-helper-linux.py");
     const py = ["python3", "python"].map((cmd) => spawnSync(cmd, ["-c", `import py_compile; py_compile.compile(r"${helper}", doraise=True)`], { encoding: "utf8" })).find((x) => !x.error);
@@ -1929,6 +1939,7 @@ async function checkBluetoothLink() {
   }
   check("Remote recording over Bluetooth: the right password gets a session, each request sealed and relayed to the server (as from its hotspot), a long answer in frames that fit; the wrong password is told so; another device near by reads none of it and can't use its session; two devices at once; one seen but not taking connections said so at once; the server takes the link's token only from itself, the Bluetooth network only with the password",
     !out.error && out.info.name === "check-rig" && out.info.salt && out.info.iter >= 100000 && !out.info.key &&
+      out.characteristicsAsked && out.characteristicsAsked.join("|") === `${[BtLinkClient.INFO, BtLinkClient.RX, BtLinkClient.TX].join(",")}|none` &&
       out.state.status === 200 && /json/.test(out.state.type) && out.state.host && out.state.filler && out.state.framesMax <= MTU - 3 && out.state.frames > 80 &&
       out.deflated.whole && out.deflated.frames <= 3 &&
       out.command.status === 200 && out.command.body.ok === true && /did scan/.test(out.command.body.message) &&
@@ -2000,7 +2011,7 @@ async function checkBluetoothPage() {
       out.wrong = await until(() => /isn't its password/.test($("message").textContent) && $("message").textContent);
       $("btPassword").value = "correct horse 42";
       $("btConnect").click();
-      out.title = await until(() => /Hand Tracker on .+ [(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent);
+      out.title = await until(() => /Remote Recording on .+ [(]Bluetooth[)]/.test($("title").textContent) && $("title").textContent);
       out.panelGone = $("btPanel").hidden;
       out.kept = localStorage.getItem("hand-tracker-bluetooth-keys") || "";
       out.camera = await until(() => document.querySelector("#cam0 .pic span") && /tap for its picture/.test(document.querySelector("#cam0 .pic span").textContent) && document.querySelector("#cam0 img").hidden);
@@ -3341,7 +3352,7 @@ async function checkRemoteOakSettings(js) {
     Object.assign(out, await pjs(`(async () => {
       ${PAGE}
       Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
-      await until(() => /Hand Tracker on/.test($("title").textContent) && document.querySelector('[data-oakopen="${A}"]'));
+      await until(() => /Remote Recording on/.test($("title").textContent) && document.querySelector('[data-oakopen="${A}"]'));
       const out = { buttons: [...document.querySelectorAll("#camRows [data-oakopen]")].map((b) => b.dataset.oakopen).sort() };
       // On the page to be seen (not just there: the Cameras box was once left hidden). The box folds away
       // to one line until its Show is tapped (381eb43): tapped here, as a person would.
@@ -3498,6 +3509,356 @@ async function checkRemoteOakSettings(js) {
       Array.isArray(out.restarted) && out.restarted.length === 1 && out.restarted[0] === B.slice(4) &&
       out.whileRecording && out.whileRecording.ok === false && /Stop recording/.test(out.whileRecording.message),
     JSON.stringify(out));
+}
+
+// Full screen as video: the remote recording server keeps an OAK camera's own H.264 (oak_bridge.py --h264) by its
+// id, offers it in the state (never the id), and gives a page every picture after the last it had, from the last
+// keyframe when it starts or falls behind, with the frames' hands and objects while it's watched.
+async function checkRemoteVideoServer() {
+  const { RemoteRecordServer } = require("../electron/remote-record.js");
+  const KEY = "checkvideokey123456";
+  const server = new RemoteRecordServer({ keyStore: { load: () => KEY, save() {} }, page: () => "", ask: async () => ({ ok: true }), onWantPreviews: () => {} });
+  const out = { watch: [] };
+  const get = async (p) => {
+    const res = await fetch(`http://127.0.0.1:${server.port}${p}`, { headers: { "X-Key": KEY } });
+    return { status: res.status, body: Buffer.from(await res.arrayBuffer()) };
+  };
+  const records = (buf) => {
+    const list = [];
+    for (let at = 0; at + 17 <= buf.length;) {
+      const n = buf.readUInt32LE(at + 13);
+      list.push({ kind: buf.readUInt8(at), seq: buf.readUInt32LE(at + 1), u: buf.readDoubleLE(at + 5), data: buf.subarray(at + 17, at + 17 + n) });
+      at += 17 + n;
+    }
+    return list;
+  };
+  const text = (list) => list.filter((r) => r.kind !== 3).map((r) => String(r.data)).join();
+  try {
+    await server.start();
+    server.on("video-watch", (on) => out.watch.push(on));
+    server.setState({ cameras: [{ index: 0, name: "OAK", oak: true, videoId: "OAK-A" }, { index: 1, name: "Webcam" }, { index: 2, name: "Webcam 2", videoId: "cam:two", videoOnDemand: true }] });
+    out.before = { state: (await (await fetch(`http://127.0.0.1:${server.port}/api/state`, { headers: { "X-Key": KEY } })).json()).cameras, video: (await get("/api/video?i=0&after=0")).status };
+    server.setVideo("OAK-A", { u: 1, key: false }, Buffer.from("lost")); // (before any keyframe: nothing to play from)
+    const t0 = Date.now();
+    for (let k = 0; k < 60; k++) server.setVideo("OAK-A", { u: t0 + k * 33, key: k % 30 === 0 }, Buffer.from(`p${k}`));
+    out.state = (await (await fetch(`http://127.0.0.1:${server.port}/api/state`, { headers: { "X-Key": KEY } })).json()).cameras;
+    let r = await get("/api/video?i=0&after=0");
+    let list = records(r.body);
+    out.start = { status: r.status, first: list[0] && list[0].kind, n: list.length, text: text(list).slice(0, 12) };
+    const last = list[list.length - 1].seq;
+    for (let k = 60; k < 62; k++) {
+      server.setOverlay("OAK-A", { u: t0 + k * 33, w: 640, h: 360, hands: [{ lm: Array.from({ length: 21 }, () => [0.5, 0.5, 0]), label: "Left", gesture: "FIVE" }], objects: [{ label: "cat", score: 0.9, box: [0.1, 0.2, 0.3, 0.4], xyz: [1, 2, 3] }] });
+      server.setVideo("OAK-A", { u: t0 + k * 33, key: false }, Buffer.from(`p${k}`));
+    }
+    list = records((await get(`/api/video?i=0&after=${last}`)).body);
+    const ov = list.filter((x) => x.kind === 3).map((x) => JSON.parse(String(x.data)));
+    out.next = { text: text(list), overlays: ov.length, hand: ov[0] && ov[0].hands[0].label, cat: ov[0] && ov[0].objects[0].label, xyz: ov[0] && "xyz" in ov[0].objects[0] };
+    const seen = list[list.length - 1].seq;
+    let at = Date.now();
+    out.waited = { status: (await get(`/api/video?i=0&after=${seen}`)).status, ms: Date.now() - at };
+    setTimeout(() => server.setVideo("OAK-A", { u: Date.now(), key: false }, Buffer.from("p62")), 100);
+    at = Date.now();
+    r = await get(`/api/video?i=0&after=${seen}`);
+    out.came = { text: text(records(r.body)), ms: Date.now() - at };
+    for (let k = 63; k < 123; k++) server.setVideo("OAK-A", { u: t0 + k * 33, key: k % 30 === 0 }, Buffer.from(`p${k}`));
+    out.behind = text(records((await get(`/api/video?i=0&after=${seen + 1}`)).body)).split(",")[0];
+    out.kept = String(server.videos.get("OAK-A").packets[0].data);
+    out.refused = [(await get("/api/video?i=0&after=-1")).status, (await get("/api/video?i=1&after=0")).status];
+    const wants = [];
+    server.on("video-want", (list) => wants.push(list));
+    setTimeout(() => {
+      server.setVideo("cam:two", { u: Date.now(), key: true }, Buffer.from("w0"));
+    }, 600);
+    r = await get("/api/video?i=2&after=0");
+    out.onDemand = { status: r.status, first: text(records(r.body)).split(",")[0], wanted: wants.flat() };
+    server.videos.get("OAK-A").at = Date.now() - 4000; // (its camera stopped)
+    out.stopped = { state: (await (await fetch(`http://127.0.0.1:${server.port}/api/state`, { headers: { "X-Key": KEY } })).json()).cameras[0].stream, video: (await get("/api/video?i=0&after=0")).status };
+  } catch (err) {
+    out.error = String((err && err.message) || err);
+  } finally {
+    server.stop();
+  }
+  const st = out.state || [];
+  check("Full screen as video, the computer's side: an OAK camera's own H.264 is offered in the state once it comes (its id never sent), a page starting gets the group since the last keyframe, then each picture after the last it had (waiting for the next, 204 if none comes) with the frames' hands and objects; one far behind skips to the last keyframe; only the last two groups are kept; a camera that stopped isn't offered",
+    !out.error && out.before.video === 404 && !out.before.state[0].stream && !("videoId" in out.before.state[0]) && st[0] && st[0].stream === "h264" && !("videoId" in st[0]) && !st[1].stream &&
+      // (a webcam whose video is made once asked for: offered, its ids kept; asked, it's wanted, and its first picture waited for)
+      out.before.state[2].stream === "h264" && !("videoId" in out.before.state[2]) && !("videoOnDemand" in out.before.state[2]) && out.onDemand && out.onDemand.status === 200 && out.onDemand.first === "w0" && out.onDemand.wanted.includes("cam:two") &&
+      out.start.status === 200 && out.start.first === 1 && out.start.n === 30 && out.start.text.startsWith("p30,p31") &&
+      out.next.text === "p60,p61" && out.next.overlays === 2 && out.next.hand === "Left" && out.next.cat === "cat" && out.next.xyz === false &&
+      out.waited.status === 204 && out.waited.ms >= 350 && out.came.text === "p62" && out.came.ms < 350 &&
+      out.behind === "p120" && out.kept === "p90" && out.refused.join() === "404,404" && !out.stopped.state && out.stopped.video === 404 && out.watch.join() === "true,false",
+    JSON.stringify(out));
+}
+
+// Full screen as video, the whole way: the simulated OAK camera makes real H.264 (the app's ffmpeg) as oak_bridge.py
+// --h264 does; the state offers it; the page (WebCodecs: a secure page, 127.0.0.1 here) plays it full screen at its
+// rate with the hands (and Show objects' objects) drawn over it, turned as the camera is; where it can't decode, the
+// pictures as before.
+async function checkRemoteVideo(js) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = {};
+  let win = null, wasOn = true, base = "", key = "";
+  const post = (action, extra = {}) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...extra }) });
+  const state = async () => (await fetch(base + "/api/state", { headers: { "X-Key": key } })).json();
+  const A = "oak:SIMULATED-OAK-A";
+  try {
+    const setup = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      if (MultiCamera.isActive()) MultiCamera.close();
+      await sleep(500);
+      let s = await desktop.remote.status();
+      const wasOn = s.on;
+      if (!s.on) document.getElementById("remoteToggle").click();
+      for (let i = 0; i < 50 && !s.on; i++) { await sleep(100); s = await desktop.remote.status(); }
+      MultiCamera.setOakSettings("${A}", null);
+      MultiCamera.setOakSettings("${A}", { detect: true, night: "off" }); // (objects too: the person and the cat)
+      return { status: s, wasOn };
+    })()`);
+    wasOn = setup.wasOn;
+    const keyed = (setup.status.urls || []).find((u) => u.keyed);
+    key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
+    base = `http://127.0.0.1:${setup.status.port}`;
+    await post("scan");
+    let st = null;
+    for (let i = 0; i < 100 && !(st && st.available && st.available.at && !st.available.scanning); i++) {
+      await sleep(200);
+      st = await state();
+    }
+    for (const c of st.available.cameras) await post("pick", { pick: { id: c.id, use: c.id === A } });
+    await post("mode", { mode: "freeform" });
+    await post("cameras");
+    for (let i = 0; i < 150; i++) {
+      st = await state();
+      if (st.running && (st.cameras || []).length === 1 && st.cameras[0].fps > 0 && st.cameras[0].stream) break;
+      await sleep(200);
+    }
+    out.state = (st.cameras || []).map((c) => ({ stream: c.stream, videoId: "videoId" in c, oak: c.oak }));
+    out.startedWith = await js(`MultiCamera._tiles().map((t) => t.oakWith ? JSON.parse(t.oakWith).h264 : null)`);
+    win = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { partition: "check-remote-video", backgroundThrottling: false } });
+    await win.loadURL(`${base}/#k=${key}`);
+    const pjs = (code) => withLimit(win.webContents.executeJavaScript(code), "the remote page, full screen video");
+    const PAGE = `
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      const until = async (fn, ms = 15000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+      // (pixels exactly a colour drawn over the video: the hands' points #FF3355, their lines #00FF88, a person's box #fcc419)
+      const count = (canvas, rgb) => {
+        const d = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+        let n = 0;
+        for (let i = 0; i < d.length; i += 4) if (d[i] === rgb[0] && d[i + 1] === rgb[1] && d[i + 2] === rgb[2]) n++;
+        return n;
+      };
+      // (how varied the picture is: the test picture's colours, not one flat colour)
+      const varied = (canvas) => {
+        const d = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data, seen = new Set();
+        for (let i = 0; i < d.length; i += 4 * 97) seen.add((d[i] >> 5) * 64 + (d[i + 1] >> 5) * 8 + (d[i + 2] >> 5));
+        return seen.size;
+      };
+    `;
+    out.play = await pjs(`(async () => {
+      ${PAGE}
+      const pic = await until(() => document.querySelector("#cam0 .pic img:not([hidden])") && document.querySelector("#cam0 .pic"));
+      if (!pic) return { error: "no picture to tap" };
+      pic.click();
+      const canvas = $("fullVideo");
+      const shown = await until(() => !canvas.hidden && canvas.width > 0 && canvas.width);
+      await sleep(2500);
+      const counts = JSON.parse(canvas.dataset.counts || "{}");
+      await sleep(2000);
+      const later = JSON.parse(canvas.dataset.counts || "{}");
+      const each = Object.fromEntries(Object.keys(later).map((k) => [k, later[k] - (counts[k] || 0)])); // (in those 2 s)
+      return { decoder: typeof VideoDecoder, shown: !!shown, img: !$("fullImg").hidden, w: canvas.width, h: canvas.height, rate: $("fullRate").textContent, each,
+        points: count(canvas, [255, 51, 85]), lines: count(canvas, [0, 255, 136]), person: count(canvas, [252, 196, 25]), varied: varied(canvas) };
+    })()`);
+    out.cameraFps = ((await state()).cameras || [{}])[0].fps; // (the camera's own rate: its tile's)
+    out.made = await js(`(() => { const t = MultiCamera._tiles()[0]; return t && t.status ? t.status.fps : null; })()`);
+    // Turned a quarter: the video turns with it (taller than wide), the hands with it.
+    await post("camera", { camera: { index: 0, rotation: 90 } });
+    out.turned = await pjs(`(async () => {
+      ${PAGE}
+      const canvas = $("fullVideo");
+      await until(() => canvas.width === 360 && canvas.height === 640, 8000);
+      await sleep(500);
+      return { w: canvas.width, h: canvas.height, points: count(canvas, [255, 51, 85]) };
+    })()`);
+    await post("camera", { camera: { index: 0, rotation: 0 } });
+    // Hand tracking off for it: no hands drawn (the picture goes on).
+    out.trackingOff = await js(`(() => { MultiCamera.setTracking("${A}", false); return true; })()`);
+    let off = false;
+    for (let i = 0; i < 80 && !off; i++) {
+      const c = ((await state()).cameras || [])[0];
+      off = !!c && c.tracking === false;
+      if (!off) await sleep(100);
+    }
+    out.noHands = await pjs(`(async () => {
+      ${PAGE}
+      const canvas = $("fullVideo");
+      // (its camera starts again without the hands: a moment of its pictures, then its video again)
+      await sleep(4500);
+      const back = await until(() => !canvas.hidden && $("fullImg").hidden, 10000);
+      await sleep(1000);
+      return { off: ${off}, back: !!back, points: count(canvas, [255, 51, 85]), varied: varied(canvas) };
+    })()`);
+    await js(`(() => { MultiCamera.setTracking("${A}", true); return true; })()`);
+    // Where this device can't decode it (no WebCodecs): its pictures, as before.
+    out.pictures = await pjs(`(async () => {
+      ${PAGE}
+      $("fullClose").click();
+      await sleep(500);
+      delete window.VideoDecoder;
+      window.VideoDecoder = undefined;
+      document.querySelector("#cam0 .pic").click();
+      const img = $("fullImg");
+      const ok = await until(() => !img.hidden && img.naturalWidth > 0 && img.src.startsWith("blob:"));
+      await sleep(1500);
+      const r = { img: !!ok, canvas: !$("fullVideo").hidden, rate: $("fullRate").textContent };
+      $("fullClose").click();
+      return r;
+    })()`);
+  } catch (err) {
+    out.error = String((err && err.message) || err);
+  } finally {
+    if (win) win.destroy();
+    if (base) await post("close").catch(() => {});
+    await js(`(async () => {
+      MultiCamera.setOakSettings("${A}", null);
+      MultiCamera.setTracking("${A}", true);
+      if (!${wasOn} && (await desktop.remote.status()).on) document.getElementById("remoteToggle").click();
+      return true;
+    })()`).catch(() => {});
+  }
+  const p = out.play || {}, t = out.turned || {}, n = out.noHands || {}, pc = out.pictures || {};
+  const fps = (txt) => Number((/(\d+) fps/.exec(txt || "") || [])[1] || 0);
+  check("Full screen as video, the whole way: an OAK camera started with its own H.264 is offered as video (its id kept on the computer); the page plays it full screen (WebCodecs) at about the camera's rate, its hands and objects drawn over it, turned with the camera; with hand tracking off, no hands; where it can't decode, its pictures as before",
+    !out.error && (out.state || [])[0] && out.state[0].stream === "h264" && !out.state[0].videoId && (out.startedWith || [])[0] === true &&
+      p.decoder === "function" && p.shown && !p.img && p.w === 640 && p.h === 360 && fps(p.rate) >= 15 && p.points > 100 && p.lines > 100 && p.person > 50 && p.varied > 20 &&
+      // (every picture that came shown, none left behind or too old, at about the camera's own rate)
+      p.each && p.each.old === 0 && p.each.behind === 0 && p.each.shown >= p.each.decoded - 2 && p.each.shown >= 2 * 0.8 * Math.min(out.cameraFps || 30, 30) &&
+      t.w === 360 && t.h === 640 && t.points > 100 && n.off && n.back && n.points === 0 && n.varied > 20 &&
+      pc.img && !pc.canvas && fps(pc.rate) > 0,
+    JSON.stringify(out));
+}
+
+// A webcam's full screen as video (its own switch under its ⚙, off to start): with it on, the state offers its video;
+// a page playing it full screen has it made on this computer (WebCodecs' VideoEncoder in its tile) only then, at the
+// camera's size, and once no page plays it, it stops being made. Where this computer can't make H.264, its
+// pictures, and it isn't offered again.
+async function checkRemoteWebcamVideo(js) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = {};
+  let win = null, wasOn = true, base = "", key = "", web = "";
+  const post = (action, extra = {}) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...extra }) });
+  const state = async () => (await fetch(base + "/api/state", { headers: { "X-Key": key } })).json();
+  const making = () => js(`(() => { const f = document.querySelectorAll("#multiCamGrid iframe")[0]; return !!(f && f.contentWindow.Tile && f.contentWindow.Tile.video && f.contentWindow.Tile.video()); })()`);
+  try {
+    const setup = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      if (MultiCamera.isActive()) MultiCamera.close();
+      await sleep(500);
+      let s = await desktop.remote.status();
+      const wasOn = s.on;
+      if (!s.on) document.getElementById("remoteToggle").click();
+      for (let i = 0; i < 50 && !s.on; i++) { await sleep(100); s = await desktop.remote.status(); }
+      const encoder = typeof VideoEncoder === "function" ? await VideoEncoder.isConfigSupported({ codec: "avc1.42e01f", width: 640, height: 480, bitrate: 2500000, framerate: 30, latencyMode: "realtime", avc: { format: "annexb" } }).then((x) => x.supported, (e) => String(e)) : "none";
+      return { status: s, wasOn, encoder };
+    })()`);
+    wasOn = setup.wasOn;
+    out.encoder = setup.encoder;
+    const keyed = (setup.status.urls || []).find((u) => u.keyed);
+    key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
+    base = `http://127.0.0.1:${setup.status.port}`;
+    await post("scan");
+    let st = null;
+    for (let i = 0; i < 100 && !(st && st.available && st.available.at && !st.available.scanning); i++) {
+      await sleep(200);
+      st = await state();
+    }
+    const webcam = st.available.cameras.find((c) => c.present && !/^(oak|kinect|ps4):/.test(c.id));
+    web = webcam ? webcam.id : "";
+    out.listed = { webcam: webcam && webcam.video, oak: (st.available.cameras.find((c) => c.id.startsWith("oak:")) || {}).video };
+    for (const c of st.available.cameras) await post("pick", { pick: { id: c.id, use: c.id === web } });
+    out.refused = await (await post("pick", { pick: { id: "oak:SIMULATED-OAK-A", video: true } })).json(); // (an OAK camera's video is its own)
+    out.switched = await (await post("pick", { pick: { id: web, video: true } })).json();
+    out.listedOn = ((await state()).available.cameras.find((c) => c.id === web) || {}).video;
+    await post("mode", { mode: "freeform" });
+    await post("cameras");
+    for (let i = 0; i < 150; i++) {
+      st = await state();
+      if (st.running && (st.cameras || []).length === 1 && st.cameras[0].fps > 0) break;
+      await sleep(200);
+    }
+    out.offered = (st.cameras || []).map((c) => ({ stream: c.stream, ids: "videoId" in c || "videoOnDemand" in c }));
+    await sleep(1500);
+    out.before = await making(); // (nobody's playing it: not made)
+    win = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { partition: "check-webcam-video", backgroundThrottling: false } });
+    await win.loadURL(`${base}/#k=${key}`);
+    const pjs = (code) => withLimit(win.webContents.executeJavaScript(code), "the remote page, a webcam's video");
+    out.play = await pjs(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      const until = async (fn, ms = 15000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+      const pic = await until(() => document.querySelector("#cam0 .pic img:not([hidden])") && document.querySelector("#cam0 .pic"));
+      if (!pic) return { error: "no picture to tap" };
+      pic.click();
+      const canvas = $("fullVideo");
+      const shown = await until(() => !canvas.hidden && canvas.width > 0, 12000);
+      await sleep(1500);
+      const a = JSON.parse(canvas.dataset.counts || "{}");
+      await sleep(2000);
+      const b = JSON.parse(canvas.dataset.counts || "{}");
+      return { shown: !!shown, img: !$("fullImg").hidden, w: canvas.width, h: canvas.height, rate: $("fullRate").textContent, shownIn2s: (b.shown || 0) - (a.shown || 0) };
+    })()`);
+    out.during = await making();
+    out.tile = await js(`(() => { const t = MultiCamera._tiles()[0]; const f = document.querySelectorAll("#multiCamGrid iframe")[0]; const v = f && f.contentDocument.getElementById("video"); return { fps: t && t.status ? t.status.fps : null, w: v && v.videoWidth, h: v && v.videoHeight }; })()`);
+    // Its hands as its video carries them: in its own picture's terms, wherever the tracker found them (on its picture
+    // turned a quarter clockwise, then also in the middle square of it, with Square crop): a point found at (0.2, 0.3).
+    const raw = () => js(`(() => { const f = document.querySelectorAll("#multiCamGrid iframe")[0]; return f.contentWindow.Tile._rawHands([{ handedness: "Left", imageLandmarks: [{ x: 0.2, y: 0.3 }] }])[0]; })()`);
+    out.mapped = { plain: await raw() };
+    await post("camera", { camera: { index: 0, rotation: 90 } });
+    for (let i = 0; i < 40 && (await js(`document.querySelectorAll("#multiCamGrid iframe")[0].contentWindow.HandTracker.getRotation()`)) !== 90; i++) await sleep(100);
+    out.mapped.turned = await raw();
+    await js(`(() => { document.querySelectorAll("#multiCamGrid iframe")[0].contentWindow.HandTracker.setSquareCrop(true); return true; })()`);
+    out.mapped.cropped = await raw();
+    await js(`(() => { document.querySelectorAll("#multiCamGrid iframe")[0].contentWindow.HandTracker.setSquareCrop(false); return true; })()`);
+    await post("camera", { camera: { index: 0, rotation: 0 } });
+    await pjs(`(() => { document.getElementById("fullClose").click(); return true; })()`);
+    for (let i = 0; i < 60 && (await making()); i++) await sleep(200);
+    out.after = await making(); // (no page plays it: no longer made)
+    await post("pick", { pick: { id: web, video: false } });
+    out.offAgain = ((await state()).cameras || []).map((c) => c.stream || null);
+  } catch (err) {
+    out.error = String((err && err.message) || err);
+  } finally {
+    if (win) win.destroy();
+    if (base) {
+      if (web) await post("pick", { pick: { id: web, video: false } }).catch(() => {});
+      await post("close").catch(() => {});
+    }
+    await js(`(async () => {
+      if (!${wasOn} && (await desktop.remote.status()).on) document.getElementById("remoteToggle").click();
+      return true;
+    })()`).catch(() => {});
+  }
+  const p = out.play || {}, tile = out.tile || {};
+  const fps = (txt) => Number((/(\d+) fps/.exec(txt || "") || [])[1] || 0);
+  const near = (h, [x, y]) => !!h && Array.isArray(h.lm) && h.lm.length === 1 && Math.abs(h.lm[0][0] - x) < 0.002 && Math.abs(h.lm[0][1] - y) < 0.002;
+  out.mapped = out.mapped || {};
+  if (out.encoder === true) {
+    check("A webcam's full screen as video: its own switch (off to start; not an OAK camera's, whose video is its own); on, its video is offered, made on this computer only while a page plays it full screen (its picture's size, about its rate), and no longer once none does; off, not offered",
+      !out.error && out.listed.webcam === false && out.listed.oak === undefined && out.refused && out.refused.ok === false && out.switched && out.switched.ok === true && out.listedOn === true &&
+        out.offered[0] && out.offered[0].stream === "h264" && !out.offered[0].ids && out.before === false &&
+        p.shown && !p.img && p.w === (tile.w & ~1) && p.h === (tile.h & ~1) && p.shownIn2s >= 2 * 0.6 * Math.min(tile.fps || 30, 30) && fps(p.rate) > 0 &&
+        out.during === true && out.after === false && (out.offAgain || []).every((x) => x === null) &&
+        // (turned a quarter: (0.2, 0.3) is (0.3, 0.8) of its own picture; in the middle 720 of its 1280: x (280 + 0.3 * 720) / 1280)
+        near(out.mapped.plain, [0.2, 0.3]) && near(out.mapped.turned, [0.3, 0.8]) && near(out.mapped.cropped, [(280 + 0.3 * 720) / 1280, 0.8]) && out.mapped.plain.label === "Left",
+      JSON.stringify(out));
+  } else {
+    // (This computer can't make H.264 with WebCodecs: the switch's still there, and full screen shows its pictures.)
+    check("A webcam's full screen as video, where this computer can't make H.264: its switch on, full screen shows its pictures as before",
+      !out.error && out.listedOn === true && p.img && fps(p.rate) > 0, JSON.stringify(out));
+  }
 }
 
 async function checkRemoteRecording(js) {
@@ -3753,6 +4114,11 @@ async function checkRemoteRecording(js) {
     out.metadata = saved ? saved.metadata : null;
     out.takeBody = saved && Array.isArray(saved.body) ? saved.body.map((m) => ({ camera: m.camera, rows: m.samples.length, columns: m.columns.length, level: !!m.samples.some((r) => Number.isFinite(r[10])) })) : null;
     out.takeImuCal = saved && Array.isArray(saved.imu) ? saved.imu.map((m) => !!m.imu_to_camera) : null;
+    // Each camera's video listed in it, with when it started on the take's clock (the converter's grid video).
+    out.videosListed = saved && Array.isArray(saved.videos)
+      ? saved.videos.map((v) => `${v.role}/${v.camera}/${Number.isFinite(v.start_s) && Math.abs(v.start_s) < 5}/${fs.existsSync(path.join(process.env.HAND_TRACKER_REMOTE_DIR, v.file))}`).sort() : null;
+    // Each camera's role as the take started, its serial and its USB port (simulated here: 1-1.1, 1-1.2…).
+    out.devices = saved && Array.isArray(saved.camera_devices) ? saved.camera_devices.map((d) => `${d.role}/${d.kind}/${d.serial}/${d.usb_port}/${d.usb_id}`).sort() : null;
     // Each camera's video, saved beside the take (named after the role it started with).
     out.videos = ((after.lastTake && after.lastTake.files) || []).filter((f) => /-video-[a-z-]+\.(webm|mp4)$/.test(f)).map((f) => {
       const full = path.join(process.env.HAND_TRACKER_REMOTE_DIR, f);
@@ -3813,7 +4179,7 @@ async function checkRemoteRecording(js) {
   out.tailnet = [tailnetPeer("100.104.1.2", "::ffff:100.90.3.4"), tailnetPeer("192.168.1.5", "100.90.3.4"), tailnetPeer("100.104.1.2", "192.168.1.9")];
   const probe = new RemoteRecordServer({ keyStore: null, page: () => "", ask: async () => ({}) });
   out.ownHost = [probe.ownHost({ headers: { host: "localhost:47821" } }), probe.ownHost({ headers: { host: "evil.example:47821" } })];
-  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so, and unticked is off the list) and picked, with roles; Ego needs all four roles, Stereo a head camera; the take details are optional (with the hidden switch on, Start recording needs all three; either way they're locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras mirrored like webcams; every camera found is ticked unless unticked before), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself (with each camera's video, named after its role, and its photo from the start, listed with the take; the photo a switch on the page, on by default), Stop cameras stops them",
+  check("Remote recording: the phone's page needs the key (Tailscale peers don't, addressed by this computer's name; no other website's commands); the cameras it can start are listed first (any kind; a picked one that's unplugged says so, and unticked is off the list) and picked, with roles; Ego needs all four roles, Stereo a head camera; the take details are optional (with the hidden switch on, Start recording needs all three; either way they're locked until the take is saved), then starts the cameras picked that are plugged in (nothing runs before; OAK cameras mirrored like webcams; every camera found is ticked unless unticked before), in the main view's place; previews come through (one camera full screen bigger and more often), a role moves a camera to its block, turn and flip, the take details name the take (with its length) and are its metadata, Stop saves it by itself (with each camera's video, named after its role, and its photo from the start, listed with the take; each camera's role, serial and USB port in the take, and its video with when it started; the photo a switch on the page, on by default), Stop cameras stops them",
     out.setup.on && out.setup.card && !out.setup.runningBefore && key.length > 10 && out.page && out.noKey === 401 && out.wrongKey === 401 &&
       ["oak:SIMULATED-OAK-A", "oak:SIMULATED-OAK-B"].every((id) => (out.setup.ticked || []).includes(id)) &&
       out.before.running === false && out.script && out.scan &&
@@ -3842,7 +4208,10 @@ async function checkRemoteRecording(js) {
       out.full.frames >= 12 && out.full.size && out.full.small && out.full.size.w > out.full.small.w && out.full.fps >= 6 &&
       out.numbered.got >= 12 && out.numbered.distinct === out.numbered.got &&
       out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_\d+s\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
-      out.videos.map((v) => v.f).sort().join() === "-video-chest.mp4,-video-head.mp4" && out.videos.every((v) => v.plain && v.video === "h264" && ["aac", "none"].includes(v.sound) && v.kb > 5 && v.fps > 16) &&
+      out.videos.map((v) => v.f).sort().join() === "-video-chest.mp4,-video-head.mp4" &&
+      out.videosListed && out.videosListed.join() === "chest/Chest/true/true,head/Head/true/true" &&
+      out.devices && out.devices.length === 2 && /^chest\/oak\/SIMULATED-OAK-[AB]\/1-1\.\d+\/03e7:f63b$/.test(out.devices[0]) && /^head\/oak\/SIMULATED-OAK-[AB]\/1-1\.\d+\/03e7:f63b$/.test(out.devices[1]) &&
+      out.devices[0].split("/")[2] !== out.devices[1].split("/")[2] && out.devices[0].split("/")[3] !== out.devices[1].split("/")[3] && out.videos.every((v) => v.plain && v.video === "h264" && ["aac", "none"].includes(v.sound) && v.kb > 5 && v.fps > 16) &&
       out.photoDefault === true && out.photoOff.ok && out.photoOffState.join() === "false,false" &&
       JSON.stringify(out.alertsBefore) === '{"cpu":false,"gpu":false,"memory":false,"net":false}' && out.alertCpu.ok && /CPU stays over 90% for a minute/.test(out.alertCpu.message) &&
       JSON.stringify(out.alertsAfter) === '{"cpu":true,"gpu":false,"memory":false,"net":false}' && out.alertCpuOff.ok &&
@@ -3901,7 +4270,7 @@ async function checkRemoteLauncher(js) {
       // The remote recording page, here in the app, reaching the computer through it.
       out.client = await wjs(`(async () => {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-        for (let i = 0; i < 150 && !(/Hand Tracker on/.test(document.getElementById("title").textContent) && document.querySelectorAll("#camRows .camrow").length); i++) await sleep(200);
+        for (let i = 0; i < 150 && !(/Remote Recording on/.test(document.getElementById("title").textContent) && document.querySelectorAll("#camRows .camrow").length); i++) await sleep(200);
         // Its takes: the one the remote recording check saved, into a folder (the checks pick the
         // output folder), then deleted from the computer.
         const rows = () => [...document.querySelectorAll("#takeRows .takerow")];
@@ -3973,7 +4342,7 @@ async function checkRemoteLauncher(js) {
   out.takeFiles = { saved: savedTake, left: leftTake };
   check("The Remote recording page (as on the website) opens from the header in a window of its own, and the computer's page opens right there (the app reaching it, its code from the pasted address): its cameras and modes, never a browser; back on the list, its cameras' previews under its name, hidden by its own switch and by the one for every computer (remembered)",
     out.link.shown && out.link.target === "_blank" && l.backHidden && /doesn't look like/.test(l.error) && /opens here/.test(l.where) &&
-      c.path === "/remote-client.html" && c.rig === `127.0.0.1:${port}` && c.hash === "" && /^Hand Tracker on /.test(c.title) && /Cameras off/.test(c.status) &&
+      c.path === "/remote-client.html" && c.rig === `127.0.0.1:${port}` && c.hash === "" && /^Remote Recording on /.test(c.title) && /Cameras off/.test(c.status) &&
       c.cameras >= 2 && c.modes === "Ego,Stereo,Freeform" && c.back && c.saved[0] === (port === 47821 ? "127.0.0.1" : `127.0.0.1:${port}`) && c.wifiHidden &&
       out.stillOpen === "app://hand-tracker/remote-client.html" && out.mainPage === "/index.html" && opened.length === 0 &&
       t.rows >= 1 && /on this device/.test(t.note) && t.del && t.after === t.rows - 1 && savedTake.length >= 1 && leftTake.length === 0 &&
@@ -5651,7 +6020,7 @@ async function checkRemoteRestart(js) {
       const $ = (id) => document.getElementById(id);
       const until = async (fn, ms = 20000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
       Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
-      await until(() => /Hand Tracker on/.test($("title").textContent) && document.querySelectorAll("#grid .cam").length === 2 && !document.querySelector("#cam1 .restart").hidden);
+      await until(() => /Remote Recording on/.test($("title").textContent) && document.querySelectorAll("#grid .cam").length === 2 && !document.querySelector("#cam1 .restart").hidden);
       const out = {
         tools: [...document.querySelectorAll("#cam0 .tools button")].map((b) => b.textContent.trim() || b.className),
         full: document.querySelectorAll("#grid button.big").length,
@@ -6655,6 +7024,86 @@ async function checkViewerVideo() {
   const verified = verifyExports(outDir, "viewer-converted", exporter.FORMATS.map((f) => f.id), true);
   check("…each decodes as the right format, with the sound kept", verified.ok, verified.summary);
   win.destroy();
+}
+
+// Grid video (the Recording Converter, for a take opened from its JSON): a take with three cameras' videos
+// (one started a second after the take, with sound; one half a second before it, and shorter; one upright,
+// as a phone held so) made one 1080p MP4: 2 x 2 in the roles' order, each picture where its camera was on
+// the take's clock (black before it started and after it ended), each with its name, the sound lined up too.
+async function checkGridVideo() {
+  const dir = path.join(outDir, "grid-take");
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  const take = "Sam-Smith_Lab-2_Grid_2026-11-24_10-00-00_3s";
+  const make = (suffix, size, seconds, sound) => {
+    const args = ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", `testsrc2=size=${size}:rate=30`];
+    if (sound) args.push("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100");
+    args.push("-t", String(seconds), "-c:v", "libx264", "-pix_fmt", "yuv420p", ...(sound ? ["-c:a", "aac", "-shortest"] : []), path.join(dir, `${take}-video-${suffix}.mp4`));
+    spawnSync(exporter.ffmpegPath, args);
+  };
+  make("chest", "360x640", 3, true);
+  make("head", "640x360", 3, false);
+  make("left-wrist", "1280x720", 2, false);
+  const json = path.join(dir, `${take}.json`);
+  fs.writeFileSync(json, JSON.stringify({
+    format: "hand-tracker-motion", recorded_at: "2026-11-24T18:00:00Z", metadata: { contributor: "Sam Smith", location: "Lab 2", task: "Grid", length: "0:03", length_s: 3.5 }, hands: [],
+    videos: [
+      { file: `${take}-video-chest.mp4`, camera: "Chest", role: "chest", start_s: 1 },
+      { file: `${take}-video-head.mp4`, camera: "Head", role: "head", start_s: 0 },
+      { file: `${take}-video-left-wrist.mp4`, camera: "Left wrist", role: "wrist_left", start_s: -0.5 },
+    ],
+  }));
+  const win = new BrowserWindow({
+    show: false, width: 920, height: 1600,
+    webPreferences: { preload: path.join(__dirname, "..", "electron", "preload.js"), sandbox: true, contextIsolation: true },
+  });
+  await win.loadURL("app://hand-tracker/viewer.html");
+  const js = (code) => withLimit(win.webContents.executeJavaScript(code, true), "the grid video");
+  const r = await js(`(async () => {
+    const bytes = Uint8Array.from(atob(${JSON.stringify(fs.readFileSync(json).toString("base64"))}), (c) => c.charCodeAt(0));
+    await RecordingViewer.openBytes(${JSON.stringify(path.basename(json))}, bytes.buffer, { filePath: ${JSON.stringify(json)} });
+    const card = () => document.getElementById("gridCard");
+    for (let i = 0; i < 100 && !(card() && !card().hidden); i++) await new Promise((r) => setTimeout(r, 100));
+    if (!card() || card().hidden) return { shown: false };
+    const note = document.getElementById("gridNote").textContent;
+    document.getElementById("gridBtn").click();
+    for (let i = 0; i < 1200 && !document.querySelector("#gridResults li.ok") && !/couldn't/.test(document.getElementById("gridStatus").textContent); i++) await new Promise((r) => setTimeout(r, 100));
+    const li = document.querySelector("#gridResults li.ok");
+    return { shown: true, note, made: !!li, result: li ? li.querySelector(".name").title : document.getElementById("gridStatus").textContent };
+  })()`);
+  win.destroy();
+  const out = path.join(dir, `${take}-video-grid.mp4`);
+  const info = r.made && fs.existsSync(out) ? await exporter.probe(out) : null;
+  // The mean and brightest of a block of the grid at a moment (grey, 0-255).
+  const look = (t, x, y, w, h) => {
+    const g = spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-ss", String(t), "-i", out, "-frames:v", "1", "-vf", `crop=${w}:${h}:${x}:${y},format=gray`, "-f", "rawvideo", "-"], { maxBuffer: 1 << 26 });
+    let sum = 0, most = 0;
+    for (const v of g.stdout) {
+      sum += v;
+      most = Math.max(most, v);
+    }
+    return g.stdout.length ? { mean: Math.round(sum / g.stdout.length), most } : null;
+  };
+  // 2 x 2 blocks of 960 x 540: head top left, chest top right, left wrist bottom left, none bottom right.
+  const mid = (k) => [(k % 2) * 960 + 300, Math.floor(k / 2) * 540 + 150, 360, 240];
+  const px = info ? {
+    head: look(1, ...mid(0)).mean, chestBefore: look(0.5, ...mid(1)).mean, chestAfter: look(1.5, ...mid(1)).mean,
+    wristDuring: look(1, ...mid(2)).mean, wristAfter: look(2, ...mid(2)).mean, empty: look(1, ...mid(3)).mean,
+    chestLabel: look(0.5, 960 + 16, 16, 120, 46).most, emptyCorner: look(1, 960 + 16, 540 + 16, 120, 46).most,
+  } : null;
+  const loud = (a, b) => {
+    const run = spawnSync(exporter.ffmpegPath, ["-hide_banner", "-nostats", "-i", out, "-af", `atrim=start=${a}:end=${b},volumedetect`, "-f", "null", "-"], { encoding: "utf8" });
+    return Number((/mean_volume: (-?[\d.]+) dB/.exec(run.stderr) || [])[1]);
+  };
+  const sound = info && info.hasAudio ? { before: loud(0, 0.9), after: loud(1.1, 3.4) } : null;
+  check("Grid video: a take's three camera videos side by side in one 1080p MP4 (2 × 2, in the roles' order), from the converter's card",
+    r.shown && /^Head, Chest and Left wrist side by side in one 1080p MP4 \(2 × 2\)/.test(r.note) && /lined up as the take was recorded/.test(r.note) && /with Chest's sound/.test(r.note) &&
+      r.made && info && info.width === 1920 && info.height === 1080 && info.videoCodec === "h264" && Math.abs(info.duration - 3.5) < 0.15,
+    JSON.stringify({ r, info }));
+  check("...each picture where it was on the take's clock (black before its camera started and after it ended), each with its name, the sound lined up too",
+    px && px.head > 40 && px.chestBefore < 20 && px.chestAfter > 40 && px.wristDuring > 40 && px.wristAfter < 20 && px.empty < 20 && px.chestLabel > 200 && px.emptyCorner < 20 &&
+      sound && sound.before < -80 && sound.after > -40,
+    JSON.stringify({ px, sound }));
 }
 
 // Motion files convert to every other format: each of the app's own hand exports (C3D, TRC,

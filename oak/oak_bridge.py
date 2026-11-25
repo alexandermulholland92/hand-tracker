@@ -11,7 +11,7 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
     python oak_bridge.py --models DIR [--lm lite|full] [--two-hands] [--xyz]
                          [--far both|higher|left|right] [--all-hands] [--fps N] [--device ID]
                          [--mjpeg auto|on|off] [--detect] [--picture color|depth|left|right|blend|side]
-                         [--motion] [--imu] [--no-hands]
+                         [--motion] [--imu] [--no-hands] [--h264]
                          [--night auto|on|off] [--ir-dots]
     (--device: which OAK camera, by its id from --list; the first one found otherwise.
      --mjpeg: the camera sends its pictures as JPEG from its own encoder, about a tenth of the
@@ -33,6 +33,11 @@ Usage (Hand Tracker starts it; the models come from its one-time OAK setup):
      gyroscope (rad/s), IMU_HZ a second, each frame bringing those since the last as "imu":
      [[when (ms since 1970, on this computer's clock), ax, ay, az, gx, gy, gz]], on the sensor's
      own axes.
+     --h264: the colour picture as H.264 too, from the camera's own encoder (H264_KBPS, a keyframe
+     a second), alongside its pictures: remote recording's full screen plays it (the page draws the
+     hands and objects over it). Only the colour camera's picture: not night vision's, the depth
+     views or a black-and-white camera's (those stay pictures only). If the camera can't run it
+     with the rest, it starts without.
      --no-hands: no hand tracking (Sentry mode, while it doesn't track hands): none of the hands'
      models run on the camera, only its picture (the same size) and what else is asked for;
      each frame's "hands" is empty. The depth cameras run only for an object's distance or the
@@ -62,7 +67,9 @@ camera) rather than MediaPipe's mirrored convention, "score", "lm_score", "xyz":
 camera (x right, y down, z forward) or null, "gesture"}]}, and with --detect "objects": [{"label",
 "score", "box": [x0, y0, x1, y1] (0-1 of the picture), "xyz": [x, y, z] mm or absent}], with
 --motion "grey": {"w": 64, "h": 36, "data": base64 of a byte a pixel, rows top to bottom} when
-the camera made a new one.
+the camera made a new one. With --h264, also {"h264": {"u" (when the camera took that picture, as
+a frame's "u"), "key": true for a keyframe (it has the SPS, PPS and IDR picture)}} with one
+picture's H.264 (Annex B) where a frame's JPEG goes.
 Anything else the tracker prints goes to stderr.
 """
 
@@ -296,6 +303,23 @@ class NightCamera:
 
 IMU_HZ = 100  # the motion sensor's readings a second (--imu)
 CHIP_S = 5  # how often the camera's chip temperature is read (sent with each frame as chipC, °C)
+# --h264: its bit rate (about 0.3 MB/s: a phone over Tailscale carries about 0.8) and how many of its
+# encoded pictures the camera holds for this computer (non-blocking: one lost breaks the picture
+# until the next keyframe, so plenty, read at every frame).
+H264_KBPS = 2500
+H264_QUEUE = 30
+
+
+def h264_key(data):
+    """Whether one picture's H.264 (Annex B) starts a group: it has an SPS (7) or an IDR slice (5)."""
+    i, n = 0, len(data)
+    while True:
+        i = data.find(b"\x00\x00\x01", i)
+        if i < 0 or i + 3 >= n:
+            return False
+        if data[i + 3] & 0x1F in (5, 7):
+            return True
+        i += 3
 
 DETECT_GAP_S = 0.33
 # On the camera (a Script node): only every frame DETECT_GAP_S after the last one sent goes on.
@@ -385,6 +409,26 @@ def add_extras(dai, pipeline, cam, stereo, extras, tracker):
         x.input.setQueueSize(8)
         imu.out.link(x.input)
         tracker.extra_streams.append("imu_out")
+    if extras.get("h264") and not isinstance(cam, NightCamera) and extras.get("picture") in (None, "color"):
+        # The colour picture as H.264 from the camera's own encoder (beside the JPEG one, when that's
+        # used: the same pictures), a keyframe a second, so a page that starts watching has one soon
+        # (this computer keeps the group since the last). A picture the encoder can't take in time
+        # is skipped (the next is encoded against the last one it took); none it made is.
+        fps = max(1, int(round(getattr(tracker, "internal_fps", None) or 30)))
+        enc = pipeline.create(dai.node.VideoEncoder)
+        enc.setDefaultProfilePreset(fps, dai.VideoEncoderProperties.Profile.H264_MAIN)
+        enc.setKeyframeFrequency(fps)
+        enc.setBitrateKbps(H264_KBPS)
+        enc.setNumBFrames(0)  # (each picture as it comes: none waits for a later one)
+        enc.input.setBlocking(False)
+        enc.input.setQueueSize(2)
+        cam.video.link(enc.input)
+        x = pipeline.create(dai.node.XLinkOut)
+        x.setStreamName("h264_out")
+        x.input.setBlocking(False)
+        x.input.setQueueSize(H264_QUEUE)
+        enc.bitstream.link(x.input)
+        tracker.extra_streams.append("h264_out")
     if extras.get("motion") and getattr(cam, "meter", False):
         # Night vision's Automatic (its colour camera running alongside, to tell when it's light
         # again): with the small picture made on the camera too, every picture stopped after 153
@@ -763,7 +807,7 @@ def run(args):
         except (OSError, ValueError, KeyError):
             warnings.append("The object finder's kinds aren't beside its model, so objects aren't found.")
             detect = None
-    extras = {"detect": detect, "picture": args.picture, "motion": args.motion, "imu": False}
+    extras = {"detect": detect, "picture": args.picture, "motion": args.motion, "imu": False, "h264": args.h264}
 
     import depthai as dai
 
@@ -876,7 +920,8 @@ def run(args):
         last = time.time()
         frames = 0
         fps = 0.0
-        queues = {name: tracker.device.getOutputQueue(name=name, maxSize=50 if name == "imu_out" else 1, blocking=False) for name in getattr(tracker, "extra_streams", [])}
+        sizes = {"imu_out": 50, "h264_out": H264_QUEUE}
+        queues = {name: tracker.device.getOutputQueue(name=name, maxSize=sizes.get(name, 1), blocking=False) for name in getattr(tracker, "extra_streams", [])}
         objects, objects_at = [], 0.0
         focal = focal_of(dai, tracker) if "det_out" in queues else None
         picture = None
@@ -888,6 +933,18 @@ def run(args):
             if frame is None:
                 break
             h, w = tracker.img_h, tracker.img_w
+            if "h264_out" in queues:
+                # Every encoded picture the camera made since the last frame, in order (each its own
+                # message; when its picture was taken, as a frame's "u").
+                for packet in queues["h264_out"].tryGetAll():
+                    data = bytes(packet.getData())
+                    if not data:
+                        continue
+                    try:
+                        u = round((time.time() - (dai.Clock.now() - packet.getTimestamp()).total_seconds()) * 1000, 1)
+                    except Exception:
+                        u = round(time.time() * 1000, 1)
+                    send({"h264": {"u": u, "key": h264_key(data)}}, data)
             if "det_out" in queues:
                 found = queues["det_out"].tryGet()
                 if found is not None:
@@ -1056,6 +1113,14 @@ def run(args):
                 status("starting", message="Starting the OAK camera again without its motion sensor…")
                 time.sleep(2)  # until the camera is let go
                 continue
+            if extras.get("h264"):
+                # Its H.264 wouldn't start with the rest (the full screen then shows its pictures, as
+                # before): started again without it.
+                extras["h264"] = False
+                warnings.append("Its H.264 video couldn't run alongside the rest, so remote recording's full screen shows its pictures.")
+                status("starting", message="Starting the OAK camera again without its H.264 video…")
+                time.sleep(2)  # until the camera is let go
+                continue
             if extras["detect"]:
                 # Finding objects as well may be more than the camera's processor can take with the
                 # hands' models (or its model may not load): started again without it.
@@ -1096,6 +1161,7 @@ def run(args):
         status("running", camera=getattr(getattr(tracker, "device", None), "getDeviceName", lambda: "OAK camera")(), width=tracker.img_w, height=tracker.img_h,
                depth=bool(getattr(tracker, "xyz", False) or getattr(tracker, "has_depth", False)), depthCameras=stereo, id=device.getMxId(), usb=usb, jpeg="camera" if mjpeg else "computer",
                detect="det_out" in streams, picture=view, motion="motion_out" in streams or getattr(tracker, "host_motion", False), imu="imu_out" in streams, imuToCamera=imu_to_camera(device) if "imu_out" in streams else None, hands=hands,
+               h264="h264_out" in streams,
                night=night, infrared=infrared, warning=" ".join(dict.fromkeys(warnings)) or None)
         change = None
         try:
@@ -1161,6 +1227,7 @@ def main():
     ap.add_argument("--motion", action="store_true", help="a small grey picture (64 x 36) with each frame, for Sentry mode")
     ap.add_argument("--imu", action="store_true", help="its motion sensor's readings too (accelerometer, gyroscope)")
     ap.add_argument("--no-hands", action="store_true", help="no hand tracking: only the picture and what else is asked for (Sentry mode)")
+    ap.add_argument("--h264", action="store_true", help="the colour picture as H.264 too, from the camera's encoder (remote recording's full screen)")
     ap.add_argument("--night", choices=["auto", "on", "off"], default="off", help="night vision by the camera's infrared light (OAK-D Pro)")
     ap.add_argument("--ir-dots", action="store_true", help="the infrared dot projector on, day or night (better depth; dots on the black-and-white pictures)")
     ap.add_argument("--check", action="store_true")

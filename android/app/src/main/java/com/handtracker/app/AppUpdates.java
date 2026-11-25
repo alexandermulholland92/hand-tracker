@@ -39,7 +39,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Pi Cluster on a phone updating this phone's Hand Tracker apps, itself too, from GitHub's "Latest
+ * Cluster on a phone updating this phone's Hand Tracker apps, itself too, from GitHub's "Latest
  * build" release (the same builds the Pis take):
  *   apps()        which of them are on this phone, and from which build (each app's manifest says:
  *                 com.handtracker.build, "git:" and the commit; build.gradle puts it in)
@@ -47,28 +47,30 @@ import java.util.concurrent.locks.ReentrantLock;
  *   recording()   whether this phone is recording or saving a take just now: Hand Tracker and Remote
  *                 Recording say (AppStateProvider.java)
  *   download()    an APK into this app's cache, checked against that size and SHA-256
- *   install()     through Android's PackageInstaller. Android asks first the first time Pi Cluster
+ *   install()     through Android's PackageInstaller. Android asks first the first time Cluster
  *                 updates an app (and before it installs a new one); after that, from Android 12, an
- *                 app Pi Cluster installed updates without asking. How it went: AppUpdateResult.java.
+ *                 app Cluster installed updates without asking. How it went: AppUpdateResult.java.
  *   autoUpdate()  every hour on Wi-Fi, as often as Android lets it (an app used less is let look less
  *                 often: usually within a few hours) (AppUpdateJob.java): the apps with a newer build
  *                 updated by themselves, unless this phone is recording or saving a take (then at the
- *                 next look); Pi Cluster itself last, and not while it's open. Each is left installing
+ *                 next look); Cluster itself last, and not while it's open. Each is left installing
  *                 after a short wait (Play Protect can take minutes to check one first), its answer
  *                 added to the note when it comes. Those Android would ask about first get a
- *                 notification instead (once for each build), to be updated from Pi Cluster.
- * Used by AppUpdatePlugin.java (pi-cluster.js: This phone's apps) and AppUpdateJob.java.
+ *                 notification instead (once for each build), to be updated from Cluster.
+ * Used by AppUpdatePlugin.java (cluster.js: This phone's apps) and AppUpdateJob.java.
  */
 final class AppUpdates {
     static final String RELEASE = "https://api.github.com/repos/alexandermulholland92/hand-tracker/releases/tags/latest-build";
-    // (its package, its name, its APK's name in the release before "-<version>.apk"). Pi Cluster last:
-    // it's updated after the others, as updating itself closes it.
+    // (its package, its name, its APK's name in the release before "-<version>.apk", and that name
+    // before the rename, 2026-11-25, which the release has too while phones may still look for it:
+    // taken only when the new one isn't there). Cluster last: it's updated after the others, as
+    // updating itself closes it.
     static final String[][] APPS = {
             {"com.handtracker.app", "Hand Tracker", "HandTracker"},
             {"com.handtracker.mouse", "Hand Mouse", "HandMouse"},
             {"com.handtracker.remote", "Remote Recording", "RemoteRecording"},
             {"com.handtracker.converter", "Recording Converter", "RecordingConverter"},
-            {"com.handtracker.cluster", "Pi Cluster", "PiCluster"},
+            {"com.handtracker.cluster", "Cluster", "Cluster", "PiCluster"},
     };
     // (the apps that record: they say whether they're recording, AppStateProvider.java)
     static final String[] RECORDERS = {"com.handtracker.app", "com.handtracker.remote"};
@@ -83,7 +85,7 @@ final class AppUpdates {
 
     // One update at a time, from the page's button or the hourly look.
     static final ReentrantLock LOCK = new ReentrantLock();
-    // Pi Cluster on the screen (AppUpdatePlugin): it isn't updated by itself then, as that closes it.
+    // Cluster on the screen (AppUpdatePlugin): it isn't updated by itself then, as that closes it.
     static volatile boolean open;
     private static int code = 1;
 
@@ -114,7 +116,7 @@ final class AppUpdates {
                 o.put("commit", commitOf(app.metaData));
                 o.put("updated", info.lastUpdateTime);
                 o.put("self", a[0].equals(ctx.getPackageName()));
-                // (whether Pi Cluster installed it last: then it updates without asking, from Android 12)
+                // (whether Cluster installed it last: then it updates without asking, from Android 12)
                 o.put("ours", ours(ctx, a[0]));
             } catch (PackageManager.NameNotFoundException e) {
                 o.put("installed", false);
@@ -156,7 +158,7 @@ final class AppUpdates {
     // ---------- recording just now? ----------
     // The app's name, or null when nothing on this phone is recording or saving a take. Only recording
     // counts (the user, 2026-11-20: "just unless recording"), not cameras on. An app from before it could
-    // say isn't asked: Pi Cluster updates one like that only with Update (Android asks first then).
+    // say isn't asked: Cluster updates one like that only with Update (Android asks first then).
     static String recording(Context ctx) {
         for (String pkg : RECORDERS) {
             if (!installed(ctx, pkg)) continue;
@@ -176,7 +178,7 @@ final class AppUpdates {
         c.setConnectTimeout(15000);
         c.setReadTimeout(30000);
         c.setRequestProperty("Accept", "application/vnd.github+json");
-        c.setRequestProperty("User-Agent", "PiCluster-Android");
+        c.setRequestProperty("User-Agent", "Cluster-Android");
         int status = c.getResponseCode();
         if (status != 200) throw new IOException("GitHub answered " + status + ".");
         JSONObject r;
@@ -193,7 +195,9 @@ final class AppUpdates {
             JSONObject x = assets.getJSONObject(i);
             String name = x.optString("name", "");
             for (String[] a : APPS) {
-                if (!name.startsWith(a[2] + "-") || !name.endsWith(".apk")) continue;
+                if (!name.endsWith(".apk")) continue;
+                boolean before = a.length > 3 && name.startsWith(a[3] + "-") && !apps.has(a[0]);
+                if (!name.startsWith(a[2] + "-") && !before) continue;
                 String digest = x.optString("digest", "");
                 JSONObject o = new JSONObject();
                 o.put("asset", name);
@@ -225,7 +229,7 @@ final class AppUpdates {
         c.setConnectTimeout(15000);
         c.setReadTimeout(60000);
         c.setInstanceFollowRedirects(true);
-        c.setRequestProperty("User-Agent", "PiCluster-Android");
+        c.setRequestProperty("User-Agent", "Cluster-Android");
         long got = 0;
         try {
             int status = c.getResponseCode();
@@ -290,7 +294,7 @@ final class AppUpdates {
         return code++;
     }
 
-    // The apps asked for, in APPS' order (Pi Cluster last): each downloaded, checked, installed, and its
+    // The apps asked for, in APPS' order (Cluster last): each downloaded, checked, installed, and its
     // answer waited for. Holding LOCK. -> { done: [pkg], failed: [{ pkg, error }], asks: [pkg] }
     static JSONObject update(Context ctx, List<String> want, JSONObject latest, boolean background, Progress progress) throws Exception {
         JSONObject assets = latest.getJSONObject("apps");
@@ -404,8 +408,8 @@ final class AppUpdates {
                 JSONObject a = apps.getJSONObject(i);
                 String pkg = a.getString("pkg");
                 if (!a.optBoolean("installed") || upToDate(a, latest) || !assets.has(pkg)) continue;
-                // (by itself only where Android lets it: an app Pi Cluster installed, from Android 12;
-                // Pi Cluster itself not while it's open, as that would close it under your finger)
+                // (by itself only where Android lets it: an app Cluster installed, from Android 12;
+                // Cluster itself not while it's open, as that would close it under your finger)
                 if (Build.VERSION.SDK_INT >= 31 && a.optBoolean("ours")) {
                     if (!(a.optBoolean("self") && open)) silent.add(pkg);
                 } else {
@@ -422,7 +426,7 @@ final class AppUpdates {
                 return;
             }
             List<String> stillAsk = new ArrayList<>(asking);
-            // (Pi Cluster itself after the note is written: updating it ends this process)
+            // (Cluster itself after the note is written: updating it ends this process)
             boolean self = silent.remove(ctx.getPackageName());
             if (!silent.isEmpty()) {
                 synchronized (AppUpdates.class) {
@@ -454,11 +458,11 @@ final class AppUpdates {
                 synchronized (AppUpdates.class) {
                     s.append(ARRIVED);
                     looking = false;
-                    said(ctx, s.toString().trim() + (self ? " Pi Cluster itself next." : ""));
+                    said(ctx, s.toString().trim() + (self ? " Cluster itself next." : ""));
                 }
             }
             if (self) {
-                if (silent.isEmpty()) said(ctx, "Updating Pi Cluster itself to build " + commit.substring(0, 7) + ".");
+                if (silent.isEmpty()) said(ctx, "Updating Cluster itself to build " + commit.substring(0, 7) + ".");
                 if (!stillAsk.isEmpty()) tellOnce(ctx, commit, stillAsk); // (before: updating itself ends this process)
                 List<String> me = new ArrayList<>();
                 me.add(ctx.getPackageName());
@@ -497,17 +501,17 @@ final class AppUpdates {
         return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("auto", "");
     }
 
-    // A notification, once for each build: the apps Android asks about first, updated from Pi Cluster.
+    // A notification, once for each build: the apps Android asks about first, updated from Cluster.
     static void tellOnce(Context ctx, String commit, List<String> names) {
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         if (commit.equals(prefs.getString("told", ""))) return;
         String text = String.join(", ", names) + (names.size() == 1 ? " has" : " have") + " a newer build (" + commit.substring(0, 7)
-                + "). Android asks once before Pi Cluster updates " + (names.size() == 1 ? "it" : "each") + ": open Pi Cluster and tap Update.";
+                + "). Android asks once before Cluster updates " + (names.size() == 1 ? "it" : "each") + ": open Cluster and tap Update.";
         notify(ctx, "Newer builds of the apps", text, null);
         prefs.edit().putString("told", commit).apply();
     }
 
-    // (ask: Android's own question, opened from the notification; null opens Pi Cluster)
+    // (ask: Android's own question, opened from the notification; null opens Cluster)
     static void notify(Context ctx, String title, String text, PendingIntent ask) {
         NotificationManager nm = ctx.getSystemService(NotificationManager.class);
         if (nm == null) return;

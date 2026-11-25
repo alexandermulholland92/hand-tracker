@@ -896,7 +896,7 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
       deleteSentry,
       onStatus: on("status"),
       setState: (state) => Rig.setState({ state: JSON.stringify(state) }).catch(() => {}),
-      // Recording or saving a take, for Pi Cluster on the same phone (it doesn't update the apps
+      // Recording or saving a take, for Cluster on the same phone (it doesn't update the apps
       // meanwhile: AppStateProvider.java). Android only: elsewhere, and in an app from before it,
       // there's nothing to tell.
       setBusy: (busy) => (typeof Rig.setBusy === "function" ? Promise.resolve(Rig.setBusy({ busy: !!busy })).catch(() => {}) : Promise.resolve()),

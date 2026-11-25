@@ -1,31 +1,66 @@
 """
-health.py - Pi Cluster module: how this Pi is doing. Processor use and temperature, memory, Wi-Fi,
+health.py - Cluster module: how this Pi is doing. Processor use and temperature, memory, Wi-Fi,
 its drives, the supply's voltage and whether it's been too low or too hot (the firmware's own
 flags), and its power: wall or battery (a PiSugar tells, through pisugar-server; otherwise this
 Pi's Power setting says).
 
 Other modules read status()["power"]["source"] ("wall", "battery" or "unknown").
+
+The user, 2026-11-22 (from a capture rig's own fixes):
+- Low battery: a Pi on battery (piradise) at 10% saves any recording (Hand Tracker's "stop") and then shuts down
+  cleanly, before the battery cuts it off. Two readings in a row, not while charging, not in its first 3 minutes
+  (time to plug it in). Its own switch.
+- Its starts: each start of this Pi noted with why it started, and its last minutes alive: after a restart or a
+  shutdown (this service, asked to end while the system shuts down, says which), after its power was cut (no such
+  note, and the firmware says it started from power-on), or after it froze (no note, a warm start: its watchdog).
+  The last ones are in status()["boots"]; an unexpected one in the last day is a warning.
+
+On a Windows PC in the cluster: Windows' own readings (winsys.py): processor, memory, Wi-Fi (netsh), drives, uptime
+and its power (wall or battery, as Windows tells). No temperature (Windows gives it only to an administrator). Neither
+of the two above.
+
+On a phone in the cluster (the Cluster app, Android or iPhone): the phone's own readings (phonesys.py): its model,
+memory, battery (its power: charging or not) and its temperature, Wi-Fi, storage and how long it's been on; no
+processor use (a phone doesn't let an app read it). Neither of the two above: a phone looks after its own battery.
 """
 
 import os
 import random
 import re
 import socket
+import sys
+import threading
 import time
 
 TITLE = "Health"
 ORDER = 10
 ON = True
 EVERY = 5
-SETTINGS = [
+WINDOWS = os.environ.get("HT_CLUSTER_PLATFORM") == "windows"
+PHONE = os.environ.get("HT_CLUSTER_PLATFORM") in ("android", "ios")
+PLATFORMS = ("linux", "windows", "android", "ios")
+SETTINGS = [] if PHONE else [
     {"key": "power", "title": "Power", "default": "auto",
-     "choices": [["auto", "Find out (PiSugar)"], ["wall", "Wall power"], ["battery", "Battery"]]},
-]
+     "choices": [["auto", "Find out (Windows)" if WINDOWS else "Find out (PiSugar)"], ["wall", "Wall power"], ["battery", "Battery"]]},
+] + ([] if WINDOWS else [{"key": "lowBattery", "title": "On battery at 10%: save any recording, then shut down", "default": True}])
 
 HOT_C = 80
+LOW_BATTERY = 10  # (%: the user's choice)
+LOW_READINGS = 2
+SETTLE_S = 180  # (after a start: time to plug it in)
+SAVE_WAIT_S = 180
+BOOTS_KEPT = 30
+SEEN_EVERY = 300
+POWER_ON_RESET = 0x1000  # (the firmware's reset flags: HADPOR, a start from power-on)
+CAUSES = {"first": "its first start seen", "restart": "a restart", "shutdown": "being shut down",
+          "power": "its power was cut (or it was unplugged)", "froze": "it froze (its watchdog restarted it)",
+          "unknown": "stopping without shutting down (its power cut, or it froze)"}
+UNEXPECTED = ("power", "froze", "unknown")
 _now = {}
 _cpu_prev = None
 _slow = {"at": 0}  # (Wi-Fi's name and the drives: every 30 s)
+_guard = {"low": 0, "doing": False}
+_boot = {"seenAt": 0}
 
 # The firmware's flags (vcgencmd get_throttled): now, and since it started.
 THROTTLED_NOW = {0: "Voltage too low now", 1: "Processor held back now", 2: "Slowed down now", 3: "Near its heat limit now"}
@@ -150,15 +185,72 @@ def simulated():
         "tempC": 58, "wifi": {"iface": "wlan0", "dbm": -57, "ssid": "Home", "mhz": 5180},
         "volts": 5.12, "throttled": {"now": [], "since": []},
         "drives": [{"mount": "/", "total": 500 * 10 ** 9, "free": 320 * 10 ** 9}],
-        "uptime": int(t % 100000), "pisugar": None,
+        "uptime": int(os.environ.get("HT_CLUSTER_SIM_UPTIME") or t % 100000),
+        # (the checks: a PiSugar's battery at this level, unplugged)
+        "pisugar": {"level": int(os.environ["HT_CLUSTER_SIM_BATTERY"]), "plugged": False, "charging": False} if os.environ.get("HT_CLUSTER_SIM_BATTERY") else None,
     }
 
 
-def tick(node):
+def windows_tick(node):
     global _cpu_prev
-    if node.simulate:
+    w = winsys()
+    name = w.cpu_name()
+    r = {"model": "Windows PC" + (" (%s)" % name if name else "")}
+    times = w.cpu_times()
+    r["cpu"] = cpu_percent(_cpu_prev, times)
+    _cpu_prev = times
+    r["cores"] = os.cpu_count()
+    r["load"] = None
+    r["memory"] = w.memory()
+    r["tempC"] = None
+    if time.time() - _slow["at"] > 30:
+        _slow.update(at=time.time(), wifi=w.wifi(), drives=w.drives())
+    r["wifi"] = _slow.get("wifi")
+    r["drives"] = _slow.get("drives") or []
+    r["volts"] = None
+    r["throttled"] = None
+    r["uptime"] = w.uptime()
+    r["pisugar"] = None
+    r["windowsPower"] = w.power()
+    _now.clear()
+    _now.update(r)
+
+
+def phone_tick(node):
+    """A phone's readings, as the app gives them (phonesys.py)."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import phonesys
+
+    p = phonesys.readings()
+    b = p.get("battery") if isinstance(p.get("battery"), dict) else None
+    r = {"model": p.get("model") or "Phone", "cpu": None, "cores": p.get("cores") or os.cpu_count(), "load": None,
+         "memory": p.get("memory") if isinstance(p.get("memory"), dict) and p["memory"].get("total") else None,
+         "tempC": p.get("tempC"), "wifi": p.get("wifi") if isinstance(p.get("wifi"), dict) else None,
+         "drives": [d for d in p.get("drives") or [] if isinstance(d, dict) and d.get("total")], "volts": None, "throttled": None,
+         "uptime": p.get("uptime"), "pisugar": None,
+         "phonePower": {"plugged": bool(b.get("plugged")), "level": b["level"], "charging": bool(b.get("charging"))} if b and b.get("level") is not None else None}
+    _now.clear()
+    _now.update(r)
+
+
+def tick(node):
+    readings(node)
+    if not WINDOWS and not PHONE:
+        boot_tick(node)
+        battery_guard(node)
+
+
+def readings(node):
+    global _cpu_prev
+    if node.simulate and not PHONE:
         _now.update(simulated())
         return
+    if WINDOWS:
+        return windows_tick(node)
+    if PHONE:
+        return phone_tick(node)
     r = {}
     r["model"] = (_read("/proc/device-tree/model") or "").strip("\x00\n ") or None
     stat = parse_stat(_read("/proc/stat"))
@@ -199,9 +291,139 @@ def tick(node):
     _now.update(r)
 
 
+# ----- low battery: any recording saved, then shut down (the user, 2026-11-22) -----
+def battery_guard(node):
+    if _guard["doing"] or not node.setting("health", "lowBattery"):
+        return
+    p = power(node)
+    low = (p["source"] == "battery" and p.get("level") is not None and p["level"] <= LOW_BATTERY and not p.get("charging")
+           and (_now.get("uptime") or 0) >= SETTLE_S)
+    _guard["low"] = _guard["low"] + 1 if low else 0
+    if _guard["low"] < LOW_READINGS:
+        return
+    _guard["doing"] = True
+    threading.Thread(target=shut_down, args=(node, p["level"]), daemon=True).start()
+
+
+def shut_down(node, level):
+    node.event("health", "Battery at %d%%: saving any recording, then shutting down." % level, bad=True)
+    m = node.modules.get("rig")
+    r = m.mod if m else None
+    if r and r.busy(node):
+        code, answer = r.ht(node, "POST", "/api/command", {"action": "stop"}, timeout=30)
+        until = time.time() + SAVE_WAIT_S
+        while time.time() < until and r.busy(node):
+            time.sleep(3)
+        if r.busy(node):
+            node.event("health", "The take was still saving after %d minutes: shutting down all the same." % (SAVE_WAIT_S // 60), bad=True)
+        else:
+            node.event("health", "The take is saved.")
+    answer = node.root("poweroff", timeout=60)
+    if not answer.get("ok"):
+        node.event("health", "Couldn't shut down: %s" % answer.get("error"), bad=True)
+        _guard.update(doing=False, low=0)  # (tried again at the next low readings)
+
+
+# ----- its starts, and why (the user, 2026-11-22) -----
+def boot_id(node):
+    if node.simulate:
+        return os.environ.get("HT_CLUSTER_SIM_BOOT_ID") or "simulated-boot"
+    return (_read("/proc/sys/kernel/random/boot_id") or "").strip()
+
+
+def boot_time(node):
+    if node.simulate:
+        return time.time() - (_now.get("uptime") or 0)
+    m = re.search(r"^btime\s+(\d+)", _read("/proc/stat") or "", re.M)
+    return int(m.group(1)) if m else None
+
+
+def power_on_start(node):
+    """Whether this start was from power-on (the firmware's reset flags, as the bootloader left them), or None
+    (not known here)."""
+    if node.simulate:
+        v = os.environ.get("HT_CLUSTER_SIM_RSTS")
+        return None if v is None else bool(int(v, 16) & POWER_ON_RESET)
+    try:
+        with open("/proc/device-tree/chosen/bootloader/rsts", "rb") as f:
+            data = f.read(4)
+    except OSError:
+        return None
+    return bool(int.from_bytes(data, "big") & POWER_ON_RESET) if len(data) == 4 else None
+
+
+def boot_tick(node):
+    bid = boot_id(node)
+    if not bid:
+        return
+    mem = node.memory("health")
+    boots = mem.get("boots") or []
+    now = time.time()
+    if not boots or boots[-1].get("id") != bid:
+        prev = boots[-1] if boots else None
+        if prev is None:
+            cause = "first"
+        elif prev.get("ended") in ("restart", "shutdown"):
+            cause = prev["ended"]
+        else:
+            cold = power_on_start(node)
+            cause = "unknown" if cold is None else "power" if cold else "froze"
+        boots.append({"id": bid, "at": int(boot_time(node) or now), "cause": cause, "seen": int(now)})
+        mem["boots"] = boots[-BOOTS_KEPT:]
+        mem.save()
+        _boot["seenAt"] = now
+        if cause in UNEXPECTED:
+            last = (" (last heard from %s)" % time.strftime("%Y-%m-%d %H:%M", time.localtime(prev["seen"]))) if prev and prev.get("seen") else ""
+            node.event("health", "Started again after %s%s." % (CAUSES[cause], last), bad=True)
+        return
+    if now - _boot["seenAt"] >= SEEN_EVERY:
+        _boot["seenAt"] = now
+        boots[-1]["seen"] = int(now)
+        mem.save()
+
+
+def stopping(node):
+    """This service asked to end: when the system itself is shutting down, its start's note says how (a restart, or
+    shut down), so the next start knows it wasn't a power cut."""
+    if WINDOWS or PHONE:
+        return
+    how = None
+    if node.simulate:
+        how = os.environ.get("HT_CLUSTER_SIM_SHUTDOWN") or None
+    else:
+        code, out, _ = node.run(["systemctl", "is-system-running"], 3)
+        if out.strip() == "stopping":
+            code, jobs, _ = node.run(["systemctl", "list-jobs", "--no-legend", "--no-pager"], 3)
+            how = "restart" if re.search(r"\b(reboot|kexec)\.target\b", jobs or "") else "shutdown"
+    if not how:
+        return
+    mem = node.memory("health")
+    boots = mem.get("boots") or []
+    if boots and boots[-1].get("id") == boot_id(node):
+        boots[-1].update(ended=how, seen=int(time.time()))
+        mem.save()
+
+
+def boots_seen(node):
+    """The last starts, newest first: [{"at", "cause", "words", "lastSeen" (of the start before it)}]."""
+    boots = node.memory("health").get("boots") or []
+    out = []
+    for i in range(len(boots) - 1, -1, -1):
+        b = boots[i]
+        prev = boots[i - 1] if i else None
+        out.append({"at": b.get("at"), "cause": b.get("cause"), "words": CAUSES.get(b.get("cause"), b.get("cause")),
+                    "lastSeen": prev.get("seen") if prev else None})
+    return out[:10]
+
+
 def power(node):
     told = node.setting("health", "power")
     sugar = _now.get("pisugar")
+    wp = _now.get("windowsPower") or _now.get("phonePower")
+    if wp:  # (a Windows PC: as Windows tells it, a battery's level too)
+        sugar = {"plugged": wp.get("plugged") is not False, "level": wp["level"], "charging": wp.get("charging")} if "level" in wp else None
+        if not sugar and told not in ("wall", "battery"):
+            return {"source": "battery" if wp.get("plugged") is False else "wall", "set": told}
     if told in ("wall", "battery"):
         source = told
     elif sugar:
@@ -241,12 +463,17 @@ def status(node):
     w = r.get("wifi")
     if w:
         band = (" %s GHz" % ("5" if w["mhz"] >= 4900 else "2.4")) if w.get("mhz") else ""
-        parts.append("Wi-Fi %d dBm%s" % (w["dbm"], band))
+        if w.get("signal") is not None:  # (Windows says how strong as a share)
+            parts.append("Wi-Fi %d%%%s" % (w["signal"], band))
+        elif w.get("dbm") is not None:
+            parts.append("Wi-Fi %d dBm%s" % (w["dbm"], band))
     p = r["power"]
     if p["source"] == "battery":
         parts.append("Battery %d%%" % p["level"] if "level" in p else "Battery")
         if p.get("level") is not None and p["level"] < 20 and not p.get("charging"):
             warn.append("Battery low: %d%%" % p["level"])
+    elif p["source"] == "wall" and PHONE:  # (a phone: plugged in, charging or full)
+        parts.append(("Charging" if p.get("charging") else "Plugged in") + (" (battery %d%%)" % p["level"] if "level" in p else ""))
     elif p["source"] == "wall":
         parts.append("Wall power" + (" (battery %d%%)" % p["level"] if "level" in p else ""))
     for d in r.get("drives") or []:
@@ -255,9 +482,26 @@ def status(node):
     th = r.get("throttled")
     if th and th["now"]:
         warn.extend(th["now"])
+    if not WINDOWS and not PHONE:
+        r["boots"] = boots_seen(node)
+        for b in r["boots"]:
+            if b["cause"] in UNEXPECTED and b.get("at") and time.time() - b["at"] < 86400:
+                warn.append("Started again at %s after %s" % (time.strftime("%H:%M", time.localtime(b["at"])), b["words"]))
+                break
+        if _guard["doing"]:
+            warn.append("Battery nearly empty: saving any recording, then shutting down")
     r["summary"] = " · ".join(parts)
     r["warnings"] = warn
     return r
+
+
+def winsys():
+    """winsys.py (beside ht_cluster.py): Windows' own readings."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import winsys as w
+    return w
 
 
 ACTIONS = {}

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_apps.py - checks Pi Cluster's Transmission (cluster/node/modules/apps.py) on any computer:  python3 cluster/test_apps.py
+test_apps.py - checks Cluster's Transmission (cluster/node/modules/apps.py) on any computer:  python3 cluster/test_apps.py
 
 Two Pis are simulated here: "pi", which keeps Transmission's files, and "pie". Each has a stand-in
 Hand Tracker (so it can be "recording"), and there's a stand-in Transmission (its RPC, keeping its
@@ -71,8 +71,8 @@ def torrents():
         rest = data[k + 14:]
         ln = int(rest.split(b":")[0])
         dest = rest[len(str(ln)) + 1:len(str(ln)) + 1 + ln].decode()
-        # (the first seeds, at 1.5 KB/s; the others wait to download)
-        out.append({"id": i + 1, "name": n[:-7], "downloadDir": dest, "percentDone": 1 if i == 0 else 0.5, "status": 6 if i == 0 else 3,
+        # (the first seeds, at 1.5 KB/s; the others wait to download, 47.36% and 99.996% here)
+        out.append({"id": i + 1, "name": n[:-7], "downloadDir": dest, "percentDone": [1, 0.4736, 0.99996][i] if i < 3 else 0.5, "status": 6 if i == 0 else 3,
                     "rateDownload": 0, "rateUpload": 1500 if i == 0 else 0})
     s = load()
     for j, a in enumerate(s["added"]):
@@ -80,7 +80,7 @@ def torrents():
     order = queue(s, [t["id"] for t in out])
     for t in out:
         t.update(hashString=hashlib.sha1(t["name"].encode()).hexdigest(), downloadedEver=1000000 * t["id"], uploadedEver=500000 * t["id"],
-                 peersConnected=3, queuePosition=order.index(t["id"]))
+                 peersConnected=3, queuePosition=order.index(t["id"]), addedDate=1795000000 + 86400 * t["id"])
     return out
 def queue(s, ids):
     kept = [i for i in s.get("order") or [] if i in ids]
@@ -156,6 +156,28 @@ elif job == "transmission-stop":
     print(json.dumps({"ok": True}))
 elif job == "nfs-share":
     print(json.dumps({"ok": True, "shared": sorted(set(words))}))
+elif job == "cluster-password":  # (the run kind's: kept as it is here, a stand-in; the real helper keeps a salted check)
+    d = json.loads(sys.stdin.readline() or "{}")
+    pw_file = os.path.join(state, "cluster-password.txt")
+    have = open(pw_file).read() if os.path.exists(pw_file) else None
+    if "check" in d:
+        print(json.dumps({"ok": True, "set": have is not None, "right": have == d["check"]}))
+    elif have is not None and d.get("old") != have:
+        print(json.dumps({"ok": False, "error": "That isn't the cluster password set before on this computer."}))
+    elif len(d.get("new") or "") < 8:
+        print(json.dumps({"ok": False, "error": "A cluster password needs at least 8 characters."}))
+    else:
+        open(pw_file, "w").write(d["new"])
+        print(json.dumps({"ok": True, "set": True}))
+elif job == "run-as-root":
+    d = json.loads(sys.stdin.readline() or "{}")
+    pw_file = os.path.join(state, "cluster-password.txt")
+    if not os.path.exists(pw_file) or open(pw_file).read() != d.get("password"):
+        print(json.dumps({"ok": False, "error": "That isn't this Pi's cluster password."}))
+    else:
+        sys.stdout.flush()
+        code = subprocess.call(d["argv"], cwd=d["cwd"], env=dict(os.environ, **(d.get("env") or {})), shell=isinstance(d["argv"], str))
+        print(json.dumps({"ok": True, "code": code}))
 else:
     print(json.dumps({"ok": True}))
 '''
@@ -262,11 +284,11 @@ def main():
     pi_port, pie_port, old = free_port(), free_port(), free_port()
     procs = {}
 
-    def start(name, port, peer, ht, tr_port):
+    def start(name, port, peer, ht, tr_port, **extra):
         env = dict(os.environ, HT_CLUSTER_SIM_NAME=name, HT_CLUSTER_SIM_PEERS="127.0.0.1:%d" % peer, HT_CLUSTER_STATE=os.path.join(tmp, name + "-state"),
                    HT_CLUSTER_JOBS_DIR=os.path.join(tmp, name + "-jobs"), HT_CLUSTER_HT_URL=ht, HT_CLUSTER_ROOT_HELPER=os.path.join(tmp, "fake-helper.py"),
                    HT_TEST_HELPER_LOG=log, HT_TEST_FAKE_TR=os.path.join(tmp, "fake-tr.py"), HT_CLUSTER_TR_PORT=str(tr_port), HT_CLUSTER_TR_CONFIG=config,
-                   HT_CLUSTER_TR_OLD_PORT=str(old), HT_CLUSTER_SIM_GTK=gtk, HT_CLUSTER_SIM_HOME=home, HT_CLUSTER_SIM_FAST="1", PYTHONDONTWRITEBYTECODE="1")
+                   HT_CLUSTER_TR_OLD_PORT=str(old), HT_CLUSTER_SIM_GTK=gtk, HT_CLUSTER_SIM_HOME=home, HT_CLUSTER_SIM_FAST="1", PYTHONDONTWRITEBYTECODE="1", **extra)
         p = subprocess.Popen([sys.executable, os.path.join(NODE, "ht_cluster.py"), "--simulate", "--port", str(port)], env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         procs[name] = p
@@ -284,8 +306,11 @@ def main():
         check("The window app's torrents move in", code == 200 and a.get("ok"), a)
         check("...their files and progress copied, the window app's own put aside",
               len(os.listdir(os.path.join(config, "torrents"))) == 3 and len(os.listdir(os.path.join(config, "resume"))) == 3 and
-              not os.path.exists(os.path.join(gtk, "torrents")) and os.path.isdir(os.path.join(gtk, "moved-to-pi-cluster", "torrents")) and
+              not os.path.exists(os.path.join(gtk, "torrents")) and os.path.isdir(os.path.join(gtk, "moved-to-cluster", "torrents")) and
               os.path.exists(os.path.join(gtk, "settings.json")))
+        os.rename(os.path.join(gtk, "moved-to-cluster"), os.path.join(gtk, "moved-to-pi-cluster"))
+        check("...and copies put aside before the rename (moved-to-pi-cluster) get the new name",
+              wait_for(lambda: os.path.isdir(os.path.join(gtk, "moved-to-cluster", "torrents")) and not os.path.exists(os.path.join(gtk, "moved-to-pi-cluster")), 15))
         s = json.load(open(os.path.join(config, "settings.json")))
         check("...its settings kept, on its own address now", s.get("speed-limit-down") == 1000 and s.get("rpc-port") == pi_tr and s.get("download-dir").endswith("Downloads"), s)
         shared = wait_for(lambda: [l for l in open(log).read().splitlines() if " nfs-share " in l], 10)
@@ -417,6 +442,29 @@ def main():
         code, a = act(pi_port, "add", {"magnet": "magnet:?xt=urn:btih:abc", "folder": tmp})
         check("...but not outside your home", code != 200 and "home" in a.get("error", ""), a)
 
+        # A Windows PC in the cluster (the user, 2026-11-22: Transmission on this PC "when it's free"), its Linux for it
+        # set up (simulated: here it starts the stand-in Transmission as a Pi does)
+        pc_port, pc_tr = free_port(), free_port()
+        pc_ht, pc_ht_url = fake_ht()
+        start("pc", pc_port, pi_port, pc_ht_url, pc_tr, HT_CLUSTER_PLATFORM="windows", HT_CLUSTER_SIM_WSL="1")
+        pc_apps = lambda: next((m for m in (ask(pc_port, "GET", "/api/node")[1].get("modules") or []) if m["name"] == "apps"), {})
+        m = wait_for(lambda: (pc_apps().get("status") or {}).get("canRun") and pc_apps(), 20) or {}
+        check("A Windows PC with its Linux set up can run Transmission, and offers only that switch (never its files' home)",
+              (m.get("status") or {}).get("canRun") and [s["key"] for s in m.get("settings") or []] == ["transmission"], m)
+        code, a = act(pi_port, "lease", {"worker": "probe", "running": False, "free": False, "canRun": False})
+        check("...the home's word says where it keeps its folders (for that Linux to mount them at the same paths)",
+              code == 200 and a.get("homeDir") == os.path.normpath(home), a)
+        act(pi_port, "move", {"to": "pc"})
+        on_pc = wait_for(lambda: apps(pi_port).get("runner") == "pc" and (tr_ask(old, "session-stats") or {}).get("who") == "pc", 60)
+        check("Moved to the PC: Transmission runs there, still on pi's old address", bool(on_pc), (apps(pi_port), tr_ask(old, "session-stats")))
+        act(pi_port, "move", {"to": "pi"})
+        home_again = wait_for(lambda: apps(pi_port).get("runner") == "pi" and (tr_ask(old, "session-stats") or {}).get("who") == "pi" and
+                              not os.path.exists(os.path.join(tmp, "pc-state", "tr-running")), 60)
+        check("...and back on pi when moved there, stopped on the PC first", bool(home_again), apps(pi_port))
+        act(pi_port, "move", {"to": None})
+        procs["pc"].terminate()
+        procs["pc"].wait(10)
+
         # pie running it, then pi gone: pie stops it by itself
         act(pi_port, "move", {"to": "pie"})
         on_pie = wait_for(lambda: os.path.exists(os.path.join(tmp, "pie-state", "tr-running")), 60)
@@ -440,7 +488,7 @@ def main():
                     p.wait(10)
                 except subprocess.TimeoutExpired:
                     p.kill()
-        for st in ("pi-state", "pie-state"):
+        for st in ("pi-state", "pie-state", "pc-state"):
             m = os.path.join(tmp, st, "tr-running")
             if os.path.exists(m):
                 try:

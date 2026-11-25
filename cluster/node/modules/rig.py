@@ -1,16 +1,20 @@
 """
-rig.py - Pi Cluster module: this Pi's camera rig, through the Hand Tracker app on it (its remote
+rig.py - Cluster module: this Pi's camera rig, through the Hand Tracker app on it (its remote
 recording server, port 47821, asked over this Pi's own Tailscale address as a phone would). Whether
 Hand Tracker is installed and running and which build it is, its cameras, recording and Sentry;
 Start or Restart Hand Tracker, and Sentry on or off.
 
 updates.py asks busy() (recording or saving: an update waits) and restarts Hand Tracker after an
 update with restart_after(), turning Sentry back on if it was on.
+
+On a Windows PC in the cluster: Hand Tracker's own app there (whatever put it in), through its remote recording
+server as on a Pi; Cluster doesn't install or start it there.
 """
 
 import json
 import os
 import struct
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -20,6 +24,8 @@ ORDER = 20
 ON = True
 EVERY = 5
 SETTINGS = []
+WINDOWS = os.environ.get("HT_CLUSTER_PLATFORM") == "windows"
+NO_WINDOW = 0x08000000
 
 APP_DIR = "/opt/Hand Tracker"
 APP_EXE = APP_DIR + "/hand-tracker"
@@ -82,7 +88,9 @@ def installed(node, fresh=False):
     if not fresh and time.time() - _installed["at"] < 60:
         return _installed["info"]
     info = None
-    if node.simulate:
+    if WINDOWS and not node.simulate:
+        info = None  # (Hand Tracker's app on Windows isn't Cluster's to put in)
+    elif node.simulate:
         # (the checks: what's "installed", from the file their stand-in root helper writes)
         try:
             with open(os.environ.get("HT_CLUSTER_SIM_HT") or "", "r", encoding="utf-8") as f:
@@ -120,6 +128,13 @@ def app_process(node):
     """Whether Hand Tracker's main process is running here."""
     if node.simulate:
         return _now["state"] is not None
+    if WINDOWS:
+        try:
+            out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Hand Tracker.exe", "/NH"], capture_output=True, text=True,
+                                 timeout=10, creationflags=NO_WINDOW).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return "hand tracker.exe" in out.lower()
     try:
         pids = [p for p in os.listdir("/proc") if p.isdigit()]
     except OSError:
@@ -207,7 +222,11 @@ def status(node):
     inst = installed(node)
     out = {"installed": inst, "answering": st is not None}
     warn = []
-    if st is None and not inst:
+    if st is None and WINDOWS:
+        running = app_process(node)
+        out["app"] = "running" if running else "not running"
+        out["summary"] = "Hand Tracker running, remote recording off" if running else "Hand Tracker isn't running"
+    elif st is None and not inst:
         out["app"] = "not installed"
         out["summary"] = "Hand Tracker isn't installed"
     elif st is None:
@@ -234,6 +253,12 @@ def status(node):
         for c in out["cameras"]:
             if c.get("error"):
                 warn.append("%s: %s" % (c.get("name") or "A camera", c["error"]))
+        # (its room as Hand Tracker works it out: free space and the hours of takes that leaves; the user, 2026-11-22)
+        s = st.get("storage") if isinstance(st.get("storage"), dict) else None
+        if s and s.get("text"):
+            out["space"] = str(s["text"])[:240]
+            if s.get("low"):
+                warn.append("Little room left: %s" % out["space"])
     out["warnings"] = warn
     return out
 
@@ -246,6 +271,8 @@ def act_restart(node, args):
 
 
 def act_start(node, args):
+    if WINDOWS:
+        return {"ok": False, "error": "Start Hand Tracker on this PC itself."}
     if app_process(node):
         return {"ok": False, "error": "Hand Tracker is already running."}
     if not installed(node, fresh=True):
@@ -279,7 +306,7 @@ def act_sentry(node, args):
 
 
 ACTIONS = {
-    "start": {"title": "Start Hand Tracker", "run": act_start},
+    "start": {"title": "Start Hand Tracker", "run": act_start, "hidden": WINDOWS},
     "restart": {"title": "Restart Hand Tracker", "run": act_restart, "confirm": "Restart Hand Tracker on this Pi? A take being recorded is saved first."},
     "sentry": {"title": "Sentry", "run": act_sentry, "hidden": True},
 }

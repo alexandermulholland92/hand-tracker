@@ -14,6 +14,10 @@
  * several-videos panel) go into an export queue (video-queue.js) and are converted one
  * after another, each on its own; synced ones trimmed to the stretch they share.
  *
+ * Grid video (the computer apps, for a take opened from its JSON): its camera videos beside it
+ * side by side in one 1080p MP4, each labelled with its role, lined up as the take was recorded,
+ * with the sound of the first that has any (electron/exporter.js's gridVideo makes it).
+ *
  * window.RecordingViewer.openBytes(name, arrayBuffer) / openTake(path, name) /
  * openVideo(file) / queueVideos(files) are the same entry points the file pickers use;
  * the automated checks call them. selfTest() is the Recording Converter app's own check.
@@ -518,6 +522,7 @@
 
       ${playerCard("Playback", `${hands.map((h) => `<span style="color:${handColor(h.handedness)}">■ ${esc(h.handedness || "Hand")}</span>`).join(" &nbsp; ")} &nbsp;•&nbsp; ${mirrored ? "mirrored, as shown in the app" : "camera view"}`)}
       ${annotatable(current.filePath) ? AnnotateUI.card() : ""}
+      ${gridPossible(current.filePath) ? gridCard() : ""}
 
       <div class="card">
         <div class="section-label">Task Phases Over Time</div>
@@ -547,10 +552,93 @@
     drawTrajectories(hands, mirrored, data.image_size);
     setupHandPlayer(data, duration);
     if (annotatable(current.filePath)) AnnotateUI.attach({ path: current.filePath, take: data, player });
+    if (gridPossible(current.filePath)) setupGrid(current.filePath);
     setupHandTable(data);
     setupExport(withVideoFormats(MotionExport.FORMATS), ["bvh"], baseNameOf(current.name), (ids, name) =>
       saveRecording({ ids, baseName: name, build: (motionIds) => MotionExport.build(data, motionIds, name), scene: handScene(data), progress: exportProgress })
     );
+  }
+
+  // ---------- Grid video: a take's camera videos side by side in one 1080p MP4 (the computer apps) ----------
+  // 2 x 2 for up to four cameras, 3 x 2 for five or six, in the roles' order (head, chest, left wrist, right
+  // wrist, then north, south, east, west), each with its role on it; shown once two videos or more are found.
+  const GRID_MOST = 6;
+  const gridPossible = (filePath) => !!(window.desktop && window.desktop.takeVideos && window.desktop.gridVideo && filePath && /\.json$/i.test(filePath));
+  const gridCard = () => `
+    <div class="card" id="gridCard" hidden>
+      <div class="section-label">Grid video</div>
+      <div class="note" id="gridNote"></div>
+      <div class="export-actions"><button id="gridBtn">Make grid video</button><span id="gridStatus" class="note"></span></div>
+      <ul id="gridResults" class="results"></ul>
+    </div>`;
+  const listed = (names) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
+  // A camera's label in the grid: its name in white on a dark box (a PNG, put in its block's top left corner).
+  async function gridLabel(text) {
+    const c = document.createElement("canvas");
+    const font = "600 30px system-ui, sans-serif";
+    let ctx = c.getContext("2d");
+    ctx.font = font;
+    c.width = Math.ceil(ctx.measureText(text).width) + 28;
+    c.height = 46;
+    ctx = c.getContext("2d");
+    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    ctx.beginPath();
+    ctx.roundRect(0, 0, c.width, c.height, 10);
+    ctx.fill();
+    ctx.font = font;
+    ctx.fillStyle = "#fff";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, 14, c.height / 2 + 1);
+    const blob = await new Promise((resolve) => c.toBlob(resolve, "image/png"));
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+  async function setupGrid(filePath) {
+    let take = null;
+    try {
+      take = await window.desktop.takeVideos(filePath);
+    } catch {
+      return;
+    }
+    const card = $("gridCard");
+    if (!card || !take || !take.ok || take.videos.length < 2 || !current || current.filePath !== filePath) return;
+    const roles = (window.CameraRoles && CameraRoles.ROLES) || [];
+    const rank = (v) => {
+      const i = roles.findIndex((r) => r.id === v.role || r.label.toLowerCase() === String(v.camera).toLowerCase());
+      return i < 0 ? roles.length : i;
+    };
+    const videos = take.videos.map((v, i) => ({ ...v, i })).sort((a, b) => rank(a) - rank(b) || a.i - b.i).slice(0, GRID_MOST);
+    const nameOf = (v) => String((window.CameraRoles && CameraRoles.label(v.role)) || v.camera || "Camera").slice(0, 40);
+    const sound = videos.find((v) => v.hasAudio);
+    $("gridNote").textContent =
+      `${listed(videos.map(nameOf))} side by side in one 1080p MP4 (${videos.length <= 4 ? "2 × 2" : "3 × 2"}), each with its name on it, ` +
+      (take.timed ? "lined up as the take was recorded" : "each from its own start (this take doesn't say when each began)") +
+      `, with ${sound ? `${nameOf(sound)}'s sound` : "no sound (none of them has any)"}. Saved beside the take as ${take.name}-video-grid.mp4.` +
+      (take.videos.length > GRID_MOST ? ` The first ${GRID_MOST} (it has ${take.videos.length}).` : "");
+    card.hidden = false;
+    $("gridBtn").onclick = async () => {
+      const btn = $("gridBtn"), status = $("gridStatus");
+      btn.disabled = true;
+      $("gridResults").innerHTML = "";
+      status.textContent = "Making it… 0%";
+      const off = window.desktop.onExportProgress((p) => {
+        if (p && p.format === "grid" && $("gridStatus")) $("gridStatus").textContent = `Making it… ${Math.floor((p.progress || 0) * 100)}%`;
+      });
+      try {
+        const job = { path: filePath, videos: [] };
+        for (const v of videos) job.videos.push({ file: v.file, label: await gridLabel(nameOf(v)) });
+        const r = await window.desktop.gridVideo(job);
+        if (!$("gridResults")) return;
+        if (r && r.ok) {
+          status.textContent = "";
+          ExportUI.renderResults($("gridResults"), [{ ok: true, path: r.path, size: r.size }]);
+        } else status.textContent = (r && r.message) || "It couldn't be made.";
+      } catch (err) {
+        if ($("gridStatus")) $("gridStatus").textContent = `It couldn't be made: ${err.message}`;
+      } finally {
+        off();
+        if ($("gridBtn")) $("gridBtn").disabled = false;
+      }
+    };
   }
 
   // Index of the frame shown at time t (the last one at or before t), or -1.

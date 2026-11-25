@@ -1,5 +1,5 @@
 """
-apps.py - Pi Cluster module: apps the cluster runs on whichever Pi is free. The first is Transmission.
+apps.py - Cluster module: apps the cluster runs on whichever Pi is free. The first is Transmission.
 
 Transmission's torrents, settings and files stay on one Pi, its home: the Pi with "Transmission's
 files and settings are here" on (pi). It runs on whichever Pi is free and allowed to ("Can run
@@ -8,6 +8,8 @@ or its battery is low. When it isn't free, or goes quiet, Transmission moves on.
 - On another Pi: the home's folders are mounted (an NFS share, Tailscale's addresses only; the root
   helper's nfs-share) and put back at their own paths for Transmission alone, so every torrent keeps
   its folder.
+- On a Windows PC: in a Linux of its own under WSL (Cluster-Linux), the home's folders mounted at their
+  own paths there through this service's NFS relay (see "a Windows PC" below).
 - Its old address: the home still answers on Transmission's old address (port 9092, the window
   app's, from Tailscale and the home network) and passes it on to wherever Transmission runs, so the
   Jellyfin turtle, Hand Tracker's turtle and the web page keep working.
@@ -35,6 +37,7 @@ import re
 import shutil
 import signal
 import socket
+import subprocess
 import threading
 import time
 import urllib.error
@@ -44,11 +47,15 @@ TITLE = "Apps"
 ORDER = 50
 ON = True
 EVERY = 5
+# A Windows PC in the cluster: Transmission runs there in a Linux of its own under WSL (its folders at the same
+# paths as on the Pis), once that's set up (wsl_ready: setup.py --linux); until then it can't run there. It
+# never keeps Transmission's files (they stay on a Pi).
+WINDOWS = os.environ.get("HT_CLUSTER_PLATFORM") == "windows"
 SETTINGS = [
     {"key": "transmission", "title": "Can run Transmission", "default": True},
-    {"key": "home", "title": "Transmission's files and settings are here", "default": False},
-]
-
+] + ([] if WINDOWS else [{"key": "home", "title": "Transmission's files and settings are here", "default": False}])
+ASIDE = "moved-to-cluster"  # (in the window app's folder: its own copies of the torrents, put aside when they move here)
+OLD_ASIDE = "moved-to-pi-cluster"  # (its name before the rename, 2026-11-25: the home names it again)
 TR_PORT = 9093  # the cluster's Transmission's own address (on the Pi running it)
 OLD_PORT = 9092  # on its home: the window app's old address, passed on to it
 LEASE_S = 60  # a Pi running it says so at least this often, or it's taken as gone
@@ -116,7 +123,7 @@ def old_port(node):
 
 
 def is_home(node):
-    return bool(node.setting("apps", "home"))
+    return not WINDOWS and bool(node.setting("apps", "home"))
 
 
 def top_of(path):
@@ -169,9 +176,31 @@ def ask_tr(node, method, args=None, timeout=10):
 
 
 # ----- this Pi -----
+def wsl_ready(node):
+    """A Windows PC's Linux for Transmission is set up: Cluster-Linux is one of WSL's Linuxes (setup.py --linux
+    makes it). Looked at once a minute, in the registry (WSL isn't started for it)."""
+    if node.simulate:
+        return bool(os.environ.get("HT_CLUSTER_SIM_WSL"))
+    now = time.time()
+    if _wsl["ready"] is None or now - _wsl["readyAt"] > 60:
+        try:
+            _wsl["ready"] = WSL_DISTRO in winsys().wsl_distros()
+        except Exception:  # (no registry key: no WSL at all)
+            _wsl["ready"] = False
+        _wsl["readyAt"] = now
+    return _wsl["ready"]
+
+
+def can_run(node):
+    """Its "Can run Transmission" on, and (a Windows PC) its Linux for it set up."""
+    return bool(node.setting("apps", "transmission")) and (not WINDOWS or wsl_ready(node))
+
+
 def unit_active(node):
     if node.simulate:
         return os.path.exists(os.path.join(node.state_dir, "tr-running"))
+    if WINDOWS:
+        return wsl_running(node)
     code, out, _ = node.run(["systemctl", "is-active", "ht-cluster-transmission"], 10)
     return out.strip() == "active"
 
@@ -259,14 +288,14 @@ def act_migrate(node, args):
     with open(os.path.join(c, "settings.json"), "w", encoding="utf-8") as f:
         json.dump(s, f, indent=4)
     # The window app's own copies put aside (its settings stay: pi/download-cap.sh reads its port there).
-    aside = os.path.join(g, "moved-to-pi-cluster")
+    aside = os.path.join(g, ASIDE)
     os.makedirs(aside, exist_ok=True)
     for part in ("torrents", "resume", "queue.json"):
         if os.path.exists(os.path.join(g, part)):
             shutil.move(os.path.join(g, part), os.path.join(aside, part))
     with open(os.path.join(aside, "README.txt"), "w", encoding="utf-8") as f:
-        f.write("These torrents moved into Pi Cluster's Transmission (%s) on %s.\n"
-                "Pi Cluster's app: Give them back to the window app moves them back here.\n" % (c, time.strftime("%Y-%m-%d %H:%M")))
+        f.write("These torrents moved into Cluster's Transmission (%s) on %s.\n"
+                "Cluster's app: Give them back to the window app moves them back here.\n" % (c, time.strftime("%Y-%m-%d %H:%M")))
     n = len(os.listdir(os.path.join(c, "torrents")))
     mem.update(migrated=True, names=names, outside=outside, runner=None, handing=None, prefer=None)
     mem.save()
@@ -318,6 +347,13 @@ def home_tick(node):
     mem = node.memory("apps")
     if not mem.get("migrated"):
         return
+    # (the window app's copies put aside before the rename, 2026-11-25: under the new name)
+    old = os.path.join(gtk_dir(node), OLD_ASIDE)
+    if os.path.isdir(old) and not os.path.lexists(os.path.join(gtk_dir(node), ASIDE)):
+        try:
+            os.rename(old, os.path.join(gtk_dir(node), ASIDE))
+        except OSError:
+            pass
     now = time.time()
     with _lock:
         runner, handing = mem.get("runner"), mem.get("handing")
@@ -515,7 +551,8 @@ def act_lease(node, args):
         mem = node.memory("apps")
         run = bool(mem.get("migrated")) and mem.get("runner") == worker and not mem.get("handing")
         where = "local" if worker == node.name else (node.target() or "").split(":")[0]
-    return {"ok": True, "run": run, "where": where, "names": mem.get("names") or []}
+    # (homeDir: where its folders are here, for a Windows PC's Linux to mount them at the same paths)
+    return {"ok": True, "run": run, "where": where, "names": mem.get("names") or [], "homeDir": os.path.normpath(home_dir())}
 
 
 # ----- every Pi: running it when the home says so -----
@@ -534,8 +571,14 @@ def runner_tick(node):
     now = time.time()
     if now - _run["beat"] < BEAT_S:
         return
+    slept = WINDOWS and not node.simulate and _run["beat"] and now - _run["beat"] > LEASE_S
     _run["beat"] = now
     running = unit_active(node)
+    if slept and running:
+        # (a Windows PC that was asleep: the home may have started Transmission elsewhere meanwhile, so it stops
+        # here before it saves anything; the home hands it back if it hadn't moved)
+        stop_here(node, "this PC was asleep")
+        running = False
     home = _run["home"] if _run["home"] and now - _run["contact"] < 120 else find_home(node)
     if not home:
         if running and now - _run["contact"] > FENCE_S:
@@ -544,7 +587,7 @@ def runner_tick(node):
     _run["home"] = home
     ok, why = free(node)
     h = node.status_of("health") if node.modules.get("health") else {}
-    words = {"worker": node.name, "running": running, "free": ok, "why": why, "canRun": bool(node.setting("apps", "transmission")),
+    words = {"worker": node.name, "running": running, "free": ok, "why": why, "canRun": can_run(node),
              "target": node.target() or "", "cpu": h.get("cpu"), "trPort": tr_port(node)}
     if home["name"] == node.name:
         code, a = 200, act_lease(node, words)
@@ -555,6 +598,8 @@ def runner_tick(node):
             stop_here(node, "can't reach %s, which has Transmission's files" % home["name"])
         return
     _run["contact"] = now
+    if a.get("homeDir"):
+        _run["homeDir"] = a["homeDir"]
     if a.get("run"):
         if running and _run["names"] is None and not _run["starting"] and kept(node, a["where"], a.get("names") or []):
             # (running already: this service restarted, an update say, and left it going. Started again, it
@@ -591,6 +636,18 @@ def start_here(node, where, names):
 
     def go():
         try:
+            if WINDOWS and not node.simulate:
+                why, relay = start_wsl(node, where, names)
+                if why:
+                    _run["error"] = "Transmission didn't start: %s" % why
+                    node.event("apps", _run["error"], bad=True)
+                    return
+                _run.update(names=names, where=where, error=None, caps=None)
+                mem = node.memory("apps")
+                mem["started"] = {"where": where, "names": list(names), "relay": relay}  # (kept through this service's restarts)
+                mem.save()
+                node.event("apps", "Transmission started here, in this PC's Linux (its files from %s)." % where)
+                return
             if not node.simulate and not os.path.exists("/usr/bin/transmission-daemon") or not node.simulate and not shutil.which("mount.nfs4"):
                 a = node.root("install-transmission", timeout=1800)
                 if not a.get("ok"):
@@ -612,7 +669,7 @@ def start_here(node, where, names):
 
 
 def stop_here(node, why):
-    a = node.root("transmission-stop", timeout=300)
+    a = {"ok": stop_wsl(node)} if WINDOWS and not node.simulate else node.root("transmission-stop", timeout=300)
     _run.update(names=None, where=None, caps=None)
     mem = node.memory("apps")
     if mem.pop("started", None) is not None:
@@ -622,6 +679,9 @@ def stop_here(node, why):
 
 def keep_caps(node):
     """Its own download and upload limits (the turtle's when on), kept on the Wi-Fi by Linux."""
+    if WINDOWS and not node.simulate:  # (a Windows PC: Transmission's own limits only; its relay and address kept up)
+        keep_wsl_links(node)
+        return
     try:
         s = rpc("127.0.0.1", tr_port(node), "session-get", {"fields": ["alt-speed-enabled", "alt-speed-down", "alt-speed-up",
                                                                          "speed-limit-down", "speed-limit-down-enabled", "speed-limit-up", "speed-limit-up-enabled"]}, timeout=5)
@@ -638,6 +698,339 @@ def keep_caps(node):
         a = node.root("transmission-cap", *caps, timeout=60)
         if a.get("ok"):
             _run["caps"] = caps
+
+
+# ----- a Windows PC: Transmission in its own Linux (WSL) -----
+# Cluster-Linux (setup.py --linux: Debian 13 with the Pis' transmission-daemon and the NFS client) runs
+# windows/transmission.sh as root through wsl.exe: the home's folders mounted at their own paths, then Transmission,
+# in the foreground for as long as it runs (wsl.exe running it keeps that Linux up, and goes on through this
+# service's own restarts). Two things on Windows' side, in this service:
+# - the NFS relay: WSL's connections reach the home from ports above 1023 (WSL's network changes them), which the
+#   home's share turns away ("secure"); the relay, on Windows' side of WSL's network and for that Linux alone,
+#   passes them on from ports below 1024 (any program may use those on Windows).
+# - Transmission's address: WSL passes this PC's 127.0.0.1:9093 on to it; the home reaches it at this PC's
+#   Tailscale address, passed on to that.
+# Its speed limits are Transmission's own here (no nft).
+WSL_DISTRO = "Cluster-Linux"
+NFS_RELAY_PORT = 47832  # (on Windows' side of WSL's network only)
+TR_CONFIG_REL = ".local/share/ht-cluster/transmission"  # (ht-cluster-root's TR_CONFIG, in the home's home)
+CREATE_NO_WINDOW, CREATE_NEW_PROCESS_GROUP = 0x08000000, 0x00000200
+_wsl = {"proc": None, "ready": None, "readyAt": 0}
+_links = {"relay": None, "relayKey": None, "tr": None, "trKey": None}
+
+
+def winsys():
+    import winsys as w  # (cluster/node/winsys.py: Windows only)
+    return w
+
+
+def wsl_exe():
+    return os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", "wsl.exe")
+
+
+def wsl_path(p):
+    """A Windows path as WSL's Linux sees it (C:\\Users\\... -> /mnt/c/Users/...)."""
+    drive, rest = os.path.splitdrive(os.path.abspath(p))
+    return "/mnt/%s%s" % (drive[:1].lower(), rest.replace("\\", "/"))
+
+
+def wsl_script(node):
+    """windows/transmission.sh as that Linux reads it: a copy with Linux's line ends, in the state folder."""
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "windows", "transmission.sh")
+    with open(src, "rb") as f:
+        data = f.read().replace(b"\r\n", b"\n")
+    dst = os.path.join(node.state_dir, "transmission-wsl.sh")
+    try:
+        with open(dst, "rb") as f:
+            same = f.read() == data
+    except OSError:
+        same = False
+    if not same:
+        with open(dst + ".new", "wb") as f:
+            f.write(data)
+        os.replace(dst + ".new", dst)
+    return wsl_path(dst)
+
+
+def wsl_cmd(node, words):
+    return [wsl_exe(), "-d", WSL_DISTRO, "-u", "root", "--exec", "/bin/sh", wsl_script(node)] + [str(w) for w in words]
+
+
+def wsl_call(node, words, timeout=60):
+    """transmission.sh <words> in Cluster-Linux, as root: (exit code, what it said)."""
+    code, out, err = node.run(wsl_cmd(node, words), timeout, dict(os.environ, WSL_UTF8="1"))
+    return code, (out + "\n" + err).replace("\x00", "").strip()
+
+
+def wsl_pid_file(node):
+    return os.path.join(node.state_dir, "transmission-wsl.pid")
+
+
+def wsl_running(node):
+    """Transmission's wsl.exe (started by this service, or by it before a restart) is still going."""
+    p = _wsl["proc"]
+    if p is not None:
+        if p.poll() is None:
+            return True
+        _wsl["proc"] = None
+    path = wsl_pid_file(node)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            pid = int(f.read().split()[0])
+        since = os.path.getmtime(path)
+    except (OSError, ValueError, IndexError):
+        return False
+    w = winsys()
+    if since < time.time() - w.uptime() or (w.exe_of(pid) or "").lower() != "wsl.exe":  # (Windows started since, or it ended)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _ipv4(s):
+    try:
+        return ipaddress.ip_address(s).version == 4
+    except ValueError:
+        return False
+
+
+def home_folder(node):
+    """The home's own home folder (its lease answer says; a home from before that: its folders action)."""
+    if _run.get("homeDir"):
+        return _run["homeDir"]
+    home = _run.get("home") or {}
+    if home.get("target"):
+        code, a = node.ask(home["target"], "POST", "/api/action", {"module": "apps", "action": "folders", "args": {}}, timeout=15)
+        if code == 200 and isinstance(a, dict) and a.get("ok") and a.get("home"):
+            _run["homeDir"] = a["home"]
+    return _run.get("homeDir")
+
+
+def _reserved_connect(host, port):
+    """A connection to host:port from a port below 1024 (the home's NFS share takes only those)."""
+    for local in range(1023, 599, -1):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind(("0.0.0.0", local))
+        except OSError:
+            s.close()
+            continue
+        try:
+            s.settimeout(15)
+            s.connect((host, port))
+            s.settimeout(None)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            return s
+        except OSError as e:
+            s.close()
+            if getattr(e, "winerror", None) in (10048, 10013, 10049):  # (that port taken just then, for this address: the next one)
+                continue
+            raise
+    raise OSError("no port below 1024 free here")
+
+
+def _serve_relay(server, peer, upstream):
+    while _links["relay"] is server:
+        try:
+            conn, addr = server.accept()
+        except OSError:
+            break
+        if addr[0] != peer:  # (that Linux alone)
+            conn.close()
+            continue
+        try:
+            up = _reserved_connect(*upstream)
+        except OSError:
+            conn.close()
+            continue
+        threading.Thread(target=_pipe, args=(conn, up), daemon=True).start()
+        threading.Thread(target=_pipe, args=(up, conn), daemon=True).start()
+
+
+def _serve_tr(server, target):
+    while _links["tr"] is server:
+        try:
+            conn, addr = server.accept()
+        except OSError:
+            break
+        if not _allowed(addr[0]):
+            conn.close()
+            continue
+        try:
+            up = socket.create_connection(target, timeout=10)
+            up.settimeout(None)
+        except OSError:
+            conn.close()
+            continue
+        threading.Thread(target=_pipe, args=(conn, up), daemon=True).start()
+        threading.Thread(target=_pipe, args=(up, conn), daemon=True).start()
+
+
+def _listen(addr):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(addr)
+    s.listen(32)
+    return s
+
+
+def keep_relay(gw, vm, home_ip):
+    """The NFS relay: on gw (Windows' side of WSL's network), for vm (that Linux) alone, to the home's NFS. -> None,
+    or why it couldn't."""
+    key = (gw, vm, home_ip)
+    if _links["relay"] and _links["relayKey"] == key:
+        return None
+    _close("relay")
+    try:
+        s = _listen((gw, NFS_RELAY_PORT))
+    except OSError as e:
+        return "Its relay for the home's folders couldn't listen on %s:%d: %s" % (gw, NFS_RELAY_PORT, e)
+    _links.update(relay=s, relayKey=key)
+    threading.Thread(target=_serve_relay, args=(s, vm, (home_ip, 2049)), daemon=True).start()
+    return None
+
+
+def keep_tr_link(node):
+    """Transmission's address at this PC's Tailscale address (for the home and the app), passed on to WSL's."""
+    ip = (node.target() or "").split(":")[0]
+    if not _ipv4(ip):
+        return
+    key = (ip, tr_port(node))
+    if _links["tr"] and _links["trKey"] == key:
+        return
+    _close("tr")
+    try:
+        s = _listen(key)
+    except OSError:
+        return
+    _links.update(tr=s, trKey=key)
+    threading.Thread(target=_serve_tr, args=(s, ("127.0.0.1", tr_port(node))), daemon=True).start()
+
+
+def _close(which):
+    s = _links[which]
+    _links[which] = None
+    _links[which + "Key"] = None
+    if s:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
+def keep_wsl_links(node):
+    """While Transmission runs here: its relay and its address kept up (again after this service restarted)."""
+    r = (node.memory("apps").get("started") or {}).get("relay") or {}
+    if r.get("gw") and r.get("vm") and r.get("home"):
+        keep_relay(r["gw"], r["vm"], r["home"])
+    keep_tr_link(node)
+
+
+def wsl_log(node):
+    path = os.path.join(node.state_dir, "transmission-wsl.log")
+    try:
+        if os.path.getsize(path) > 1 << 20:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
+    return path
+
+
+def last_said(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = [l.strip() for l in f.read().replace("\x00", "").splitlines() if l.strip()]
+        return lines[-1][:300] if lines else "nothing said"
+    except OSError:
+        return "nothing said"
+
+
+def start_wsl(node, where, names):
+    """Transmission started in this PC's Linux, the home's folders from where: -> (None, the relay's addresses), or
+    (why not, None)."""
+    if not _ipv4(where or ""):
+        return "this PC doesn't keep Transmission's files", None
+    home = home_folder(node)
+    if not home or not home.startswith("/home/"):
+        return "couldn't learn where the home keeps its folders", None
+    stop_wsl(node, quiet=True)
+    code, out = wsl_call(node, ["net"], 120)
+    parts = out.split()
+    if code != 0 or len(parts) < 2 or not _ipv4(parts[0]) or not _ipv4(parts[1]):
+        return "this PC's Linux didn't start (%s)" % (out.splitlines()[-1][:200] if out else code), None
+    gw, vm = parts[0], parts[1]
+    why = keep_relay(gw, vm, where)
+    if why:
+        return why, None
+    log = wsl_log(node)
+    with open(log, "ab") as f:
+        f.write(("%s starting, its folders from %s: %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), where, ", ".join(names))).encode("utf-8"))
+        f.flush()
+        since = f.tell()
+        p = subprocess.Popen(wsl_cmd(node, ["start", gw, NFS_RELAY_PORT, home, TR_CONFIG_REL] + list(names)), stdout=f, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL, env=dict(os.environ, WSL_UTF8="1"), creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+    _wsl["proc"] = p
+    with open(wsl_pid_file(node), "w", encoding="utf-8") as f:
+        f.write("%d\n" % p.pid)
+    # (started once its folders are mounted and Transmission launched, as on a Pi: not waiting for it to answer,
+    # which over a slow Wi-Fi can take minutes, reading every torrent's progress from the home)
+    deadline = time.time() + 600
+    while time.time() < deadline:
+        if p.poll() is not None:
+            _close("relay")
+            return "it ended at once: %s" % last_said(log), None
+        try:
+            with open(log, "rb") as f:
+                f.seek(since)
+                if b"transmission.sh: running" in f.read():
+                    break
+        except OSError:
+            pass
+        time.sleep(2)
+    else:
+        stop_wsl(node, quiet=True)
+        return "its folders weren't mounted within 10 minutes: %s" % last_said(log), None
+    keep_tr_link(node)
+    return None, {"gw": gw, "vm": vm, "home": where}
+
+
+def stop_wsl(node, quiet=False):
+    """Transmission here stopped (it saves its torrents' progress first: up to 2 minutes), its folders let go, and
+    its relay and address closed. -> whether it stopped cleanly."""
+    ok = True
+    if wsl_running(node) or not quiet:
+        code, out = wsl_call(node, ["stop"], 180)
+        ok = code == 0
+    p = _wsl["proc"]
+    if p is not None:
+        try:
+            p.wait(30)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            ok = False
+        _wsl["proc"] = None
+    elif wsl_running(node):  # (started by this service before it restarted)
+        try:
+            with open(wsl_pid_file(node), "r", encoding="utf-8") as f:
+                pid = int(f.read().split()[0])
+            for _ in range(30):
+                if (winsys().exe_of(pid) or "").lower() != "wsl.exe":
+                    break
+                time.sleep(1)
+            else:
+                winsys().stop(pid)
+                ok = False
+        except (OSError, ValueError, IndexError):
+            pass
+    try:
+        os.remove(wsl_pid_file(node))
+    except OSError:
+        pass
+    _close("tr")
+    _close("relay")
+    return ok
 
 
 # ----- the home: its old address, passed on -----
@@ -722,7 +1115,7 @@ def _wake(node):
 
 def tick(node):
     # (this Pi's own word first: the home weighs itself with the others when it chooses)
-    if node.setting("apps", "transmission") or unit_active(node) or _run["names"] is not None:
+    if can_run(node) or unit_active(node) or _run["names"] is not None:
         runner_tick(node)
     if is_home(node):
         home_tick(node)
@@ -751,7 +1144,7 @@ def act_turtle(node, args):
 def act_torrents(node, args):
     try:
         t = ask_tr(node, "torrent-get", {"fields": ["id", "name", "percentDone", "status", "rateDownload", "rateUpload", "downloadDir", "errorString", "eta", "totalSize",
-                                                    "hashString", "downloadedEver", "uploadedEver", "queuePosition", "peersConnected"]})
+                                                    "hashString", "downloadedEver", "uploadedEver", "queuePosition", "peersConnected", "addedDate"]})
     except (RuntimeError, OSError) as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "torrents": t.get("torrents", [])}
@@ -926,13 +1319,15 @@ ACTIONS = {
 def status(node):
     ok, why = free(node)
     here = unit_active(node)
-    out = {"home": is_home(node), "canRun": bool(node.setting("apps", "transmission")), "free": ok, "why": why, "runningHere": here,
+    out = {"home": is_home(node), "canRun": can_run(node), "free": ok, "why": why, "runningHere": here,
            "error": _run["error"]}
     parts = []
     if here:
         parts.append("Transmission runs here")
     elif out["canRun"]:
         parts.append("Can run Transmission" + ("" if ok else " (not now: %s)" % why))
+    elif WINDOWS and node.setting("apps", "transmission"):
+        parts.append("Doesn't run Transmission yet (its Linux for it isn't set up on this PC: setup.py --linux)")
     else:
         parts.append("Doesn't run Transmission (its switch is off)")
     warn = [_run["error"]] if _run["error"] else []

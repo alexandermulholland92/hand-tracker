@@ -6,7 +6,7 @@
      BLUETOOTH_CONNECT and _ADVERTISE; BLUETOOTH and _ADMIN before Android 12). Left out: Sentry's watch while
      closed and after a restart (its service and boot receiver, special-use foreground service, wake lock),
      sound, old storage, finding Bluetooth rigs and OptiTrack (scan, location, multicast, network switching),
-     the dashboard's sign-in, and telling Pi Cluster whether it's recording (it doesn't record). -->
+     the dashboard's sign-in, and telling Cluster whether it's recording (it doesn't record). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 

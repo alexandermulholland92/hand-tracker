@@ -114,9 +114,9 @@
   }
   async function directCall(path, method, body, file) {
     const d = direct;
-    // (Only the pictures and takes' downloads, the heavy part: its state and commands still go
-    // over Tailscale, where it trusts the phone with more, its Wi-Fi among it.)
-    if (!d || Date.now() - d.failedAt < DIRECT_AGAIN_MS || !/^\/api\/(preview|take)\?/.test(path)) return null;
+    // (Only the pictures, a camera's video and takes' downloads, the heavy part: its state and commands
+    // still go over Tailscale, where it trusts the phone with more, its Wi-Fi among it.)
+    if (!d || Date.now() - d.failedAt < DIRECT_AGAIN_MS || !/^\/api\/(preview|video|take)\?/.test(path)) return null;
     try {
       const r = await nativeRemote.rigRequest({ rig: d.rig, path, method, body: body || "", key: d.key, connectMs: DIRECT_CONNECT_MS, toFile: !!file && filesOk });
       if (r.status === 401) {
@@ -320,8 +320,15 @@
     if (c.oak) return oakSettingsHtml(c, disabled, track);
     if (c.kinect) return kinectSettingsHtml(c, disabled, track);
     if (c.ps4) return ps4SettingsHtml(c, disabled, track);
-    return `<div class="oakset" id="${setId(c.id)}">${track}<div class="sub">Off: a take records this camera's video, without its hands.</div></div>`;
+    // A webcam's full screen as video (a computer from before this has no such switch: none shown).
+    const v = c.video === true;
+    const video = typeof c.video === "boolean"
+      ? `<div class="row"><span class="grow">${CAM_VIDEO[0]}</span><button type="button" class="small${v ? " on" : ""}" data-camvideo="${id}" aria-pressed="${v}"${disabled ? " disabled" : ""}>${v ? "On" : "Off"}</button></div><div class="sub">${CAM_VIDEO[1]}</div>`
+      : "";
+    return `<div class="oakset" id="${setId(c.id)}">${track}<div class="sub">Off: a take records this camera's video, without its hands.</div>${video}</div>`;
   }
+  // A webcam's full screen as video: its switch and what it does.
+  const CAM_VIDEO = ["Full screen as video", "Full screen plays this camera as video (smoother, up to its own rate) on a phone or app that can, its hands drawn there. The video is made on the computer while it's played, which takes some of its processor (a Raspberry Pi has no chip for it). OAK cameras send their own, always."];
   // A Kinect's own settings (multi-camera.js's KINECT_OWN): what its picture shows and what's
   // found in it, its colour camera, and what each take keeps.
   const KINECT_CHOICES = {
@@ -420,6 +427,8 @@
       command("pick", { pick: { id: b.dataset.track, tracking: b.getAttribute("aria-pressed") !== "true" } });
     } else if (b.dataset.second) {
       command("pick", { pick: { id: b.dataset.second, secondLook: b.getAttribute("aria-pressed") !== "true" } });
+    } else if (b.dataset.camvideo) {
+      command("pick", { pick: { id: b.dataset.camvideo, video: b.getAttribute("aria-pressed") !== "true" } });
     } else if (b.dataset.oakset) {
       command("oak", { oak: { id: b.dataset.oakid, options: { [b.dataset.oakset]: b.getAttribute("aria-pressed") !== "true" } } });
     } else if (b.dataset.kinset) {
@@ -2350,14 +2359,14 @@
   // The take's length, counted on each second from the rig's last answer (they come every 1-6 s).
   function showRecClock() {
     const t = clock(state.elapsed_s + (Date.now() - stateAt) / 1000);
-    document.title = `● ${t} · Hand Tracker`;
+    document.title = `● ${t} · Remote Recording`;
     $("status").innerHTML = `<span class="dot"></span>Recording ${t}`;
   }
   setInterval(() => state && state.recording && showRecClock(), 1000);
   function render() {
     const s = state;
-    $("title").textContent = (s.host ? `Hand Tracker on ${s.host}` : "Hand Tracker") + (bt || btNet ? " (Bluetooth)" : "");
-    document.title = "Hand Tracker remote";
+    $("title").textContent = (s.host ? `Remote Recording on ${s.host}` : "Remote Recording") + (bt || btNet ? " (Bluetooth)" : "");
+    document.title = "Remote Recording";
     const cams = s.cameras || [];
     const running = cams.filter((c) => c.fps > 0).length;
     const status = $("status");
@@ -2681,7 +2690,9 @@
   // ---------- one camera, full screen ----------
   // Tapping a camera's picture shows it alone, as big as the screen and more often (about 15
   // pictures a second: Hand Tracker sends only that one meanwhile, and each request waits for
-  // its next picture). Tapping it, ✕, Escape or Back goes back to every camera.
+  // its next picture). An OAK camera whose own video comes (the state's stream "h264") plays as
+  // video instead where this device can (videoLoop): up to the camera's 30 a second, its hands and
+  // objects drawn over it here. Tapping it, ✕, Escape or Back goes back to every camera.
   let full = null; // { i, stop }
   function openFull(i) {
     if (full || !Number.isInteger(i)) return;
@@ -2691,6 +2702,8 @@
     $("fullName").textContent = c.role || c.name || `Camera ${i + 1}`;
     $("fullRate").textContent = "";
     $("fullImg").removeAttribute("src");
+    $("fullImg").hidden = false;
+    $("fullVideo").hidden = true;
     $("full").hidden = false;
     if (state) renderSentry(state);
     try {
@@ -2698,7 +2711,30 @@
     } catch {}
     const root = document.documentElement;
     if (root.requestFullscreen) root.requestFullscreen().catch(() => {});
-    fullLoop(loop);
+    runFull(loop);
+  }
+  // Its video where it comes and plays here, else its pictures; the video again once it comes back (its
+  // camera started again with new settings, say: a few seconds without it), not sooner than VIDEO_AGAIN_MS
+  // after it last stopped.
+  const VIDEO_AGAIN_MS = 3000;
+  async function runFull(loop) {
+    const cam = () => ((state && state.cameras) || [])[loop.i];
+    let videoAfter = 0;
+    while (!loop.stop) {
+      if (canPlayVideo(cam())) {
+        if (await videoLoop(loop)) return; // (closed)
+        videoAfter = Date.now() + VIDEO_AGAIN_MS;
+        if (loop.stop) return;
+      }
+      $("fullVideo").hidden = true;
+      $("fullImg").hidden = false;
+      const pictures = { i: loop.i, stop: false };
+      const watch = setInterval(() => {
+        if (loop.stop || (Date.now() > videoAfter && canPlayVideo(cam()))) pictures.stop = true;
+      }, 1000);
+      await fullLoop(pictures);
+      clearInterval(watch);
+    }
   }
   function closeFull(fromHistory) {
     if (!full) return;
@@ -2779,6 +2815,258 @@
     }
     await asking(true);
     if (url) URL.revokeObjectURL(url);
+  }
+
+  // ---------- full screen as video ----------
+  // An OAK camera's own H.264 (Hand Tracker keeps the group since its last keyframe): asked for after
+  // the last picture had (/api/video?i=N&after=S, waiting for the next), decoded here (WebCodecs) and
+  // drawn as its time comes (a few that come at once aren't shown at once), turned and flipped as the
+  // camera is, with its hands and objects (the camera's own, each frame's) drawn over it as on its tile.
+  // Only where this device can: WebCodecs is there (the apps; a browser only on a secure page) and not
+  // over Bluetooth (far too slow). Once it can't (no such video, or this device can't decode it), its
+  // pictures again (videoOff: from then on here).
+  let videoOff = false;
+  const canPlayVideo = (c) => !videoOff && !bt && !!c && c.stream === "h264" && typeof VideoDecoder === "function" && typeof EncodedVideoChunk === "function";
+  // The camera's records (electron/remote-record.js videoRecords): [{ kind (1 keyframe, 2 picture, 3 hands
+  // and objects), seq, u, data }].
+  function readVideoRecords(bytes) {
+    const out = [];
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let at = 0; at + 17 <= bytes.length;) {
+      const n = view.getUint32(at + 13, true);
+      if (at + 17 + n > bytes.length) break;
+      out.push({ kind: view.getUint8(at), seq: view.getUint32(at + 1, true), u: view.getFloat64(at + 5, true), data: bytes.subarray(at + 17, at + 17 + n) });
+      at += 17 + n;
+    }
+    return out;
+  }
+  // Its codec, from a keyframe's SPS (its profile, constraints and level: "avc1.4d401f"), or null.
+  function avcCodec(data) {
+    const hex = (b) => b.toString(16).padStart(2, "0");
+    for (let at = 0; at + 6 < data.length; at++) {
+      if (data[at] === 0 && data[at + 1] === 0 && data[at + 2] === 1 && (data[at + 3] & 0x1f) === 7) return `avc1.${hex(data[at + 4])}${hex(data[at + 5])}${hex(data[at + 6])}`;
+    }
+    return null;
+  }
+  // MediaPipe's hand: which of its 21 points join (as its tiles draw them).
+  const HAND_LINES = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [0, 17], [17, 18], [18, 19], [19, 20]];
+  const objectColor = (label) => (label === "person" ? "#fcc419" : ["cat", "dog", "bird", "horse", "sheep", "cow"].includes(label) ? "#da77f2" : "#adb5bd");
+  // One picture, turned (clockwise) and flipped as its camera is, with its hands and objects.
+  function drawVideoFrame(canvas, frame, ov, c) {
+    const W = frame.displayWidth, H = frame.displayHeight, r = [90, 180, 270].includes(c.rotation) ? c.rotation : 0;
+    const CW = r % 180 ? H : W, CH = r % 180 ? W : H;
+    if (canvas.width !== CW || canvas.height !== CH) {
+      canvas.width = CW;
+      canvas.height = CH;
+    }
+    const ctx = canvas.getContext("2d");
+    // (the picture's own pixels to the canvas's: turned, then flipped)
+    let [a, b, cc, d, e, f] = r === 90 ? [0, 1, -1, 0, H, 0] : r === 180 ? [-1, 0, 0, -1, W, H] : r === 270 ? [0, -1, 1, 0, 0, W] : [1, 0, 0, 1, 0, 0];
+    if (c.mirror) [a, cc, e] = [-a, -cc, CW - e];
+    const place = (x, y) => [a * x + cc * y + e, b * x + d * y + f];
+    ctx.setTransform(a, b, cc, d, e, f);
+    ctx.drawImage(frame, 0, 0, W, H);
+    const unit = Math.max(1, W / 640);
+    const tags = [];
+    if (ov && c.tracking !== false) {
+      for (const hand of ov.hands || []) {
+        const pts = (hand.lm || []).map(([x, y]) => [x * W, y * H]);
+        if (pts.length < 21) continue;
+        ctx.strokeStyle = "#00FF88";
+        ctx.lineWidth = 2 * unit;
+        ctx.beginPath();
+        for (const [i, j] of HAND_LINES) {
+          ctx.moveTo(pts[i][0], pts[i][1]);
+          ctx.lineTo(pts[j][0], pts[j][1]);
+        }
+        ctx.stroke();
+        ctx.fillStyle = "#FF3355";
+        for (const [x, y] of pts) {
+          ctx.beginPath();
+          ctx.arc(x, y, 3 * unit, 0, 2 * Math.PI);
+          ctx.fill();
+        }
+        if (hand.label) tags.push({ at: place(...pts[0]), text: hand.label, color: "#00FF88" });
+      }
+    }
+    if (ov && c.showObjects !== false) {
+      for (const o of ov.objects || []) {
+        const [x0, y0, x1, y1] = o.box;
+        ctx.strokeStyle = objectColor(o.label);
+        ctx.lineWidth = 2 * unit;
+        ctx.strokeRect(x0 * W, y0 * H, (x1 - x0) * W, (y1 - y0) * H);
+        // (its name at the box's top left as it's seen, upright)
+        const corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(([x, y]) => place(x * W, y * H));
+        tags.push({ at: [Math.min(...corners.map((q) => q[0])), Math.min(...corners.map((q) => q[1]))], text: o.label, color: objectColor(o.label), above: true });
+      }
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.font = `600 ${Math.round(14 * unit)}px "Segoe UI", system-ui, sans-serif`;
+    ctx.textBaseline = "middle";
+    for (const t of tags) {
+      const tw = ctx.measureText(t.text).width + 12 * unit, th = 22 * unit;
+      const x = Math.min(Math.max(0, t.at[0]), CW - tw), y = t.above ? (t.at[1] - th >= 0 ? t.at[1] - th : t.at[1]) : Math.min(CH - th, t.at[1] + 6 * unit);
+      ctx.fillStyle = "rgba(14, 15, 18, 0.8)";
+      ctx.fillRect(x, y, tw, th);
+      ctx.fillStyle = t.color;
+      ctx.fillText(t.text, x + 6 * unit, y + th / 2);
+    }
+  }
+  // -> true once it's stopped (full screen closed), false when it can't play it (its pictures, then).
+  async function videoLoop(loop) {
+    const canvas = $("fullVideo");
+    const cam = () => (((state && state.cameras) || [])[loop.i]) || {};
+    let decoder = null, codec = "", after = 0, needKey = true, failed = false, shownOnce = false;
+    let frames = 0, since = performance.now(), lead = null, timer = null;
+    const waits = []; // how long the last pictures took to be ready here (from when the camera took them)
+    let newest = 0; // when the newest picture come so far was taken
+    // (Starting, or after a skip, from the last keyframe: the pictures since it come at once, older than the
+    // newest by up to a second; they're decoded, as the rest need them, but not shown, nor counted in lead.)
+    const CATCH_UP_MS = 250;
+    // (what became of its pictures, on the canvas for the checks: decoded, shown, not shown as old, left behind)
+    const counts = { decoded: 0, shown: 0, old: 0, behind: 0, asked: 0 };
+    const tell = () => (canvas.dataset.counts = JSON.stringify(counts));
+    const queue = []; // decoded pictures waiting for their time
+    const overlays = []; // its frames' hands and objects, by when
+    const overlayFor = (u) => {
+      let best = null;
+      for (const o of overlays) if (Math.abs(o.u - u) <= 50 && (!best || Math.abs(o.u - u) < Math.abs(best.u - u))) best = o;
+      if (best) return best;
+      for (const o of overlays) if (o.u <= u && u - o.u <= 300 && (!best || o.u > best.u)) best = o;
+      return best;
+    };
+    // Each picture shown in turn as its time comes: lead after the camera took it, lead being about the
+    // longest most of the last pictures took to be ready here (9 in 10 of the last 60, eased towards), so
+    // pictures that come a few at once (a link that sends in bursts) are still shown evenly, each. Far
+    // behind (over VIDEO_QUEUE waiting): the newest at once. By a timer, not the screen's frames (which a
+    // page not in view barely gets).
+    const VIDEO_QUEUE = 8;
+    const later = (ms) => {
+      if (timer === null) timer = setTimeout(tick, Math.max(0, Math.min(100, ms)));
+    };
+    function tick() {
+      timer = null;
+      if (loop.stop) return;
+      const now = performance.now();
+      const due = queue.length > VIDEO_QUEUE ? queue.length - 1 : queue.length && queue[0].timestamp / 1000 + lead <= now ? 0 : -1;
+      if (due >= 0) {
+        for (const old of queue.splice(0, due)) {
+          old.close();
+          counts.behind++;
+        }
+        const frame = queue.shift();
+        try {
+          drawVideoFrame(canvas, frame, overlayFor(frame.timestamp / 1000), cam());
+          if (!shownOnce) {
+            shownOnce = true;
+            canvas.hidden = false;
+            $("fullImg").hidden = true;
+          }
+          frames++;
+          counts.shown++;
+        } finally {
+          frame.close();
+        }
+        tell();
+        if (now - since >= 1000) {
+          $("fullRate").textContent = `${Math.round((frames * 1000) / (now - since))} fps`;
+          frames = 0;
+          since = now;
+        }
+      }
+      // (the next no sooner than 8 ms on: one shown at a time)
+      if (queue.length) later(Math.max(8, queue[0].timestamp / 1000 + lead - performance.now()));
+    }
+    async function open(c) {
+      const config = { codec: c, optimizeForLatency: true };
+      const ok = await VideoDecoder.isConfigSupported(config).then((x) => !!(x && x.supported), () => false);
+      if (!ok) return false;
+      if (decoder && decoder.state !== "closed") decoder.close();
+      decoder = new VideoDecoder({
+        output: (frame) => {
+          counts.decoded++;
+          if (!loop.stop && frame.timestamp / 1000 < newest - CATCH_UP_MS) counts.old++;
+          if (loop.stop || frame.timestamp / 1000 < newest - CATCH_UP_MS) return frame.close();
+          const now = performance.now(), wait = now - frame.timestamp / 1000;
+          waits.push(wait);
+          if (waits.length > 60) waits.shift();
+          const most = waits.slice().sort((x, y) => x - y)[Math.floor(0.9 * (waits.length - 1))];
+          // (eased towards it; at once the first time, or when this computer's clock and the camera's jumped)
+          lead = lead === null || Math.abs(most - lead) > 2000 ? most : lead + (most - lead) * 0.1;
+          queue.push(frame);
+          later(frame.timestamp / 1000 + lead - now);
+        },
+        error: () => (failed = true),
+      });
+      decoder.configure(config);
+      codec = c;
+      return true;
+    }
+    try {
+      while (!loop.stop) {
+        if (failed) return false;
+        if (document.hidden) {
+          // (not shown: nothing asked for; from its last keyframe once it's shown again)
+          await sleep(500);
+          after = 0;
+          needKey = true;
+          continue;
+        }
+        let res;
+        try {
+          counts.asked++;
+          res = await api(`/api/video?i=${loop.i}&after=${after}`);
+        } catch {
+          if (loop.stop) break;
+          await sleep(500);
+          continue;
+        }
+        if (loop.stop) break;
+        if (res.status === 204) continue;
+        if (res.status !== 200) return false; // (no video from it now: its pictures)
+        for (const r of readVideoRecords(res.bytes)) {
+          if (r.kind === 3) {
+            try {
+              overlays.push(JSON.parse(new TextDecoder().decode(r.data)));
+            } catch {
+              // (not one: left out)
+            }
+            continue;
+          }
+          if (r.seq !== after + 1 && r.kind !== 1) needKey = true; // (a gap: from the next keyframe)
+          after = r.seq;
+          newest = Math.max(newest, r.u);
+          if (r.kind === 1) {
+            const c = avcCodec(r.data);
+            if (c && c !== codec && !(await open(c))) {
+              videoOff = true; // (this device can't decode it)
+              return false;
+            }
+            needKey = false;
+          }
+          if (needKey || !decoder || decoder.state !== "configured") continue;
+          try {
+            decoder.decode(new EncodedVideoChunk({ type: r.kind === 1 ? "key" : "delta", timestamp: Math.round(r.u * 1000), data: r.data }));
+          } catch {
+            videoOff = true;
+            return false;
+          }
+        }
+        if (overlays.length > 150) overlays.splice(0, overlays.length - 150);
+        // (decoding falling behind: from the next keyframe)
+        if (decoder && decoder.decodeQueueSize > 30) {
+          decoder.reset();
+          codec = "";
+          needKey = true;
+        }
+      }
+      return true;
+    } finally {
+      clearTimeout(timer);
+      for (const f of queue.splice(0)) f.close();
+      if (decoder && decoder.state !== "closed") decoder.close();
+      if (failed) videoOff = true; // (its decoder failed here: pictures from now on)
+    }
   }
 
   const unreachable = () => (rig

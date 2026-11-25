@@ -9,7 +9,7 @@ import android.os.Bundle;
 import android.os.SystemClock;
 
 /**
- * Whether this app is recording or saving a take just now, for Pi Cluster on the same phone, which
+ * Whether this app is recording or saving a take just now, for Cluster on the same phone, which
  * doesn't update the phone's apps meanwhile (AppUpdates.recording). The page says so
  * (remote-record-ui.js, through RigServerPlugin.setBusy) as it starts, and every 30 seconds while it
  * records or saves; it counts as busy until 2 minutes after the last time it said so (the take's

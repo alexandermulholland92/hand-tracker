@@ -13,11 +13,14 @@
  *    android/app/src/converter/assets for Recording Converter, with Capacitor's settings and
  *    the page each opens on (remote-recording.html, recording-converter.html)
  * 4. runs Gradle (assembleFullDebug, assembleMouseDebug, assembleRemoteDebug,
- *    assembleConverterDebug) with Android Studio's bundled JDK and your Android SDK
+ *    assembleConverterDebug) with Android Studio's bundled JDK and your Android SDK, then the Cluster app on its
+ *    own (assembleClusterDebug: only it has Python, for its member service, android/app/build.gradle), with
+ *    Cluster's service's code in its assets (cluster/node: assets/cluster-node, with a STAMP of its contents, by
+ *    which the phone knows to copy it again, and its VERSION: the commit a GitHub build is made from, else "dev")
  * 5. copies the results to dist/HandTracker-<version>.apk, dist/HandMouse-<version>.apk,
  *    dist/RemoteRecording-<version>.apk, dist/RecordingConverter-<version>.apk and
- *    dist/PiCluster-<version>.apk (Pi Cluster: the "cluster" flavor, only its own few files with
- *    pi-cluster.html as index.html, build-web.js --cluster, made as Hand Mouse is)
+ *    dist/Cluster-<version>.apk (Cluster: the "cluster" flavor, only its own few files with
+ *    cluster.html as index.html, build-web.js --cluster, made as Hand Mouse is)
  *
  * Needs Android Studio (or JAVA_HOME + ANDROID_HOME pointing at a JDK 17+ and an Android SDK).
  */
@@ -64,11 +67,26 @@ run(`node scripts/build-web.js --hand-mouse --out "${path.join(MOUSE_ASSETS, "pu
 for (const f of ["capacitor.config.json", "capacitor.plugins.json"]) fs.copyFileSync(path.join(MAIN_ASSETS, f), path.join(MOUSE_ASSETS, f));
 // Remote Recording (its rig is Hand Tracker's page) and Recording Converter: all of Hand Tracker's
 // files, each opening on its own page (Capacitor's server.appStartPath).
-// Pi Cluster: its page as index.html and the few files it loads (build-web.js --cluster).
+// Cluster: its page as index.html and the few files it loads (build-web.js --cluster).
 const CLUSTER_ASSETS = path.join(ANDROID, "app", "src", "cluster", "assets");
 fs.rmSync(CLUSTER_ASSETS, { recursive: true, force: true });
 run(`node scripts/build-web.js --cluster --out "${path.join(CLUSTER_ASSETS, "public")}"`);
 for (const f of ["capacitor.config.json", "capacitor.plugins.json"]) fs.copyFileSync(path.join(MAIN_ASSETS, f), path.join(CLUSTER_ASSETS, f));
+// The member service's code (Cluster's own service, run on the phone: MemberService.java): its Python files.
+{
+  const from = path.join(ROOT, "cluster", "node"), to = path.join(CLUSTER_ASSETS, "cluster-node");
+  const files = [...fs.readdirSync(from).filter((f) => f.endsWith(".py")), ...fs.readdirSync(path.join(from, "modules")).filter((f) => f.endsWith(".py")).map((f) => `modules/${f}`)];
+  const hash = require("crypto").createHash("sha256");
+  for (const f of files.sort()) {
+    const data = fs.readFileSync(path.join(from, f));
+    fs.mkdirSync(path.dirname(path.join(to, f)), { recursive: true });
+    fs.writeFileSync(path.join(to, f), data);
+    hash.update(f).update(data);
+  }
+  const sha = process.env.GITHUB_SHA || "";
+  fs.writeFileSync(path.join(to, "VERSION"), /^[0-9a-f]{40}$/.test(sha) ? sha : "dev");
+  fs.writeFileSync(path.join(to, "STAMP"), hash.digest("hex").slice(0, 16));
+}
 for (const [flavor, page] of [["remote", "/remote-recording.html"], ["converter", "/recording-converter.html"]]) {
   const assets = path.join(ANDROID, "app", "src", flavor, "assets");
   fs.rmSync(assets, { recursive: true, force: true });
@@ -79,11 +97,16 @@ for (const [flavor, page] of [["remote", "/remote-recording.html"], ["converter"
   fs.writeFileSync(path.join(assets, "capacitor.config.json"), JSON.stringify(capConfig, null, "\t"));
 }
 // Full path: some shells don't look in the current folder for commands.
-run(`"${path.join(ANDROID, isWin ? "gradlew.bat" : "gradlew")}" assembleFullDebug assembleMouseDebug assembleRemoteDebug assembleConverterDebug assembleClusterDebug`, ANDROID);
+const gradlew = `"${path.join(ANDROID, isWin ? "gradlew.bat" : "gradlew")}"`;
+run(`${gradlew} assembleFullDebug assembleMouseDebug assembleRemoteDebug assembleConverterDebug`, ANDROID);
+// (on its own: only the Cluster app has Python, which Gradle adds to every app it builds in the same run; its own
+// Transmission first, built once: scripts/build-transmission-android.js, the NDK's)
+run("node scripts/build-transmission-android.js");
+run(`${gradlew} assembleClusterDebug`, ANDROID);
 
 const version = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
 fs.mkdirSync(path.join(ROOT, "dist"), { recursive: true });
-for (const [flavor, name] of [["full", "HandTracker"], ["mouse", "HandMouse"], ["remote", "RemoteRecording"], ["converter", "RecordingConverter"], ["cluster", "PiCluster"]]) {
+for (const [flavor, name] of [["full", "HandTracker"], ["mouse", "HandMouse"], ["remote", "RemoteRecording"], ["converter", "RecordingConverter"], ["cluster", "Cluster"]]) {
   const apk = path.join(ANDROID, "app", "build", "outputs", "apk", flavor, "debug", `app-${flavor}-debug.apk`);
   const out = path.join(ROOT, "dist", `${name}-${version}.apk`);
   fs.copyFileSync(apk, out);

@@ -98,6 +98,7 @@ app/src/mouse/assets
 app/src/remote/assets
 app/src/converter/assets
 app/src/cluster/assets
+app/src/cluster/jniLibs
 
 # Generated Config files
 app/src/main/assets/capacitor.config.json

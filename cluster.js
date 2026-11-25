@@ -1,5 +1,5 @@
 /**
- * pi-cluster.js — Pi Cluster's page (pi-cluster.html), in its own app. Lists the Pis running Pi
+ * cluster.js — Cluster's page (cluster.html), in its own app. Lists the Pis running
  * Cluster's service (window.desktop.cluster: electron/cluster.js finds them over Tailscale), asked
  * again every few seconds:
  *   Pis — each Pi's modules, the same way for every module (a module this page doesn't know yet
@@ -10,12 +10,18 @@
  * A Pi that's away (unplugged, out of battery, off the Wi-Fi) stays listed, faded, with when it
  * was last seen and what it said then, until it's back or forgotten.
  *
- * On a phone (Pi Cluster's Android and iPhone apps: the "cluster" flavor, ios-variant.js cluster)
+ * On a phone (Cluster's Android and iPhone apps: the "cluster" flavor, ios-variant.js cluster)
  * the same page goes through the app's own Cluster plugin (ClusterPlugin.java, RemoteLink.swift)
  * instead: phoneCluster() below, the same calls. A phone has no Tailscale command to list the
  * Pis, so it asks the Pis it knows (the first time: "pi", by its Tailscale name, or one named on
  * Add a Pi) which others there are; and a job's results come as one zip, into Downloads (iPhone:
  * the Files app).
+ *
+ * This phone in the cluster (the Cluster app on Android: its own switch, at the top): while it's on, the app runs
+ * Cluster's own service here (MemberService.java), so this phone is one of the cluster's members, with its health, jobs
+ * and downloads, listed with the Pis. Phones are reached through a Pi (only the Pis have each phone's key). A Pi's
+ * shared folders (its FTP link: cluster/node/modules/ftp.py) open here too, through the app's Ftp plugin: its folders
+ * looked through, a file fetched into Downloads or one sent from the phone, a folder made (not deleting anything).
  *
  * In a browser (on a device on the same Tailscale account): a Pi's own service serves this page at
  * http://<that Pi>:47830/ (cluster/node/ht_cluster.py) and says so in a meta tag; browserCluster()
@@ -24,6 +30,16 @@
  */
 (() => {
   const $ = (id) => document.getElementById(id);
+  // What this page remembers on a device, under names from before the rename (2026-11-25: "Pi Cluster" became
+  // "Cluster"): copied to the new names the first time (the old ones left, for an older copy of the page).
+  try {
+    const RENAMED = { piClusterPis: "clusterPis", "piCluster.torrentSort": "cluster.torrentSort", "piCluster.addOn": "cluster.addOn",
+      piClusterAskedNotices: "clusterAskedNotices", piClusterSeenBuild: "clusterSeenBuild" };
+    for (const [was, now] of Object.entries(RENAMED)) {
+      const kept = localStorage.getItem(was);
+      if (kept !== null && localStorage.getItem(now) === null) localStorage.setItem(now, kept);
+    }
+  } catch {}
   const api = (window.desktop && window.desktop.cluster) || phoneCluster() || browserCluster();
   const REFRESH_MS = 4000;
 
@@ -32,7 +48,7 @@
     const meta = document.querySelector('meta[name="ht-cluster-page"]');
     if (!meta || !/^https?:$/.test(location.protocol)) return null;
     const SELF = location.host; // (the Pi that served the page: asked directly; the others through it)
-    const KEY = "piClusterPis";
+    const KEY = "clusterPis";
     const ASK_MS = 8000;
     const PIECE = 8 << 20; // (a file's piece going to a Pi: the service takes up to 16 MB)
     let known = {};
@@ -179,7 +195,7 @@
     const cap = window.Capacitor;
     const P = cap && cap.Plugins && cap.Plugins.Cluster;
     if (!P) return null;
-    const KEY = "piClusterPis";
+    const KEY = "clusterPis";
     const PIECE = 2 << 20; // (a file's piece going to a Pi, through the app's bridge as base64)
     const ASK_MS = 6000;
     let known = {};
@@ -194,10 +210,14 @@
     const files = new Map(); // picked here: id -> File
     let peers = { at: 0, list: [] };
     const listeners = new Set();
+    // The phones of the cluster (members too: their own switch in this app), asked through the Pi whose Tailscale
+    // peers they are (the Pis have their keys; this page doesn't): phone address -> that Pi.
+    const phoneVia = new Map();
 
     async function ask(target, method, path, { body, data, timeoutMs = ASK_MS } = {}) {
       try {
-        const a = await P.request({ target, method, path, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), ...(data ? { data } : {}), timeoutMs });
+        const via = phoneVia.get(target);
+        const a = await P.request({ target: via || target, ...(via ? { to: target } : {}), method, path, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), ...(data ? { data } : {}), timeoutMs });
         if (String(a.type || "").startsWith("application/json")) {
           let j = {};
           try {
@@ -220,9 +240,12 @@
       // The Pis the known ones see on Tailscale (asked once a minute).
       if (now - peers.at > 60000) {
         for (const t of targets) {
+          if (phoneVia.has(t)) continue; // (a phone: it doesn't list the others)
           const a = await ask(t, "GET", "/api/peers");
           if (a.status === 200 && Array.isArray(a.peers)) {
             peers = { at: now, list: a.peers.filter((p) => p.online).map((p) => p.ip) };
+            phoneVia.clear();
+            for (const p of a.peers) if (p.phone && p.ip) phoneVia.set(p.ip, t);
             break;
           }
         }
@@ -284,6 +307,9 @@
       phone: true,
       list,
       addPi,
+      // (the Pis this app knows, as its own member service finds the others through them)
+      seeds: () => [...new Set([...Object.values(known).filter((k) => !(k.node && ["android", "ios"].includes(k.node.platform))).map((k) => k.target),
+        ...peers.list.filter((ip) => !phoneVia.has(ip))])].slice(0, 32),
       settings: ({ target, module, on, key, value }) => post(target, "/api/settings", { module, ...(typeof on === "boolean" ? { on } : {}), ...(key !== undefined ? { key, value } : {}) }),
       action: ({ target, module, action, args }) => post(target, "/api/action", { module, action, args: args || {} }),
       forget: async (name) => {
@@ -327,6 +353,149 @@
       },
     };
   }
+  // ---------- a Pi's shared folders, over its FTP link (the Cluster app on Android: its Ftp plugin) ----------
+  const Ftp = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Ftp;
+  const files = { pi: null, path: "/", entries: [], busy: false, error: "", note: "" };
+  const sizeText = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${Math.round(n / 1e3)} kB` : `${n} B`);
+  function filesButton(pi) {
+    const f = Ftp && mod(pi.node, "ftp");
+    const st = (f && f.on && f.status) || {};
+    if (!st.ready || !(st.folders || []).length) return null;
+    const b = el("button", { textContent: "Shared folders", title: `${pi.name}'s shared folders (${st.folders.join(", ")}), over its FTP link` });
+    b.onclick = () => openFiles(pi, "/");
+    return b;
+  }
+  async function openFiles(pi, path) {
+    Object.assign(files, { pi, path, busy: true, error: "", note: files.pi === pi ? files.note : "" });
+    renderFiles();
+    try {
+      const a = await Ftp.list({ host: pi.target, path });
+      files.entries = (a.entries || []).sort((x, y) => (x.dir === y.dir ? x.name.localeCompare(y.name) : x.dir ? -1 : 1));
+    } catch (e) {
+      files.entries = [];
+      files.error = (e && e.message) || String(e);
+    }
+    files.busy = false;
+    renderFiles();
+  }
+  const joinPath = (dir, name) => `${dir.replace(/\/+$/, "")}/${name}`;
+  function renderFiles() {
+    const box = $("filesBox");
+    if (!box) return;
+    if (!files.pi) {
+      box.hidden = true;
+      return;
+    }
+    box.hidden = false;
+    const close = el("button", { textContent: "✕", title: "Close" });
+    close.onclick = () => {
+      files.pi = null;
+      renderFiles();
+    };
+    const up = el("button", { textContent: "↑ Up", disabled: files.path === "/" || files.busy });
+    up.onclick = () => openFiles(files.pi, files.path.replace(/\/[^/]*\/?$/, "") || "/");
+    const send = el("button", { textContent: "Send a file here", disabled: files.path === "/" || files.busy, title: "A file from this phone, into this folder on the Pi" });
+    send.onclick = async () => {
+      try {
+        const a = await Ftp.upload({ host: files.pi.target, dir: files.path });
+        files.note = `Sent ${a.name}${a.size >= 0 ? ` (${sizeText(a.size)})` : ""}.`;
+      } catch (e) {
+        files.note = (e && e.message) || String(e);
+      }
+      openFiles(files.pi, files.path);
+    };
+    const make = el("button", { textContent: "New folder", disabled: files.path === "/" || files.busy });
+    make.onclick = async () => {
+      const name = (prompt("The new folder's name:") || "").trim();
+      if (!name || /[\/\\]/.test(name)) return;
+      try {
+        await Ftp.mkdir({ host: files.pi.target, path: joinPath(files.path, name) });
+      } catch (e) {
+        files.note = (e && e.message) || String(e);
+      }
+      openFiles(files.pi, files.path);
+    };
+    const rows = files.entries.map((e) => {
+      const row = el("button", { className: "fileRow", textContent: e.dir ? `📁 ${e.name}` : `${e.name} · ${sizeText(e.size)}` });
+      row.onclick = async () => {
+        if (e.dir) return openFiles(files.pi, joinPath(files.path, e.name));
+        if (!confirm(`Fetch ${e.name} (${sizeText(e.size)}) into this phone's Downloads?`)) return;
+        files.note = `Fetching ${e.name}…`;
+        renderFiles();
+        const handle = await Ftp.addListener("progress", (p) => {
+          files.note = `Fetching ${p.name}: ${p.size > 0 ? Math.round((100 * p.got) / p.size) : sizeText(p.got)}${p.size > 0 ? "%" : ""}`;
+          renderFiles();
+        });
+        try {
+          await Ftp.download({ host: files.pi.target, path: joinPath(files.path, e.name), name: e.name, size: e.size });
+          files.note = `${e.name} is in Downloads.`;
+        } catch (err) {
+          files.note = `${e.name}: ${(err && err.message) || err}`;
+        } finally {
+          if (handle && handle.remove) handle.remove();
+        }
+        renderFiles();
+      };
+      return row;
+    });
+    box.replaceChildren(
+      el("div", { className: "top" }, el("b", {}, `${files.pi.name}'s shared folders`), el("span", { className: "sub" }, files.path), close),
+      el("div", { className: "buttons" }, up, send, make),
+      files.busy ? el("div", { className: "sub" }, "Looking…") : "",
+      files.error ? el("div", { className: "warn-line" }, files.error) : "",
+      files.note ? el("div", { className: "sub" }, files.note) : "",
+      !files.busy && !files.error && !rows.length ? el("div", { className: "sub" }, "Nothing here.") : "",
+      el("div", { className: "fileList" }, rows),
+    );
+  }
+
+  // ---------- this phone in the cluster (the Cluster app on Android: its own switch) ----------
+  const Member = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Member;
+  let member = null;
+  async function memberStatus() {
+    if (!Member) return;
+    try {
+      member = await Member.status();
+    } catch (e) {
+      member = { error: (e && e.message) || String(e) };
+    }
+    renderMember();
+  }
+  function renderMember() {
+    const box = $("memberBox");
+    if (!Member || !box) return;
+    box.hidden = false;
+    const m = member || {};
+    const btn = el("button", { textContent: m.on ? "On" : "Off", title: m.on ? "Leave the cluster (this phone only looks at it)" : "Join the cluster: its health, jobs and downloads, as the Pis'" });
+    btn.setAttribute("aria-pressed", String(!!m.on));
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        member = m.on ? await Member.stop() : await Member.start({ seeds: api && api.seeds ? api.seeds() : [] });
+      } catch (e) {
+        say(`This phone couldn't ${m.on ? "leave" : "join"}: ${(e && e.message) || e}`, true);
+      }
+      renderMember();
+      setTimeout(memberStatus, 1500);
+    };
+    const words = !m.on ? "Off: this phone only looks at the cluster."
+      : !m.running ? "Starting…"
+      : m.address ? `In the cluster as ${m.name} (${m.address}): its health, jobs and downloads, listed with the Pis.`
+      : `In the cluster as ${m.name}, but Tailscale isn't on here, so the Pis can't reach it.`;
+    // (its Hand Tracker takes, shared with the cluster as a Pi's are, once Android's All files access is on for this app)
+    let takes = "";
+    if (m.on && m.takes === false) {
+      const allow = el("button", { textContent: "Allow", title: "Android's All files access for this app (in its Settings): this phone's Hand Tracker takes shared with the cluster" });
+      allow.onclick = async () => {
+        member = await Member.allowTakes();
+        renderMember();
+      };
+      takes = el("div", { className: "sub" }, "This phone's Hand Tracker takes aren't shared yet: turn on All files access for this app. ", allow);
+    }
+    box.replaceChildren(el("div", { className: "top" }, el("b", {}, "This phone in the cluster"), el("span", { className: "sub" }, words), el("span", { className: "spans" }, btn)),
+      takes, m.error ? el("div", { className: "warn-line" }, m.error) : "");
+  }
+
   const open = new Set(); // Pis whose ⚙ is open
   let data = null;
   let tab = "pis";
@@ -402,6 +571,8 @@
     for (const w of st.warnings || []) block.append(el("div", { className: "warn-line" }, "⚠ " + w));
     if (m.error) block.append(el("div", { className: "warn-line" }, `⚠ ${m.title} had a problem: ${m.error}`));
     if (m.name === "rig" && st.cameras && st.cameras.length) block.append(cameraLine(st.cameras));
+    if (m.name === "rig" && st.space) block.append(el("div", { className: "cams" }, `Space: ${st.space}`));
+    if (m.name === "health" && st.boots && st.boots.length) block.append(bootsBox(st.boots));
     const buttons = (m.actions || []).filter((a) => !a.hidden && actionMakesSense(m, a));
     if (live && buttons.length) {
       block.append(el("div", { className: "buttons" }, buttons.map((a) => {
@@ -418,7 +589,19 @@
     const st = m.status || {};
     if (m.name === "rig" && a.name === "start") return st.app === "not running";
     if (m.name === "rig" && a.name === "restart") return st.app === "running" && st.answering;
+    if (m.name === "downloads" && a.name === "getLibtorrent") return st.ready && !st.home && st.pieces === false;
     return true;
+  }
+
+  // Its last starts and why (health.py: after a restart, a shutdown, its power cut, or a freeze), newest first.
+  function bootsBox(boots) {
+    const when = (s) => (s ? new Date(s * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "?");
+    const box = el("details", { className: "boots" }, el("summary", {}, `Starts: last ${when(boots[0].at)}, after ${boots[0].words}`));
+    for (const b of boots) {
+      const bad = ["power", "froze", "unknown"].includes(b.cause);
+      box.append(el("div", { className: bad ? "warn-line" : "cams" }, `${when(b.at)}: after ${b.words}${b.lastSeen && bad ? ` (last heard from ${when(b.lastSeen)})` : ""}`));
+    }
+    return box;
   }
 
   function cameraLine(cams) {
@@ -455,13 +638,13 @@
     const sub = pi.answering
       ? [model, node.version && `service ${short(node.version)}`].filter(Boolean).join(" · ")
       : pi.online
-        ? `On Tailscale, but its Pi Cluster service isn't answering${pi.error ? ` (${pi.error})` : ""} · last answered ${ago(pi.seen)}`
+        ? `On Tailscale, but its Cluster service isn't answering${pi.error ? ` (${pi.error})` : ""} · last answered ${ago(pi.seen)}`
         : `Away · last seen ${ago(pi.seen)}`;
     const top = el("div", { className: "top" }, dot, el("span", { className: "name" }, pi.name), el("span", { className: "sub" }, sub));
     if (!pi.answering) {
       const forget = el("button", { textContent: "Forget", title: "Take it off this list (it comes back if its service answers again)" });
       forget.onclick = async () => {
-        if (!confirm(`Take ${pi.name} off the list? It comes back by itself if its Pi Cluster service answers again.`)) return;
+        if (!confirm(`Take ${pi.name} off the list? It comes back by itself if its Cluster service answers again.`)) return;
         await api.forget(pi.name);
         refresh();
       };
@@ -472,6 +655,8 @@
         open.has(pi.name) ? open.delete(pi.name) : open.add(pi.name);
         render();
       };
+      const shared = filesButton(pi);
+      if (shared) top.append(shared);
       top.append(gear);
     }
     return top;
@@ -542,6 +727,7 @@
       rigs.replaceChildren(...nodes.filter((p) => p.node).map(rigCard));
     }
     renderJobs();
+    if (!$("runOpts").hidden && !$("newJob").hidden) showRunOptions(); // (its members and where the cluster password is set, as they change)
     renderTransmission();
     const live = nodes.filter((p) => p.answering).length;
     $("note").textContent = data
@@ -576,6 +762,57 @@
   const rate = (b) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB/s` : `${Math.round((b || 0) / 1e3)} KB/s`);
   const bytes = (b) => (!b ? "0 B" : b >= 1e12 ? `${(b / 1e12).toFixed(2)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${Math.round(b / 1e6)} MB` : `${Math.round(b / 1e3)} KB`);
   const homeRel = (p, home) => (home && p && p.startsWith(home) ? "~" + p.slice(home.length) : p || "");
+
+  // How much of a torrent is here (the user, 2026-11-22: "show download percentage for each torrent"; their
+  // choices: a bar, the number beside its name, one decimal place): rounded down, so it says 100% only once
+  // it's all here. [0 to 1, its words]
+  function percent(t) {
+    const done = Math.max(0, Math.min(1, Number(t.percentDone) || 0));
+    return [done, done >= 1 ? "100%" : `${(Math.floor(done * 1000 + 1e-6) / 10).toFixed(1)}%`];
+  }
+
+  // Its bar under its name, filled that far, with the number on it (green once it's all here; grey while it's paused).
+  function percentBar(t, done, pct) {
+    const bar = el("div", { className: "tr-bar" + (done >= 1 ? " done" : t.status === 0 ? " paused" : "") },
+      el("div", { className: "fill", style: `width:${(done * 100).toFixed(2)}%` }), el("span", { className: "num" }, pct));
+    bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-label", `${t.name}: downloaded`);
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
+    bar.setAttribute("aria-valuenow", pct.replace("%", ""));
+    bar.setAttribute("aria-valuetext", pct);
+    return bar;
+  }
+
+  // The torrent list's order (the user, 2026-11-24: "sort torrents by alphabetical, activity, age, and by queue";
+  // their choices: activity is the fastest now first, age the newest first, a Reverse switch for any of them, and
+  // each device remembering the last one chosen, queue at first).
+  const TR_SORT_KEY = "cluster.torrentSort";
+  const trName = (a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" });
+  const trQueue = (a, b) => (a.queuePosition || 0) - (b.queuePosition || 0);
+  const trSpeed = (t) => (t.rateDownload || 0) + (t.rateUpload || 0);
+  const TR_ORDER = {
+    name: trName,
+    activity: (a, b) => trSpeed(b) - trSpeed(a) || trQueue(a, b),
+    // (when it was added; from a home whose service doesn't say yet, the order Transmission numbered them in)
+    age: (a, b) => (b.addedDate || 0) - (a.addedDate || 0) || (b.id || 0) - (a.id || 0) || trName(a, b),
+    queue: trQueue,
+  };
+  function trSort() {
+    try {
+      const s = JSON.parse(localStorage.getItem(TR_SORT_KEY) || "null");
+      if (s && TR_ORDER[s.by]) return { by: s.by, reverse: !!s.reverse };
+    } catch {}
+    return { by: "queue", reverse: false };
+  }
+  function setTrSort(change) {
+    try {
+      localStorage.setItem(TR_SORT_KEY, JSON.stringify({ ...trSort(), ...change }));
+    } catch {}
+    renderTransmission();
+  }
+  $("trSort").onchange = () => setTrSort({ by: $("trSort").value });
+  $("trReverse").onchange = () => setTrSort({ reverse: $("trReverse").checked });
 
   // Each torrent's traffic: its drop-down (open ones by the torrent's hash, with their graph's span) and the
   // readings its graph is drawn from (the home keeps them: apps.py's traffic).
@@ -770,18 +1007,25 @@
     $("trWeb").onclick = () => window.open(`http://${home.target.split(":")[0]}:9092/transmission/web/`, "_blank");
     $("trFolder").textContent = add.folder ? homeRel(add.folder, add.browsing && add.browsing.home) : "its usual folder (~/Downloads)";
     renderLimits(home, st);
-    // (downloading first, then those waiting to download in the queue's order, then the rest by name)
-    const rank = (t) => (t.status === 4 ? 0 : t.status === 3 ? 1 : 2);
+    renderAddOn(home);
+    renderSpread(home);
+    // (in the order chosen above the list: alphabetical, activity, age or queue, reversed if asked; trSort)
     const byQueue = (a, b) => (a.queuePosition || 0) - (b.queuePosition || 0);
-    const list = torrents.list.slice().sort((a, b) => rank(a) - rank(b) || (rank(a) === 1 ? byQueue(a, b) : 0) || a.name.localeCompare(b.name));
+    const sort = trSort();
+    $("trSort").value = sort.by;
+    $("trReverse").checked = sort.reverse;
+    const list = torrents.list.slice().sort(TR_ORDER[sort.by] || byQueue);
+    if (sort.reverse) list.reverse();
     const waiting = (status) => list.filter((x) => x.status === status).sort(byQueue);
     const was = document.activeElement && document.activeElement.closest && document.activeElement.closest("#trList") ? document.activeElement.dataset.fkey : null;
     $("trList").replaceChildren(torrents.error ? el("div", { className: "warn-line" }, "⚠ " + torrents.error) : "", ...list.map((t) => {
       const b = el("button", { textContent: t.status === 0 ? "Resume" : "Pause" });
       b.onclick = () => act(home, "apps", "torrent", { do: t.status === 0 ? "start" : "stop", ids: [t.id] }).then(() => loadTorrents(true));
-      const bits = [`${Math.round((t.percentDone || 0) * 100)}%`, STATUS[t.status] || "", homeRel(t.downloadDir, add.browsing && add.browsing.home)];
+      const bits = [STATUS[t.status] || "", homeRel(t.downloadDir, add.browsing && add.browsing.home)];
       const key = /^[0-9a-f]{40}$/i.test(t.hashString || "") ? t.hashString.toLowerCase() : null;
-      return el("div", { className: "card" }, el("div", { className: "top" }, el("span", { className: "summary", style: "flex:1;word-break:break-word" }, t.name), b),
+      const [done, pct] = percent(t);
+      return el("div", { className: "card" }, el("div", { className: "top" }, el("span", { className: "summary", style: "flex:1;word-break:break-word" }, t.name), el("span", { className: "tr-pct" }, pct), b),
+        percentBar(t, done, pct),
         el("div", { className: "cams" }, bits.filter(Boolean).join(" · ")), t.errorString ? el("div", { className: "warn-line" }, "⚠ " + t.errorString) : "",
         key ? trafficBox(home, t, key, waiting) : el("div", { className: "cams" }, `↓ ${rate(t.rateDownload)}  ↑ ${rate(t.rateUpload)}`));
     }));
@@ -799,6 +1043,143 @@
       setTimeout(refresh, 800);
     };
     loadTorrents();
+    loadSpread();
+  }
+
+  // ---------- Downloads on other computers (downloads.py; the user, 2026-11-24: "decentralize the transmission
+  // downloads from pi so any device can download and seed from that device and send it to pi"). A new download goes
+  // to the home (its Transmission, as before), a computer by name, or the one with the most free network; it can be
+  // split between computers, by files or by pieces; and once it's copied to the home, the home takes it over or the
+  // computer keeps seeding it. Those choices are remembered on each device.
+  let spread = { at: 0, list: [], computers: [], error: null, has: false };
+  const DL_KEY = "cluster.addOn";
+  function dlPrefs() {
+    try {
+      return JSON.parse(localStorage.getItem(DL_KEY) || "null") || {};
+    } catch {
+      return {};
+    }
+  }
+  function setDlPrefs(change) {
+    try {
+      localStorage.setItem(DL_KEY, JSON.stringify({ ...dlPrefs(), ...change }));
+    } catch {}
+  }
+  const hasDownloads = (home) => !!(home && mod(home.node, "downloads") && mod(home.node, "downloads").on);
+
+  async function loadSpread(now = false) {
+    const home = trHome();
+    if (!hasDownloads(home) || !home.answering || (!now && Date.now() - spread.at < 8000)) return;
+    spread.at = Date.now();
+    const a = await api.action({ target: home.target, module: "downloads", action: "list", args: {} }).catch((e) => ({ error: e.message }));
+    spread = { at: Date.now(), list: a.downloads || [], computers: a.computers || [], error: a.ok ? null : a.error, has: !!a.ok };
+    if (tab === "transmission") renderTransmission();
+  }
+
+  const freeBytes = (c) => bytes(Math.max(0, (c.room || 0) - (c.reserve || 0)));
+  const netWords = (c) => (c.net == null ? "network not read yet" : `network ${rate(c.net)}`);
+  function computerWords(c) {
+    if (c.home) return `its Transmission · ${freeBytes(c)} free · ${netWords(c)}`;
+    if (!c.heard) return "not answering";
+    if (!c.ready) return "no Transmission of its own";
+    if (!c.free) return `not now: ${c.why || "busy"}`;
+    return `${freeBytes(c)} free · ${netWords(c)}${c.pieces ? "" : " · no libtorrent"}`;
+  }
+
+  // "Download it on": the home, the computer with the most free network, or a computer by name (its room and how
+  // busy its network is beside it); split and hand-over choices only for another computer.
+  function renderAddOn(home) {
+    const on = $("trOn");
+    if (document.activeElement === on) return;
+    const prefs = dlPrefs();
+    const others = spread.computers.filter((c) => !c.home);
+    const me = spread.computers.find((c) => c.home);
+    const opts = [el("option", { value: "home", textContent: `${home.name} (${me ? computerWords(me) : "the cluster's Transmission"})` })];
+    if (spread.has && others.length) {
+      opts.push(el("option", { value: "freest", textContent: "The computer with the most free network" }));
+      for (const c of others) opts.push(el("option", { value: c.name, textContent: `${c.name} (${computerWords(c)})`, disabled: !c.heard || !c.ready }));
+    }
+    on.replaceChildren(...opts);
+    on.value = prefs.where && [...on.options].some((o) => o.value === prefs.where && !o.disabled) ? prefs.where : "home";
+    const away = on.value !== "home";
+    $("trSplitField").hidden = !away;
+    $("trAfterField").hidden = !away;
+    $("trSplit").value = prefs.split || "";
+    for (const r of document.querySelectorAll('input[name="trAfter"]')) r.checked = r.value === (prefs.after || "home");
+    $("trAfterTitle").textContent = `Once it's copied to ${home.name}`;
+    $("trAfterHome").textContent = `${home.name} takes it over: its Transmission checks its copy and seeds it, and the computer's copy is deleted`;
+    $("trOnNote").textContent = !hasDownloads(home) ? `Other computers can download too once ${home.name}'s service is updated.` :
+      on.value === "freest" ? `The least busy network right now, among the computers free with room for it: ${home.name} too, and ${home.name} first if it's about as free (nothing to copy then).` :
+      away && $("trSplit").value === "pieces" ? "Each computer needs libtorrent (Get libtorrent, under its Downloads on the Pis tab)." : "";
+  }
+  $("trOn").onchange = () => {
+    setDlPrefs({ where: $("trOn").value });
+    renderTransmission();
+  };
+  $("trSplit").onchange = () => {
+    setDlPrefs({ split: $("trSplit").value });
+    renderTransmission();
+  };
+  for (const r of document.querySelectorAll('input[name="trAfter"]')) r.onchange = () => setDlPrefs({ after: r.value });
+
+  const pct1 = (x) => `${(Math.floor((x || 0) * 1000 + 1e-6) / 10).toFixed(1)}%`;
+  function partLine(home, p) {
+    let words;
+    if (!p.heard) words = "not answering";
+    else if (p.state === "downloading") {
+      const peers = typeof p.peers === "number" ? ` · ${p.peers} peer${p.peers === 1 ? "" : "s"}` : "";
+      words = `${pct1(p.pct)} · ↓ ${rate(p.down)} ↑ ${rate(p.up)}${peers}${p.free === false ? ` (waiting: ${p.why || "busy"})` : ""}`;
+    } else if (p.state === "copying" && p.turn) words = `copying to ${home.name}: ${pct1(p.size ? p.copied / p.size : 0)}${p.copyRate ? ` (${rate(p.copyRate)})` : ""}`;
+    else if (p.state === "copied") words = `copied to ${home.name}`;
+    else words = `downloaded: waiting its turn to copy to ${home.name}${p.free === false ? ` (${p.why || "busy"})` : ""}`;
+    const what = p.files != null ? ` (${p.files} file${p.files === 1 ? "" : "s"})` : p.pieces ? ` (pieces ${p.pieces[0] + 1} to ${p.pieces[1]})` : "";
+    return el("div", { className: "cams" }, `${p.device}${what}: ${words}${p.error ? " · ⚠ " + p.error : ""}`);
+  }
+
+  function spreadCard(home, d) {
+    const [done, pct] = percent({ percentDone: d.pct });
+    const who = [...new Set(d.parts.map((p) => p.device))].join(", ");
+    const keep = d.parts.length === 1 ? "keeps" : "keep";
+    const send = async (action, args, ask) => {
+      if (ask && !confirm(ask)) return;
+      const a = await api.action({ target: home.target, module: "downloads", action, args: { id: d.id, ...args } }).catch((e) => ({ error: e.message }));
+      say(a.message || a.error || "Done.", !a.ok);
+      loadSpread(true);
+      loadTorrents(true);
+    };
+    const buttons = [];
+    const going = d.state === "downloading" || d.state === "metadata";
+    if (going) buttons.push(el("button", { textContent: d.paused ? "Resume" : "Pause", onclick: () => send("pause", { paused: !d.paused }) }));
+    if (d.state === "seeding") {
+      buttons.push(el("button", { textContent: `Let ${home.name} take it over`,
+        onclick: () => send("after", { after: "home" }, `${home.name}'s Transmission checks its copy of ${d.name} and seeds it; then the copies on ${who} are deleted. Go on?`) }));
+    } else if (going) {
+      buttons.push(el("button", { textContent: d.after === "home" ? `Keep seeding it on ${who} instead` : `Let ${home.name} take it over instead`,
+        onclick: () => send("after", { after: d.after === "home" ? "keep" : "home" }) }));
+    }
+    buttons.push(el("button", { textContent: "Remove",
+      onclick: () => send("remove", {}, `Remove ${d.name} from ${who}? Their copies are deleted${d.state === "seeding" ? `; ${home.name} keeps its own` : ""}.`) }));
+    const allCopied = d.parts.length && d.parts.every((p) => p.state === "copied");
+    const where = {
+      metadata: `getting its list of files on ${who}`,
+      downloading: allCopied ? `all copied: ${home.name} puts it together` : d.split ? `split between ${who} (${d.split === "files" ? "by files" : "by pieces"})` : `on ${who}`,
+      checking: `on ${home.name}: its Transmission checks it${d.check && d.check.status === 2 ? ` (${pct1(d.check.recheck)})` : ""}, then seeds it`,
+      seeding: `on ${home.name}, not seeded there; ${who} ${keep} seeding it`,
+      failed: "stopped",
+    }[d.state] || d.state;
+    const then = d.state === "checking" || d.state === "seeding" || d.state === "failed" ? "" : d.after === "home" ? ` · then ${home.name} takes it over` : ` · then ${who} ${keep} seeding it`;
+    return el("div", { className: "card" },
+      el("div", { className: "top" }, el("span", { className: "summary", style: "flex:1;word-break:break-word" }, d.name), el("span", { className: "tr-pct" }, pct)),
+      percentBar({ name: d.name, status: d.paused ? 0 : 4 }, done, pct),
+      el("div", { className: "cams" }, `${where}${then} · into ${homeRel(d.folder, add.browsing && add.browsing.home)}${d.paused ? " · paused" : ""}`),
+      d.error ? el("div", { className: "warn-line" }, "⚠ " + d.error) : "",
+      ...(going ? d.parts.map((p) => partLine(home, p)) : []),
+      el("div", { className: "buttons" }, buttons));
+  }
+
+  function renderSpread(home) {
+    $("dlBox").hidden = !spread.list.length && !spread.error;
+    $("dlList").replaceChildren(spread.error ? el("div", { className: "warn-line" }, "⚠ " + spread.error) : "", ...spread.list.map((d) => spreadCard(home, d)));
   }
 
   async function browseFolders(where) {
@@ -858,14 +1239,21 @@
     const magnet = $("trMagnet").value.trim();
     if (!home || (!magnet && !add.file)) return say("A magnet link or a .torrent file first.", true);
     say("Adding it…");
-    const args = { ...(magnet ? { magnet } : { torrent: add.file.data }), ...(add.folder ? { folder: add.folder } : {}) };
-    const a = await api.action({ target: home.target, module: "apps", action: "add", args }).catch((e) => ({ error: e.message }));
+    // (to the home's Downloads when it has them: it adds it to its own Transmission itself, or sends it to another
+    // computer, as chosen)
+    const spreadOn = spread.has && hasDownloads(home);
+    const where = spreadOn ? $("trOn").value || "home" : "home";
+    const after = (document.querySelector('input[name="trAfter"]:checked') || {}).value || "home";
+    const args = { ...(magnet ? { magnet } : { torrent: add.file.data }), ...(add.folder ? { folder: add.folder } : {}),
+      ...(spreadOn ? { where, split: where === "home" ? null : $("trSplit").value || null, after } : {}) };
+    const a = await api.action({ target: home.target, module: spreadOn ? "downloads" : "apps", action: "add", args }).catch((e) => ({ error: e.message }));
     say(a.message || a.error, !a.ok);
     if (a.ok) {
       $("trMagnet").value = "";
       add.file = null;
       $("trFileName").textContent = "";
       loadTorrents(true);
+      loadSpread(true);
     }
   };
 
@@ -878,10 +1266,10 @@
   }
 
   // ---------- Jobs: the job list (on the Pi that keeps it), and making a job ----------
-  const KINDS = { animals: "Animals in clips", convert: "Converting videos", command: "A command for each file" };
+  const KINDS = { animals: "Animals in clips", convert: "Converting videos", command: "A command for each file", run: "Any command or script" };
   const shown = new Set(); // jobs whose files are listed
   const itemsOf = new Map(); // job -> its files, as last asked
-  const pickedJobs = { recordings: new Map(), files: [], folder: null, model: null };
+  const pickedJobs = { recordings: new Map(), files: [], folder: null, model: null, script: null, members: null };
   let browsing = null;
 
   function homePi() {
@@ -933,6 +1321,17 @@
       card.append(el("div", { className: "mod summary" }, `${j.summary.pictures} pictures, no animal found yet`));
     }
     if (!home.answering) return card;
+    if (j.needsPassword) {  // (a root job whose password the Pi keeping the list forgot as it restarted)
+      const pw = el("input", { type: "password", autocomplete: "off", placeholder: "cluster password" });
+      const go = el("button", { textContent: "Go on" });
+      go.onclick = async () => {
+        const a = await api.action({ target: home.target, module: "jobs", action: "jobPassword", args: { job: j.id, password: pw.value } }).catch((e) => ({ error: e.message }));
+        pw.value = "";
+        say(a.message || a.error, !a.ok);
+        setTimeout(refresh, 500);
+      };
+      card.append(el("div", { className: "warn-line" }, `It runs as root: ${home.name} needs the cluster password again to go on (it restarted). `, pw, " ", go));
+    }
     const buttons = el("div", { className: "buttons" });
     const button = (text, fn, cls = "") => {
       const b = el("button", { textContent: text, className: cls });
@@ -956,7 +1355,7 @@
       if (["waiting", "running"].includes(j.state)) loadItems(home, j.id); // (as it goes)
       const items = itemsOf.get(j.id) || [];
       card.append(el("div", { className: "items" }, items.map((it) => el("div", { className: it.state === "failed" ? "bad" : "" },
-        `${it.name} (from ${it.from}): ${it.state}${it.worker ? ` on ${it.worker}` : ""}${it.state === "running" ? ` ${Math.round(100 * (it.progress || 0))}%` : ""}${it.error ? ` — ${it.error}` : ""}`))));
+        `${it.name}${it.from && !it.only ? ` (from ${it.from})` : ""}: ${it.state}${it.worker ? ` on ${it.worker}` : ""}${it.state === "running" ? ` ${Math.round(100 * (it.progress || 0))}%` : ""}${it.error ? ` — ${it.error}` : ""}`))));
     }
     return card;
   }
@@ -989,6 +1388,9 @@
   function showOptions() {
     $("animalsOpts").hidden = kindNow() !== "animals";
     $("commandOpts").hidden = kindNow() !== "command";
+    $("runOpts").hidden = kindNow() !== "run";
+    $("filesField").hidden = kindNow() === "run" && runHow() !== "files";
+    if (kindNow() === "run") showRunOptions();
     const m = pickedJobs.model;
     const app = window.SentryModels && window.SentryModels.MODELS.finder;
     $("modelName").textContent = m ? `${m.name} (from this computer)` : app ? `the app's own (${app.name})` : "?";
@@ -999,14 +1401,70 @@
     if (pickedJobs.files.length) bits.push(`${pickedJobs.files.length} file${pickedJobs.files.length === 1 ? "" : "s"} from this ${api && api.phone ? "phone" : api && api.browser ? "device" : "computer"}`);
     if (pickedJobs.folder) bits.push(`the folder ${pickedJobs.folder}`);
     $("chosen").textContent = bits.length ? "Chosen: " + bits.join(", ") + "." : "No files chosen yet.";
-    $("startJob").disabled = !(n || pickedJobs.folder);
+    $("startJob").disabled = !(n || pickedJobs.folder) && !(kindNow() === "run" && runHow() !== "files");
   }
+
+  // Any command or script (the run kind; the user, 2026-11-24: "make the cluster do anything together"): once on each
+  // chosen member, or split over files, lines or numbers; as root only with the cluster password, set here on every member.
+  const runHow = () => (document.querySelector('input[name="runHow"]:checked') || {}).value || "each";
+  const members = () => ((data && data.nodes) || []).filter((p) => p.answering && mod(p.node, "jobs") && mod(p.node, "jobs").on);
+  function showRunOptions() {
+    const live = members();
+    $("runMembers").replaceChildren(...live.map((p) => {
+      const cb = el("input", { type: "checkbox", checked: !pickedJobs.members || pickedJobs.members.has(p.name) });
+      cb.onchange = () => {
+        if (!pickedJobs.members) pickedJobs.members = new Set(members().map((x) => x.name));
+        cb.checked ? pickedJobs.members.add(p.name) : pickedJobs.members.delete(p.name);
+      };
+      const st = (mod(p.node, "jobs") || {}).status || {};
+      return el("label", {}, cb, p.name + (st.runs === false ? " (its Linux isn't set up)" : ""));
+    }));
+    $("runScriptName").textContent = pickedJobs.script ? pickedJobs.script.name : "";
+    $("runNoScript").hidden = !pickedJobs.script;
+    $("runCommand").disabled = !!pickedJobs.script;
+    $("runPassword").disabled = !$("runRoot").checked;
+    const set = live.filter((p) => ((mod(p.node, "jobs") || {}).status || {}).passwordSet);
+    const unset = live.filter((p) => !set.includes(p));
+    $("passwordState").textContent = !set.length ? "No cluster password set yet." : unset.length
+      ? `Set on ${set.map((p) => p.name).join(", ")}; not on ${unset.map((p) => p.name).join(", ")}.` : `Set on every member (${set.length}).`;
+  }
+  for (const r of document.querySelectorAll('input[name="runHow"]')) r.onchange = showOptions;
+  $("runRoot").onchange = showOptions;
+  $("runScript").onclick = async () => {
+    const got = await api.pickFiles();
+    if (got && got[0]) pickedJobs.script = got[0];
+    showOptions();
+  };
+  $("runNoScript").onclick = () => {
+    pickedJobs.script = null;
+    showOptions();
+  };
+  $("clusterPassword").onclick = () => {
+    $("pwBox").hidden = !$("pwBox").hidden;
+    $("pwSaid").textContent = "";
+  };
+  $("pwSet").onclick = async () => {
+    const neu = $("pwNew").value;
+    if (neu.length < 8) return ($("pwSaid").textContent = "8 characters or more.");
+    if (neu !== $("pwAgain").value) return ($("pwSaid").textContent = "The two new ones aren't the same.");
+    const old = $("pwOld").value;
+    $("pwSaid").textContent = "Setting it…";
+    const said = await Promise.all(members().map((p) => api.action({ target: p.target, module: "jobs", action: "setPassword", args: { new: neu, old } })
+      .then((a) => `${p.name}: ${a.ok ? "set" : a.error}`).catch((e) => `${p.name}: ${e.message}`)));
+    for (const id of ["pwOld", "pwNew", "pwAgain"]) $(id).value = "";
+    $("pwSaid").textContent = said.join(" · ");
+    setTimeout(refresh, 600);
+  };
 
   function resetForm() {
     pickedJobs.recordings.clear();
     pickedJobs.files = [];
     pickedJobs.folder = null;
     pickedJobs.model = null;
+    pickedJobs.script = null;
+    pickedJobs.members = null;
+    $("runPassword").value = "";
+    $("runRoot").checked = false;
     $("recordingsBox").hidden = true;
     $("browseBox").hidden = true;
     $("jobTitle").value = "";
@@ -1100,18 +1558,36 @@
       const id = $("format").value;
       const f = window.VideoFormats.FORMATS.find((x) => x.id === id);
       Object.assign(params, { format: id, label: f.label, ext: f.ext, suffix: f.suffix || "", args: window.VideoFormats.outputArgs(id, {}) });
+    } else if (kind === "run") {
+      const how = runHow();
+      params.how = how === "each" ? "each" : "split";
+      if (pickedJobs.script) params.script = { upload: pickedJobs.script.name };
+      else if (!(params.command = $("runCommand").value.trim())) return say("Which command, or which script?", true);
+      if (how === "each" && !(params.members = pickedJobs.members ? [...pickedJobs.members] : members().map((p) => p.name)).length) return say("On which members?", true);
+      if (how === "lines" && !(params.lines = $("runLines").value.split(/\r?\n/).filter((l) => l.trim())).length) return say("Which lines?", true);
+      if (how === "count") params.count = Math.min(10000, Math.max(1, Math.floor(Number($("runCount").value) || 1)));
+      if ($("runRoot").checked) {
+        params.root = true;
+        if (!$("runPassword").value) return say("The cluster password, to run it as root?", true);
+      }
     } else {
       params.command = $("command").value.trim();
       if (!params.command) return say("Which command?", true);
     }
+    const byFiles = kind !== "run" || runHow() === "files";
     const taken = new Set();
-    const uploads = pickedJobs.files.map((f) => ({ ...f, name: uniqueName(f.name, taken) }));
-    const files = [...[...pickedJobs.recordings.values()].map((r) => ({ name: r.name, size: r.size, node: r.node, path: r.path })), ...uploads.map((f) => ({ name: f.name, size: f.size, upload: true }))];
+    const uploads = byFiles ? pickedJobs.files.map((f) => ({ ...f, name: uniqueName(f.name, taken) })) : [];
+    const files = byFiles ? [...[...pickedJobs.recordings.values()].map((r) => ({ name: r.name, size: r.size, node: r.node, path: r.path })), ...uploads.map((f) => ({ name: f.name, size: f.size, upload: true }))] : [];
     const count = files.length + (pickedJobs.folder ? 1 : 0);
-    const title = $("jobTitle").value.trim() || (kind === "animals" ? `Animals in ${files.length || "a folder's"} clip${files.length === 1 ? "" : "s"}` : kind === "convert" ? `Videos to ${params.label}` : "A command for each file");
-    const made = await api.action({ target: home.target, module: "jobs", action: "create", args: { kind, title, high: $("jobHigh").checked, params, files, folder: pickedJobs.folder } }).catch((e) => ({ error: e.message }));
+    const what = kind === "run" ? (pickedJobs.script ? pickedJobs.script.name : params.command) : "";
+    const title = $("jobTitle").value.trim() || (kind === "animals" ? `Animals in ${files.length || "a folder's"} clip${files.length === 1 ? "" : "s"}` : kind === "convert" ? `Videos to ${params.label}`
+      : kind === "run" ? `Run: ${what.length > 48 ? what.slice(0, 47) + "…" : what}` : "A command for each file");
+    const password = params.root ? $("runPassword").value : undefined;
+    $("runPassword").value = "";
+    const made = await api.action({ target: home.target, module: "jobs", action: "create", args: { kind, title, high: $("jobHigh").checked, params, files, folder: byFiles ? pickedJobs.folder : null, password } }).catch((e) => ({ error: e.message }));
     if (!made.ok) return say(made.error || "It wasn't made.", true);
-    const sending = [...uploads.map((f) => ({ path: f.path, name: f.name })), ...(pickedJobs.model ? [{ path: pickedJobs.model.path, name: "model.onnx" }] : [])];
+    const sending = [...uploads.map((f) => ({ path: f.path, name: f.name })), ...(pickedJobs.model ? [{ path: pickedJobs.model.path, name: "model.onnx" }] : []),
+      ...(kind === "run" && pickedJobs.script ? [{ path: pickedJobs.script.path, name: pickedJobs.script.name }] : [])];
     if (sending.length) {
       try {
         await api.upload({ target: home.target, job: made.job, files: sending });
@@ -1129,11 +1605,11 @@
 
   // ---------- this phone's apps: a newer build from GitHub's "Latest build", as the Pis take theirs ----------
   // Android (the app's AppUpdates plugin: AppUpdatePlugin.java): this phone's Hand Tracker apps update
-  // by themselves on Wi-Fi (an hourly look, as often as Android lets it: usually within a few hours), Pi Cluster too, unless the phone is recording or saving a
+  // by themselves on Wi-Fi (an hourly look, as often as Android lets it: usually within a few hours), Cluster too, unless the phone is recording or saving a
   // take (AppUpdateJob.java); Update does it now, and Install puts on one that isn't here. Android asks
-  // once before Pi Cluster updates an app it didn't install itself; until then, those wait for Update.
+  // once before Cluster updates an app it didn't install itself; until then, those wait for Update.
   // The page looks when it opens and once a day while open, with a notice when there's a newer build.
-  // iPhone: an app can't install apps there, so only the notice, for a build with Pi Cluster's iPhone
+  // iPhone: an app can't install apps there, so only the notice, for a build with Cluster's iPhone
   // app in it; installing stays with AltServer.
   const RELEASE = "https://api.github.com/repos/alexandermulholland92/hand-tracker/releases/tags/latest-build";
   function phoneApps() {
@@ -1188,9 +1664,9 @@
             st.error = `Couldn't ask GitHub for the newest build: ${(e && e.message) || e}`;
           }
         }
-        // (once: Android 13 and later ask whether Pi Cluster may notify, for the daily look's notice)
-        if (st.latest && !remember("piClusterAskedNotices")) {
-          remember("piClusterAskedNotices", "1");
+        // (once: Android 13 and later ask whether Cluster may notify, for the daily look's notice)
+        if (st.latest && !remember("clusterAskedNotices")) {
+          remember("clusterAskedNotices", "1");
           U.notices().catch(() => {});
         }
       } else {
@@ -1198,7 +1674,7 @@
           const r = await fetch(RELEASE, { headers: { Accept: "application/vnd.github+json" } });
           if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
           const j = await r.json();
-          const ipa = (j.assets || []).some((x) => /^PiCluster-.*\.ipa$/.test(x.name || ""));
+          const ipa = (j.assets || []).some((x) => /^(Pi)?Cluster-.*\.ipa$/.test(x.name || ""));
           st.latest = ipa && /^[0-9a-f]{40}$/.test(j.target_commitish || "") ? { commit: j.target_commitish, published: j.published_at, apps: {} } : null;
           st.looked = Date.now();
           st.error = "";
@@ -1212,7 +1688,7 @@
     async function update(pkgs) {
       if (st.busy || !pkgs.length) return;
       if (!st.canInstall) {
-        say("Pi Cluster needs Android's OK to install apps first: Allow, under This phone's apps.", true);
+        say("Cluster needs Android's OK to install apps first: Allow, under This phone's apps.", true);
         $("phoneAppsBox").hidden = false;
         show();
         return;
@@ -1222,7 +1698,7 @@
         say(`${st.recording} is recording or saving a take: the apps update by themselves once it stops.`, true);
         return;
       }
-      if (!confirm(`Update ${names(pkgs)} to ${build()}? Android may ask before each.${self ? " Pi Cluster updates itself last and closes then: open it again afterwards." : ""}`)) return;
+      if (!confirm(`Update ${names(pkgs)} to ${build()}? Android may ask before each.${self ? " Cluster updates itself last and closes then: open it again afterwards." : ""}`)) return;
       st.busy = true;
       for (const p of pkgs) st.line[p] = { text: "Waiting its turn…" };
       show();
@@ -1251,12 +1727,12 @@
       const notice = $("appNotice");
       const box = $("phoneAppsBox");
       if (ios) {
-        const fresh = !!(st.latest && mine() && st.latest.commit !== mine() && remember("piClusterSeenBuild") !== st.latest.commit);
+        const fresh = !!(st.latest && mine() && st.latest.commit !== mine() && remember("clusterSeenBuild") !== st.latest.commit);
         notice.hidden = !fresh;
         if (fresh) {
           const ok = el("button", { textContent: "OK" });
           ok.onclick = () => {
-            remember("piClusterSeenBuild", st.latest.commit);
+            remember("clusterSeenBuild", st.latest.commit);
             show();
           };
           notice.replaceChildren(el("div", {}, `A newer build of the apps is out (${build()}). Install it with AltServer, as before.`), el("div", { className: "buttons" }, ok));
@@ -1279,7 +1755,7 @@
         };
         const asking = older.filter((a) => !st.silent || !a.ours);
         const how = st.recording ? ` They wait while ${st.recording} is recording or saving a take.`
-          : asking.length ? ` Android asks once before Pi Cluster updates ${asking.map((a) => a.name).join(", ")}: tap Update.${asking.length < older.length ? " The others update by themselves on Wi-Fi." : ""}`
+          : asking.length ? ` Android asks once before Cluster updates ${asking.map((a) => a.name).join(", ")}: tap Update.${asking.length < older.length ? " The others update by themselves on Wi-Fi." : ""}`
             : " They update by themselves on Wi-Fi, usually within a few hours, or now with Update.";
         notice.replaceChildren(el("div", {}, `Newer builds of this phone's apps are out (${build()}): ${older.map((a) => a.name).join(", ")}.${how}`), el("div", { className: "buttons" }, go, see));
       }
@@ -1312,12 +1788,12 @@
       box.replaceChildren(...[
         el("div", { className: "top" }, el("span", { className: "name" }, "This phone's apps"), el("span", { className: "sub" }, st.latest ? `Newest: ${build()}` : st.error ? "" : "Asking GitHub…"), again, close),
         st.error ? el("div", { className: "warn-line" }, "⚠ " + st.error) : null,
-        st.canInstall ? null : el("div", { className: "warn-line" }, "Pi Cluster needs Android's OK to install apps: ", allow),
+        st.canInstall ? null : el("div", { className: "warn-line" }, "Cluster needs Android's OK to install apps: ", allow),
         st.recording ? el("div", { className: "warn-line" }, `Waiting: ${st.recording} is recording or saving a take. The apps update once it stops.`) : null,
         ...rows,
         el("div", { className: "buttons" }, all),
         st.auto ? el("div", { className: "hint" }, `Last hourly look: ${st.auto}`) : null,
-        el("div", { className: "hint" }, "The apps update by themselves on Wi-Fi, usually within a few hours of a new build (Android decides how often Pi Cluster may look, by how much it's used), except while this phone records or saves a take. Android asks once before Pi Cluster updates an app it didn't install itself, and before it installs one; after that, from Android 12, they update without asking. Pi Cluster updates itself while it isn't open; with Update, it goes last and closes."),
+        el("div", { className: "hint" }, "The apps update by themselves on Wi-Fi, usually within a few hours of a new build (Android decides how often Cluster may look, by how much it's used), except while this phone records or saves a take. Android asks once before Cluster updates an app it didn't install itself, and before it installs one; after that, from Android 12, they update without asking. Cluster updates itself while it isn't open; with Update, it goes last and closes."),
       ].filter(Boolean));
     }
 
@@ -1405,7 +1881,7 @@
 
   if (window.desktop && window.desktop.getInfo) window.desktop.getInfo().then((i) => i && i.version && ($("buildInfo").textContent = `v${i.version}`), () => {});
   if (!api) {
-    $("note").textContent = "Pi Cluster runs in its own app (Pi Cluster), or in a browser from a Pi: http://pi:47830/ on a device on your Tailscale.";
+    $("note").textContent = "Cluster runs in its own app (Cluster), or in a browser from a Pi: http://pi:47830/ on a device on your Tailscale.";
     return;
   }
   // In a browser: which Pi served the page (the others are asked through it).
@@ -1437,6 +1913,10 @@
     })();
   }
   refresh();
+  memberStatus();
+  setInterval(() => {
+    if (!document.hidden) memberStatus();
+  }, 5000);
   setInterval(() => {
     if (!document.hidden) refresh();
   }, REFRESH_MS);

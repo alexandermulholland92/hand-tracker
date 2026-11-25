@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-jobs_animals.py - the animal model over one clip, for Pi Cluster's jobs (modules/jobs.py runs it with
+jobs_animals.py - the animal model over one clip, for Cluster's jobs (modules/jobs.py runs it with
 the Python it made for this, which has ONNX Runtime, NumPy and Pillow):
 
   python jobs_animals.py --video CLIP --model MODEL.onnx --names NAMES.json --out DIR --base NAME
@@ -28,8 +28,16 @@ import subprocess
 import sys
 
 import numpy as np
-import onnxruntime as ort
 from PIL import Image
+
+PHONE = os.environ.get("HT_CLUSTER_PLATFORM") in ("android", "ios")
+if PHONE:  # (the Cluster app on a phone: its own ONNX Runtime and ffmpeg, phonetools.py beside this)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import phonetools
+
+    ort = phonetools.onnxruntime()
+else:
+    import onnxruntime as ort
 
 SIZE, STRIDE, IOU, MAX_RESULTS = 640, 32, 0.5, 20
 LIST_SCORE = 0.45  # (a kind counts as in the clip from this sure: Sentry's TRACK_SCORE)
@@ -108,7 +116,8 @@ def main():
     frames = o.work or os.path.join(o.out, "_frames")
     os.makedirs(frames, exist_ok=True)
     # The pictures: one every EVERY seconds, as JPEGs (about the label check's 92 quality).
-    r = subprocess.run([o.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", o.video,
+    run = (lambda cmd, **kw: subprocess.CompletedProcess(cmd, *phonetools.run(cmd, 3600))) if PHONE else subprocess.run
+    r = run([o.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", o.video,
                         "-vf", "fps=1/%g" % o.every, "-q:v", "2", "-threads", str(o.threads), os.path.join(frames, "%06d.jpg")],
                        capture_output=True, text=True)
     if r.returncode != 0:

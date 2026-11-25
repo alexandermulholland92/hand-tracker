@@ -29,13 +29,15 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Cluster — Pi Cluster's own app on Android (the "cluster" flavor; pi-cluster.js) reaching the Pis
- * running Pi Cluster's service (cluster/node, port 47830) over Tailscale: plain HTTP straight over
+ * Cluster — Cluster's own app on Android (the "cluster" flavor; cluster.js) reaching the Pis
+ * running Cluster's service (cluster/node, port 47830) over Tailscale: plain HTTP straight over
  * TCP (as RemotePlugin's rigRequest: Android keeps the app's other requests off plain HTTP), with
  * the service's own header, and only to its /api/ paths.
  *
- *   request({ target: "pi" | "100.x.y.z" | "host:port", method, path, body?, data? (base64), timeoutMs? })
+ *   request({ target: "pi" | "100.x.y.z" | "host:port", method, path, body?, data? (base64), timeoutMs?, to? })
  *       -> { status, type, body (text, for JSON), data (base64, for anything else) }
+ *       to: a phone of the cluster (its Tailscale address), asked through the Pi that's target (X-HT-Cluster-To): only
+ *       the Pis can ask a phone (they have its key)
  *   save({ target, path, name, size }) -> { saved }
  *       a file from a Pi (a job's results as one zip), fetched a piece at a time (path&at=…) straight
  *       into the phone's Downloads; "progress" { name, got, size } as it goes
@@ -49,6 +51,8 @@ public class ClusterPlugin extends Plugin {
             "^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*)(:(\\d{1,5}))?$");
     private static final Pattern PATH = Pattern.compile("^/api/[A-Za-z0-9/_.-]{1,80}(\\?[A-Za-z0-9%._~!*'()=&+-]{0,4000})?$");
     private static final Pattern NAME = Pattern.compile("^[^/\\\\\\u0000-\\u001f]{1,200}\\.zip$");
+
+    private static final Pattern TO = Pattern.compile("^100\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$");
 
     private final ExecutorService pool = Executors.newCachedThreadPool();
 
@@ -75,7 +79,7 @@ public class ClusterPlugin extends Plugin {
                     type = "application/json";
                 }
                 int timeout = Math.max(2000, Math.min(180000, call.getInt("timeoutMs", 20000)));
-                Answer a = exchange(call.getString("target", ""), method, call.getString("path", ""), payload, type, timeout);
+                Answer a = exchange(call.getString("target", ""), method, call.getString("path", ""), payload, type, timeout, call.getString("to", null));
                 JSObject ret = new JSObject();
                 ret.put("status", a.status);
                 ret.put("type", a.type);
@@ -157,6 +161,11 @@ public class ClusterPlugin extends Plugin {
 
     // One request and its answer over a TCP connection of its own (the service closes it).
     static Answer exchange(String target, String method, String path, byte[] payload, String type, int timeoutMs) throws IOException {
+        return exchange(target, method, path, payload, type, timeoutMs, null);
+    }
+
+    static Answer exchange(String target, String method, String path, byte[] payload, String type, int timeoutMs, String to) throws IOException {
+        if (to != null && !TO.matcher(to).matches()) throw new IOException("That isn't a phone of the cluster.");
         Matcher m = TARGET.matcher(target == null ? "" : target);
         if (!m.matches()) throw new IOException("That isn't a Pi's name.");
         int port = m.group(6) != null ? Integer.parseInt(m.group(6)) : PORT;
@@ -170,6 +179,7 @@ public class ClusterPlugin extends Plugin {
                 .append("Host: ").append(m.group(1)).append(':').append(port).append("\r\n")
                 .append("X-HT-Cluster: 1\r\n")
                 .append("Connection: close\r\n");
+        if (to != null) head.append("X-HT-Cluster-To: ").append(to).append("\r\n");
         if (payload != null) head.append("Content-Type: ").append(type).append("\r\nContent-Length: ").append(payload.length).append("\r\n");
         else if (!"GET".equals(method)) head.append("Content-Length: 0\r\n");
         head.append("\r\n");

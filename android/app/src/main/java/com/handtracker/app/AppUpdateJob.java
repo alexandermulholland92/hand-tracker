@@ -8,10 +8,10 @@ import android.content.ComponentName;
 import android.content.Context;
 
 /**
- * Pi Cluster's hourly look for a newer build of this phone's apps, on Wi-Fi (an unmetered network:
+ * Cluster's hourly look for a newer build of this phone's apps, on Wi-Fi (an unmetered network:
  * a build is over 200 MB), even when it isn't open (Android's JobScheduler, kept through restarts):
  * AppUpdates.autoUpdate updates them by itself, unless the phone is recording or saving a take.
- * Scheduled when Pi Cluster opens (AppUpdatePlugin).
+ * Scheduled when Cluster opens (AppUpdatePlugin).
  */
 public class AppUpdateJob extends JobService {
     static final int ID = 4701;

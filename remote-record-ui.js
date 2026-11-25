@@ -902,17 +902,25 @@
       const tracking = cams().tracking ? cams().tracking(c.id) : true; // (its own Hand tracking switch)
       // Sentry's second look: its own switch, for a camera that doesn't find objects itself.
       const second = !c.id.startsWith("oak:") && cams().secondLook ? { secondLook: cams().secondLook(c.id) } : {};
-      return { id: c.id, label: c.label, present: c.present, use: picked.includes(c.id), role, tracking, ...oak, ...second };
+      // A webcam's full screen as video (H.264 made here while a page plays it): its own switch.
+      const video = !/^(oak|kinect|ps4):/.test(c.id) && cams().cameraVideo ? { video: cams().cameraVideo(c.id) } : {};
+      return { id: c.id, label: c.label, present: c.present, use: picked.includes(c.id), role, tracking, ...oak, ...second, ...video };
     });
   }
 
   // One camera picked or not, or given a role (a camera that had that role takes its old one).
   // tracking: its own Hand tracking switch (a running OAK camera starts again with or without
-  // its hand models); secondLook: its Sentry's second look switch.
-  function pick({ id, use, role, tracking, secondLook }) {
+  // its hand models); secondLook: its Sentry's second look switch; video: a webcam's full screen as
+  // video (H.264 made on this computer while a page plays it).
+  function pick({ id, use, role, tracking, secondLook, video }) {
     const list = available();
     const i = list.findIndex((c) => c.id === id);
     if (i < 0) return { ok: false, message: "That camera isn't plugged in any more." };
+    if (typeof video === "boolean") {
+      if (!cams().setCameraVideo || /^(oak|kinect|ps4):/.test(id)) return { ok: false, message: "This camera's full screen can't be made into video here." };
+      cams().setCameraVideo(id, video);
+      return { ok: true, message: `Full screen as video is ${video ? "on" : "off"} for ${labelOf(id)}${video ? " (made on this computer while it's played)" : ""}.` };
+    }
     if (typeof secondLook === "boolean") {
       if (!cams().setSecondLook || id.startsWith("oak:")) return { ok: false, message: "This camera has no second look to turn on or off." };
       cams().setSecondLook(id, secondLook);
@@ -1061,7 +1069,7 @@
         if (view && view.want) view.want(true);
         // (in the desktop app written to disk as it's recorded, not held in memory)
         const rec = global.CameraVideo.start({ canvas: src.canvas, fps: VIDEO_FPS, audio: remoteSound(), preferMp4: true, quality: remoteQuality(), file: host && host.remote && host.remote.clip ? host.remote.clip : null });
-        videos.push({ role: cam.role || cam.name, rec, view });
+        videos.push({ role: cam.role || cam.name, roleId: cam.roleId || "", rec, view });
       } catch (err) {
         if (view && view.want) view.want(false);
         notice = { at: Date.now(), message: `${cam.role || cam.name}'s video didn't start: ${errText(err)}` };
@@ -1081,18 +1089,18 @@
           continue;
         }
         const clip = await v.rec.stop();
-        out.push({ role: v.role, clip });
+        out.push({ role: v.role, roleId: v.roleId, clip });
       } catch {
-        if (keep) out.push({ role: v.role, clip: null });
+        if (keep) out.push({ role: v.role, roleId: v.roleId, clip: null });
       }
     }
     return out;
   }
   // Saved beside the take: <take>-video-<role>. -> the files' names; into: each one saved, for
-  // the take's MCAP file ({ path, name, startMs }).
+  // the take's MCAP file and its list of videos ({ path, name, roleId, startMs }).
   async function saveVideos(baseName, list, into = []) {
     const saved = [];
-    for (const { role, clip } of list) {
+    for (const { role, roleId, clip } of list) {
       if (!clip || !host) continue;
       if (!clip.size) {
         if (clip.fileId !== null && host.remote.clip) await host.remote.clip.discard(clip.fileId).catch(() => {});
@@ -1105,7 +1113,7 @@
         const r = (res.results || [])[0];
         if (r && r.ok) {
           saved.push(r.path.split(/[\\/]/).pop());
-          if (clip.startedAt) into.push({ path: r.path, name: role, startMs: clip.startedAt });
+          if (clip.startedAt) into.push({ path: r.path, name: role, roleId: roleId || "", startMs: clip.startedAt });
         }
       } catch {
         // (the take's result says what was saved)
@@ -1150,6 +1158,13 @@
         ? { ok: true, at, files: videoFiles, duration: seconds, hands: 0, details: d }
         : { ok: false, at, message: "No hands were recorded, so nothing was saved." };
       return { ok: lastTake.ok, message: videoFiles.length ? `No hands were recorded; saved ${videoFiles.join(", ")}` : lastTake.message };
+    }
+    // Each camera's video in the take's JSON, with when it started on the take's clock (seconds: the
+    // Recording Converter's grid video lines them up so).
+    const t0 = Date.parse(take.recorded_at);
+    const own = withTake.filter((v) => !v.kind);
+    if (own.length && Number.isFinite(t0)) {
+      take.videos = own.map((v) => ({ file: v.path.split(/[\\/]/).pop(), camera: v.name, role: v.roleId || null, start_s: Math.round(v.startMs - t0) / 1000 }));
     }
     const saved = await app.saveMotionNow(name, withTake);
     takeDetails = null; // saved: the next take can have others
@@ -1587,7 +1602,7 @@
     if (rigApp && $("remoteAppName")) $("remoteAppName").textContent = "Remote Recording";
     onPhone = !opts.desktop;
     // On a phone: whether it's recording or saving a take (remote recording on or not), as it starts
-    // and every 30 seconds meanwhile, for Pi Cluster on the same phone, which doesn't update the
+    // and every 30 seconds meanwhile, for Cluster on the same phone, which doesn't update the
     // phone's apps then (AppStateProvider.java).
     if (onPhone && remote.setBusy) {
       let told = false, toldAt = 0;
@@ -1619,6 +1634,8 @@
     initTakes();
     remote.onStatus(show);
     remote.onWantPreviews(setPreviews);
+    // (The cameras whose video a page is playing full screen: a webcam's is made only then.)
+    if (remote.onVideoWant) remote.onVideoWant((ids) => cams() && cams().setVideoWant && cams().setVideoWant(ids));
     remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st, sentry, oak, kinect, ps4 }) => {
       let result;
       try {

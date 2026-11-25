@@ -429,7 +429,7 @@ public class RigServerPlugin extends Plugin {
     }
 
     // This phone recording or saving a take (the page says so as it starts and every 30 seconds
-    // meanwhile, remote server on or not: remote-record-ui.js), for Pi Cluster on the same phone,
+    // meanwhile, remote server on or not: remote-record-ui.js), for Cluster on the same phone,
     // which doesn't update the phone's apps meanwhile (AppStateProvider.java).
     @PluginMethod
     public void setBusy(PluginCall call) {

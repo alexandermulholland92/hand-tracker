@@ -13,7 +13,7 @@
 //       write({ id, characteristic, value }) (with a response); notify({ id, characteristic })
 //       disconnect({ id }); events "notification" { id, characteristic, value }, "disconnected" { id }
 //     One device at a time; each step waits for the one before.
-//   Cluster: Pi Cluster's own app reaching the Pis running Pi Cluster's service (ClusterPlugin, below).
+//   Cluster: Cluster's own app reaching the Pis running Cluster's service (ClusterPlugin, below).
 
 import Foundation
 import Network
@@ -30,7 +30,7 @@ public class RigLinkPlugin: CAPPlugin, CAPBridgedPlugin {
     ]
 
     static let RIG = "^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*):(\\d{1,5})$"
-    static let RIG_PATH = "^/api/(state|command|imu(\\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\\?span=(1h|24h|7d)(&after=\\d{1,15})?|preview\\?i=[0-3](&full=1)?(&after=\\d{1,12})?|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12})$"
+    static let RIG_PATH = "^/api/(state|command|imu(\\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\\?span=(1h|24h|7d)(&after=\\d{1,15})?|preview\\?i=[0-3](&full=1)?(&after=\\d{1,12})?|video\\?i=[0-3]&after=\\d{1,12}|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12})$"
     static let RIG_KEY = "^[A-Za-z0-9_-]{8,64}$"
     static let maxBytes = 4 * 1024 * 1024
     private let queue = DispatchQueue(label: "hand-tracker.rig-link")
@@ -100,7 +100,7 @@ final class RigExchange {
     private let maxBytes: Int
     private let seconds: Int
 
-    // (maxBytes and seconds: remote recording’s 4 MB and 10 s unless said; Pi Cluster’s pieces are bigger and slower)
+    // (maxBytes and seconds: remote recording’s 4 MB and 10 s unless said; Cluster’s pieces are bigger and slower)
     init(host: String, port: UInt16, request: Data, queue: DispatchQueue, maxBytes: Int = RigLinkPlugin.maxBytes, seconds: Int = 10) {
         conn = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port) ?? 47821, using: .tcp)
         self.request = request
@@ -191,14 +191,14 @@ final class RigExchange {
     }
 }
 
-// ---------- Pi Cluster: the Pis running Pi Cluster's service ----------
-// ClusterPlugin, for Pi Cluster's own app (pi-cluster.js; the same as ClusterPlugin.java on Android):
+// ---------- Cluster: the Pis running Cluster's service ----------
+// ClusterPlugin, for Cluster's own app (cluster.js; the same as ClusterPlugin.java on Android):
 //   request({ target: "pi" | "100.x.y.z" | "host:port", method, path, body?, data? (base64), timeoutMs? })
 //     -> { status, type, body (text, for JSON), data (base64, for anything else) }
 //     plain HTTP over TCP to the service (port 47830), with its own header, only to its /api/ paths
 //   save({ target, path, name, size }) -> { saved }
 //     a file from a Pi (a job's results as one zip) fetched a piece at a time (path&at=…) into the
-//     app's Documents (the Files app: On My iPhone › Pi Cluster); "progress" { name, got, size }
+//     app's Documents (the Files app: On My iPhone › Cluster); "progress" { name, got, size }
 @objc(ClusterPlugin)
 public class ClusterPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "ClusterPlugin"
@@ -296,7 +296,7 @@ public class ClusterPlugin: CAPPlugin, CAPBridgedPlugin {
                         try? FileManager.default.removeItem(at: file)
                         do {
                             try FileManager.default.moveItem(at: part, to: file)
-                            call.resolve(["saved": "Files › On My iPhone › Pi Cluster › " + name])
+                            call.resolve(["saved": "Files › On My iPhone › Cluster › " + name])
                         } catch {
                             fail("Can't keep it: \(error.localizedDescription)")
                         }
@@ -330,6 +330,10 @@ public class BtLinkPlugin: CAPPlugin, CAPBridgedPlugin, CBCentralManagerDelegate
     private var peripheral: CBPeripheral?
     private var connecting: CAPPluginCall?
     private var toDiscover = 0
+    // The characteristics connect was asked to find (one missing: this iPhone kept an older layout of the rig's
+    // services), and whether its services are being found again (the rig said they changed: Service Changed).
+    private var wanted: [CBUUID] = []
+    private var rediscovering = false
     // The GATT step under way, and those waiting for it.
     private var step: CAPPluginCall?
     private var stepFor: CBCharacteristic?
@@ -386,6 +390,9 @@ public class BtLinkPlugin: CAPPlugin, CAPBridgedPlugin, CBCentralManagerDelegate
     // ---------- connected ----------
     @objc func connect(_ call: CAPPluginCall) {
         let id = UUID(uuidString: call.getString("id") ?? "")
+        // characteristics: the UUIDs it must have, comma separated (optional).
+        let want = (call.getString("characteristics") ?? "").split(separator: ",").map { String($0) }
+            .filter { UUID(uuidString: $0) != nil }.map { CBUUID(string: $0) }
         DispatchQueue.main.async { [self] in
             whenReady { [self] state in
                 if let why = unavailable(state) { return call.reject(why) }
@@ -395,6 +402,7 @@ public class BtLinkPlugin: CAPPlugin, CAPBridgedPlugin, CBCentralManagerDelegate
                 close()
                 peripheral = p
                 connecting = call
+                wanted = want
                 p.delegate = self
                 c.connect(p, options: nil)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [self] in
@@ -424,19 +432,45 @@ public class BtLinkPlugin: CAPPlugin, CAPBridgedPlugin, CBCentralManagerDelegate
     }
 
     public func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
-        guard p === peripheral, connecting != nil else { return }
+        guard p === peripheral, connecting != nil || rediscovering else { return }
         let services = p.services ?? []
-        if error != nil || services.isEmpty { return failConnect("Its Bluetooth services weren't found.") }
+        if error != nil || services.isEmpty {
+            if connecting != nil { return failConnect("Its Bluetooth services weren't found.") }
+            rediscovering = false
+            return gone("Its Bluetooth services changed, and weren't found again.")
+        }
         toDiscover = services.count
         services.forEach { p.discoverCharacteristics(nil, for: $0) }
     }
 
     public func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard p === peripheral, let call = connecting else { return }
+        guard p === peripheral, connecting != nil || rediscovering else { return }
         toDiscover -= 1
         if toDiscover > 0 { return }
+        rediscovering = false
+        guard let call = connecting else { return }
         connecting = nil
+        let have = Set((p.services ?? []).flatMap { $0.characteristics ?? [] }.map { $0.uuid })
+        if wanted.contains(where: { !have.contains($0) }) {
+            call.reject(oldLayout(p))
+            return close()
+        }
         call.resolve(["mtu": p.maximumWriteValueLength(for: .withResponse) + 3])
+    }
+
+    // The rig says its services changed (Service Changed: it was updated while connected): found again.
+    public func peripheral(_ p: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+        guard p === peripheral, connecting == nil, !rediscovering else { return }
+        rediscovering = true
+        p.discoverServices(nil)
+    }
+
+    // What to do when this iPhone kept an older layout of the rig's services (iOS keeps them for a device it's seen,
+    // and the rig was updated since): see them anew.
+    private func oldLayout(_ p: CBPeripheral) -> String {
+        let said = seen[p.identifier]?.1 ?? ""
+        let name = !said.isEmpty ? said : (p.name ?? "It")
+        return "\(name)'s Bluetooth was updated since this iPhone last saw it: in Settings → Bluetooth, turn Bluetooth off and on (if \(name) is under My Devices there, tap ⓘ beside it and choose Forget This Device first), then connect again."
     }
 
     private func failConnect(_ why: String) {
@@ -564,5 +598,6 @@ public class BtLinkPlugin: CAPPlugin, CAPBridgedPlugin, CBCentralManagerDelegate
     private func close() {
         if let p = peripheral { central?.cancelPeripheralConnection(p) }
         peripheral = nil
+        rediscovering = false
     }
 }

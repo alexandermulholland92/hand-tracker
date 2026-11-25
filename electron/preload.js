@@ -28,6 +28,12 @@ contextBridge.exposeInMainWorld("desktop", {
   // events, same result). trim: { start, length } seconds converts just that stretch.
   probeVideo: (videoPath) => ipcRenderer.invoke("video:probe", { path: videoPath }),
   convertVideoFile: (job) => ipcRenderer.invoke("video:convert-file", job),
+  // A take's camera videos, beside its JSON on disk, and all of them as one grid video (Grid video):
+  // takeVideos(jsonPath) -> { ok, name, videos: [{ file, camera, role, start, hasAudio }], length, timed };
+  // gridVideo({ path, videos: [{ file, label: PNG bytes }] }) -> { ok, path, size, layout, sound } (progress
+  // events as convertVideoFile's, format "grid").
+  takeVideos: (jsonPath) => ipcRenderer.invoke("video:take-videos", { path: jsonPath }),
+  gridVideo: (job) => ipcRenderer.invoke("video:grid", job),
 
   // cb({ format, index, total, progress 0..1 }); returns an unsubscribe function.
   onExportProgress: (cb) => {
@@ -391,6 +397,7 @@ contextBridge.exposeInMainWorld("desktop", {
     // One camera's USB off and on: { serial, usb, dev } (an OAK camera's id, USB ids, a USB port)
     // -> { ok, message, how, others: [{ dev, serial, usb }] } (the other cameras switched with it)
     resetCamera: (match) => ipcRenderer.invoke("remote:reset-camera", match),
+    cameraUsb: (match) => ipcRenderer.invoke("remote:camera-usb", match),
     // The room left where takes are saved, and whether it has a battery (electron/storage.js):
     // -> { free, total, battery }
     storage: () => ipcRenderer.invoke("remote:storage"),
@@ -414,6 +421,14 @@ contextBridge.exposeInMainWorld("desktop", {
     // What the phone's page shows (about twice a second) and the cameras' previews.
     setState: (state) => ipcRenderer.send("remote:state", state),
     sendPreviews: (list) => ipcRenderer.send("remote:previews", list),
+    // A webcam's H.264 for full screen, one picture ({ id, u, key, data, hands }), made here while a page plays it;
+    // cb(ids): the cameras whose video pages are playing now.
+    sendVideo: (picture) => ipcRenderer.send("remote:video", picture),
+    onVideoWant: (cb) => {
+      const listener = (_event, ids) => cb(ids);
+      ipcRenderer.on("remote:video-want", listener);
+      return () => ipcRenderer.removeListener("remote:video-want", listener);
+    },
     onWantPreviews: (cb) => {
       const listener = (_event, on) => cb(on);
       ipcRenderer.on("remote:want-previews", listener);
@@ -454,7 +469,7 @@ contextBridge.exposeInMainWorld("desktop", {
     model: (which) => ipcRenderer.invoke("sentry:model", which),
   },
 
-  // Pi Cluster's own app (electron/cluster.js): the Pis running Pi Cluster's service.
+  // Cluster's own app (electron/cluster.js): the Pis running Cluster's service.
   // list() -> { nodes: [{ name, target, online, answering, seen, node, error }], tailscale, at };
   // settings({ target, module, on } | { target, module, key, value }), action({ target, module,
   // action, args }) -> the Pi's answer ({ status, ok?, message?, error? }); forget(name).

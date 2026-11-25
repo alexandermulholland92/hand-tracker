@@ -231,7 +231,9 @@
                 drop();
                 onGone.forEach((f) => f());
               }));
-              await plugin.connect({ id: d.id });
+              // (Hand Tracker's own: its three characteristics, which the iPhone checks it has: one missing means it
+              // kept an older layout of a rig's services, and says how to see them anew.)
+              await plugin.connect({ id: d.id, ...(service === SERVICE ? { characteristics: [INFO, RX, TX].join(",") } : {}) });
               return { getPrimaryService: async () => ({ getCharacteristic: async (uuid) => characteristic(uuid) }) };
             },
             disconnect: () => {

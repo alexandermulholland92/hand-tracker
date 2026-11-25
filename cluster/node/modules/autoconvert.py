@@ -1,5 +1,5 @@
 """
-autoconvert.py - Pi Cluster module, on the Pi that keeps the job list: every video in ~/Videos that some
+autoconvert.py - Cluster module, on the Pi that keeps the job list: every video in ~/Videos that some
 device would make Jellyfin convert while it plays gets a copy every device plays as it is, "<name> -
 converted.mp4" beside it; the original is kept, for the devices that play it (the user, 2026-11-21: "have
 the conversion set up to run automatically when new videos that need conversion are found", and "any video

@@ -1,6 +1,6 @@
 /**
- * fake-cluster-plugin.js — preload for check-cluster.js's phone part: stands in for Pi Cluster's
- * phone apps' Cluster plugin (ClusterPlugin.java, RemoteLink.swift's ClusterPlugin) so pi-cluster.js
+ * fake-cluster-plugin.js — preload for check-cluster.js's phone part: stands in for Cluster's
+ * phone apps' Cluster plugin (ClusterPlugin.java, RemoteLink.swift's ClusterPlugin) so cluster.js
  * runs its phone way in desktop Chromium: request() and save() as the plugin does them (plain HTTP
  * with the service's header; a file saved a piece at a time), saves into FAKE_CLUSTER_DOWNLOADS,
  * and Tailscale's names here: FAKE_CLUSTER_NAMES={"pi":"127.0.0.1:47901"}. A file box's click()
@@ -73,12 +73,12 @@ window.Capacitor = {
   },
 };
 
-// Pi Cluster's AppUpdates plugin (AppUpdatePlugin.java) on Android, when FAKE_APPS is set: this phone's
+// Cluster's AppUpdates plugin (AppUpdatePlugin.java) on Android, when FAKE_APPS is set: this phone's
 // apps (FAKE_APPS: [{ pkg, name, installed, commit, updated, ours }], kept here: an install gives an app
-// the newest build), GitHub's newest build (FAKE_LATEST), and installs in AppUpdates.APPS' order (Pi
-// Cluster last), with its "progress" as they go; recorded in window.__appInstalls, and the notifications
+// the newest build), GitHub's newest build (FAKE_LATEST), and installs in AppUpdates.APPS' order
+// (Cluster last), with its "progress" as they go; recorded in window.__appInstalls, and the notifications
 // asked for in window.__notices. window.__appRecording: an app recording now (it refuses then, as the
-// plugin does); window.__appAuto: what the hourly look did last. FAKE_PLATFORM=ios: Pi Cluster's iPhone
+// plugin does); window.__appAuto: what the hourly look did last. FAKE_PLATFORM=ios: Cluster's iPhone
 // app instead (no AppUpdates there).
 if (process.env.FAKE_APPS && platform === "android") {
   const ORDER = ["com.handtracker.app", "com.handtracker.mouse", "com.handtracker.remote", "com.handtracker.converter", "com.handtracker.cluster"];

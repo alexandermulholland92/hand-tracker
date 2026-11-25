@@ -192,6 +192,7 @@ function checkRigRulesMatch() {
   const paths = ["/api/state", "/api/command", "/api/wifi", "/api/takes", "/api/history?span=1h", "/api/history?span=24h&after=1794772981575", "/api/history?span=2h", "/api/history?span=7d&after=x", "/api/preview?i=0", "/api/preview?i=3&full=1", "/api/preview?i=4", "/api/preview?i=0&full=2",
     "/api/preview?i=0&full=1&after=0", "/api/preview?i=3&full=1&after=123456789012", "/api/preview?i=0&full=1&after=1234567890123", "/api/preview?i=0&after=5",
     "/api/preview?i=0&full=1&after=-1", "/api/preview?i=0&full=1&after=", "/api/preview?i=0&full=1&after=1&x=1",
+    "/api/video?i=0&after=0", "/api/video?i=3&after=123456789012", "/api/video?i=4&after=0", "/api/video?i=0", "/api/video?i=0&after=-1", "/api/video?i=0&after=1&full=1",
     "/api/take?f=Sam-Smith_2s.json&at=0", "/api/take?f=a%20b%2Fc.mcap&at=2097152", "/api/take?f=a/b.json&at=0", "/api/take?f=a.json", "/api/take?f=a.json&at=-1", "/api/take?f=&at=0",
     "/api/takes/x", "/api/state?x", "/api/../state", "/", "/remote-client.js"];
   out.differ = [...hosts.filter((h) => javaHost.test(h) !== RIG_HOST.test(h)), ...paths.filter((p) => javaPath.test(p) !== RIG_PATH.test(p))];
@@ -1382,7 +1383,7 @@ async function checkRemoteFromPhone(win, js) {
   const c = out.client || {};
   check("Remote recording from the app: its page opens in place, and a computer's page opens right here, reaching the computer through the app (its cameras, a mode changed); one camera fills the grid in its own shape, the roles with none listed",
     !out.error && out.launcher.path === "/remote.html" && out.launcher.back && /opens here/.test(out.launcher.where) &&
-      c.path === "/remote-client.html" && c.hash === "" && c.title === "Hand Tracker on rig-test" && /Cameras off/.test(c.status) && c.rows.length === 1 &&
+      c.path === "/remote-client.html" && c.hash === "" && c.title === "Remote Recording on rig-test" && /Cameras off/.test(c.status) && c.rows.length === 1 &&
       c.before === "Stereo" && c.after === "Ego" && c.back && c.calls > 2 && c.fits && out.asked.includes("mode") &&
       out.takes && out.takes.listed === 1 && /on this device \(Documents\/Hand Tracker\/Takes from rig-test\)/.test(out.takes.note) &&
       out.takes.saved.join() === "Hand Tracker/Takes from rig-test/Phone-Take_2026-10-02_12-00-00_1s.json" && out.takes.after === 0 && out.takesLeft.length === 0 &&
@@ -1483,8 +1484,8 @@ async function checkIphoneRemote() {
   const l = out.launcher || {}, n = out.network || {}, b = out.ble || {};
   check("Remote recording from the iPhone app: remote.html offers Bluetooth (no Bluetooth network), a computer's address opens its page right here (the app reaching it), and its Bluetooth button connects over Bluetooth Low Energy (picked from those near by when its name there isn't the one saved, its password once, a camera's picture when tapped)",
     !out.error && l.platform === "ios" && l.card && l.web && !l.android && !l.settings && /opens here/.test(l.where) &&
-      /remote-client\.html\?rig=127\.0\.0\.1/.test(n.path) && n.title === "Hand Tracker on rig-test" && n.riglink > 0 &&
-      /bt=127\.0\.0\.1/.test(b.path) && b.panel && (b.listed || []).join() === "Other,rig-test" && /Which computer/.test(b.asked) && b.title === "Hand Tracker on rig-test (Bluetooth)" && b.picture &&
+      /remote-client\.html\?rig=127\.0\.0\.1/.test(n.path) && n.title === "Remote Recording on rig-test" && n.riglink > 0 &&
+      /bt=127\.0\.0\.1/.test(b.path) && b.panel && (b.listed || []).join() === "Other,rig-test" && /Which computer/.test(b.asked) && b.title === "Remote Recording on rig-test (Bluetooth)" && b.picture &&
       (b.calls || []).includes("btlink.connect 1F0E-RIG") && b.kept > 40,
     JSON.stringify(out));
 }
@@ -1689,14 +1690,14 @@ async function checkRemoteBluetoothNetwork(win, js) {
   check("Remote recording from the app over a computer's Bluetooth network: remote.html says how to join it and opens Bluetooth settings; on none, the computer's page says so; on it, its Bluetooth password is asked for (the wrong one said), the right one connects (over Bluetooth) and is kept; a computer out of reach goes over its Bluetooth network by itself (by name), another one's is offered, and a different computer on it is said; with a VPN keeping the app off it, Bluetooth Low Energy by itself (the computer asked for, its password once, a camera's picture on a tap, full screen from a tap on that picture, with two requests on their way at once)",
     !out.error && l.card && l.android && !l.web && /isn't on/.test(l.now) && l.settings &&
       /rig=10\.43\.0\.1/.test(decodeURIComponent(off.url || "")) && /Bluetooth Low Energy.*Faster: pair/.test(off.note) && off.settings && !off.password && off.asked &&
-      /rig-test needs its Bluetooth password/.test(c.asked || "") && c.wrong && c.title === "Hand Tracker on rig-test (Bluetooth)" && c.panelGone && /Connected to rig-test over Bluetooth/.test(c.message) && c.rows === 1 &&
-      out.kept === "__fakeBtPw:AA:BB:CC:DD:EE:01" && out.again && out.again.title === "Hand Tracker on rig-test (Bluetooth)" && !out.again.panel &&
+      /rig-test needs its Bluetooth password/.test(c.asked || "") && c.wrong && c.title === "Remote Recording on rig-test (Bluetooth)" && c.panelGone && /Connected to rig-test over Bluetooth/.test(c.message) && c.rows === 1 &&
+      out.kept === "__fakeBtPw:AA:BB:CC:DD:EE:01" && out.again && out.again.title === "Remote Recording on rig-test (Bluetooth)" && !out.again.panel &&
       out.auto && /rig=10\.43\.0\.1:47821&want=localhost/.test(out.auto.url) && out.auto.title && out.auto.other &&
       out.offer && /rig=127/.test(decodeURIComponent(out.offer.url)) && out.offer.open && !out.offer.password && /Can't reach 127\.0\.0\.1/.test(out.offer.note) &&
       out.offered && /want=127\.0\.0\.1/.test(out.offered.url) && out.offered.title &&
-      out.le && /VPN/.test(out.le.asked || "") && /needs its Bluetooth password/.test(out.le.asked || "") && out.le.title === "Hand Tracker on rig-test (Bluetooth)" &&
+      out.le && /VPN/.test(out.le.asked || "") && /needs its Bluetooth password/.test(out.le.asked || "") && out.le.title === "Remote Recording on rig-test (Bluetooth)" &&
       out.le.panelGone && out.le.tap && out.le.picture && out.le.calls.includes("btlink.connect AA:00:00:00:00:01") && !out.le.calls.includes("btlink.connect AA:00:00:00:00:02") && out.le.kept > 40 &&
-      out.leAgain && out.leAgain.title === "Hand Tracker on rig-test (Bluetooth)" && !out.leAgain.password &&
+      out.leAgain && out.leAgain.title === "Remote Recording on rig-test (Bluetooth)" && !out.leAgain.password &&
       out.leFull && out.leFull.got && out.leFull.rate && out.leFull.shown && out.leFull.atOnce === 2 && out.leFull.asked > 4,
     JSON.stringify(out));
 }

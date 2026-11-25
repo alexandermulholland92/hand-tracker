@@ -9,7 +9,7 @@ import android.os.Build;
 
 /**
  * How an app's install through Android's PackageInstaller went (AppUpdates.install): done, or not
- * with Android's reason, or Android asking first. Its question is shown here when Pi Cluster is in use
+ * with Android's reason, or Android asking first. Its question is shown here when Cluster is in use
  * (the Update button), or, for an hourly update with no one looking, put in a notification to answer
  * later (AppUpdates.autoUpdate). Passed on to whoever waits for it (AppUpdates.update).
  */
@@ -38,7 +38,7 @@ public class AppUpdateResult extends BroadcastReceiver {
             ask.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             if (intent.getBooleanExtra(EXTRA_BACKGROUND, false)) {
                 PendingIntent later = PendingIntent.getActivity(ctx, pkg == null ? 0 : pkg.hashCode(), ask, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-                AppUpdates.notify(ctx, "Update " + AppUpdates.nameOf(pkg) + "?", "Android asks before Pi Cluster updates " + AppUpdates.nameOf(pkg) + ". Tap to answer.", later);
+                AppUpdates.notify(ctx, "Update " + AppUpdates.nameOf(pkg) + "?", "Android asks before Cluster updates " + AppUpdates.nameOf(pkg) + ". Tap to answer.", later);
                 tell(pkg, false, ASKS);
                 return;
             }

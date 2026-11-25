@@ -1,14 +1,17 @@
 /**
- * check-cluster.js — checks the Pi Cluster app (its own app: --app=cluster) with a Pi simulated on
- * this computer: Pi Cluster's real service (cluster/node, --simulate) beside a stand-in Hand Tracker
+ * check-cluster.js — checks the Cluster app (its own app: --app=cluster) with a Pi simulated on
+ * this computer: Cluster's real service (cluster/node, --simulate) beside a stand-in Hand Tracker
  * and a stand-in GitHub, found through HT_CLUSTER_NODES.
  *   npm run check:cluster        (Python 3 needed: PYTHON, else python3, python or py -3)
  * Checked in the app's window: the Pi listed with its modules' summaries; a module turned off
  * under ⚙ (and the Pi says so); Sentry turned off from Camera rigs (Hand Tracker is asked);
  * a module the page doesn't know shown all the same; Transmission's torrents moved in (with
- * cluster/test_apps.py's stand-in Transmission), each torrent's Traffic drop-down (its speeds,
+ * cluster/test_apps.py's stand-in Transmission), each torrent's percentage (beside its name and on
+ * a bar), each torrent's Traffic drop-down (its speeds,
  * totals, peers, a graph over 1 h and 24 h), asking for more peers, a waiting torrent moved up the
- * queue, and how many download, seed and connect at once; on a phone (the app's plugins standing
+ * queue, and how many download, seed and connect at once; a download on another computer (its word posted
+ * to the Pi's Downloads as one would send it: Download it on, the split and hand-over choices, its card,
+ * Remove); on a phone (the app's plugins standing
  * in: fake-cluster-plugin.js), the Pi found and a job done from there, and this phone's apps (a
  * newer build's notice, the list, Update all, Install; the iPhone's notice only); in a browser, the
  * page as a Pi serves it (a second Pi asked through it, a job from a file picked there, its results
@@ -108,13 +111,13 @@ if (!py) {
   console.error("Python 3 is needed (PYTHON=…, python3, python or py -3).");
   process.exit(1);
 }
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cluster-check-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cluster-check-"));
 const port = 47900 + Math.floor(Math.random() * 90);
 // (an extra module, as one added later would be: the page has to show it without knowing it)
 const nodeDir = path.join(tmp, "node");
 fs.cpSync(path.join(ROOT, "cluster", "node"), nodeDir, { recursive: true, filter: (src) => !src.includes("__pycache__") });
-// (the Pi Cluster page beside the service, as a build puts it there: what a simulated Pi serves to a browser)
-for (const f of ["pi-cluster.html", "pi-cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png"]) {
+// (the Cluster page beside the service, as a build puts it there: what a simulated Pi serves to a browser)
+for (const f of ["cluster.html", "cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png"]) {
   fs.mkdirSync(path.dirname(path.join(nodeDir, "web", f)), { recursive: true });
   fs.copyFileSync(path.join(ROOT, f), path.join(nodeDir, "web", f));
 }
@@ -165,9 +168,15 @@ const fakeState = () => {
 let service = null;
 process.argv.push("--app=cluster");
 process.env.HT_CLUSTER_NODES = `127.0.0.1:${port}`;
+const phonePort = port + 100; // (a phone of the cluster: the Cluster app's member service, simulated)
+process.env.HT_CLUSTER_PHONES = `127.0.0.1:${phonePort}`;
 process.env.HT_CLUSTER_ONLY = "1"; // (not the real Pis on this computer's Tailscale)
-app.setPath("userData", path.join(tmp, "app"));
+// (its folder from before the rename, 2026-11-25, "Pi Cluster", with what it kept: moved to the new name as it starts)
+fs.mkdirSync(path.join(tmp, "Pi Cluster"));
+fs.writeFileSync(path.join(tmp, "Pi Cluster", "kept-before.json"), "{}");
+app.setPath("userData", path.join(tmp, "Cluster"));
 require("../electron/main.js");
+const folderMoved = fs.existsSync(path.join(tmp, "Cluster", "kept-before.json")) && !fs.existsSync(path.join(tmp, "Pi Cluster"));
 
 app.whenReady().then(async () => {
   let code = 1;
@@ -184,8 +193,9 @@ app.whenReady().then(async () => {
       },
       stdio: "ignore",
     });
-    const win = await until(() => BrowserWindow.getAllWindows().find((w) => /pi-cluster\.html/.test(w.webContents.getURL())));
-    check("The Pi Cluster app opens its page", !!win);
+    const win = await until(() => BrowserWindow.getAllWindows().find((w) => /cluster\.html/.test(w.webContents.getURL())));
+    check("The Cluster app opens its page", !!win);
+    check("...its folder from before the rename (Pi Cluster) moved to its new name first, with what it kept", folderMoved);
     const js = (code) => win.webContents.executeJavaScript(code, true);
     // (HT_CLUSTER_SHOT=folder: pictures of the window as it's checked)
     const shot = async (name) => {
@@ -279,6 +289,31 @@ app.whenReady().then(async () => {
     const saved = await until(() => fs.existsSync(path.join(saveIn, "A command for each file", "letter.txt")) && fs.existsSync(path.join(saveIn, "A command for each file", "log.txt")), 30000);
     check("...and its results saved on this computer", !!saved && fs.readFileSync(path.join(saveIn, "A command for each file", "letter.txt"), "utf8").startsWith("hello"), fs.existsSync(saveIn) && fs.readdirSync(saveIn));
 
+    // Any command or script across the cluster (the user, 2026-11-24: "make the cluster do anything together"): the
+    // cluster password set on every member from the form, then a command run as root once on each member, its results saved
+    await click("#jobs button", "New job");
+    await js("document.querySelector('input[name=kind][value=run]').click(); null");
+    const runShown = await js("!document.getElementById('runOpts').hidden && document.getElementById('filesField').hidden && document.querySelectorAll('#runMembers input:checked').length");
+    check("Any command or script: its own options, once on each member (every one ticked at first), and no files asked for", runShown === 1, runShown);
+    await js("document.getElementById('clusterPassword').click(); for (const id of ['pwNew', 'pwAgain']) document.getElementById(id).value = 'correct horse 42'; document.getElementById('pwSet').click(); null");
+    const pwSet = await until(async () => /Set on every member/.test(await js("document.getElementById('passwordState').textContent")) && js("document.getElementById('pwSaid').textContent"), 30000);
+    check("...the cluster password set on every member from there, each saying so", !!pwSet && /: set/.test(pwSet), pwSet || (await js("document.getElementById('passwordState').textContent")));
+    const member = os.hostname().split(".")[0];
+    await js(`document.getElementById('runCommand').value = ${JSON.stringify(`${py[0]} ${py[1].join(" ")} -c "import os,sys; open(os.path.join(sys.argv[1], 'who.txt'), 'w').write(sys.argv[2])" {out} {member}`)};
+      document.getElementById('runRoot').click(); document.getElementById('runPassword').value = 'correct horse 42'; document.getElementById('jobTitle').value = 'Who runs it'; null`);
+    await click("#newJob button", "Start the job");
+    const ran = await until(async () => {
+      const t = await js("document.getElementById('jobList').innerText");
+      return /Who runs it[\s\S]*1 of 1 done/.test(t) && t;
+    }, 90000);
+    check("...a command run as root on each member, with the password", !!ran, (await js("document.getElementById('jobList').innerText")) + " | message: " + (await js("document.getElementById('message').textContent")));
+    await js("[...document.querySelectorAll('#jobList .card')].find((c) => c.textContent.startsWith('Who runs it')).querySelector('button').click(); null");
+    const whoFile = path.join(saveIn, "Who runs it", member, "who.txt");
+    const savedWho = await until(() => fs.existsSync(whoFile), 30000);
+    check("...its results saved on this computer, in a folder for each member", !!savedWho && fs.readFileSync(whoFile, "utf8") === member, fs.existsSync(saveIn) && fs.readdirSync(saveIn));
+    const pwLeft = await js("document.getElementById('runPassword').value + document.getElementById('pwNew').value + document.getElementById('pwAgain').value");
+    check("...and no password left in the page's fields", pwLeft === "", pwLeft);
+
     // Transmission: which Pi keeps its files, then the offer to move the window app's torrents in
     await js("document.getElementById('tabTransmission').click(); null");
     const trAsk = await until(() => js("[...document.querySelectorAll('#trHome button')].some((b) => b.textContent === 'Keep them there')"));
@@ -295,11 +330,27 @@ app.whenReady().then(async () => {
     const trList = () => js("document.getElementById('trList').innerText");
     const three = await until(async () => (await js("document.querySelectorAll('#trList details.traffic').length")) === 3, 60000);
     check("Moved in: the torrents listed, each with a Traffic drop-down", !!three, await trList());
+    // (the user, 2026-11-22: "show download percentage for each torrent": a bar, the number beside its name, one decimal place)
+    const pcts = await js(`[...document.querySelectorAll('#trList .card')].map((c) => {
+      const top = c.querySelector('.top'), name = top.querySelector('.summary'), pct = top.querySelector('.tr-pct'), button = top.querySelector('button');
+      const bar = c.querySelector('.tr-bar'), fill = bar && bar.querySelector('.fill'), r = (e) => e.getBoundingClientRect();
+      return { name: name.textContent, beside: pct && pct.textContent, onBar: bar && bar.querySelector('.num').textContent,
+        filled: bar && Math.round((1000 * r(fill).width) / r(bar).width) / 10, now: bar && bar.getAttribute('aria-valuenow'), role: bar && bar.getAttribute('role'),
+        done: !!bar && bar.classList.contains('done'), line: c.querySelector('.cams').textContent,
+        besideName: !!pct && r(pct).left >= r(name).right && r(pct).right <= r(button).left && r(pct).top < r(name).bottom && r(pct).bottom > r(name).top,
+        bigger: !!pct && parseFloat(getComputedStyle(pct).fontSize) > parseFloat(getComputedStyle(c.querySelector('.cams')).fontSize),
+        underName: !!bar && r(bar).top >= r(top).bottom && r(bar).width >= 0.9 * r(c).width - 40 };
+    })`);
+    const pctOf = (n) => pcts.find((p) => p.name === n) || {};
+    const fine = (p, words, filled, done) => p.beside === words && p.onBar === words && p.now === words.replace("%", "") && Math.abs(p.filled - filled) <= 0.5 &&
+      p.done === done && p.role === "progressbar" && p.besideName && p.bigger && p.underName && !/%/.test(p.line);
+    check("Each torrent's percentage beside its name in larger type, and on a bar under it filled that far, to one decimal place (100% only once it's all here)",
+      pcts.length === 3 && fine(pctOf("t0"), "100%", 100, true) && fine(pctOf("t1"), "47.3%", 47.4, false) && fine(pctOf("t2"), "99.9%", 100, false), pcts);
     const sums = await js("[...document.querySelectorAll('#trList details.traffic > summary')].map((s) => s.textContent)");
     check("...its speeds on it, 0 too", sums.length === 3 && sums.every((s) => /^Traffic\s+↓ \d+ KB\/s\s+↑ \d+ KB\/s$/.test(s)) && sums.some((s) => /↑ 2 KB\/s/.test(s)) && sums.some((s) => /↑ 0 KB\/s/.test(s)), sums);
     const card = (name) => `[...document.querySelectorAll('#trList .card')].find((c) => c.querySelector('.summary').textContent === ${JSON.stringify(name)})`;
     const order = () => js("[...document.querySelectorAll('#trList .card .summary')].map((s) => s.textContent).join(',')");
-    check("...those waiting to download first, in the queue's order", (await order()) === "t1,t2,t0", await order());
+    check("...in Transmission's queue order at first", (await order()) === "t0,t1,t2", await order());
     await js(`${card("t0")}.querySelector('summary').click(); null`);
     const opened = await until(() => js(`(() => { const c = ${card("t0")}; const p = c && c.querySelector('.graph path.up'); return p && /L/.test(p.getAttribute('d')) && c.querySelector('details').innerText + ' | ' + c.querySelector('.graph').textContent; })()`), 30000);
     check("Opened: what it's received and sent in all, its peers, and its traffic over the last hour", !!opened && /In all: ↓ 1 MB\s+↑ 500 KB · 3 peers connected/.test(opened) && /1 h ago/.test(opened), opened || (await trList()));
@@ -319,8 +370,23 @@ app.whenReady().then(async () => {
     const second = await until(() => js(`/2 of 2 waiting to download/.test(${card("t2")}.innerText)`));
     check("A waiting torrent says its place in the queue", !!second, await trList());
     await js(`[...${card("t2")}.querySelectorAll('button')].find((b) => b.textContent === 'Up').click(); null`);
-    const upped = await until(async () => (await order()) === "t2,t1,t0", 20000);
+    const upped = await until(async () => (await order()) === "t0,t2,t1", 20000);
     check("...and moves up it from its drop-down", !!upped, await order());
+    // (the user, 2026-11-24: sorted alphabetically, by activity (fastest now first), by age (newest first) or by queue,
+    // reversed if asked, the last choice remembered on this device)
+    const sortBy = (by, reverse = false) => js(`(() => { const s = document.getElementById('trSort'), r = document.getElementById('trReverse');
+      s.value = ${JSON.stringify(by)}; s.dispatchEvent(new Event('change')); if (r.checked !== ${reverse}) r.click(); return null; })()`);
+    const sorted = {};
+    for (const [by, reverse] of [["name", false], ["activity", false], ["age", false], ["age", true], ["queue", false]]) {
+      await sortBy(by, reverse);
+      sorted[by + (reverse ? " reversed" : "")] = await order();
+    }
+    check("Torrents sorted alphabetically, by activity (the one sending first, then queue order), by age (newest first), reversed, and by queue",
+      sorted.name === "t0,t1,t2" && sorted.activity === "t0,t2,t1" && sorted.age === "t2,t1,t0" && sorted["age reversed"] === "t0,t1,t2" && sorted.queue === "t0,t2,t1", sorted);
+    await sortBy("age");
+    const sortKept = await js("localStorage.getItem('cluster.torrentSort')");
+    await sortBy("queue");
+    check("...the choice remembered on this device", sortKept === JSON.stringify({ by: "age", reverse: false }), sortKept);
     if (process.env.HT_CLUSTER_SHOT) await js(`${card("t2")}.scrollIntoView({ block: "end" }); null`);
     await shot("5b-transmission-queue");
     const limits = await until(() => js("!document.getElementById('trLimits').hidden && document.getElementById('trPeerAll').value === '60' && document.getElementById('trDlSize').value === '3'"), 20000);
@@ -338,14 +404,57 @@ app.whenReady().then(async () => {
     check("...and the page shows it", !!shown, await js("document.getElementById('trLimits').innerText"));
     await shot("6-transmission-limits");
 
+    // Downloads on other computers (the user, 2026-11-24: "decentralize the transmission downloads from pi so any device
+    // can download and seed from that device and send it to pi"): another computer's word posted to this Pi's Downloads,
+    // as one would send it every few seconds; then Download it on lists it, a magnet link is added there, its card shows
+    // where it is and what comes after, and Remove takes it off (that computer told to delete its copy)
+    const farBeat = () => ask(port, "POST", "/api/action", { module: "downloads", action: "beat", args: { worker: "faraway", ready: true, free: true, why: "",
+      room: 100e9, reserve: 4e9, net: 2000, pieces: false, torrents: [] } });
+    const onList = await until(async () => {
+      await farBeat();
+      const t = await js("[...document.getElementById('trOn').options].map((o) => o.value + '=' + o.textContent).join(' | ')");
+      return /faraway=faraway \(/.test(t) && /freest=The computer with the most free network/.test(t) && t;
+    }, 30000);
+    check("Download it on: this Pi (its Transmission), the computer with the most free network, or another computer, its room and network beside it",
+      !!onList && /^home=/.test(onList) && /faraway \(96\.0 GB free · network 2 KB\/s · no libtorrent\)/.test(onList), onList);
+    await js("(() => { const s = document.getElementById('trOn'); s.value = 'faraway'; s.dispatchEvent(new Event('change')); })(); null");
+    const choices = await until(() => js("!document.getElementById('trSplitField').hidden && !document.getElementById('trAfterField').hidden && document.getElementById('trAfterField').innerText"));
+    check("...another computer chosen: whether to split it, and what happens once it's copied here", !!choices && /takes it over/.test(choices) && /keeps seeding it/.test(choices), choices);
+    const farMagnet = "magnet:?xt=urn:btih:" + "c".repeat(40) + "&dn=Far+Film";
+    await farBeat();
+    await js(`document.getElementById('trMagnet').value = ${JSON.stringify(farMagnet)}; document.getElementById('trAdd').click(); null`);
+    const farCard = await until(async () => {
+      await farBeat();
+      return js("(() => { const b = document.getElementById('dlBox'); return !b.hidden && document.getElementById('dlList').innerText; })()");
+    }, 30000);
+    check("...added there: its card under Downloading on other computers, saying where it is and what comes after",
+      !!farCard && /Far Film/.test(farCard) && /on faraway · then \S+ takes it over/.test(farCard) && /faraway: 0\.0%/.test(farCard), farCard || (await js("document.getElementById('message').textContent")));
+    const asked = await farBeat();
+    check("...and that computer is asked to download it (its magnet link)", (asked.want || []).some((w) => w.magnet === farMagnet && w.files === null), asked);
+    const keptWhere = await js("localStorage.getItem('cluster.addOn')");
+    check("...the choice remembered on this device", /"where":"faraway"/.test(keptWhere || ""), keptWhere);
+    await shot("6b-transmission-elsewhere");
+    await js("[...document.querySelectorAll('#dlList button')].find((b) => b.textContent === 'Remove').click(); null");
+    const farGone = await until(async () => (await js("document.getElementById('dlBox').hidden")) && ((await farBeat()).drop || []).some((d) => d.hash === "c".repeat(40) && d.deleteData), 30000);
+    check("Removed from its card: off the list, and that computer told to delete its copy", !!farGone, await js("document.getElementById('dlList').innerText"));
+    await js("(() => { const s = document.getElementById('trOn'); s.value = 'home'; s.dispatchEvent(new Event('change')); })(); null");
+
     // On a phone: the same page through the app's Cluster plugin (here fake-cluster-plugin.js): the
     // Pi found by its Tailscale name, a command job over a file picked on the phone, its results as one zip
     const downloads = path.join(tmp, "phone-downloads");
     fs.mkdirSync(downloads);
     Object.assign(process.env, { FAKE_CLUSTER_NAMES: JSON.stringify({ pi: `127.0.0.1:${port}` }), FAKE_CLUSTER_DOWNLOADS: downloads, FAKE_CLUSTER_PICK: letter });
+    // (what a device remembered under the names from before the rename, 2026-11-25, is still there when the page opens:
+    // here the torrents' order, kept as piCluster.torrentSort)
+    const sortNow = await js("localStorage.getItem('cluster.torrentSort')");
+    await js("localStorage.removeItem('cluster.torrentSort'); localStorage.setItem('piCluster.torrentSort', JSON.stringify({ by: 'name', reverse: true })); null");
     const phone = new BrowserWindow({ show: false, width: 400, height: 860, webPreferences: { preload: path.join(__dirname, "fake-cluster-plugin.js"), contextIsolation: false, sandbox: false } });
-    await phone.loadURL("app://hand-tracker/pi-cluster.html");
+    await phone.loadURL("app://hand-tracker/cluster.html");
     const pjs = (code) => phone.webContents.executeJavaScript(code, true);
+    const sortCopied = await pjs("localStorage.getItem('cluster.torrentSort')");
+    check("Settings a device kept under the names from before the rename are kept (copied to the new names)",
+      sortCopied === JSON.stringify({ by: "name", reverse: true }), sortCopied);
+    await js(`localStorage.removeItem('piCluster.torrentSort'); localStorage.setItem('cluster.torrentSort', ${JSON.stringify(sortNow)}); null`);
     await pjs("window.confirm = () => true; null");
     const phoneText = () => pjs("document.getElementById('pis').innerText");
     const onPhone = await until(async () => /CPU/.test(await phoneText()) && /Hand Tracker running/.test(await phoneText()), 30000);
@@ -382,19 +491,19 @@ app.whenReady().then(async () => {
         { pkg: "com.handtracker.mouse", name: "Hand Mouse", installed: true, commit: NEW, updated: Date.now() },
         { pkg: "com.handtracker.remote", name: "Remote Recording", installed: false },
         { pkg: "com.handtracker.converter", name: "Recording Converter", installed: true, commit: "", updated: Date.parse("2026-11-01T12:00:00Z") },
-        { pkg: "com.handtracker.cluster", name: "Pi Cluster", installed: true, commit: OLD, updated: Date.now() - 86400000, self: true, ours: true },
+        { pkg: "com.handtracker.cluster", name: "Cluster", installed: true, commit: OLD, updated: Date.now() - 86400000, self: true, ours: true },
       ]),
       FAKE_LATEST: JSON.stringify({ commit: NEW, published: "2026-11-20T22:40:51Z", apps: {
         "com.handtracker.app": asset("HandTracker"), "com.handtracker.mouse": asset("HandMouse"), "com.handtracker.remote": asset("RemoteRecording"),
-        "com.handtracker.converter": asset("RecordingConverter"), "com.handtracker.cluster": asset("PiCluster") } }),
+        "com.handtracker.converter": asset("RecordingConverter"), "com.handtracker.cluster": asset("Cluster") } }),
     });
     const handset = new BrowserWindow({ show: false, width: 400, height: 860, webPreferences: { preload: path.join(__dirname, "fake-cluster-plugin.js"), contextIsolation: false, sandbox: false } });
-    await handset.loadURL("app://hand-tracker/pi-cluster.html");
+    await handset.loadURL("app://hand-tracker/cluster.html");
     const hjs = (code) => handset.webContents.executeJavaScript(code, true);
     await hjs("window.confirm = () => true; null");
     const notice = await until(() => hjs("!document.getElementById('appNotice').hidden && document.getElementById('appNotice').innerText"), 20000);
     check("This phone's apps: a notice when GitHub has a newer build, naming the older ones here",
-      !!notice && /build bbbbbbb/.test(notice) && /Hand Tracker, Recording Converter, Pi Cluster/.test(notice) && !/Hand Mouse/.test(notice) && /3 newer/.test(await hjs("document.getElementById('phoneAppsBtn').textContent")), notice);
+      !!notice && /build bbbbbbb/.test(notice) && /Hand Tracker, Recording Converter, Cluster/.test(notice) && !/Hand Mouse/.test(notice) && /3 newer/.test(await hjs("document.getElementById('phoneAppsBtn').textContent")), notice);
     check("...and Android asked once whether it may notify (the hourly look's notices)", (await hjs("window.__notices")) === 1, await hjs("window.__notices"));
     await hjs("[...document.querySelectorAll('#appNotice button')].find((b) => b.textContent === 'See all').click(); null");
     const appList = () => hjs("document.getElementById('phoneAppsBox').innerText");
@@ -404,8 +513,8 @@ app.whenReady().then(async () => {
     });
     check("...the list: each app's build here (up to date, older, or not on this phone)", !!appsListed, await appList());
     const list = await appList();
-    check("...which update by themselves (Pi Cluster installed them) and which Android asks about once",
-      /Pi Cluster — this phone: build aaaaaaa · updates by itself/.test(list) && /Hand Tracker — this phone: build aaaaaaa · Android asks once: Update/.test(list), list);
+    check("...which update by themselves (Cluster installed them) and which Android asks about once",
+      /Cluster — this phone: build aaaaaaa · updates by itself/.test(list) && /Hand Tracker — this phone: build aaaaaaa · Android asks once: Update/.test(list), list);
     const installs = () => hjs("JSON.stringify(window.__appInstalls)");
     const lookAgain = "[...document.querySelectorAll('#phoneAppsBox button')].find((b) => b.textContent === 'Look again').click(); null";
     await hjs(`window.__appRecording = 'Hand Tracker'; window.__appAuto = '16:40: Waiting: Hand Tracker is recording or saving a take (looks again within an hour).'; ${lookAgain}`);
@@ -420,7 +529,7 @@ app.whenReady().then(async () => {
     await hjs("[...document.querySelectorAll('#phoneAppsBox button')].find((b) => b.textContent.startsWith('Update all')).click(); null");
     const updatedAll = await until(async () => (await installs()) === JSON.stringify([["com.handtracker.app", "com.handtracker.converter", "com.handtracker.cluster"]]) &&
       /updated to build bbbbbbb/.test(await hjs("document.getElementById('message').textContent")) && /Hand Tracker — this phone: build bbbbbbb · up to date/.test(await appList()));
-    check("Update all: the older ones updated, Pi Cluster last, and up to date after", !!updatedAll, (await installs()) + " | " + (await appList()));
+    check("Update all: the older ones updated, Cluster last, and up to date after", !!updatedAll, (await installs()) + " | " + (await appList()));
     await hjs("[...document.querySelectorAll('#phoneAppsBox .app-row')].find((r) => r.textContent.startsWith('Remote Recording')).querySelector('button').click(); null");
     const installedOne = await until(async () => JSON.parse(await installs()).length === 2 && JSON.parse(await installs())[1].join() === "com.handtracker.remote" &&
       /Remote Recording — this phone: build bbbbbbb · up to date/.test(await appList()));
@@ -435,14 +544,14 @@ app.whenReady().then(async () => {
     session.defaultSession.protocol.handle("https", (req) => {
       if (new URL(req.url).hostname !== "api.github.com") return net.fetch(req, { bypassCustomProtocolHandlers: true });
       githubAsked++;
-      return new Response(JSON.stringify({ target_commitish: NEW, published_at: "2026-11-20T22:40:51Z", assets: [{ name: "PiCluster-1.1.0-ios-unsigned.ipa" }, { name: "PiCluster-1.1.0.apk" }] }),
+      return new Response(JSON.stringify({ target_commitish: NEW, published_at: "2026-11-20T22:40:51Z", assets: [{ name: "Cluster-1.1.0-ios-unsigned.ipa" }, { name: "Cluster-1.1.0.apk" }] }),
         { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
     });
     delete process.env.FAKE_APPS;
     Object.assign(process.env, { FAKE_PLATFORM: "ios", FAKE_BUILD_COMMIT: OLD });
     try {
       const iphone = new BrowserWindow({ show: false, width: 400, height: 860, webPreferences: { preload: path.join(__dirname, "fake-cluster-plugin.js"), contextIsolation: false, sandbox: false } });
-      await iphone.loadURL("app://hand-tracker/pi-cluster.html");
+      await iphone.loadURL("app://hand-tracker/cluster.html");
       const ijs = (code) => iphone.webContents.executeJavaScript(code, true);
       const iNotice = await until(() => ijs("!document.getElementById('appNotice').hidden && document.getElementById('appNotice').innerText"), 20000);
       check("iPhone: a notice that a newer build is out, to install with AltServer (no updating there)",
@@ -531,6 +640,24 @@ app.whenReady().then(async () => {
       other.destroy();
     } finally {
       for (const p of pair) p.kill();
+    }
+
+    // A phone of the cluster (the Cluster app's own member service, simulated): it gives the Pi its key, and the app
+    // reaches it through the Pi (only the Pis have its key), listed with the Pis with its own health
+    const phoneService = spawn(py[0], [...py[1], path.join(nodeDir, "ht_cluster.py"), "--simulate", "--port", String(phonePort)], {
+      env: { ...process.env, HT_CLUSTER_PLATFORM: "android", HT_CLUSTER_NAME: "OnePlus", HT_CLUSTER_SEEDS: `127.0.0.1:${port}`, HT_CLUSTER_PHONE_SIM: "64,charging",
+        HT_CLUSTER_STATE: path.join(tmp, "state-phone"), HT_CLUSTER_JOBS_DIR: path.join(tmp, "jobs-phone"), HT_CLUSTER_SIM_FAST: "1", PYTHONDONTWRITEBYTECODE: "1" },
+      stdio: "ignore",
+    });
+    try {
+      await js("document.getElementById('tabPis').click(); null");
+      const shown = await until(async () => {
+        const t = await text();
+        return t.includes("OnePlus") && t.includes("Charging (battery 64%)") && t;
+      }, 100000); // (its address was asked before it started: not again for a minute, cluster.js's NOT_ONE_MS)
+      check("A phone of the cluster is listed with the Pis (reached through the Pi, which has its key), with its own health", !!shown, await text());
+    } finally {
+      phoneService.kill();
     }
 
     // The Pi goes away

@@ -7,7 +7,7 @@
  *                                          Raspberry Pi OS) and other ARM boards; built on Linux
  *   node scripts/dist.js mac               macOS (.dmg) for this Mac's processor, built on a Mac
  *   node scripts/dist.js mac --x64         macOS (.dmg) for Intel Macs (or --arm64: Apple silicon)
- *   ... --app mouse | remote | converter | cluster   Hand Mouse, Remote Recording, Recording Converter or Pi Cluster, the
+ *   ... --app mouse | remote | converter | cluster   Hand Mouse, Remote Recording, Recording Converter or Cluster, the
  *                                          apps of their own built from this one: the same files,
  *                                          their own name, ID, start page (electron/main.js
  *                                          reads appKind) and files' names, so each installs
@@ -47,19 +47,19 @@ const APPS = {
     rules: [], // (no cameras, no hand mouse)
   },
   cluster: {
-    name: "Pi Cluster", id: "com.handtracker.cluster", slug: "pi-cluster", file: "PiCluster",
+    name: "Cluster", id: "com.handtracker.cluster", slug: "hand-tracker-cluster", file: "Cluster",
     synopsis: "Your Raspberry Pis in one place: their health, camera rigs and updates",
-    camera: "Pi Cluster doesn't use the camera.",
+    camera: "Cluster doesn't use the camera.",
     rules: [], // (no cameras, no hand mouse)
   },
 };
 const appAt = process.argv.indexOf("--app");
 const appKind = appAt >= 0 ? process.argv[appAt + 1] : null;
 if (appAt >= 0 && !APPS[appKind]) {
-  console.error("--app is mouse (Hand Mouse), remote (Remote Recording), converter (Recording Converter) or cluster (Pi Cluster).");
+  console.error("--app is mouse (Hand Mouse), remote (Remote Recording), converter (Recording Converter) or cluster (Cluster).");
   process.exit(1);
 }
-// The commit it's built from (Pi Cluster's service reads it from a Pi's Hand Tracker, to tell whether
+// The commit it's built from (Cluster's service reads it from a Pi's Hand Tracker, to tell whether
 // GitHub's latest build is newer).
 const commit = (() => {
   if (/^[0-9a-f]{40}$/.test(process.env.GITHUB_SHA || "")) return process.env.GITHUB_SHA;

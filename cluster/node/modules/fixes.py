@@ -1,5 +1,5 @@
 """
-fixes.py - Pi Cluster module: the repository's Raspberry Pi fixes (pi/*.sh) put on this Pi from the app,
+fixes.py - Cluster module: the repository's Raspberry Pi fixes (pi/*.sh) put on this Pi from the app,
 each with a switch of its own for this Pi. They're all off on a Pi until switched on there; one that's
 already on the Pi (put in by hand) is taken as it is and shows on.
   Wi-Fi recovery (pi/wifi-watchdog.sh): the Wi-Fi chip's driver reloaded when the chip locks up, and the
@@ -16,6 +16,9 @@ already on the Pi (put in by hand) is taken as it is and shows on.
     (usb_max_current_enable=1 in config.txt) and no warning (PSU_MAX_CURRENT=5000 in its bootloader's
     settings). Only for a supply that can give that much. Until the Pi is restarted, a warning says so
     (Updates: Restart this Pi).
+  Wi-Fi at each start (pi/wifi-autoconnect.sh): the Wi-Fi network the Pi was last on set to join by itself again
+    when it starts (its auto-connect switched back on if something turned it off), and joined if the Wi-Fi isn't on
+    one; only that network, and never a hotspot (the user, 2026-11-22).
 On: put in, and put in again when a newer build of this service brings a changed script. Off: taken
 away. Neither while Hand Tracker records or saves a take. A fix that didn't go in is tried again an
 hour later, or at once with "Try the fixes again". "Test the Wi-Fi recovery" reloads the Wi-Fi driver
@@ -33,6 +36,7 @@ import time
 TITLE = "Fixes"
 ORDER = 35
 ON = True
+PLATFORMS = ("linux",)  # (Raspberry Pi OS's: not on a Windows PC in the cluster)
 EVERY = 60
 
 # (setting, script in pi/, name in the app, its switch, the files that say it's on a Pi)
@@ -53,6 +57,9 @@ FIXES = [
     ("usbCurrent", "usb-current", "USB power",
      "USB power: a Pi 5 without a 5 A supply treated as having one: USB ports' 1.6 A, no warning (only if its supply can give it; after a restart)",
      ["/etc/hand-tracker/usb-current"]),
+    ("wifiAutoconnect", "wifi-autoconnect", "Wi-Fi at each start",
+     "Wi-Fi at each start: the network it was last on joins by itself again (auto-connect switched back on if it was off)",
+     ["/usr/local/sbin/hand-tracker-wifi-autoconnect", "/etc/systemd/system/hand-tracker-wifi-autoconnect.service"]),
 ]
 SETTINGS = [{"key": key, "title": switch, "default": False} for key, _, _, switch, _ in FIXES]
 WIFI = FIXES[0][4]

@@ -39,6 +39,13 @@
  *                                             picture drawn with them (on its left half, side by side) -> { hands }
  *   Tile.ps4Status(status)                    its helper's status
  *   Tile.ps4Options({ model, hands })         its hand model and how many hands
+ *   await Tile.startVideo(onChunk) -> ok      a webcam's picture as H.264, made here (WebCodecs' VideoEncoder:
+ *                                             this computer's processor where it has no encoder chip), for
+ *                                             remote recording's full screen: each picture as it's tracked (or
+ *                                             drawn, with tracking off), onChunk({ u (ms since 1970), key, data
+ *                                             (Annex B), hands: [{ lm: [[x, y]] 0-1 of the camera's own picture,
+ *                                             unturned, label }] }); false where it can't be made here
+ *   Tile.stopVideo()                          no more of it
  *   Tile.setView({ rotation, mirror })        turn the picture (and its tracking) clockwise by 0, 90, 180
  *                                             or 270 degrees, and show it mirrored or not (just the look:
  *                                             Left stays the person's left)
@@ -314,6 +321,7 @@
       HandTracker.onHandLandmarks(({ hands, timestamp }) => {
         latest = hands;
         pictures++;
+        if (videoOut) videoOut.frame(hands, timestamp);
         gestures.update(hands);
         // Readable text (only when it's on: one text reader per camera would be a lot for a
         // small computer): text in a mirrored picture shown the right way round.
@@ -330,6 +338,100 @@
 
   const ready = start();
   ready.catch(() => {});
+
+  // ---------- a webcam's own H.264, for remote recording's full screen ----------
+  // Made only while a page plays it (the page showing this tile starts and stops it), at the pictures'
+  // own size, a keyframe a second (VIDEO_KEY_EVERY), constrained baseline first (what software encoders
+  // make), then Main. A picture the encoder isn't ready for is skipped (the next is encoded against the
+  // last it took). Its hands go with it, in the camera's own picture's terms (unturned, uncropped), for the
+  // page to draw: as an OAK camera's come.
+  const VIDEO_CODECS = ["avc1.42e01f", "avc1.4d401f"];
+  const VIDEO_KEY_EVERY = 30;
+  const VIDEO_KBPS = 2500;
+  let videoOut = null;
+  function rawHands(hands) {
+    const r = HandTracker.getRotation ? HandTracker.getRotation() : 0;
+    const vw = video.videoWidth, vh = video.videoHeight, cam = HandTracker.getCamera();
+    // (where the hands were found in its picture, 0-1: its own crop, or Square crop's middle square)
+    const crop = cam.crop ? cam.crop : cam.square && vw && vh ? (vw > vh ? { x: (1 - vh / vw) / 2, y: 0, w: vh / vw, h: 1 } : { x: 0, y: (1 - vw / vh) / 2, w: 1, h: vw / vh }) : null;
+    return (hands || []).map((h) => ({
+      lm: (h.imageLandmarks || []).map((p) => {
+        let [x, y] = KinectView.unturn(p.x, p.y, r);
+        if (crop) [x, y] = [crop.x + x * crop.w, crop.y + y * crop.h];
+        return [Math.round(x * 10000) / 10000, Math.round(y * 10000) / 10000];
+      }),
+      label: h.handedness === "Left" || h.handedness === "Right" ? h.handedness : "",
+    }));
+  }
+  async function startVideo(onChunk) {
+    if (videoOut) {
+      videoOut.onChunk = onChunk;
+      return true;
+    }
+    if (oak || kin || ps4 || error || typeof VideoEncoder !== "function" || typeof VideoFrame !== "function") return false;
+    const w = video.videoWidth & ~1, h = video.videoHeight & ~1;
+    if (!w || !h) return false;
+    let config = null;
+    for (const codec of VIDEO_CODECS) {
+      const c = { codec, width: w, height: h, bitrate: VIDEO_KBPS * 1000, framerate: 30, latencyMode: "realtime", avc: { format: "annexb" } };
+      const ok = await VideoEncoder.isConfigSupported(c).then((x) => !!(x && x.supported), () => false);
+      if (ok) {
+        config = c;
+        break;
+      }
+    }
+    if (!config || videoOut) return !!videoOut;
+    const out = { onChunk, hands: new Map(), count: 0, w, h };
+    out.encoder = new VideoEncoder({
+      output: (chunk) => {
+        if (videoOut !== out) return;
+        const data = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(data);
+        const hands = out.hands.get(chunk.timestamp) || [];
+        out.hands.delete(chunk.timestamp);
+        out.onChunk({ u: chunk.timestamp / 1000, key: chunk.type === "key", data, hands });
+      },
+      error: () => stopVideo(),
+    });
+    try {
+      out.encoder.configure(config);
+    } catch {
+      return false;
+    }
+    out.frame = (hands, timestamp) => {
+      if (videoOut !== out || out.encoder.state !== "configured" || video.readyState < 2) return;
+      if ((video.videoWidth & ~1) !== out.w || (video.videoHeight & ~1) !== out.h) return stopVideo(); // (its size changed: started again when next asked)
+      if (out.encoder.encodeQueueSize > 2) return; // (the encoder busy: this one skipped)
+      const u = performance.timeOrigin + (Number.isFinite(timestamp) ? timestamp : performance.now());
+      let frame;
+      try {
+        frame = new VideoFrame(video, { timestamp: Math.round(u * 1000) });
+      } catch {
+        return;
+      }
+      out.hands.set(frame.timestamp, HandTracker.isTracking() ? rawHands(hands) : []);
+      if (out.hands.size > 60) out.hands.delete(out.hands.keys().next().value);
+      try {
+        out.encoder.encode(frame, { keyFrame: out.count++ % VIDEO_KEY_EVERY === 0 });
+      } catch {
+        stopVideo();
+      }
+      frame.close();
+    };
+    videoOut = out;
+    return true;
+  }
+  function stopVideo() {
+    const out = videoOut;
+    videoOut = null;
+    if (out && out.encoder.state !== "closed") {
+      try {
+        out.encoder.close();
+      } catch {
+        // (closed already)
+      }
+    }
+  }
 
   global.Tile = {
     ready,
@@ -391,6 +493,10 @@
       }
     },
     ps4Frame: (f) => ps4Frame(f),
+    startVideo: (onChunk) => startVideo(onChunk),
+    stopVideo: () => stopVideo(),
+    video: () => !!videoOut,
+    _rawHands: (hands) => rawHands(hands), // (for the checks: hands as its video carries them)
     ps4Status: (s) => {
       if (s.status === "error" || (s.status === "stopped" && s.code)) {
         error = s.message || `The PS4 camera stopped${s.detail ? `: ${s.detail}` : "."}`;

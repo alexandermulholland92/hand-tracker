@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pi Cluster: puts this Raspberry Pi in your cluster (cluster/README.md). On the Pi, logged in to
+# Cluster: puts this Raspberry Pi in your cluster (cluster/README.md). On the Pi, logged in to
 # Tailscale with your account, from your own account (not root):
 #   curl -fsSL https://raw.githubusercontent.com/alexandermulholland92/hand-tracker/main/cluster/setup.sh | sudo bash
 # From a copy of this folder instead (before a build has it):   sudo bash setup.sh --from node
@@ -36,7 +36,7 @@ if [ "$REMOVE" = 1 ]; then
   rm -f /etc/systemd/user/ht-cluster.service /etc/sudoers.d/ht-cluster /usr/local/sbin/ht-cluster-root
   rm -rf /opt/ht-cluster /var/cache/ht-cluster /var/lib/ht-cluster
   user_ctl daemon-reload 2>/dev/null || true
-  echo "Pi Cluster's service is off and gone from this Pi (its settings stay in ~$WHO/.local/state/ht-cluster)."
+  echo "Cluster's service is off and gone from this Pi (its settings stay in ~$WHO/.local/state/ht-cluster)."
   exit 0
 fi
 
@@ -52,8 +52,8 @@ if [ -n "$FROM" ]; then
   rm -rf "$V.part"
   mkdir -p "$V.part"
   cp -r "$FROM"/. "$V.part"/
-  # (the Pi Cluster page, which the service serves itself: from the copy's top folder, when it's in one)
-  for f in pi-cluster.html pi-cluster.js video-formats.js sentry-models.js models/kinds.js favicon.png apple-touch-icon.png; do
+  # (the Cluster page, which the service serves itself: from the copy's top folder, when it's in one)
+  for f in cluster.html cluster.js video-formats.js sentry-models.js models/kinds.js favicon.png apple-touch-icon.png; do
     if [ -f "$FROM/../../$f" ]; then install -D -m 644 "$FROM/../../$f" "$V.part/web/$f"; fi
   done
   find "$V.part" -name __pycache__ -prune -exec rm -rf {} +
@@ -70,7 +70,7 @@ else
   curl -fsSL "https://raw.githubusercontent.com/$REPO/$COMMIT/cluster/node/ht-cluster-root" -o /usr/local/sbin/ht-cluster-root.new
   if ! head -1 /usr/local/sbin/ht-cluster-root.new | grep -q python3; then
     rm -f /usr/local/sbin/ht-cluster-root.new
-    echo "The latest build has no Pi Cluster service in it yet."
+    echo "The latest build has no Cluster service in it yet."
     exit 1
   fi
   chown root:root /usr/local/sbin/ht-cluster-root.new
@@ -96,7 +96,7 @@ user_ctl enable ht-cluster.service >/dev/null 2>&1
 user_ctl restart ht-cluster.service
 sleep 2
 if user_ctl is-active --quiet ht-cluster.service; then
-  echo "Done: $(hostname) is in your Pi Cluster. It shows in the Pi Cluster app within a minute."
+  echo "Done: $(hostname) is in your Cluster. It shows in the Cluster app within a minute."
 else
   echo "The service didn't start. What it said:"
   journalctl --user -M "$WHO@" -u ht-cluster -n 20 --no-pager || true

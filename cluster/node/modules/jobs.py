@@ -1,5 +1,5 @@
 """
-jobs.py - Pi Cluster module: jobs shared out across the Pis. One Pi keeps the cluster's job list and
+jobs.py - Cluster module: jobs shared out across the Pis. One Pi keeps the cluster's job list and
 its files (this Pi's "Keep the cluster's job list and files here"); each Pi with "Take jobs" on asks
 it for work, one file at a time, and sends back what it made.
 
@@ -14,6 +14,17 @@ A job is one kind of work over a list of files (an item each):
   playable a video made one every device plays as it is (autoconvert.py's): each file's own plan
            (which streams, the picture copied or made H.264, scaled to 1080p, HDR made SDR) into an
            .mp4, put by the Pi that keeps the list where the file's "place" says (never over a file)
+  run      any command line or script (the user, 2026-11-24: "make the cluster do anything together"): once on each
+           chosen member ("each": a part a member, done by that member alone), or split over a list ("split": files,
+           lines of text, or the numbers 1 to N, each part to whichever member is free). In a command line: {in} the
+           file, {out} the folder for what it makes, {name} and {file} the file's name without and with its ending,
+           {input} the line or number, {i} and {n} the part's place and how many there are, {member} the member
+           running it; a script gets the file, line or number as its $1, and all of them as IN, OUT, NAME, INPUT,
+           INDEX, COUNT and MEMBER. A script runs by its #! line, else by its ending (bash, python3, node, perl). It
+           runs as the member's own user; as root only with the cluster password (the user's choice: set once in the
+           app; each member keeps only a check of it, and runs root jobs through its root helper, which checks it; the
+           password itself is kept in memory alone, by the Pi keeping the list, while the job's there). A Windows PC
+           runs them in its own Linux (Cluster-Linux, WSL), and takes only those it has the language for.
 The files: recordings on any Pi (Hand Tracker's recordings folder: done by that Pi itself while it
 takes jobs, else fetched by another), files sent from a computer to the Pi that keeps the list, or a
 folder on that Pi. What's made goes to that Pi (~/ht-cluster-jobs/results/<job>/), where the app
@@ -74,6 +85,29 @@ SETTINGS = [
 ]
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# A Windows PC in the cluster (ht_cluster.py's HT_CLUSTER_PLATFORM): its jobs' priority a choice of its own (the user,
+# 2026-11-22: "anytime with its switch at any chosen priority"), instead of the Pis' high-priority switch; it takes
+# conversions and the animal model's jobs (TAKES: a command job's line is written for a Pi's Linux).
+WINDOWS = os.environ.get("HT_CLUSTER_PLATFORM") == "windows"
+# A phone (the Cluster app, Android or iPhone: its own switch): its programs are the app's (phonetools.py: ffmpeg in the
+# app, a Python script in its own Python, a command in Android's sh), held still by giving the file back (an app's
+# can't be paused), and never as root. It says which kinds it takes: an iPhone no commands (it can't run any).
+PHONE = os.environ.get("HT_CLUSTER_PLATFORM") in ("android", "ios")
+PLATFORMS = ("linux", "windows", "android", "ios")
+PRIORITIES = [["low", "Low"], ["belowNormal", "Below normal"], ["normal", "Normal"], ["aboveNormal", "Above normal"], ["high", "High"]]
+TAKES = ("convert", "playable", "animals")  # (and "run", in its Linux, once that's set up: run_kinds)
+if WINDOWS:
+    SETTINGS = [SETTINGS[0], {"key": "priority", "title": "Its jobs' priority", "default": "belowNormal", "choices": PRIORITIES}] + [
+        s for s in SETTINGS[1:] if s["key"] != "high"]
+
+
+def winsys():
+    """winsys.py (beside ht_cluster.py): a job's programs on Windows."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import winsys as w
+    return w
+
 PIECE = 4 << 20  # bytes per request, files going between Pis and to the app
 MAX_PIECE = 16 << 20
 # A Pi working on a file says so every 20 s; one not heard from for this long has its file put back on the list.
@@ -101,6 +135,13 @@ TEXT_SUBS = {"subrip", "ass", "ssa", "mov_text", "webvtt", "text"}
 VIDEO = re.compile(r"\.(mp4|webm|mkv|mov|avi|m4v|ts|mpg|mpeg|wmv|flv|3gp|ogv)$", re.I)
 SAFE_NAME = re.compile(r"^[^/\\\x00-\x1f]{1,200}$")
 SAFE_REL = re.compile(r"^[A-Za-z0-9 ._()+,=@'-]+(/[A-Za-z0-9 ._()+,=@'-]+)*$")
+MAX_PARTS = 10000  # (a run job's parts: lines, numbers)
+LANGUAGES = ("bash", "python3", "node", "perl")
+BY_ENDING = {".sh": "bash", ".bash": "bash", ".py": "python3", ".js": "node", ".mjs": "node", ".pl": "perl"}
+WSL_DISTRO = "Cluster-Linux"  # (apps.py's: a Windows PC's own Linux)
+_secrets = {}  # job id -> its cluster password (a root run job's: in memory alone, never in the job list)
+_pw = {"at": 0, "set": False}
+_has = {"at": 0, "list": None}
 MODEL_URL = "https://github.com/alexandermulholland92/hand-tracker/releases/download/"
 
 _lock = threading.RLock()  # (the job list, on the Pi that keeps it)
@@ -129,21 +170,35 @@ class Moving(RuntimeError):
 # ----- where things are -----
 def data_dir(node):
     d = os.environ.get("HT_CLUSTER_JOBS_DIR") if node.simulate else None
+    if not d and WINDOWS:
+        d = os.path.join(os.path.dirname(node.state_dir), "jobs")
     return d or os.path.join(os.path.expanduser("~"), "ht-cluster-jobs")
 
 
 def work_dir(node):
-    return os.path.join(node.state_dir, "work") if node.simulate else os.path.join(os.path.expanduser("~"), ".cache", "ht-cluster", "work")
+    if node.simulate or PHONE:
+        return os.path.join(node.state_dir, "work")
+    if WINDOWS:
+        return os.path.join(os.path.dirname(node.state_dir), "work")
+    return os.path.join(os.path.expanduser("~"), ".cache", "ht-cluster", "work")
 
 
 def env_dir(node):
+    if WINDOWS:
+        return os.path.join(os.path.dirname(node.state_dir), "jobs-env")
     return os.path.join(os.path.expanduser("~"), ".local", "share", "ht-cluster", "jobs-env")
+
+
+def env_python(d):
+    return os.path.join(d, "Scripts", "python.exe") if os.name == "nt" else os.path.join(d, "bin", "python")
 
 
 def recordings_dir(node):
     """Hand Tracker's remote recording folder here (its setting, else Documents/Hand Tracker recordings)."""
     if node.simulate and os.environ.get("HT_CLUSTER_SIM_RECORDINGS"):
         return os.environ["HT_CLUSTER_SIM_RECORDINGS"]
+    if PHONE:  # (a phone: its Hand Tracker apps' Documents/Hand Tracker, as the Cluster app says where; none it can't read)
+        return os.environ.get("HT_CLUSTER_PHONE_RECORDINGS") or os.path.join(node.state_dir, "no-recordings")
     try:
         with open(os.path.join(os.path.expanduser("~"), ".config", "Hand Tracker", "settings.json"), "r", encoding="utf-8") as f:
             d = json.load(f).get("remoteDir")
@@ -155,7 +210,9 @@ def recordings_dir(node):
 
 
 def ffmpeg(node):
-    for p in (os.environ.get("HT_CLUSTER_FFMPEG") if node.simulate else None, "/usr/bin/ffmpeg",
+    if PHONE:
+        return "ffmpeg"  # (the app's: phonetools.py)
+    for p in (os.environ.get("HT_CLUSTER_FFMPEG") if node.simulate or WINDOWS else None, "/usr/bin/ffmpeg",
               "/opt/Hand Tracker/resources/app.asar.unpacked/node_modules/ffmpeg-static/ffmpeg"):
         if p and os.path.exists(p):
             return p
@@ -238,7 +295,7 @@ def expire(node):
             save(node)
 
 
-def pick(node, worker, worker_can_reach):
+def pick(node, worker, worker_can_reach, kinds=None, has=None):
     """The next file for this worker: a conversion whose last try didn't work first, from any job, the one put back
     longest ago; then its own recordings; then the job list's own files and any other Pi's whose Pi isn't taking
     jobs itself (fetched from there)."""
@@ -246,6 +303,11 @@ def pick(node, worker, worker_can_reach):
     me = node.name
 
     def takes(j, it):
+        if j["kind"] == "run":
+            if it.get("only"):  # (once on each member: that member's own)
+                return it["only"] == worker
+            if not it["source"]["node"]:  # (a line or a number: no file to fetch)
+                return True
         src = it["source"]["node"]
         if src == worker:
             return True
@@ -253,7 +315,9 @@ def pick(node, worker, worker_can_reach):
             return False
         owner_busy = src != me and now - _seen.get(src, 0) < OWNER_FRESH_S
         return src == me or (not owner_busy and src in worker_can_reach)
-    live = [j for j in sorted(book(node), key=lambda x: (not x.get("high"), x["created"])) if j["state"] in ("waiting", "running")]
+    live = [j for j in sorted(book(node), key=lambda x: (not x.get("high"), x["created"])) if j["state"] in ("waiting", "running")
+            and (not kinds or j["kind"] in kinds)  # (a worker that says which kinds it takes: a Windows PC)
+            and runnable(j, has)]
     again = [(it["first"], j, it) for j in live if j["kind"] in CONVERSIONS for it in j["items"]
              if it["state"] == "waiting" and it.get("first") and takes(j, it)]
     if again:
@@ -269,6 +333,17 @@ def pick(node, worker, worker_can_reach):
             if fallback is None and takes(j, it):
                 fallback = (j, it)
     return fallback
+
+
+def runnable(job, has):
+    """A run job a worker can take: in a language it has (one that doesn't say has them all: a Pi from before), and,
+    as root, while the Pi keeping the list has its password."""
+    if job["kind"] != "run":
+        return True
+    needs = job["params"].get("needs")
+    if needs and has is not None and needs not in has:
+        return False
+    return not job["params"].get("root") or job["id"] in _secrets
 
 
 def put_first(job, it):
@@ -319,7 +394,7 @@ def act_create(node, args):
     if not is_home(node):
         return {"ok": False, "error": "%s doesn't keep the job list." % node.name}
     kind = args.get("kind")
-    if kind not in ("animals", "convert", "command", "playable"):
+    if kind not in ("animals", "convert", "command", "playable", "run"):
         return {"ok": False, "error": "Which kind of job?"}
     params = args.get("params") if isinstance(args.get("params"), dict) else {}
     if kind == "convert" and not (isinstance(params.get("args"), list) and all(isinstance(a, str) for a in params["args"]) and params.get("ext")):
@@ -330,8 +405,13 @@ def act_create(node, args):
         m = params.get("model") or {}
         if not ((m.get("url", "").startswith(MODEL_URL) and re.fullmatch(r"[0-9a-f]{64}", str(m.get("sha256", "")))) or m.get("upload")):
             return {"ok": False, "error": "Which model?"}
+    password = None
+    if kind == "run":
+        why, password = run_params(node, params, args)
+        if why:
+            return {"ok": False, "error": why}
     jid = "j%s-%s" % (time.strftime("%Y%m%d-%H%M%S"), uuid.uuid4().hex[:4])
-    items = []
+    items = run_parts(params) if kind == "run" else []
     for i, s in enumerate(args.get("files") or []):
         if not isinstance(s, dict) or not SAFE_NAME.match(str(s.get("name") or "")):
             continue
@@ -356,20 +436,80 @@ def act_create(node, args):
             return {"ok": False, "error": "No folder %s on %s." % (folder, node.name)}
         for name in sorted(os.listdir(folder)):
             p = os.path.join(folder, name)
-            if os.path.isfile(p) and (kind == "command" or VIDEO.search(name)):
+            if os.path.isfile(p) and (kind in ("command", "run") or VIDEO.search(name)):
                 items.append({"name": name, "size": os.path.getsize(p), "source": {"node": node.name, "path": p}, "state": "waiting"})
     if not items:
-        return {"ok": False, "error": "No files for it." + (" (Only videos are taken for this kind of job.)" if folder and kind != "command" else "")}
+        return {"ok": False, "error": ("Nothing to run it over." if kind == "run" else "No files for it.") + (
+            " (Only videos are taken for this kind of job.)" if folder and kind not in ("command", "run") else "")}
     for n, it in enumerate(items):
         it.update(id="i%d" % (n + 1), worker=None, lease=None, until=0, progress=0, tries=0, error=None, summary=None)
-    uploading = any(it["state"] == "uploading" for it in items) or bool((params.get("model") or {}).get("upload"))
+        if kind == "run":
+            it.update(index=n + 1, count=len(items))
+    uploading = (any(it["state"] == "uploading" for it in items) or bool((params.get("model") or {}).get("upload"))
+                 or bool((params.get("script") or {}).get("upload")))
     job = {"id": jid, "kind": kind, "title": str(args.get("title") or kind)[:120], "created": time.time(), "high": bool(args.get("high")),
            "params": params, "state": "uploading" if uploading else "waiting", "items": items, "summary": None}
     with _lock:
         book(node).append(job)
+        if password:
+            _secrets[jid] = password
         save(node)
-    node.event("jobs", "New job: %s (%d file%s)" % (job["title"], len(items), "" if len(items) == 1 else "s"))
+    node.event("jobs", "New job: %s (%d %s%s)" % (job["title"], len(items), "part" if kind == "run" else "file", "" if len(items) == 1 else "s"))
     return {"ok": True, "job": jid, "uploads": [it["name"] for it in items if it["state"] == "uploading"]}
+
+
+def run_params(node, params, args):
+    """A run job's params checked (and its "needs" set): -> (why not, or None; its password, for a root job)."""
+    if params.get("how") not in ("each", "split"):
+        return "Once on each member, or split over a list?", None
+    command = str(params.get("command") or "").strip()
+    script = params.get("script") if isinstance(params.get("script"), dict) else None
+    if script and not SAFE_NAME.match(str(script.get("upload") or "")):
+        script = None
+    if bool(command) == bool(script):
+        return "A command line, or a script (one of the two)?", None
+    params["command"], params["script"] = command or None, {"upload": script["upload"]} if script else None
+    if params.get("needs") not in LANGUAGES:
+        params["needs"] = BY_ENDING.get(os.path.splitext(script["upload"])[1].lower()) if script else None
+    params["root"] = bool(params.get("root"))
+    if not params["root"]:
+        return None, None
+    password = str(args.get("password") or "")
+    a = check_password(node, password)
+    if a.get("error"):
+        return a["error"], None
+    return None, password
+
+
+def check_password(node, password):
+    """The cluster password checked by this computer's root helper: {} if it's right, else {"error"}."""
+    a = node.root("cluster-password", timeout=60, stdin=json.dumps({"check": password}) + "\n")
+    if not a.get("ok"):
+        return {"error": "Couldn't check the cluster password: %s" % a.get("error")}
+    if not a.get("set"):
+        return {"error": "No cluster password is set on %s yet: set it first (Cluster password, in the Jobs tab)." % node.name}
+    if not a.get("right"):
+        return {"error": "That isn't the cluster password."}
+    return {}
+
+
+def run_parts(params):
+    """A run job's parts that aren't files: one for each chosen member, or one for each line or number."""
+    blank = lambda name: {"name": name, "size": 0, "source": {"node": None, "path": None}, "state": "waiting"}
+    if params["how"] == "each":
+        members = []
+        for m in params.get("members") or []:
+            if isinstance(m, str) and SAFE_NAME.match(m) and m not in members:
+                members.append(m)
+        return [dict(blank(m), only=m) for m in members[:64]]
+    lines = [str(l).rstrip("\r") for l in params.pop("lines", None) or [] if str(l).strip()][:MAX_PARTS]
+    if lines:
+        return [dict(blank("%d: %s" % (i + 1, l[:80])), input=l[:4096]) for i, l in enumerate(lines)]
+    try:
+        n = int(params.get("count") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return [dict(blank(str(i)), input=str(i)) for i in range(1, min(n, MAX_PARTS) + 1)]
 
 
 def act_start(node, args):
@@ -386,6 +526,9 @@ def act_start(node, args):
         upload = (job["params"].get("model") or {}).get("upload")
         if upload and not os.path.isfile(os.path.join(data_dir(node), "inputs", job["id"], upload)):
             return {"ok": False, "error": "The model file hasn't arrived."}
+        script = (job["params"].get("script") or {}).get("upload")
+        if script and not os.path.isfile(os.path.join(data_dir(node), "inputs", job["id"], script)):
+            return {"ok": False, "error": "The script hasn't arrived."}
         if job["state"] == "uploading":
             job["state"] = "waiting"
         settle(job)
@@ -451,9 +594,13 @@ def brief(job, items=False):
     out["counts"] = counts(job)
     out["files"] = len(job["items"])
     out["working"] = sorted({it["worker"] for it in job["items"] if it["state"] == "running" and it.get("worker")})
-    out["params"] = {k: v for k, v in job["params"].items() if k in ("every", "format", "command", "label", "modelName")}
+    out["params"] = {k: v for k, v in job["params"].items() if k in ("every", "format", "command", "label", "modelName", "how", "root", "needs")}
+    if job["kind"] == "run":
+        out["params"]["script"] = (job["params"].get("script") or {}).get("upload")
+        out["needsPassword"] = bool(job["params"].get("root")) and job["id"] not in _secrets and job["state"] in ("waiting", "running")
     if items:
-        out["items"] = [{k: it.get(k) for k in ("id", "name", "size", "state", "worker", "progress", "error", "summary", "placed")} | {"from": it["source"]["node"]} for it in job["items"]]
+        out["items"] = [{k: it.get(k) for k in ("id", "name", "size", "state", "worker", "progress", "error", "summary", "placed", "only")}
+                        | {"from": it["source"]["node"] or it.get("only")} for it in job["items"]]
     return out
 
 
@@ -515,7 +662,7 @@ def zip_name(job):
 
 
 def route_zip_file(node, h, q):
-    """The zip act_zip made: a piece at a time (?at=), or whole as a download (?whole=1: the Pi Cluster
+    """The zip act_zip made: a piece at a time (?at=), or whole as a download (?whole=1: the Cluster
     page in a browser, through a one-time link)."""
     job = job_of(node, q.get("job")) if is_home(node) else None
     path = os.path.join(data_dir(node), "zips", job["id"] + ".zip") if job else None
@@ -558,14 +705,17 @@ def act_recordings(node, args):
 
 
 def act_lease(node, args):
-    """A Pi asking for work: {worker, reach: [the Pis it can fetch files from]} -> an item, or none."""
+    """A Pi asking for work: {worker, reach: [the Pis it can fetch files from], kinds?: the kinds of job it takes}
+    -> an item, or none."""
     if not is_home(node):
         return {"ok": False, "error": "%s doesn't keep the job list." % node.name}
     worker = str(args.get("worker") or "")
     with _lock:
         _seen[worker] = time.time()
         expire(node)
-        got = pick(node, worker, set(args.get("reach") or []) | {node.name})
+        kinds = [str(k) for k in args.get("kinds") or []] if isinstance(args.get("kinds"), list) else None
+        has = [str(k) for k in args.get("has") or []] if isinstance(args.get("has"), list) else None
+        got = pick(node, worker, set(args.get("reach") or []) | {node.name}, kinds, has)
         if not got:
             return {"ok": True, "item": None}
         job, it = got
@@ -573,10 +723,14 @@ def act_lease(node, args):
         settle(job)
         save(node)
         upload = (job["params"].get("model") or {}).get("upload")
+        script = (job["params"].get("script") or {}).get("upload")
         return {"ok": True, "item": {"job": job["id"], "kind": job["kind"], "title": job["title"], "high": job["high"], "params": job["params"],
                                      "id": it["id"], "name": it["name"], "size": it["size"], "source": it["source"], "lease": it["lease"],
-                                     "plan": it.get("plan"),
-                                     "modelPath": os.path.join(data_dir(node), "inputs", job["id"], upload) if upload else None}}
+                                     "plan": it.get("plan"), "input": it.get("input"), "index": it.get("index"), "count": it.get("count"),
+                                     "modelPath": os.path.join(data_dir(node), "inputs", job["id"], upload) if upload else None,
+                                     "scriptPath": os.path.join(data_dir(node), "inputs", job["id"], script) if script else None,
+                                     # (a root part: its password, which its member's root helper checks; never in the job list)
+                                     "password": _secrets.get(job["id"]) if job["params"].get("root") else None}}
 
 
 def find_lease(node, lease):
@@ -754,7 +908,8 @@ def route_upload(node, h, q):
         return node.send(h, 409, {"error": "That job isn't taking files."})
     it = next((i for i in job["items"] if i["name"] == name and i["state"] == "uploading"), None)
     model = (job["params"].get("model") or {}).get("upload")
-    if not it and name != model:
+    script = (job["params"].get("script") or {}).get("upload")
+    if not it and name not in (model, script):
         return node.send(h, 400, {"error": "That file isn't one of the job's."})
     return write_piece(node, h, os.path.join(data_dir(node), "inputs", job["id"], name), q)
 
@@ -891,8 +1046,28 @@ def reasons(node, running=False):
     return ""
 
 
+def by_file(what, on=True):
+    """A run part that the service can't signal itself (as root, or in a Windows PC's Linux): told through a file in
+    its folder (".pause" while it's there, ".stop"), which its root helper or run-job.sh watches."""
+    w = _run.get("folder")
+    if not w or not _run.get("byFile"):
+        return
+    path = os.path.join(w, what)
+    try:
+        if on:
+            open(path, "w").close()
+        elif os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 def pause(on):
+    by_file(".pause", on)
     p = _run["proc"]
+    if p and p.poll() is None and WINDOWS and os.name == "nt":  # (Windows: its programs held still, and carried on)
+        winsys().pause(p.pid, on)
+        return
     if not p or p.poll() is not None or not hasattr(os, "killpg"):
         return
     try:
@@ -902,7 +1077,15 @@ def pause(on):
 
 
 def stop_proc():
+    by_file(".stop")
     p = _run["proc"]
+    if p and p.poll() is None and PHONE:
+        p.terminate()
+        try:
+            p.wait(10)
+        except subprocess.TimeoutExpired:
+            pass
+        return
     if p and p.poll() is None:
         try:
             if hasattr(os, "killpg"):
@@ -921,6 +1104,7 @@ def stop_proc():
 def tick(node):
     if is_home(node):
         expire(node)
+    password_set(node)  # (for the app: whether jobs can run as root here; asked at most once a minute)
     if _run["item"]:
         watch(node)
         return
@@ -933,7 +1117,12 @@ def tick(node):
         _state["why"] = "No Pi keeps the job list yet"
         return
     reach = [p["name"] for p in node.cluster()]
-    code, a = ask_home(node, home, "lease", {"worker": node.name, "reach": reach})
+    ask = {"worker": node.name, "reach": reach, "has": languages(node)}
+    if WINDOWS:
+        ask["kinds"] = list(TAKES) + (["run"] if wsl_ready(node) else [])
+    elif PHONE:
+        ask["kinds"] = list(TAKES) + (["run", "command"] if os.environ.get("HT_CLUSTER_PLATFORM") == "android" else ["run"])
+    code, a = ask_home(node, home, "lease", ask)
     if code != 200 or not isinstance(a, dict):
         _state["why"] = "Can't reach %s, which keeps the job list" % home["name"]
         return
@@ -950,7 +1139,7 @@ def tick(node):
 def watch(node):
     """While a file's being worked on: pause and go on as this Pi's state changes; say how it's going."""
     why = reasons(node, running=True)
-    if why and why.startswith("Not taking"):
+    if why and (why.startswith("Not taking") or PHONE):  # (a phone: its programs can't be held still)
         _run["stop"] = "give back"
     elif why and not _run["paused"]:
         pause(True)
@@ -960,6 +1149,10 @@ def watch(node):
         _run.update(paused=False, why="")
     elif why:
         _run["why"] = why
+    p = _run.get("proc")
+    if WINDOWS and os.name == "nt" and p and p.poll() is None and _run.get("priority") != node.setting("jobs", "priority"):
+        _run["priority"] = node.setting("jobs", "priority")  # (its priority changed while it ran: its programs too)
+        winsys().set_priority(p.pid, _run["priority"])
         if time.time() - _run["pausedAt"] > GIVE_BACK_S:
             _run["stop"] = "give back"
     if _run["stop"]:
@@ -972,9 +1165,15 @@ def watch(node):
             stop_proc()
 
 
-def launch(node, cmd, high, cwd=None, env=None):
+def launch(node, cmd, high, cwd=None, env=None, stdin_text=None):
     """A job's program: in a process group of its own (to pause it whole), at low priority on two
     cores, or (high) on all of them, ahead of everything (the root helper renices it)."""
+    if PHONE:
+        import phonetools  # (beside ht_cluster.py)
+
+        p = phonetools.popen(cmd, cwd=cwd, env=dict(env or {}, HT_CLUSTER_JOB="1"), stdin_text=stdin_text)
+        _run["proc"] = p
+        return p
     prefix = []
     if os.name == "posix" and not high:
         prefix = ["nice", "-n", "15"] + (["ionice", "-c3"] if shutil.which("ionice") else [])
@@ -982,12 +1181,22 @@ def launch(node, cmd, high, cwd=None, env=None):
             prefix += ["taskset", "-c", "2,3"]
     e = dict(os.environ, HT_CLUSTER_JOB="1", **(env or {}))
     kw = {"start_new_session": True} if os.name == "posix" else {}
+    if WINDOWS and os.name == "nt":  # (a Windows PC: no window of its own, at the PC's chosen priority, whatever the job says)
+        _run["priority"] = node.setting("jobs", "priority")
+        kw = {"creationflags": winsys().creationflags(_run["priority"])}
+    stdin = subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL
     if isinstance(cmd, str):  # (a command line as it is: Windows's cmd, for the checks)
-        p = subprocess.Popen(cmd, shell=True, cwd=cwd, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        p = subprocess.Popen(cmd, shell=True, cwd=cwd, env=e, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     else:
-        p = subprocess.Popen(prefix + cmd, cwd=cwd, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, **kw)
+        p = subprocess.Popen(prefix + cmd, cwd=cwd, env=e, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, **kw)
+    if stdin_text is not None:
+        try:
+            p.stdin.write(stdin_text)
+            p.stdin.close()
+        except OSError:
+            pass
     _run["proc"] = p
-    if high and not node.simulate:
+    if high and not node.simulate and not WINDOWS:
         time.sleep(0.5)
         node.root("renice-jobs", timeout=60)
     return p
@@ -1263,15 +1472,217 @@ def do_command(node, item, src, out_dir, work):
     return {"outputs": sum(len(n) for _, _, n in os.walk(out_dir)) - 1}
 
 
+# ----- any command or script (the run kind) -----
+def languages(node):
+    """The languages this member runs scripts in (looked at once every 10 minutes): a Windows PC's, in its Linux."""
+    if time.time() - _has["at"] < 600 and _has["list"] is not None:
+        return _has["list"]
+    if PHONE:  # (a phone: Python scripts in its own Python; Android's sh runs shell scripts, not bash's own)
+        _has.update(at=time.time(), list=["python3"])
+        return _has["list"]
+    if node.simulate:  # (the checks: every language, or those they name)
+        _has.update(at=time.time(), list=[x for x in (os.environ.get("HT_CLUSTER_SIM_HAS") or " ".join(LANGUAGES)).split() if x in LANGUAGES])
+        return _has["list"]
+    if WINDOWS and not node.simulate:
+        code, out, _ = node.run([wsl_exe(), "-d", WSL_DISTRO, "-u", "root", "--exec", "/bin/sh", "-c",
+                                 "for t in %s; do command -v $t >/dev/null 2>&1 && echo $t; done" % " ".join(LANGUAGES)], 120)
+        found = [l.strip() for l in (out or "").replace("\x00", "").splitlines() if l.strip() in LANGUAGES] if code == 0 else []
+    else:
+        found = [x for x in LANGUAGES if shutil.which(x)]
+    _has.update(at=time.time(), list=found)
+    return found
+
+
+def wsl_exe():
+    return os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", "wsl.exe")
+
+
+def wsl_ready(node):
+    """A Windows PC's Linux is set up (Cluster-Linux, setup.py --linux): it takes run jobs, in there."""
+    if node.simulate:
+        return bool(os.environ.get("HT_CLUSTER_SIM_WSL"))
+    try:
+        return WSL_DISTRO in winsys().wsl_distros()
+    except Exception:
+        return False
+
+
+def wsl_path(p):
+    """A Windows path as WSL's Linux sees it (C:\\Users\\... -> /mnt/c/Users/...)."""
+    drive, rest = os.path.splitdrive(os.path.abspath(p))
+    return "/mnt/%s%s" % (drive[:1].lower(), rest.replace("\\", "/"))
+
+
+def wsl_copy(node, name):
+    """windows/<name> as WSL's Linux reads it: a copy with Linux's line ends, in the state folder."""
+    with open(os.path.join(HERE, "windows", name), "rb") as f:
+        data = f.read().replace(b"\r\n", b"\n")
+    dst = os.path.join(node.state_dir, name)
+    try:
+        with open(dst, "rb") as f:
+            same = f.read() == data
+    except OSError:
+        same = False
+    if not same:
+        with open(dst + ".new", "wb") as f:
+            f.write(data)
+        os.replace(dst + ".new", dst)
+    return wsl_path(dst)
+
+
+def script_file(node, item, home, work):
+    """The job's script here: on the Pi keeping the list, where it was sent; elsewhere fetched from there. Its line
+    ends made Linux's (a script written on Windows would stop at its first line)."""
+    name = item["params"]["script"]["upload"]
+    if home["name"] == node.name and item.get("scriptPath") and os.path.isfile(item["scriptPath"]):
+        with open(item["scriptPath"], "rb") as f:
+            data = f.read()
+    else:
+        tmp = os.path.join(work, ".script")
+        fetch(node, {"name": name, "size": 0, "source": {"node": home["name"], "path": item.get("scriptPath") or ""}}, home, tmp)
+        with open(tmp, "rb") as f:
+            data = f.read()
+        os.remove(tmp)
+    if b"\0" not in data[:4096]:
+        data = data.replace(b"\r\n", b"\n")
+    path = os.path.join(work, re.sub(r"[^A-Za-z0-9._-]", "_", name) or "script")
+    with open(path, "wb") as f:
+        f.write(data)
+    os.chmod(path, 0o755)
+    return path, data
+
+
+def part_folder(item):
+    """Where a run part's results go in its job's: its member's name (once on each member), else its number (and
+    its file's name, for a file)."""
+    if item["params"].get("how") == "each":
+        base = item["name"]
+    else:
+        base = str(item.get("index") or 1).zfill(len(str(item.get("count") or 1)))
+        if (item.get("source") or {}).get("path"):
+            base += " " + os.path.splitext(item["name"])[0]
+    return re.sub(r"[^A-Za-z0-9 ._()+,=@'-]", "_", base)[:80].strip() or "part"
+
+
+def do_run(node, item, src, out_dir, work, home):
+    """A part of a run job: its command line, or its script, as this member's own user or (with the cluster
+    password, checked by the root helper) as root; on a Windows PC in its Linux. What it prints goes in log.txt."""
+    p = item["params"]
+    in_linux = WINDOWS and os.name == "nt" and not node.simulate
+    posix = os.name == "posix" or in_linux  # (else Windows itself, for the checks: cmd's way, and this Python for a script)
+    lp = wsl_path if in_linux else (lambda v: v)
+    name = item["name"] if src else ""
+    values = {"in": lp(src) if src else "", "out": lp(out_dir), "name": os.path.splitext(name)[0] if src else "", "file": name,
+              "input": item.get("input") or "", "i": str(item.get("index") or 1), "n": str(item.get("count") or 1), "member": node.name}
+    env = {"IN": values["in"], "OUT": values["out"], "NAME": values["name"], "INPUT": values["input"], "INDEX": values["i"],
+           "COUNT": values["n"], "MEMBER": node.name}
+    if p.get("script"):
+        path, data = script_file(node, item, home, work)
+        first = data.split(b"\n", 1)[0]
+        lang = p.get("needs") or "bash"
+        extra = [values["in"] or values["input"]] if values["in"] or values["input"] else []
+        if posix:
+            argv = ([lp(path)] if first.startswith(b"#!") else [lang, lp(path)]) + extra
+        else:
+            argv = [sys.executable, path] + extra
+    else:
+        q = shlex.quote if posix else (lambda v: subprocess.list2cmdline([v]))
+        cmd = p["command"]
+        for k, v in values.items():
+            cmd = cmd.replace("{%s}" % k, q(v))
+        argv = ["bash", "-c", cmd] if posix else cmd
+    root = bool(p.get("root"))
+    stdin_text = None
+    if in_linux:  # (a Windows PC: in its Linux, run-job.sh watching its folder for .pause and .stop)
+        if root:
+            a = check_password(node, item.get("password") or "")
+            if a.get("error"):
+                raise RuntimeError(a["error"])
+        envs = ["%s=%s" % (k, v) for k, v in env.items()] + ["HOME=/tmp", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HT_CLUSTER_JOB=1"]
+        cmd = [wsl_exe(), "-d", WSL_DISTRO, "-u", "root", "--cd", wsl_path(work), "--exec", "/bin/sh", wsl_copy(node, "run-job.sh")] + (
+            ["--root"] if root else []) + ["--", "env"] + envs + argv
+        _run["byFile"] = True
+    elif root:  # (a Pi: through its root helper, which checks the password, then runs it and watches .pause and .stop)
+        helper = [sys.executable, os.environ["HT_CLUSTER_ROOT_HELPER"]] if node.simulate and os.environ.get("HT_CLUSTER_ROOT_HELPER") else ["sudo", "-n", "/usr/local/sbin/ht-cluster-root"]
+        cmd = helper + ["run-as-root"]
+        stdin_text = json.dumps({"password": item.get("password") or "", "argv": argv, "cwd": work, "env": env}) + "\n"
+        _run["byFile"] = True
+    else:
+        cmd = argv
+    proc = launch(node, cmd, high_for(node, item), cwd=work, env=env, stdin_text=stdin_text)
+    log = []
+    code, tail = run_logged(proc, log.append)
+    answer = None
+    if root and not in_linux:  # (the root helper's own answer: its last JSON line, kept out of the log)
+        for i in range(len(log) - 1, -1, -1):
+            if log[i].strip().startswith("{"):
+                try:
+                    answer = json.loads(log[i])
+                except ValueError:
+                    answer = None
+                if isinstance(answer, dict) and "ok" in answer:
+                    del log[i]
+                else:
+                    answer = None
+                break
+        tail = log[-3:]
+    with open(os.path.join(out_dir, "log.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(log[-5000:]) + "\n")
+    if answer is not None:
+        if not answer.get("ok"):
+            raise RuntimeError(stopped_or("as root: %s" % answer.get("error")))
+        code = answer.get("code")
+    if code != 0:
+        raise RuntimeError(stopped_or("it ended with %s: %s" % (code, " / ".join(tail[-3:]))))
+    return {"outputs": sum(len(n) for _, _, n in os.walk(out_dir)) - 1}
+
+
+def password_set(node):
+    """Whether a cluster password is set here (asked of its root helper, at most once a minute)."""
+    if time.time() - _pw["at"] > 60:
+        a = node.root("cluster-password", timeout=60, stdin=json.dumps({"check": ""}) + "\n")
+        _pw.update(at=time.time(), set=bool(a.get("ok") and a.get("set")))
+    return _pw["set"]
+
+
+def act_set_password(node, args):
+    """This member's cluster password set (or changed: the old one needed): kept only as a check, by its root helper."""
+    new = str(args.get("new") or "")
+    a = node.root("cluster-password", timeout=60, stdin=json.dumps({"new": new, "old": str(args.get("old") or "")}) + "\n")
+    _pw["at"] = 0
+    if not a.get("ok"):
+        return {"ok": False, "error": a.get("error") or "it didn't take"}
+    node.event("jobs", "The cluster password was set here (for jobs run as root).")
+    return {"ok": True, "message": "Set on %s." % node.name}
+
+
+def act_job_password(node, args):
+    """A root job's password again (the Pi keeping the list restarted, which forgets it): checked, then kept in memory."""
+    with _lock:
+        job = job_of(node, args.get("job"))
+    if not job or job["kind"] != "run" or not job["params"].get("root"):
+        return {"ok": False, "error": "No such job run as root."}
+    a = check_password(node, str(args.get("password") or ""))
+    if a.get("error"):
+        return {"ok": False, "error": a["error"]}
+    _secrets[job["id"]] = str(args.get("password"))
+    return {"ok": True, "message": "%s goes on." % job["title"]}
+
+
+ACTIONS.update(setPassword={"run": act_set_password, "hidden": True}, jobPassword={"run": act_job_password, "hidden": True})
+
+
 def stopped_or(text):
     return "stopped" if _run["stop"] else text
 
 
 # ----- the animal model -----
 def tools_python(node):
+    if PHONE:
+        return "python3"  # (this Python: phonetools.py runs the script in it)
     if node.simulate and os.environ.get("HT_CLUSTER_SIM_ANIMALS_PY"):
         return os.environ["HT_CLUSTER_SIM_ANIMALS_PY"]
-    py = os.path.join(env_dir(node), "bin", "python")
+    py = env_python(env_dir(node))
     return py if os.path.exists(py) else None
 
 
@@ -1283,9 +1694,14 @@ def make_tools(node):
         _tools["making"] = True
     try:
         d = env_dir(node)
-        py = os.path.join(d, "bin", "python")
+        py = env_python(d)
         if not os.path.exists(py):
-            code, out, err = node.run([sys.executable if node.simulate else "/usr/bin/python3", "-m", "venv", d], 300)
+            base = sys.executable if node.simulate or WINDOWS else "/usr/bin/python3"
+            if WINDOWS and os.environ.get("HT_CLUSTER_TOOLS_PYTHON"):  # (one onnxruntime has wheels for: its launcher says)
+                base = os.environ["HT_CLUSTER_TOOLS_PYTHON"]
+            if os.path.basename(base).lower() == "pythonw.exe":
+                base = os.path.join(os.path.dirname(base), "python.exe")
+            code, out, err = node.run([base, "-m", "venv", d], 300)
             if code != 0:
                 raise RuntimeError("venv: " + (err or out).strip()[-200:])
         code, out, err = node.run([py, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "onnxruntime", "numpy", "pillow"], 1800)
@@ -1345,7 +1761,7 @@ def do_animals(node, item, src, out_dir, home, work):
     names = os.path.join(work, "names.json")
     with open(names, "w", encoding="utf-8") as f:
         json.dump({"names": p.get("names") or [], "animals": p.get("animals") or []}, f)
-    threads = (os.cpu_count() or 4) if high_for(node, item) else 2
+    threads = (os.cpu_count() or 4) if high_for(node, item) or WINDOWS else 2  # (a Windows PC: all, at its chosen priority)
     base = re.sub(r"[^A-Za-z0-9_.-]", "_", os.path.splitext(item["name"])[0])
     cmd = [py, os.path.join(HERE, "jobs_animals.py"), "--video", src, "--model", model, "--names", names, "--out", out_dir,
            "--base", base, "--every", str(float(p.get("every") or 1)), "--score", str(float(p.get("score") or 0.25)),
@@ -1372,8 +1788,14 @@ def work(node, item, home):
     ok, error, summary, again = False, None, None, False
     try:
         _state["last"] = "%s: %s" % (item["title"], item["name"])
-        src = fetch(node, item, home, os.path.join(w, "input" + os.path.splitext(item["name"])[1]))
-        if item["kind"] == "convert":
+        _run.update(folder=w, byFile=False)
+        has_file = bool((item.get("source") or {}).get("path"))
+        src = fetch(node, item, home, os.path.join(w, "input" + os.path.splitext(item["name"])[1])) if has_file else None
+        if item["kind"] == "run":  # (each part's own folder in the results: a member's name, or its number)
+            part_out = os.path.join(out_dir, part_folder(item))
+            os.makedirs(part_out, exist_ok=True)
+            summary = do_run(node, item, src, part_out, w, home)
+        elif item["kind"] == "convert":
             summary = do_convert(node, item, src, out_dir)
         elif item["kind"] == "playable":
             summary = do_playable(node, item, src, out_dir)
@@ -1415,7 +1837,8 @@ def start(node):
 
 
 def status(node):
-    out = {"home": is_home(node), "tools": bool(tools_python(node)), "taking": bool(node.setting("jobs", "take"))}
+    out = {"home": is_home(node), "tools": bool(tools_python(node)), "taking": bool(node.setting("jobs", "take")), "passwordSet": _pw["set"],
+           "runs": not WINDOWS or wsl_ready(node)}
     it = _run["item"]
     if it:
         out["working"] = {"job": it["job"], "title": it["title"], "file": it["name"], "progress": round(_run["progress"], 3),
