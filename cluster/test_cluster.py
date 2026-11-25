@@ -389,8 +389,8 @@ def check_fixes(tmp, gh, ht):
         m = wait_for(lambda: state(mod(), "usb-current") == "On" and mod(), 30) or mod()
         warns = (m.get("status") or {}).get("warnings") or []
         check("USB power put in: until the Pi restarts, it says to restart it", "fix-install usb-current" in helper_lines(tmp) and
-              any(w.startswith("USB power: restart this Pi") for w in warns), (m.get("status"), helper_lines(tmp)))
-        check("...and shows the supply the Pi takes it has, and the USB ports' limit now", "the Pi takes its supply as 3 A, USB limited to 0.6 A" in (m.get("status") or {}).get("summary", ""),
+              any(w.startswith("USB power: restart this device") for w in warns), (m.get("status"), helper_lines(tmp)))
+        check("...and shows the supply the Pi takes it has, and the USB ports' limit now", "the device takes its supply as 3 A, USB limited to 0.6 A" in (m.get("status") or {}).get("summary", ""),
               (m.get("status") or {}).get("summary"))
         sim("proc/sys/kernel/random/boot_id", b"boot-2\n")  # (restarted: the bootloader takes the supply as 5 A, the ports have 1.6 A)
         sim("proc/device-tree/chosen/power/max_current", (5000).to_bytes(4, "big"))
@@ -398,15 +398,15 @@ def check_fixes(tmp, gh, ht):
         poke()
         m = wait_for(lambda: not any(w.startswith("USB power") for w in (mod().get("status") or {}).get("warnings") or []) and mod(), 30) or mod()
         check("...restarted: no more warning, the supply taken as 5 A, the ports up to 1.6 A", not any(w.startswith("USB power") for w in (m.get("status") or {}).get("warnings") or []) and
-              "the Pi takes its supply as 5 A, USB up to 1.6 A" in (m.get("status") or {}).get("summary", ""), m.get("status"))
+              "the device takes its supply as 5 A, USB up to 1.6 A" in (m.get("status") or {}).get("summary", ""), m.get("status"))
         ask(port, "POST", "/api/settings", {"module": "fixes", "key": "usbCurrent", "value": False})
         m = wait_for(lambda: state(mod(), "usb-current") == "Off" and mod(), 30) or mod()
         check("...switched off: taken away, and a restart asked for again", "fix-remove usb-current" in helper_lines(tmp) and
-              any(w.startswith("USB power: restart this Pi") for w in (m.get("status") or {}).get("warnings") or []), m.get("status"))
+              any(w.startswith("USB power: restart this device") for w in (m.get("status") or {}).get("warnings") or []), m.get("status"))
 
         _, d = ask(port)
         texts = " | ".join(e["text"] for e in d.get("events", []))
-        check("Its events say what happened", all(t in texts for t in ("Freeze restart was on this Pi already", "Wi-Fi recovery put in", "Wi-Fi recovery taken off",
+        check("Its events say what happened", all(t in texts for t in ("Freeze restart was on this device already", "Wi-Fi recovery put in", "Wi-Fi recovery taken off",
                                                                          "Tailscale recovery updated", "Network tuning didn't go in", "Wi-Fi recovery test: Back on TestNet",
                                                                          "USB power put in")), texts)
     finally:
@@ -574,7 +574,7 @@ def main():
         # Raspberry Pi OS
         os_state = wait_for(lambda: (module(port, "updates").get("status") or {}).get("os", {}).get("rebootNeeded"), 30)
         warns = (module(port, "updates").get("status") or {}).get("warnings") or []
-        check("OS updates went in, and it asks for a restart", bool(os_state) and any("Restart this Pi" in w for w in warns) and "os-upgrade" in helper_log(tmp), warns)
+        check("OS updates went in, and it asks for a restart", bool(os_state) and any("Restart this device" in w for w in warns) and "os-upgrade" in helper_log(tmp), warns)
         HT["recording"] = True
         code, d = ask(port, "POST", "/api/action", {"module": "updates", "action": "reboot"})
         check("Restart this Pi is refused while recording", code == 409, (code, d))
@@ -863,7 +863,7 @@ def check_update_trial_units():
     U._state["idle"] = False
     c = Node("gamma", [("alpha", {"idle": False}), ("pc", {"idle": True, "windows": True})])
     young = U.plan(c, rel)
-    check("No idle Pi (a Windows PC never goes first): a new build waits", young[0] is False and "idle Pi" in young[1] and "trial" not in c.mem, young)
+    check("No idle Pi (a Windows PC never goes first): a new build waits", young[0] is False and "idle device" in young[1] and "trial" not in c.mem, young)
     aged = U.plan(c, {"commit": NEW, "at": old})
     c.rec = True
     rec = U.plan(c, {"commit": NEW, "at": old})

@@ -141,20 +141,20 @@
     <h1>Cluster</h1>
     <span id="buildInfo"></span>
     <button id="phoneAppsBtn" hidden title="Cluster and this phone's other Hand Tracker apps: updated or installed from GitHub's newest build">This phone's apps</button>
-    <button id="updateAll" title="Every Pi that's on updates Hand Tracker (a Pi that's recording waits until it stops)">Update all Pis</button>
-    <button id="addPi" class="main">Add a Pi</button>
+    <button id="updateAll" title="Every device that's on updates Hand Tracker (a device that's recording waits until it stops)">Update all devices</button>
+    <button id="addPi" class="main">Add a device</button>
   </header>
   <div id="appNotice" class="card notice" hidden></div>
   <section id="phoneAppsBox" class="card" hidden></section>
   <section id="memberBox" class="card" hidden></section>
   <section id="filesBox" class="card" hidden></section>
   <div class="tabs" role="tablist">
-    <button role="tab" id="tabPis" aria-selected="true">Pis</button>
+    <button role="tab" id="tabPis" aria-selected="true">Devices</button>
     <button role="tab" id="tabRigs" aria-selected="false">Camera rigs</button>
     <button role="tab" id="tabJobs" aria-selected="false">Jobs</button>
     <button role="tab" id="tabTransmission" aria-selected="false">Transmission</button>
   </div>
-  <p id="note">Looking for Pis over Tailscale…</p>
+  <p id="note">Looking for devices over Tailscale…</p>
   <p id="message" hidden></p>
   <section id="pis"></section>
   <section id="rigs" hidden></section>
@@ -175,7 +175,7 @@
       </div>
       <div id="commandOpts" class="field" hidden>
         <input id="command" type="text" style="width:100%" placeholder="ffmpeg -i {in} -vf scale=640:-1 {out}/{name}.mp4" />
-        <div class="hint">{in}: the file · {out}: the folder for what it makes (what's in it comes back) · {name}: the file's name without its ending · {file}: with it. It runs on whichever Pi takes the file, as your account.</div>
+        <div class="hint">{in}: the file · {out}: the folder for what it makes (what's in it comes back) · {name}: the file's name without its ending · {file}: with it. It runs on whichever device takes the file, as your account.</div>
       </div>
       <div id="runOpts" class="field" hidden>
         <input id="runCommand" type="text" style="width:100%" placeholder="echo hello from {member} &gt; {out}/hello.txt" />
@@ -195,10 +195,10 @@
           <div class="buttons"><button id="pwSet">Set it on every member</button></div>
           <div id="pwSaid" class="hint"></div>
         </div>
-        <div class="hint">{in}, {out}, {name}, {file}: the file, the folder for what it makes (what's in it comes back), its name without and with its ending · {input}: the line or number · {i}, {n}: the part's place and how many there are · {member}: the member running it. A script gets the file, line or number as $1, and all of them as IN, OUT, NAME, INPUT, INDEX, COUNT and MEMBER; it runs by its #! line, else by its ending (bash, python3, node, perl). The Pis and this PC (in its own Linux) run them, as their own user; as root only with the cluster password, which each member checks itself.</div>
+        <div class="hint">{in}, {out}, {name}, {file}: the file, the folder for what it makes (what's in it comes back), its name without and with its ending · {input}: the line or number · {i}, {n}: the part's place and how many there are · {member}: the member running it. A script gets the file, line or number as $1, and all of them as IN, OUT, NAME, INPUT, INDEX, COUNT and MEMBER; it runs by its #! line, else by its ending (bash, python3, node, perl). Each device runs them (this PC in its own Linux), as its own user; as root only with the cluster password, which each member checks itself.</div>
       </div>
       <div class="field" id="filesField"><b>Files</b>
-        <div class="buttons"><button id="showRecordings">Recordings on the Pis…</button> <button id="pickFiles">Files from this computer…</button> <button id="browseHome">A folder on <span class="homeName">the Pi that keeps the jobs</span>…</button></div>
+        <div class="buttons"><button id="showRecordings">Recordings on the devices…</button> <button id="pickFiles">Files from this computer…</button> <button id="browseHome">A folder on <span class="homeName">the device that keeps the jobs</span>…</button></div>
         <div id="recordingsBox" class="pick-list" hidden></div>
         <div id="browseBox" class="pick-list" hidden></div>
         <div id="chosen" class="hint"></div>
@@ -271,10 +271,10 @@
 </main>
 
 <dialog id="addDialog">
-  <h2>Add a Pi to the cluster</h2>
+  <h2>Add a device to the cluster</h2>
   <ol>
-    <li>Raspberry Pi OS (64-bit) on the Pi, with <b>Tailscale</b> installed and logged in to your account.</li>
-    <li>On the Pi, from your own account (not root), run this. It asks for your password once:
+    <li>Raspberry Pi OS (64-bit) on the device, with <b>Tailscale</b> installed and logged in to your account.</li>
+    <li>On the device, from your own account (not root), run this. It asks for your password once:
       <code class="cmd" id="setupCmd">curl -fsSL https://raw.githubusercontent.com/alexandermulholland92/hand-tracker/main/cluster/setup.sh | sudo bash</code>
       <button id="copyCmd">Copy</button> <span id="copied" hidden>Copied.</span>
     </li>
@@ -285,7 +285,7 @@
     <div class="buttons"><input id="piName" type="text" value="pi" autocapitalize="off" autocorrect="off" spellcheck="false" /> <button id="findPi">Look for it</button></div>
     <div id="findPiNote" class="hint"></div>
   </div>
-  <p style="font-size:12px;opacity:0.6;line-height:1.5">Taking a Pi out: unplug it and press Forget here, or remove the service from it with
+  <p style="font-size:12px;opacity:0.6;line-height:1.5">Taking a device out: unplug it and press Forget here, or remove the service from it with
     <code>curl -fsSL https://raw.githubusercontent.com/alexandermulholland92/hand-tracker/main/cluster/setup.sh | sudo bash -s -- --remove</code></p>
   <button id="closeAdd">Close</button>
 </dialog>

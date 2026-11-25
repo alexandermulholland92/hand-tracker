@@ -209,7 +209,7 @@ def git_blob_sha(data):
 def arch():
     code, out, _ = run(["dpkg", "--print-architecture"], 10)
     if code != 0 or not out.strip():
-        raise Failed("Couldn't tell this Pi's processor (dpkg --print-architecture).")
+        raise Failed("Couldn't tell this device's processor (dpkg --print-architecture).")
     return out.strip()
 
 
@@ -671,7 +671,7 @@ def own_transmission_start():
     run(["systemctl", "reset-failed", OWN_UNIT], 30)
     cmd = ["systemd-run", "--unit=" + OWN_UNIT, "--collect", "-p", "User=" + name, "-p", "Group=%d" % gid, "-p", "UMask=0022",
            "-p", "Restart=on-failure", "-p", "RestartSec=10", "-p", "Nice=10", "-p", "IOSchedulingClass=best-effort", "-p", "IOSchedulingPriority=7",
-           "-p", "Description=Cluster's downloads: this Pi's own Transmission",
+           "-p", "Description=Cluster's downloads: this device's own Transmission",
            "/usr/bin/transmission-daemon", "-f", "--log-level=error", "-g", config]
     code, out, err = run(cmd, 60)
     if code != 0:
@@ -765,9 +765,9 @@ def run_as_root():
     d = stdin_json()
     right = password_right(d.get("password") or "")
     if right is None:
-        raise Failed("No cluster password is set on this Pi yet: set it in the Jobs tab.")
+        raise Failed("No cluster password is set on this device yet: set it in the Jobs tab.")
     if not right:
-        raise Failed("That isn't this Pi's cluster password.")
+        raise Failed("That isn't this device's cluster password.")
     argv = d.get("argv")
     if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
         raise Failed("Which command?")
@@ -828,7 +828,7 @@ def fetch_fixes():
     except OSError:
         commit = ""
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise Missing("This Pi's version of the service (%s) hasn't got the fixes." % (commit or "?"))
+        raise Missing("This device's version of the service (%s) hasn't got the fixes." % (commit or "?"))
     try:
         tree = json.loads(fetch(API + "/repos/%s/git/trees/%s?recursive=1" % (REPO, commit)).decode("utf-8"))
     except (OSError, ValueError) as e:
@@ -865,7 +865,7 @@ def fetch_page():
     except OSError:
         commit = ""
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise Missing("This Pi's version of the service (%s) has no Cluster page to fetch." % (commit or "?"))
+        raise Missing("This device's version of the service (%s) has no Cluster page to fetch." % (commit or "?"))
     folder = os.path.join(current, "web")
     if all(os.path.isfile(os.path.join(folder, *p.split("/"))) for p in PAGE):
         return {"commit": commit, "unchanged": True}
@@ -914,7 +914,7 @@ def fix_script(name):
         with open(path, "rb") as f:
             data = f.read()
     except OSError:
-        raise Missing("This Pi's version of the service hasn't got %s yet." % name)
+        raise Missing("This device's version of the service hasn't got %s yet." % name)
     return path, hashlib.sha256(data).hexdigest()
 
 
@@ -943,7 +943,7 @@ def wifi_test():
     back before the Wi-Fi goes); the watchdog writes how it went to the journal."""
     check = at("/usr/local/sbin/hand-tracker-wifi-watchdog")
     if not os.path.exists(check):
-        raise Failed("The Wi-Fi recovery isn't on this Pi.")
+        raise Failed("The Wi-Fi recovery isn't on this device.")
     code, out, err = run(["systemd-run", "--quiet", "--unit=hand-tracker-wifi-watchdog-test-%d" % int(time.time()),
                           "--on-active=20s", "--timer-property=AccuracySec=1s", check, "reload-now"], 60)
     if code != 0:

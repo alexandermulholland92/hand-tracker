@@ -217,7 +217,7 @@ app.whenReady().then(async () => {
     check("A module the page doesn't know is shown with its summary and warning", !!listed && listed.includes("Something new: speed slow") && listed.includes("A new warning"), listed);
     const buttons = await js("[...document.querySelectorAll('#pis button')].map((b) => b.textContent)");
     check("...and its button", buttons.includes("Poke it"), buttons);
-    check("The updates module's buttons are there", buttons.includes("Check for updates") && buttons.includes("Restart this Pi"), buttons);
+    check("The updates module's buttons are there", buttons.includes("Check for updates") && buttons.includes("Restart this device"), buttons);
 
     // ⚙: a module turned off; another's setting changed
     await js("[...document.querySelectorAll('#pis button')].find((b) => b.textContent === '⚙').click(); null");
@@ -262,11 +262,11 @@ app.whenReady().then(async () => {
     const click = (sel, text) => js(`[...document.querySelectorAll(${JSON.stringify(sel)})].find((b) => b.textContent.startsWith(${JSON.stringify(text)})).click(); null`);
     await click("#jobs button", "New job");
     await js("document.querySelector('input[name=kind][value=convert]').click(); null");
-    await click("#newJob button", "Recordings on the Pis");
+    await click("#newJob button", "Recordings on the devices");
     await until(() => js("document.querySelectorAll('#recordingsBox label input').length >= 2"));
     await js("[...document.querySelectorAll('#recordingsBox label')].find((l) => l.textContent.startsWith('Sentry_Head')).querySelector('input').click(); null");
     const chosen = await js("document.getElementById('chosen').textContent");
-    check("A conversion job's recording is chosen from the Pi's list", /1 recording on the Pis/.test(chosen), chosen);
+    check("A conversion job's recording is chosen from the Pi's list", /1 recording on the devices/.test(chosen), chosen);
     await click("#newJob button", "Start the job");
     const converted = await until(async () => {
       const t = await js("document.getElementById('jobList').innerText");

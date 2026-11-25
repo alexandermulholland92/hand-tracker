@@ -124,7 +124,7 @@ def make_server(node, root, folders):
             return PERMS
 
         def get_msg_login(self, username):
-            return "This Pi's shared folders."
+            return "This device's shared folders."
 
         def get_msg_quit(self, username):
             return "Bye."
@@ -142,7 +142,7 @@ def make_server(node, root, folders):
         authorizer = Phones()
         abstracted_fs = Shared
         passive_ports = range(PASSIVE[0], PASSIVE[1])
-        banner = "Cluster: this Pi's shared folders, for the cluster's phones."
+        banner = "Cluster: this device's shared folders, for the cluster's phones."
 
         def on_connect(self):
             # (only over Tailscale: this account's own devices)
@@ -165,7 +165,7 @@ def tick(node):
                     server = make_server(node, root, folders)
                     threading.Thread(target=server.serve_forever, kwargs={"handle_exit": False}, daemon=True, name="ftp").start()
                     _state.update(server=server, error=None)
-                    node.event("ftp", "The phones' FTP link to this Pi's shared folders is on (port %d)." % PORT)
+                    node.event("ftp", "The phones' FTP link to this device's shared folders is on (port %d)." % PORT)
             except Exception as e:  # (said in its status, tried again at the next tick)
                 _state["error"] = str(e)[:300]
 
@@ -186,7 +186,7 @@ def status(node):
         return {"summary": "The phones' FTP link didn't start", "warnings": [_state["error"]], "ready": False}
     folders = _state["folders"]
     if not folders:
-        return {"summary": "On, but this Pi shares no folders on the network (its NFS exports) for it to show", "ready": True, "port": PORT, "folders": []}
+        return {"summary": "On, but this device shares no folders on the network (its NFS exports) for it to show", "ready": True, "port": PORT, "folders": []}
     names = [os.path.basename(f.rstrip("/")) or f for f in folders]
     return {"summary": "Phones see %s over FTP (port %d)" % (", ".join(names), PORT), "ready": True, "port": PORT, "folders": names}
 

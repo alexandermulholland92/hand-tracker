@@ -48,7 +48,7 @@ def ht(node, method, path, body=None, timeout=6):
     """One request to Hand Tracker's remote recording server here: (status, JSON) or (None, why)."""
     base = ht_base(node)
     if not base:
-        return None, "This Pi has no Tailscale address yet."
+        return None, "This device has no Tailscale address yet."
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(base + path, data=data, method=method)
     if data is not None:
@@ -276,7 +276,7 @@ def act_start(node, args):
     if app_process(node):
         return {"ok": False, "error": "Hand Tracker is already running."}
     if not installed(node, fresh=True):
-        return {"ok": False, "error": "Hand Tracker isn't installed on this Pi."}
+        return {"ok": False, "error": "Hand Tracker isn't installed on this device."}
     if node.simulate:
         return {"ok": True, "message": "Starting Hand Tracker (simulated)."}
     # (as the desktop starts it at login, waiting for a phone; in a service of its own, so it outlives this one's requests)
@@ -307,6 +307,6 @@ def act_sentry(node, args):
 
 ACTIONS = {
     "start": {"title": "Start Hand Tracker", "run": act_start, "hidden": WINDOWS},
-    "restart": {"title": "Restart Hand Tracker", "run": act_restart, "confirm": "Restart Hand Tracker on this Pi? A take being recorded is saved first."},
+    "restart": {"title": "Restart Hand Tracker", "run": act_restart, "confirm": "Restart Hand Tracker on this device? A take being recorded is saved first."},
     "sentry": {"title": "Sentry", "run": act_sentry, "hidden": True},
 }

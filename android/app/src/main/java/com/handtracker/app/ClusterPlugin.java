@@ -126,7 +126,7 @@ public class ClusterPlugin extends Plugin {
                 try (OutputStream out = os) {
                     for (;;) {
                         Answer a = exchange(target, "GET", path + (path.contains("?") ? "&" : "?") + "at=" + got, null, null, 120000);
-                        if (a.status != 200) throw new IOException("The Pi answered " + a.status + ".");
+                        if (a.status != 200) throw new IOException("The device answered " + a.status + ".");
                         if (a.type.startsWith("application/json")) throw new IOException(new String(a.body, StandardCharsets.UTF_8));
                         out.write(a.body);
                         got += a.body.length;
@@ -167,7 +167,7 @@ public class ClusterPlugin extends Plugin {
     static Answer exchange(String target, String method, String path, byte[] payload, String type, int timeoutMs, String to) throws IOException {
         if (to != null && !TO.matcher(to).matches()) throw new IOException("That isn't a phone of the cluster.");
         Matcher m = TARGET.matcher(target == null ? "" : target);
-        if (!m.matches()) throw new IOException("That isn't a Pi's name.");
+        if (!m.matches()) throw new IOException("That isn't a device's name.");
         int port = m.group(6) != null ? Integer.parseInt(m.group(6)) : PORT;
         if (port < 1 || port > 65535) throw new IOException("That isn't a port.");
         String host = m.group(1).replaceAll("^\\[|\\]$", "");
@@ -194,10 +194,10 @@ public class ClusterPlugin extends Plugin {
             all = readAll(socket.getInputStream());
         }
         int split = indexOf(all, new byte[] {'\r', '\n', '\r', '\n'});
-        if (split < 0) throw new IOException("Not an answer from the Pi.");
+        if (split < 0) throw new IOException("Not an answer from the device.");
         String[] lines = new String(all, 0, split, StandardCharsets.ISO_8859_1).split("\r\n");
         String[] first = lines[0].split(" ");
-        if (first.length < 2 || !first[0].startsWith("HTTP/")) throw new IOException("Not an answer from the Pi.");
+        if (first.length < 2 || !first[0].startsWith("HTTP/")) throw new IOException("Not an answer from the device.");
         Answer a = new Answer();
         int length = -1;
         try {
@@ -211,7 +211,7 @@ public class ClusterPlugin extends Plugin {
                 else if (k.equals("content-length")) length = Integer.parseInt(v);
             }
         } catch (NumberFormatException e) {
-            throw new IOException("Not an answer from the Pi.");
+            throw new IOException("Not an answer from the device.");
         }
         int start = split + 4;
         int n = all.length - start;

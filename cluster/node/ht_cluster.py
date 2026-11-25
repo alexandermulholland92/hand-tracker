@@ -762,12 +762,12 @@ class Node:
             if h.headers.get("X-HT-Cluster") != "1" and not (method == "GET" and path == "/api/download"):
                 return self.send(h, 403, {"error": "Only the Cluster app can ask that."})
             if not self.own_host(h.headers.get("Host")):
-                return self.send(h, 403, {"error": "That isn't one of this Pi's names."})
+                return self.send(h, 403, {"error": "That isn't one of this device's names."})
             if local and not self.simulate and not self.phone:
                 if method != "GET":
-                    return self.send(h, 403, {"error": "From this Pi itself: readings only."})
+                    return self.send(h, 403, {"error": "From this device itself: readings only."})
             elif not self.allowed(addr, h):
-                return self.send(h, 403, {"error": "Only your own Tailscale account can use this Pi's cluster service."})
+                return self.send(h, 403, {"error": "Only your own Tailscale account can use this device's cluster service."})
             if method == "GET" and path == "/api/download":
                 return self.download(h, addr)
             # For another Pi of the cluster (the page in a browser asks only the Pi it came from): passed on.
@@ -775,7 +775,7 @@ class Node:
             if to:
                 target = self.relay_target(to)
                 if not target:
-                    return self.send(h, 403, {"error": "%s isn't a Pi of this cluster." % str(to)[:60]})
+                    return self.send(h, 403, {"error": "%s isn't a device of this cluster." % str(to)[:60]})
                 if target != "self":
                     return self.relay(h, method, target, h.path)
             if self.route(h, method, h.path):
@@ -846,9 +846,9 @@ class Node:
         if not local and not is_tailscale(addr):
             return say(403, "Only over Tailscale.")
         if not self.own_host(h.headers.get("Host")):
-            return say(403, "That isn't one of this Pi's names.")
+            return say(403, "That isn't one of this device's names.")
         if not local and not self.allowed(addr):
-            return say(403, "Only your own Tailscale account can use this Pi's cluster service.")
+            return say(403, "Only your own Tailscale account can use this device's cluster service.")
         # (/pi-cluster.html: the page's name before the rename, 2026-11-25, as a bookmark may have it)
         name = "cluster.html" if path in ("/", "/index.html", "/pi-cluster.html") else urllib.parse.unquote(path[1:])
         if name not in PAGE_FILES:
@@ -856,7 +856,7 @@ class Node:
         where = self.page_dir()
         if not where:
             self.fetch_page_soon()
-            return say(503, "This Pi's copy of the Cluster page isn't here yet: it's being fetched for the version of the "
+            return say(503, "This device's copy of the Cluster page isn't here yet: it's being fetched for the version of the "
                             "service it runs. Try again in a minute.")
         try:
             with open(os.path.join(where, *name.split("/")), "rb") as f:
@@ -971,7 +971,7 @@ class Node:
         if body.get("to"):
             target = self.relay_target(body["to"])
             if not target:
-                return 403, {"error": "That isn't a Pi of this cluster."}
+                return 403, {"error": "That isn't a device of this cluster."}
         now = time.time()
         with self.lock:
             self.tickets = {k: t for k, t in self.tickets.items() if t["until"] > now}

@@ -36,7 +36,7 @@ SETTINGS = [
     {"key": "old", "title": "Convert old picture formats (Xvid, DivX, MPEG-2, WMV, 10-bit H.264)", "default": True},
     {"key": "hevc", "title": "Convert HEVC / H.265 (slow: hours a video)", "default": False},
     {"key": "big", "title": "Convert 4K and bigger to 1080p (slowest)", "default": False},
-    {"key": "sound", "title": "Change only the sound where only the sound doesn't play everywhere (this Pi alone)", "default": False},
+    {"key": "sound", "title": "Change only the sound where only the sound doesn't play everywhere (this device alone)", "default": False},
 ]
 
 LOOK_EVERY = 1800
@@ -230,7 +230,7 @@ def queue(node, mem, files, now):
 
 def tick(node):
     if not node.setting("jobs", "home"):
-        _state["why"] = "Only the Pi that keeps the job list looks for videos"
+        _state["why"] = "Only the device that keeps the job list looks for videos"
         return
     mem = node.memory("autoconvert")
     if not _want["look"] and time.time() - float(mem.get("lastLook") or 0) < LOOK_EVERY:

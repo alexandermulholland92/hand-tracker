@@ -178,10 +178,10 @@ def update_hand_tracker(node, asked=None):
     r = rig(node)
     inst = r.installed(node, fresh=True) if r else None
     if not inst:
-        _state["handTracker"] = "Not installed on this Pi"
+        _state["handTracker"] = "Not installed on this device"
         return
     if not deb:
-        _state["handTracker"] = "No build for this Pi on GitHub yet"
+        _state["handTracker"] = "No build for this device on GitHub yet"
         return
     target = deb.get("updated")
     if not hand_tracker_outdated(inst, rel) and asked is None:
@@ -322,7 +322,7 @@ def update_os(node, asked=None):
         o["rebootNeeded"] = True
         o["bootId"] = boot_id(node)
     mem.save()
-    node.event("updates", "Raspberry Pi OS updated (%s)%s" % (answer.get("upgraded", n), "; restart this Pi to finish." if o.get("rebootNeeded") else "."))
+    node.event("updates", "Raspberry Pi OS updated (%s)%s" % (answer.get("upgraded", n), "; restart this device to finish." if o.get("rebootNeeded") else "."))
     _state["os"] = "Up to date"
 
 
@@ -486,7 +486,7 @@ def plan(node, rel):
         return False, "recording"
     if now - (when(rel.get("at")) or now) >= NO_IDLE_S:
         return True, None
-    return False, "no idle Pi has tried it first yet"
+    return False, "no idle device has tried it first yet"
 
 
 def trial_progress(node, rel):
@@ -501,7 +501,7 @@ def trial_progress(node, rel):
         if fails:
             t.update(state="stuck", at=time.time(), error=fails[0].get("error"))
             mem.save()
-            node.event("updates", "Build %s didn't go in here (%s): another Pi can try it first." % (short(rel["commit"]), t["error"]), bad=True)
+            node.event("updates", "Build %s didn't go in here (%s): another device can try it first." % (short(rel["commit"]), t["error"]), bad=True)
         return
     t.update(state="checking", at=time.time())
     mem.save()
@@ -611,7 +611,7 @@ def status(node):
             low(out["os"]["state"]))
     warn = []
     if out["os"]["rebootNeeded"]:
-        warn.append("Restart this Pi to finish its system updates")
+        warn.append("Restart this device to finish its system updates")
     if mem.get("checkError"):
         warn.append(mem["checkError"])
     for part, title in (("handTracker", "Hand Tracker"), ("cluster", "This service"), ("os", "Raspberry Pi OS")):
@@ -619,7 +619,7 @@ def status(node):
             warn.append("%s: %s" % (title, out[part]["state"]))
     t = mem.get("trial") or {}
     if t.get("state") == "failed" and t.get("commit") == rel.get("commit"):
-        warn.append("Build %s didn't pass its check here (%s): no Pi puts it in by itself" % (short(t["commit"]), t.get("error")))
+        warn.append("Build %s didn't pass its check here (%s): no device puts it in by itself" % (short(t["commit"]), t.get("error")))
     out["warnings"] = warn
     return out
 
@@ -658,9 +658,9 @@ def act_reboot(node, args):
         return {"ok": False, "error": "Cluster doesn't restart a Windows PC."}
     if recording(node) and not args.get("force"):
         return {"ok": False, "error": "It's recording. Stop the recording first."}
-    node.event("updates", "Restarting this Pi.")
+    node.event("updates", "Restarting this device.")
     answer = node.root("reboot", timeout=60)
-    return {"ok": bool(answer.get("ok")), "message": "Restarting this Pi.", "error": answer.get("error")}
+    return {"ok": bool(answer.get("ok")), "message": "Restarting this device.", "error": answer.get("error")}
 
 
 ACTIONS = {
@@ -668,5 +668,5 @@ ACTIONS = {
     "updateHandTracker": {"title": "Update Hand Tracker now", "run": act_ht, "hidden": WINDOWS},
     "updateCluster": {"title": "Update this service now", "run": act_cluster},
     "updateOS": {"title": "Update Raspberry Pi OS now", "run": act_os, "hidden": WINDOWS},
-    "reboot": {"title": "Restart this Pi", "run": act_reboot, "confirm": "Restart this Pi now? Hand Tracker stops until it's back.", "hidden": WINDOWS},
+    "reboot": {"title": "Restart this device", "run": act_reboot, "confirm": "Restart this device now? Hand Tracker stops until it's back.", "hidden": WINDOWS},
 }

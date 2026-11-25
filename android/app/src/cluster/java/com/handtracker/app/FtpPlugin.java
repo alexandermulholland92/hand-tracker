@@ -57,10 +57,10 @@ public class FtpPlugin extends Plugin {
     private final ExecutorService pool = Executors.newCachedThreadPool();
 
     private FTPClient connect(String host) throws IOException {
-        if (host == null || !HOST.matcher(host).matches()) throw new IOException("That isn't a Pi of the cluster.");
+        if (host == null || !HOST.matcher(host).matches()) throw new IOException("That isn't a device of the cluster.");
         Context c = getContext();
         File keyFile = new File(new File(c.getFilesDir(), "cluster-state"), "phone-key");
-        if (!keyFile.exists()) throw new IOException("Turn on This phone in the cluster first: the Pis know this phone by its key.");
+        if (!keyFile.exists()) throw new IOException("Turn on This phone in the cluster first: the devices know this phone by its key.");
         String key;
         try (InputStream in = new FileInputStream(keyFile)) {
             byte[] b = new byte[256];
@@ -75,11 +75,11 @@ public class FtpPlugin extends Plugin {
         f.connect(host, PORT);
         if (!FTPReply.isPositiveCompletion(f.getReplyCode())) {
             f.disconnect();
-            throw new IOException("The Pi's FTP link didn't answer (is Get the FTP server done on it?).");
+            throw new IOException("The device's FTP link didn't answer (is Get the FTP server done on it?).");
         }
         if (!f.login(name, key)) {
             f.disconnect();
-            throw new IOException("The Pi didn't take this phone (has it seen it in the cluster yet? a minute after it joins).");
+            throw new IOException("The device didn't take this phone (has it seen it in the cluster yet? a minute after it joins).");
         }
         f.enterLocalPassiveMode();
         f.setFileType(FTP.BINARY_FILE_TYPE);
@@ -246,7 +246,7 @@ public class FtpPlugin extends Plugin {
                 String to = (dir.endsWith("/") ? dir : dir + "/") + name;
                 try (InputStream in = resolver.openInputStream(uri)) {
                     if (in == null) throw new IOException("The file couldn't be read.");
-                    if (!f.storeFile(to, in)) throw new IOException("The Pi didn't take it: " + f.getReplyString().trim());
+                    if (!f.storeFile(to, in)) throw new IOException("The device didn't take it: " + f.getReplyString().trim());
                 }
                 JSObject ret = new JSObject();
                 ret.put("name", name);

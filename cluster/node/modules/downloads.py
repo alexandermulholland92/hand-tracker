@@ -974,7 +974,7 @@ def act_add(node, args):
     "pieces"), after ("home": the home takes it over, or "keep"), and a magnet link or a .torrent file's bytes (base64),
     into a folder on the home."""
     if not is_home(node):
-        return {"ok": False, "error": "Ask the Pi that keeps Transmission's files."}
+        return {"ok": False, "error": "Ask the device that keeps Transmission's files."}
     A = apps_mod(node)
     where = str(args.get("where") or "home")
     split = args.get("split") or None
@@ -1405,7 +1405,7 @@ def take_over(node, mem, e):
 # ----- the app's buttons (on the home) -----
 def act_list(node, args):
     if not is_home(node):
-        return {"ok": False, "error": "Ask the Pi that keeps Transmission's files."}
+        return {"ok": False, "error": "Ask the device that keeps Transmission's files."}
     now = time.time()
     with _lock:
         mem = book(node)

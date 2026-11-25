@@ -34,7 +34,7 @@ final class FtpClient {
         let (code, _) = try reply()
         guard code == 220 else {
             close()
-            throw Failure(text: "The Pi's FTP link didn't answer (is Get the FTP server done on it?).")
+            throw Failure(text: "The device's FTP link didn't answer (is Get the FTP server done on it?).")
         }
         do {
             let (u, _) = try ask("USER " + user)
@@ -46,7 +46,7 @@ final class FtpClient {
             }
         } catch {
             close()
-            throw Failure(text: "The Pi didn't take this iPhone (has it seen it in the cluster yet? a minute after it joins).")
+            throw Failure(text: "The device didn't take this iPhone (has it seen it in the cluster yet? a minute after it joins).")
         }
         try expect("TYPE I", 200 ... 299)
     }
@@ -107,7 +107,7 @@ final class FtpClient {
             var at = 0
             while at < raw.count {
                 let n = Darwin.send(fd, base + at, raw.count - at, 0)
-                if n <= 0 { throw Failure(text: "The Pi's FTP link stopped answering.") }
+                if n <= 0 { throw Failure(text: "The device's FTP link stopped answering.") }
                 at += n
             }
         }
@@ -129,7 +129,7 @@ final class FtpClient {
             var chunk = [UInt8](repeating: 0, count: 4096)
             let size = chunk.count
             let n = recv(control, &chunk, size, 0)
-            if n <= 0 { throw Failure(text: "The Pi's FTP link stopped answering.") }
+            if n <= 0 { throw Failure(text: "The device's FTP link stopped answering.") }
             buffer.append(contentsOf: chunk[0..<n])
         }
     }
@@ -137,7 +137,7 @@ final class FtpClient {
     // A reply: its code, and its text (its lines, for one of several).
     private func reply() throws -> (Int, String) {
         let first = try line()
-        guard first.count >= 3, let code = Int(first.prefix(3)) else { throw Failure(text: "The Pi's FTP link said something unexpected.") }
+        guard first.count >= 3, let code = Int(first.prefix(3)) else { throw Failure(text: "The device's FTP link said something unexpected.") }
         var text = String(first.dropFirst(4))
         if first.dropFirst(3).first == "-" {
             let end = String(first.prefix(3)) + " "
@@ -161,7 +161,7 @@ final class FtpClient {
     @discardableResult
     private func expect(_ command: String, _ ok: ClosedRange<Int>) throws -> String {
         let (code, text) = try ask(command)
-        guard ok.contains(code) else { throw Failure(text: text.isEmpty ? "The Pi said no (\(code))." : text) }
+        guard ok.contains(code) else { throw Failure(text: text.isEmpty ? "The device said no (\(code))." : text) }
         return text
     }
 
@@ -178,7 +178,7 @@ final class FtpClient {
                 if n.count == 6 { port = n[4] * 256 + n[5] }
             }
         }
-        guard port > 0 && port < 65536 else { throw Failure(text: "The Pi's FTP link gave no way to send data.") }
+        guard port > 0 && port < 65536 else { throw Failure(text: "The device's FTP link gave no way to send data.") }
         return try FtpClient.open(host, port, 10, seconds)
     }
 
@@ -188,7 +188,7 @@ final class FtpClient {
         var open = true
         defer { if open { Darwin.close(data) } }
         let (code, text) = try ask(command)
-        guard code == 150 || code == 125 else { throw Failure(text: text.isEmpty ? "The Pi said no (\(code))." : text) }
+        guard code == 150 || code == 125 else { throw Failure(text: text.isEmpty ? "The device said no (\(code))." : text) }
         try move(data)
         Darwin.close(data)
         open = false
@@ -300,12 +300,12 @@ public class FtpPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDelegate {
 
     private func client(_ host: String) throws -> FtpClient {
         guard host.range(of: Self.HOST, options: .regularExpression) != nil || (selfTest && host == "127.0.0.1") else {
-            throw FtpClient.Failure(text: "That isn't a Pi of the cluster.")
+            throw FtpClient.Failure(text: "That isn't a device of the cluster.")
         }
         let state = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("cluster-state")
         guard let key = (try? String(contentsOf: state.appendingPathComponent("phone-key"), encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
-            throw FtpClient.Failure(text: "Turn on This iPhone in the cluster first: the Pis know this iPhone by its key.")
+            throw FtpClient.Failure(text: "Turn on This iPhone in the cluster first: the devices know this iPhone by its key.")
         }
         let name = UserDefaults.standard.string(forKey: "member.name") ?? "iPhone"
         return try FtpClient(host: host, port: Self.PORT, user: name, key: key)

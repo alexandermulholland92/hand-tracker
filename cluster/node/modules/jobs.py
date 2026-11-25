@@ -919,7 +919,7 @@ def route_result(node, h, q):
     job, it = find_lease(node, q.get("lease"))
     rel = str(q.get("path") or "")
     if not it:
-        return node.send(h, 409, {"error": "That work isn't this Pi's any more."})
+        return node.send(h, 409, {"error": "That work isn't this device's any more."})
     if not SAFE_REL.match(rel) or ".." in rel.split("/"):
         return node.send(h, 400, {"error": "Not a name it can take."})
     return write_piece(node, h, os.path.join(data_dir(node), "results", job["id"], *rel.split("/")), q)
@@ -1114,7 +1114,7 @@ def tick(node):
         return
     home = find_home(node)
     if not home:
-        _state["why"] = "No Pi keeps the job list yet"
+        _state["why"] = "No device keeps the job list yet"
         return
     reach = [p["name"] for p in node.cluster()]
     ask = {"worker": node.name, "reach": reach, "has": languages(node)}

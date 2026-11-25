@@ -180,7 +180,7 @@ class Cluster {
   // (only to a Pi this has found: never an address the page made up)
   target(t) {
     const target = String(t || "");
-    if (!Object.values(this.known).some((k) => k.target === target) && !this.extra.includes(target)) throw new Error("That Pi isn't one of the cluster's.");
+    if (!Object.values(this.known).some((k) => k.target === target) && !this.extra.includes(target)) throw new Error("That device isn't one of the cluster's.");
     return target;
   }
 

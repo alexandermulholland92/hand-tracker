@@ -237,7 +237,7 @@ def bdecode_destination(data):
 
 def act_migrate(node, args):
     if not is_home(node):
-        return {"ok": False, "error": "This isn't the Pi that keeps Transmission's files (its switch under ⚙)."}
+        return {"ok": False, "error": "This isn't the device that keeps Transmission's files (its switch under ⚙)."}
     mem = node.memory("apps")
     if mem.get("migrated"):
         return {"ok": False, "error": "Its torrents are in the cluster's Transmission already."}
@@ -303,13 +303,13 @@ def act_migrate(node, args):
     note = "" if answer.get("ok") else " (sharing its folders didn't work yet: %s; it runs here meanwhile)" % answer.get("error")
     node.event("apps", "Transmission moved into the cluster: %d torrents, each in its own folder%s." % (n, note))
     _wake(node)
-    return {"ok": True, "message": "Moved %d torrents in. Transmission starts on a free Pi in a moment." % n}
+    return {"ok": True, "message": "Moved %d torrents in. Transmission starts on a free device in a moment." % n}
 
 
 def act_give_back(node, args):
     """Undo: the torrents (with their progress now) back to the window app; the cluster's stops."""
     if not is_home(node):
-        return {"ok": False, "error": "This isn't the Pi that keeps Transmission's files."}
+        return {"ok": False, "error": "This isn't the device that keeps Transmission's files."}
     mem = node.memory("apps")
     if not mem.get("migrated"):
         return {"ok": False, "error": "Nothing to give back."}
@@ -360,7 +360,7 @@ def home_tick(node):
         b = _beats.get(runner) if runner else None
         if runner and (not b or now - b["at"] > LEASE_S):
             handing, runner = {"from": runner, "at": now}, None
-            node.event("apps", "Transmission's Pi went quiet: it moves on.")
+            node.event("apps", "Transmission's device went quiet: it moves on.")
         elif runner and (not b["canRun"] or not b["free"] or (mem.get("prefer") and mem["prefer"] != runner and choose(node, mem) == mem["prefer"])):
             handing, runner = {"from": runner, "at": now}, None
         if handing:
@@ -582,7 +582,7 @@ def runner_tick(node):
     home = _run["home"] if _run["home"] and now - _run["contact"] < 120 else find_home(node)
     if not home:
         if running and now - _run["contact"] > FENCE_S:
-            stop_here(node, "can't reach the Pi with Transmission's files")
+            stop_here(node, "can't reach the device with Transmission's files")
         return
     _run["home"] = home
     ok, why = free(node)
@@ -1124,7 +1124,7 @@ def tick(node):
 # ----- the app's buttons -----
 def act_move(node, args):
     if not is_home(node):
-        return {"ok": False, "error": "Ask the Pi that keeps Transmission's files."}
+        return {"ok": False, "error": "Ask the device that keeps Transmission's files."}
     to = args.get("to") or None
     mem = node.memory("apps")
     mem["prefer"] = to
@@ -1267,7 +1267,7 @@ def act_folders(node, args):
 def act_add(node, args):
     """A new download (a magnet link, or a .torrent file's bytes in base64) into a folder of your choice."""
     if not is_home(node):
-        return {"ok": False, "error": "Ask the Pi that keeps Transmission's files."}
+        return {"ok": False, "error": "Ask the device that keeps Transmission's files."}
     mem = node.memory("apps")
     folder = os.path.normpath(str(args.get("folder") or "")) or None
     top = top_of(folder) if folder else None
@@ -1345,7 +1345,7 @@ def status(node):
                 parts.append("Transmission on %s · %d torrents · ↓ %s ↑ %s%s" % (mem.get("runner"), _stats.get("torrents") or 0, kb(_stats.get("down") or 0),
                                                                                   kb(_stats.get("up") or 0), " · turtle on" if _stats.get("turtle") else ""))
             else:
-                parts.append("Transmission: moving to another Pi" if mem.get("handing") else "Transmission: starting on %s" % mem.get("runner") if mem.get("runner") else "Transmission: waiting for a free Pi")
+                parts.append("Transmission: moving to another device" if mem.get("handing") else "Transmission: starting on %s" % mem.get("runner") if mem.get("runner") else "Transmission: waiting for a free device")
             if _fwd["error"]:
                 warn.append(_fwd["error"])
             if mem.get("outside"):

@@ -176,7 +176,7 @@
         const z = await post(target, "/api/action", { module: "jobs", action: "zip", args: { job } }, 300000);
         if (z.status !== 200 || !z.ok) throw new Error(z.error || "Its results couldn't be packed.");
         const t = await post(SELF, "/api/ticket", { ...(target !== SELF ? { to: target } : {}), path: `/api/jobs/zip-file?job=${encodeURIComponent(job)}&whole=1` });
-        if (t.status !== 200 || !t.ok || !/^\/api\/download\?ticket=/.test(t.url || "")) throw new Error(t.error || "The Pi didn't give a link to save it from.");
+        if (t.status !== 200 || !t.ok || !/^\/api\/download\?ticket=/.test(t.url || "")) throw new Error(t.error || "The device didn't give a link to save it from.");
         const a = Object.assign(document.createElement("a"), { href: t.url, download: z.name, hidden: true });
         document.body.append(a);
         a.click();
@@ -276,7 +276,7 @@
     async function addPi(name) {
       const target = String(name || "").trim();
       const a = await ask(target, "GET", "/api/node");
-      if (a.status !== 200 || !a.name) return { ok: false, error: a.error || `${target} didn't answer as a Pi of the cluster (${a.status || "no answer"}).` };
+      if (a.status !== 200 || !a.name) return { ok: false, error: a.error || `${target} didn't answer as a device of the cluster (${a.status || "no answer"}).` };
       known[a.name] = { target, seen: Date.now(), node: a };
       keep();
       return { ok: true, name: a.name };
@@ -394,7 +394,7 @@
     };
     const up = el("button", { textContent: "↑ Up", disabled: files.path === "/" || files.busy });
     up.onclick = () => openFiles(files.pi, files.path.replace(/\/[^/]*\/?$/, "") || "/");
-    const send = el("button", { textContent: "Send a file here", disabled: files.path === "/" || files.busy, title: "A file from this phone, into this folder on the Pi" });
+    const send = el("button", { textContent: "Send a file here", disabled: files.path === "/" || files.busy, title: "A file from this phone, into this folder on the device" });
     send.onclick = async () => {
       try {
         const a = await Ftp.upload({ host: files.pi.target, dir: files.path });
@@ -469,7 +469,7 @@
     // (an iPhone app without its own Python, as Hand Tracker's are: nothing to switch on)
     box.hidden = m.available === false;
     if (box.hidden) return;
-    const btn = el("button", { textContent: m.on ? "On" : "Off", title: m.on ? "Leave the cluster (this phone only looks at it)" : "Join the cluster: its health, jobs and downloads, as the Pis'" });
+    const btn = el("button", { textContent: m.on ? "On" : "Off", title: m.on ? "Leave the cluster (this phone only looks at it)" : "Join the cluster: its health, jobs and downloads, as the devices'" });
     btn.setAttribute("aria-pressed", String(!!m.on));
     btn.onclick = async () => {
       btn.disabled = true;
@@ -483,8 +483,8 @@
     };
     const words = !m.on ? "Off: this phone only looks at the cluster."
       : !m.running ? "Starting…"
-      : m.address ? `In the cluster as ${m.name} (${m.address}): its health, jobs and downloads, listed with the Pis.`
-      : `In the cluster as ${m.name}, but Tailscale isn't on here, so the Pis can't reach it.`;
+      : m.address ? `In the cluster as ${m.name} (${m.address}): its health, jobs and downloads, listed with the other devices.`
+      : `In the cluster as ${m.name}, but Tailscale isn't on here, so the devices can't reach it.`;
     // (an iPhone: only while the app is open, as an iPhone gives an app no time of its own in the background)
     const iphone = m.platform === "ios" && m.on ? " While this app is open: an iPhone gives an app no time of its own in the background." : "";
     // (its Hand Tracker takes, shared with the cluster as a Pi's are, once Android's All files access is on for this app)
@@ -655,7 +655,7 @@
       };
       top.append(forget);
     } else {
-      const gear = el("button", { textContent: open.has(pi.name) ? "⚙ Close" : "⚙", title: "This Pi's modules and settings" });
+      const gear = el("button", { textContent: open.has(pi.name) ? "⚙ Close" : "⚙", title: "This device's modules and settings" });
       gear.onclick = () => {
         open.has(pi.name) ? open.delete(pi.name) : open.add(pi.name);
         render();
@@ -684,7 +684,7 @@
     const card = el("div", { className: "card" + (pi.answering ? "" : " away") }, header(pi));
     const rig = mod(pi.node, "rig");
     if (!rig || !rig.on) {
-      card.append(el("div", { className: "mod summary" }, "Its camera rig module is off (⚙ on the Pis tab)."));
+      card.append(el("div", { className: "mod summary" }, "Its camera rig module is off (⚙ on the Devices tab)."));
       return card;
     }
     const st = rig.status || {};
@@ -724,9 +724,9 @@
     const pis = $("pis");
     const rigs = $("rigs");
     if (!nodes.length) {
-      const why = data && data.phone ? " Is Tailscale on? Add a Pi can look for one by its name (pi is tried first)." : data && !data.tailscale ? " Tailscale isn't running on this computer (or isn't installed), so no Pis can be found yet." : "";
-      pis.replaceChildren(el("div", { className: "empty" }, `No Pis yet. Press Add a Pi to put one in the cluster.${why}`));
-      rigs.replaceChildren(el("div", { className: "empty" }, "No Pis yet."));
+      const why = data && data.phone ? " Is Tailscale on? Add a device can look for one by its name (pi is tried first)." : data && !data.tailscale ? " Tailscale isn't running on this computer (or isn't installed), so no devices can be found yet." : "";
+      pis.replaceChildren(el("div", { className: "empty" }, `No devices yet. Press Add a device to put one in the cluster.${why}`));
+      rigs.replaceChildren(el("div", { className: "empty" }, "No devices yet."));
     } else {
       pis.replaceChildren(...nodes.map(piCard));
       rigs.replaceChildren(...nodes.filter((p) => p.node).map(rigCard));
@@ -736,8 +736,8 @@
     renderTransmission();
     const live = nodes.filter((p) => p.answering).length;
     $("note").textContent = data
-      ? `${live} of ${nodes.length} Pi${nodes.length === 1 ? "" : "s"} answering${data.tailscale ? "" : " · Tailscale isn't running on this computer"} · updated ${new Date(data.at).toLocaleTimeString()}`
-      : "Looking for Pis over Tailscale…";
+      ? `${live} of ${nodes.length} device${nodes.length === 1 ? "" : "s"} answering${data.tailscale ? "" : " · Tailscale isn't running on this computer"} · updated ${new Date(data.at).toLocaleTimeString()}`
+      : "Looking for devices over Tailscale…";
     $("updateAll").disabled = !live;
   }
 
@@ -747,7 +747,7 @@
     try {
       data = await api.list();
     } catch (e) {
-      say(`Couldn't list the Pis: ${e.message}`, true);
+      say(`Couldn't list the devices: ${e.message}`, true);
     } finally {
       asking = false;
     }
@@ -857,7 +857,7 @@
     const have = trGraph.get(key), span = trOpen.get(key) || "1h";
     if (!have || have.span !== span) return graph.replaceChildren(el("div", { className: "hint" }, "Reading…"));
     if (have.error) return graph.replaceChildren(el("div", { className: "warn-line" }, "⚠ " + have.error));
-    if (!have.points.length) return graph.replaceChildren(el("div", { className: "hint" }, "No readings yet: the Pi keeping Transmission's files reads them every 10 seconds."));
+    if (!have.points.length) return graph.replaceChildren(el("div", { className: "hint" }, "No readings yet: the device keeping Transmission's files reads them every 10 seconds."));
     graph.innerHTML = trafficSvg(have.points, span) + '<div class="legend"><span><i class="sw down"></i>Received ↓</span><span><i class="sw up"></i>Sent ↑</span></div>';
   }
 
@@ -977,14 +977,14 @@
     if (!home) {
       const live = ((data && data.nodes) || []).filter((p) => p.answering && mod(p.node, "apps"));
       $("trMain").hidden = true;
-      if (!live.length) return line.replaceChildren("Transmission comes with the next update of the Pis' service.");
+      if (!live.length) return line.replaceChildren("Transmission comes with the next update of the devices' service.");
       const sel = el("select", {}, live.map((p) => el("option", { value: p.name, textContent: p.name, selected: /^pi$/i.test(p.name) })));
       const use = el("button", { textContent: "Keep them there" });
       use.onclick = () => {
         const p = live.find((x) => x.name === sel.value);
         if (p) set(p, "apps", { key: "home", value: true });
       };
-      return line.replaceChildren("Which Pi keeps Transmission's torrents, settings and files? ", sel, " ", use);
+      return line.replaceChildren("Which device keeps Transmission's torrents, settings and files? ", sel, " ", use);
     }
     const st = mod(home.node, "apps").status || {};
     if (!st.migrated) {
@@ -999,7 +999,7 @@
       };
       return line.replaceChildren(`${home.name} keeps Transmission's files. Its window app's torrents aren't in the cluster's Transmission yet. `, go);
     }
-    line.textContent = `${home.name} keeps Transmission's files${(st.shared || []).length ? ` (shared with the Pis running it: ${st.shared.map((n) => "~/" + n).join(", ")})` : ""}.`;
+    line.textContent = `${home.name} keeps Transmission's files${(st.shared || []).length ? ` (shared with the devices running it: ${st.shared.map((n) => "~/" + n).join(", ")})` : ""}.`;
     $("trMain").hidden = false;
     $("trLine").textContent = (mod(home.node, "apps").status || {}).summary || "";
     $("trWarn").textContent = (st.warnings || []).map((w) => "⚠ " + w).join("  ");
@@ -1115,7 +1115,7 @@
     $("trAfterHome").textContent = `${home.name} takes it over: its Transmission checks its copy and seeds it, and the computer's copy is deleted`;
     $("trOnNote").textContent = !hasDownloads(home) ? `Other computers can download too once ${home.name}'s service is updated.` :
       on.value === "freest" ? `The least busy network right now, among the computers free with room for it: ${home.name} too, and ${home.name} first if it's about as free (nothing to copy then).` :
-      away && $("trSplit").value === "pieces" ? "Each computer needs libtorrent (Get libtorrent, under its Downloads on the Pis tab)." : "";
+      away && $("trSplit").value === "pieces" ? "Each computer needs libtorrent (Get libtorrent, under its Downloads on the Devices tab)." : "";
   }
   $("trOn").onchange = () => {
     setDlPrefs({ where: $("trOn").value });
@@ -1285,7 +1285,7 @@
   function renderJobs() {
     if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#newJob")) return;
     const home = homePi();
-    for (const n of document.querySelectorAll(".homeName")) n.textContent = home ? home.name : "the Pi that keeps the jobs";
+    for (const n of document.querySelectorAll(".homeName")) n.textContent = home ? home.name : "the device that keeps the jobs";
     const line = $("jobsHome");
     $("newJobBtn").disabled = !(home && home.answering);
     if (!home) {
@@ -1296,13 +1296,13 @@
         const p = live.find((x) => x.name === sel.value);
         if (p) set(p, "jobs", { key: "home", value: true });
       };
-      line.replaceChildren("No Pi keeps the job list yet. Which one should keep it (and the jobs' files)? ", sel, " ", use);
+      line.replaceChildren("No device keeps the job list yet. Which one should keep it (and the jobs' files)? ", sel, " ", use);
       $("jobList").replaceChildren();
       return;
     }
     const st = mod(home.node, "jobs").status;
     line.textContent = home.answering
-      ? `${home.name} keeps the job list and the jobs' files (~/ht-cluster-jobs). Each Pi takes work when its switches (⚙ on the Pis tab) let it.`
+      ? `${home.name} keeps the job list and the jobs' files (~/ht-cluster-jobs). Each device takes work when its switches (⚙ on the Devices tab) let it.`
       : `${home.name} keeps the job list, but it isn't answering: what's shown is from ${ago(home.seen)}.`;
     const jobs = st.jobs || [];
     $("jobList").replaceChildren(...(jobs.length ? jobs.map((j) => jobCard(home, j)) : [el("div", { className: "empty" }, "No jobs yet.")]));
@@ -1402,7 +1402,7 @@
     $("appModel").hidden = !m;
     const n = pickedJobs.recordings.size + pickedJobs.files.length;
     const bits = [];
-    if (pickedJobs.recordings.size) bits.push(`${pickedJobs.recordings.size} recording${pickedJobs.recordings.size === 1 ? "" : "s"} on the Pis`);
+    if (pickedJobs.recordings.size) bits.push(`${pickedJobs.recordings.size} recording${pickedJobs.recordings.size === 1 ? "" : "s"} on the devices`);
     if (pickedJobs.files.length) bits.push(`${pickedJobs.files.length} file${pickedJobs.files.length === 1 ? "" : "s"} from this ${api && api.phone ? "phone" : api && api.browser ? "device" : "computer"}`);
     if (pickedJobs.folder) bits.push(`the folder ${pickedJobs.folder}`);
     $("chosen").textContent = bits.length ? "Chosen: " + bits.join(", ") + "." : "No files chosen yet.";
@@ -1480,7 +1480,7 @@
   async function showRecordings() {
     const box = $("recordingsBox");
     box.hidden = false;
-    box.replaceChildren(el("div", { className: "hint" }, "Asking the Pis…"));
+    box.replaceChildren(el("div", { className: "hint" }, "Asking the devices…"));
     const pis = ((data && data.nodes) || []).filter((p) => p.answering && mod(p.node, "jobs") && mod(p.node, "jobs").on);
     const lists = await Promise.all(pis.map((p) => api.action({ target: p.target, module: "jobs", action: "recordings", args: {} }).then((a) => [p, a]).catch((e) => [p, { error: e.message }])));
     box.replaceChildren(...lists.flatMap(([p, a]) => {
@@ -1548,7 +1548,7 @@
 
   async function startJob() {
     const home = homePi();
-    if (!home) return say("No Pi keeps the job list yet.", true); // (one that's away: its own answer says so)
+    if (!home) return say("No device keeps the job list yet.", true); // (one that's away: its own answer says so)
     const kind = kindNow();
     const params = {};
     if (kind === "animals") {
@@ -1877,16 +1877,16 @@
   };
   $("updateAll").onclick = async () => {
     const live = ((data && data.nodes) || []).filter((p) => p.answering && mod(p.node, "updates") && mod(p.node, "updates").on);
-    if (!live.length || !confirm(`Update Hand Tracker on ${live.map((p) => p.name).join(", ")}? Each restarts Hand Tracker when it's done; a Pi that's recording waits until it stops.`)) return;
+    if (!live.length || !confirm(`Update Hand Tracker on ${live.map((p) => p.name).join(", ")}? Each restarts Hand Tracker when it's done; a device that's recording waits until it stops.`)) return;
     const answers = await Promise.all(live.map((p) => api.action({ target: p.target, module: "updates", action: "updateHandTracker", args: {} }).catch((e) => ({ error: e.message }))));
     const bad = answers.map((a, i) => (a.error ? `${live[i].name}: ${a.error}` : null)).filter(Boolean);
-    say(bad.length ? bad.join(" · ") : `Asked ${live.length} Pi${live.length === 1 ? "" : "s"} to update Hand Tracker.`, bad.length > 0);
+    say(bad.length ? bad.join(" · ") : `Asked ${live.length} device${live.length === 1 ? "" : "s"} to update Hand Tracker.`, bad.length > 0);
     setTimeout(refresh, 600);
   };
 
   if (window.desktop && window.desktop.getInfo) window.desktop.getInfo().then((i) => i && i.version && ($("buildInfo").textContent = `v${i.version}`), () => {});
   if (!api) {
-    $("note").textContent = "Cluster runs in its own app (Cluster), or in a browser from a Pi: http://pi:47830/ on a device on your Tailscale.";
+    $("note").textContent = "Cluster runs in its own app (Cluster), or in a browser on your Tailscale, served by any device of the cluster: http://pi:47830/.";
     return;
   }
   // In a browser: which Pi served the page (the others are asked through it).

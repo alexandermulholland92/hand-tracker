@@ -223,7 +223,7 @@ public class ClusterPlugin: CAPPlugin, CAPBridgedPlugin {
     // One request to a Pi's service: its answer, or why not.
     func exchange(_ target: String, _ method: String, _ path: String, _ payload: Data?, _ type: String?, seconds: Int, to: String? = nil,
                   _ finish: @escaping (Result<RigAnswer, RigError>) -> Void) {
-        guard let g = RigLinkPlugin.groups(Self.TARGET, target) else { return finish(.failure(RigError(message: "That isn't a Pi's name."))) }
+        guard let g = RigLinkPlugin.groups(Self.TARGET, target) else { return finish(.failure(RigError(message: "That isn't a device's name."))) }
         let port = Int(g[6]) ?? Self.PORT
         guard port >= 1, port <= 65535, ["GET", "POST", "PUT"].contains(method), RigLinkPlugin.groups(Self.PATH, path) != nil else {
             return finish(.failure(RigError(message: "Not one of the service's requests.")))
@@ -296,7 +296,7 @@ public class ClusterPlugin: CAPPlugin, CAPBridgedPlugin {
                 case .failure(let e):
                     fail(e.message)
                 case .success(let a):
-                    if a.status != 200 { return fail("The Pi answered \(a.status).") }
+                    if a.status != 200 { return fail("The device answered \(a.status).") }
                     if a.type.hasPrefix("application/json") { return fail(String(decoding: a.body, as: UTF8.self)) }
                     out.write(a.body)
                     got += a.body.count

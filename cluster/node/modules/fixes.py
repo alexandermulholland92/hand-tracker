@@ -42,7 +42,7 @@ EVERY = 60
 # (setting, script in pi/, name in the app, its switch, the files that say it's on a Pi)
 FIXES = [
     ("wifiWatchdog", "wifi-watchdog", "Wi-Fi recovery",
-     "Wi-Fi recovery: the Wi-Fi chip's driver reloaded when it locks up, the Pi restarted if that fails",
+     "Wi-Fi recovery: the Wi-Fi chip's driver reloaded when it locks up, the device restarted if that fails",
      ["/usr/local/sbin/hand-tracker-wifi-watchdog", "/etc/systemd/system/hand-tracker-wifi-watchdog.timer"]),
     ("tailscaleWatchdog", "tailscale-watchdog", "Tailscale recovery",
      "Tailscale recovery: Tailscale restarted when it stays offline with a network",
@@ -65,7 +65,7 @@ SETTINGS = [{"key": key, "title": switch, "default": False} for key, _, _, switc
 WIFI = FIXES[0][4]
 BY_HAND = "by hand"  # (put in before this module, with no script of this service's to compare with yet)
 RETRY_AFTER = 3600
-NOT_HERE = "Not in this Pi's version of the service yet"
+NOT_HERE = "Not in this device's version of the service yet"
 TEST_SAYS = ("Back on", "Not back", "Reloading the Wi-Fi driver didn't")
 RESTART = {"usb-current"}  # (fixes taking effect at the Pi's next restart: a warning until then, when they say so)
 
@@ -95,6 +95,13 @@ def scripts(node):
     if os.path.isdir(own) or node.version != "dev":
         return own
     return os.path.join(here, "..", "..", "pi")
+
+
+def device_words(text):
+    """A fix script's own words (pi/*.sh) as the app shows them: "this Pi" said "this device", as the rest of the app
+    says it (the user, 2026-11-25); the scripts themselves aren't changed for it, as a changed script is put in again
+    on every device that has it."""
+    return re.sub(r"\b([Tt]his|[Tt]he|[Aa]) Pi\b", r"\1 device", str(text))
 
 
 def script_sha(node, name):
@@ -167,7 +174,7 @@ def one(node, mem, key, name, short, marks, retry):
         if not on:
             node.change({"module": "fixes", "key": key, "value": True})
             on = True
-        node.event("fixes", "%s was on this Pi already: its switch is on." % short)
+        node.event("fixes", "%s was on this device already: its switch is on." % short)
     elif here and rec.get(name) == BY_HAND and cur:
         rec[name] = cur
         mem.save()
@@ -184,7 +191,7 @@ def one(node, mem, key, name, short, marks, retry):
     # To put in (or in again: its script changed), or to take away (switched off).
     job, doing, done, didnt = (("fix-install", "Updating…" if here else "Putting it in…", "updated" if here else "put in", "Didn't go in")
                                if on else ("fix-remove", "Taking it off…", "taken off", "Didn't come off"))
-    missing = NOT_HERE if on else "Still on: this Pi's version of the service can't take it off"
+    missing = NOT_HERE if on else "Still on: this device's version of the service can't take it off"
     if cur is None and not released(node):
         _state[name] = missing
         return
@@ -199,7 +206,7 @@ def one(node, mem, key, name, short, marks, retry):
     _state[name] = doing
     answer = node.root(job, name, timeout=900)
     if not answer.get("ok"):
-        error = answer.get("error") or ("it didn't go in" if on else "it didn't come off")
+        error = device_words(answer.get("error") or ("it didn't go in" if on else "it didn't come off"))
         note_failure(mem, name, target, error, missing=bool(answer.get("missing")))
         if answer.get("missing"):
             _state[name] = missing
@@ -212,10 +219,10 @@ def one(node, mem, key, name, short, marks, retry):
     else:
         rec.pop(name, None)
     clear_failure(mem, name)
-    if name in RESTART and "Restart this Pi" in str(answer.get("said") or ""):
+    if name in RESTART and re.search(r"Restart this (Pi|device)\b", str(answer.get("said") or "")):
         mem.setdefault("restart", {})[name] = boot_id(node)  # (until this start is over)
     mem.save()
-    node.event("fixes", "%s %s.%s" % (short, done, " " + answer["said"] if answer.get("said") else ""))
+    node.event("fixes", "%s %s.%s" % (short, done, " " + device_words(answer["said"]) if answer.get("said") else ""))
     _state[name] = "On" if on else "Off"
 
 
@@ -273,7 +280,7 @@ def status(node):
     now_boot = boot_id(node)
     for key, name, short, _, _ in FIXES:
         if (mem.get("restart") or {}).get(name) == now_boot:
-            warn.append("%s: restart this Pi for it to take effect (Updates: Restart this Pi)" % short)
+            warn.append("%s: restart this device for it to take effect (Updates: Restart this device)" % short)
     usb = usb_power(node) if node.setting("fixes", "usbCurrent") or is_in(node, FIXES[4][4]) else None
     t = mem.get("test")
     if _asked.get("test"):
@@ -281,7 +288,7 @@ def status(node):
     out = {"fixes": fixes, "doing": _doing["what"], "test": t, "usb": usb}
     summary = " · ".join(parts)
     if usb and usb.get("supply"):
-        summary += " · the Pi takes its supply as %s A%s" % (("%.1f" % (usb["supply"] / 1000)).rstrip("0").rstrip("."),
+        summary += " · the device takes its supply as %s A%s" % (("%.1f" % (usb["supply"] / 1000)).rstrip("0").rstrip("."),
                                                            ", USB up to 1.6 A" if usb["now"] or usb["supply"] >= 5000 else ", USB limited to 0.6 A")
     if t:
         summary += " · Wi-Fi test %s: %s" % (time.strftime("%H:%M", time.localtime(t["at"])), t.get("result") or "going on")
@@ -295,16 +302,16 @@ def status(node):
 
 def act_test(node, args):
     if not is_in(node, WIFI):
-        return {"ok": False, "error": "The Wi-Fi recovery isn't on this Pi: switch it on first."}
+        return {"ok": False, "error": "The Wi-Fi recovery isn't on this device: switch it on first."}
     if recording(node):
         return {"ok": False, "error": "It's recording. Test it once the recording has stopped."}
     answer = node.root("wifi-test", timeout=60)
     if not answer.get("ok"):
-        return {"ok": False, "error": answer.get("error") or "The test didn't start."}
+        return {"ok": False, "error": device_words(answer.get("error") or "The test didn't start.")}
     when = time.time() + int(answer.get("in", 20))
     _asked["test"] = when
     node.event("fixes", "Testing the Wi-Fi recovery: the Wi-Fi driver reloads at %s." % time.strftime("%H:%M:%S", time.localtime(when)))
-    return {"ok": True, "message": "In 20 seconds this Pi's Wi-Fi driver reloads, as a test. It's off the Wi-Fi for about half a minute, then back."}
+    return {"ok": True, "message": "In 20 seconds this device's Wi-Fi driver reloads, as a test. It's off the Wi-Fi for about half a minute, then back."}
 
 
 def act_retry(node, args):
@@ -314,6 +321,6 @@ def act_retry(node, args):
 
 ACTIONS = {
     "testWifi": {"title": "Test the Wi-Fi recovery", "run": act_test, "hidden": True,
-                 "confirm": "Reload this Pi's Wi-Fi driver in 20 seconds, as a test? It's off the Wi-Fi for about half a minute."},
+                 "confirm": "Reload this device's Wi-Fi driver in 20 seconds, as a test? It's off the Wi-Fi for about half a minute."},
     "retry": {"title": "Try the fixes again", "run": act_retry, "hidden": True},
 }

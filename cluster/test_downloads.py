@@ -635,8 +635,11 @@ def main():
         start("pi")
         raw7, h7, _ = make_torrent(swarm, "Small.mkv", [(None, 300000)])
         ready = wait_for(lambda: {c["name"] for c in listing().get("computers", []) if c.get("heard")} >= {"pie", "rhubarb"}, 30)
+        # (where the cluster's Transmission ran on pie, it moves to pi now pi's back: added once it runs there, as an
+        # add in that gap finds no Transmission; the check failed that way on a busy PC, 2026-11-25)
+        moved = wait_for(lambda: os.path.exists(os.path.join(tmp, "pi-state", "tr-running")) and tr_ask(pi_tr, "session-get") is not None, 60)
         code, a = dl(pi, "add", {"torrent": b64(raw7), "folder": movies, "where": "freest"})
-        check("The most free network pi's own: added straight to its Transmission", bool(ready) and code == 200 and wait_for(lambda: cluster_has(h7), 20) and
+        check("The most free network pi's own: added straight to its Transmission", bool(ready) and bool(moved) and code == 200 and wait_for(lambda: cluster_has(h7), 20) and
               not any(d["hash"] == h7 for d in listing().get("downloads", [])), a)
         idle = wait_for(lambda: not os.path.exists(os.path.join(tmp, "rhubarb-state", "own-tr-running")), 60)
         check("A computer's own Transmission stops a while after its last download", bool(idle))
