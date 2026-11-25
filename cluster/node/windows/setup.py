@@ -1,12 +1,15 @@
 """
 setup.py - puts Cluster's service on this Windows PC, so that it's a member of the cluster (the user,
-2026-11-22: "this PC joins as a member"): in %LOCALAPPDATA%/Cluster, the service for GitHub's latest build
-(each file checked against GitHub's list, as a Pi's own update does, by ht-cluster-root's Windows part), its
-launcher started now and at each sign-in (a shortcut in the Startup folder: no administrator needed), and
+2026-11-22: "this PC joins as a member"): in the user's own folder, %USERPROFILE%/Cluster, the service for GitHub's
+latest build (each file checked against GitHub's list, as a Pi's own update does, by ht-cluster-root's Windows part),
+its launcher started now and at each sign-in (a shortcut in the Startup folder: no administrator needed), and
 config.json: the Python the service runs with, the one the animal model's tools are made with, and ffmpeg.
-A PC set up before the rename (2026-11-25: "Pi Cluster" became "Cluster") has its folder, %LOCALAPPDATA%/Pi Cluster,
-moved to the new name with everything in it (Cluster-Linux's disk moved by WSL itself), and its Startup shortcut
-named again, the next time this runs.
+Not in AppData: run from inside a packaged (MSIX) app, as Claude's own shell is, a program's writes to AppData go into
+that app's private copy of it, which nothing else sees: not WSL (the Linux Transmission's script), nor Windows at
+sign-in (the launcher). A PC set up before (2026-11-25: in %LOCALAPPDATA%/Cluster, and before the rename, "Pi Cluster"
+becoming "Cluster", in %LOCALAPPDATA%/Pi Cluster) has its folder moved here with everything in it but Cluster-Linux's
+disk (its linux folder stays where it is: WSL keeps it there, and finds it there), and its Startup shortcut made again,
+the next time this runs.
 
   python setup.py [--python PY] [--tools-python PY] [--ffmpeg FFMPEG] [--drive P=\\\\pi\\home\\alex\\Downloads]... [--from-repo]
   python setup.py --linux         (the Linux Transmission runs in here: see below)
@@ -17,7 +20,7 @@ named again, the next time this runs.
 you turn on in Windows Features). Settings already in config.json are kept unless given again.
 --linux: Transmission runs on this PC in a Linux of its own under WSL, "Cluster-Linux" (WSL itself first: as
 administrator, wsl --install --no-distribution). This downloads Debian 13 (the Pis' release; about 30 MB, Docker's
-official image, its SHA-256 checked against its manifest), sets it up in %LOCALAPPDATA%/Cluster/linux, and
+official image, its SHA-256 checked against its manifest), sets it up in %USERPROFILE%/Cluster/linux, and
 installs the Pis' own transmission-daemon and the NFS client in it from Debian (about 20 MB).
 The service answers the other Pis on port 47830 of every network: the Python it runs with needs Windows
 Firewall's leave for that (on a private network, as Tailscale's is), or Windows asks the first time.
@@ -35,8 +38,10 @@ import urllib.request
 
 NODE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # (cluster/node: this copy of the service)
 REPO = os.path.dirname(os.path.dirname(NODE))
-INSTALL = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Cluster")
-OLD_INSTALL = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Pi Cluster")  # (before the rename)
+INSTALL = os.path.join(os.path.expanduser("~"), "Cluster")
+_LOCAL = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+# (where it was: in AppData until 2026-11-25, and under its name from before the rename before that; moved from)
+OLD_INSTALLS = (os.path.join(_LOCAL, "Cluster"), os.path.join(_LOCAL, "Pi Cluster"))
 STARTUP = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 SHORTCUT = os.path.join(STARTUP, "Cluster.lnk")
 OLD_SHORTCUT = os.path.join(STARTUP, "Pi Cluster.lnk")
@@ -151,66 +156,47 @@ def install_repo():
 
 
 def stop():
-    """The launcher and the service it runs (their command lines name its folder, by its name now or the one from
-    before the rename), if they're running."""
-    match = " -or ".join("$_.CommandLine -like '*\\%s\\launcher.py*' -or $_.CommandLine -like '*\\%s\\versions\\*ht_cluster.py*'" % (n, n)
-                         for n in ("Cluster", "Pi Cluster"))
+    """The launcher and the service it runs (their command lines name its folder: this one, or one it was in before),
+    if they're running."""
+    q = lambda d: d.replace("'", "''").replace("[", "`[").replace("]", "`]")
+    match = " -or ".join("$_.CommandLine -like '*%s\\launcher.py*' -or $_.CommandLine -like '*%s\\versions\\*ht_cluster.py*'" % (q(d), q(d))
+                         for d in (INSTALL,) + OLD_INSTALLS)
     ps("Get-CimInstance Win32_Process | Where-Object { %s } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
        "-ErrorAction SilentlyContinue }" % match)
 
 
-def wsl(*args, timeout=600):
-    p = subprocess.run([wsl_exe(), *args], capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW,
-                       env=dict(os.environ, WSL_UTF8="1"))
-    return p.returncode, ((p.stdout or "") + (p.stderr or "")).replace("\x00", "").strip()
-
-
-def move_into(src, dst):
-    """Everything in folder src moved into folder dst (made if need be), then src removed: what dst has already of
-    the same name stops it, before anything's moved."""
+def move_into(src, dst, leave=()):
+    """Everything in folder src but what `leave` names moved into folder dst (made if need be), then src removed if
+    that's left it empty: what dst has already of the same name stops it, before anything's moved. (Each by a rename,
+    or copied then removed where a rename can't be made: out of a packaged app's private copy of AppData, say.)"""
+    names = [n for n in os.listdir(src) if n not in leave]
     both_dirs = lambda n: os.path.isdir(os.path.join(src, n)) and os.path.isdir(os.path.join(dst, n))
-    clash = [n for n in os.listdir(src) if os.path.exists(os.path.join(dst, n)) and not both_dirs(n)] if os.path.isdir(dst) else []
+    clash = [n for n in names if os.path.exists(os.path.join(dst, n)) and not both_dirs(n)] if os.path.isdir(dst) else []
     if clash:
         raise SystemExit("Both %s and %s have %s: keep one of each, then run this again." % (src, dst, ", ".join(sorted(clash))))
     os.makedirs(dst, exist_ok=True)
-    for name in os.listdir(src):
+    for name in names:
         s, d = os.path.join(src, name), os.path.join(dst, name)
         if os.path.isdir(s) and os.path.isdir(d):
             move_into(s, d)
         else:
-            os.replace(s, d)
-    os.rmdir(src)
+            shutil.move(s, d)
+    if not os.listdir(src):
+        os.rmdir(src)
 
 
-def move_old_folder():
-    """The folder from before the rename (%LOCALAPPDATA%/Pi Cluster) moved to the new name, everything in it: first
-    Cluster-Linux's disk, by WSL itself (which then knows where it is; nothing's moved if it can't), then the rest.
-    Its service is stopped first (main). Run again after a move that stopped part way, it goes on from there."""
-    if not os.path.isdir(OLD_INSTALL):
-        return
-    disk = os.path.join(OLD_INSTALL, "linux", "ext4.vhdx")
-    if os.path.isfile(disk) and os.path.exists(wsl_exe()):
-        sys.path.insert(0, NODE)
-        import winsys
-        if WSL_DISTRO in winsys.wsl_distros():
-            if os.path.exists(os.path.join(INSTALL, "linux", "ext4.vhdx")):
-                raise SystemExit("Both %s and %s have a Linux disk (linux\\ext4.vhdx): keep one, then run this again." % (OLD_INSTALL, INSTALL))
-            print("Moving %s's disk into %s..." % (WSL_DISTRO, os.path.join(INSTALL, "linux")), flush=True)
-            os.makedirs(INSTALL, exist_ok=True)
-            wsl("--terminate", WSL_DISTRO, timeout=120)
-            until = time.time() + 90
-            while True:  # (WSL's own machine lets go of a stopped Linux's disk a little after: tried again till then)
-                code, out = wsl("--manage", WSL_DISTRO, "--move", os.path.join(INSTALL, "linux"), timeout=1800)
-                if code == 0 or "SHARING_VIOLATION" not in out or time.time() > until:
-                    break
-                time.sleep(5)
-            if code != 0 or os.path.isfile(disk):
-                raise SystemExit("WSL didn't move %s's disk (%s): the rest stays in %s too, used as it is, until it can be."
-                                 % (WSL_DISTRO, out[-300:] or "no answer", OLD_INSTALL))
-    move_into(OLD_INSTALL, INSTALL)
+def move_old_folders():
+    """Each folder it was in before (OLD_INSTALLS) moved here, all but Cluster-Linux's disk: its linux folder stays
+    where it is (WSL keeps it there, and finds it there). Its service is stopped first (main). Run again after a move
+    that stopped part way, it goes on from there."""
+    for old in OLD_INSTALLS:
+        if os.path.isdir(old):
+            disk = [n for n in os.listdir(old) if n.lower() == "linux" and os.path.isfile(os.path.join(old, n, "ext4.vhdx"))]
+            if [n for n in os.listdir(old) if n not in disk]:
+                move_into(old, INSTALL, leave=disk)
+                print("Moved %s to %s%s." % (old, INSTALL, " (Cluster-Linux's disk stays in %s)" % os.path.join(old, disk[0]) if disk else ""), flush=True)
     if os.path.exists(OLD_SHORTCUT):
         os.remove(OLD_SHORTCUT)
-    print("Moved %s to %s (its name since the rename)." % (OLD_INSTALL, INSTALL), flush=True)
 
 
 def make_shortcut(target, launcher):
@@ -248,9 +234,10 @@ def main():
     if os.name != "nt":
         raise SystemExit("This is for a Windows PC (a Pi has cluster/setup.sh).")
     if args.linux:
-        if os.path.isdir(OLD_INSTALL):
-            raise SystemExit("This PC's folder still has its name from before the rename (%s): run setup.py without --linux first "
-                             "(it moves it, and starts the service again), then this." % OLD_INSTALL)
+        old = [d for d in OLD_INSTALLS if os.path.isfile(os.path.join(d, "launcher.py"))]
+        if old:
+            raise SystemExit("This PC's folder is still where it was before (%s): run setup.py without --linux first "
+                             "(it moves it, and starts the service again), then this." % old[0])
         return setup_linux()
     drives = []
     for d in args.drive:
@@ -264,9 +251,9 @@ def main():
             if os.path.exists(s):
                 os.remove(s)
         print("Cluster's service stopped, and it won't start at sign-in. Its folder stays: %s"
-              % (OLD_INSTALL if os.path.isdir(OLD_INSTALL) else INSTALL))
+              % next((d for d in (INSTALL,) + OLD_INSTALLS if os.path.isdir(d)), INSTALL))
         return 0
-    move_old_folder()
+    move_old_folders()
     os.makedirs(INSTALL, exist_ok=True)
     version = install_repo() if args.from_repo else install_latest()
     launcher = os.path.join(INSTALL, "launcher.py")

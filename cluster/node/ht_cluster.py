@@ -56,7 +56,7 @@ through a Pi). The Pis list phones among their Tailscale peers (phone: true).
 
 On a Windows PC (the user, 2026-11-22: "this PC joins as a member"): the same service, started at sign-in by
 its launcher (windows/launcher.py, which starts it again when it ends, as systemd does on a Pi), its state in
-%LOCALAPPDATA%/Cluster/state, the root helper's Windows part run as the user (its own update, the page),
+%USERPROFILE%/Cluster/state, the root helper's Windows part run as the user (its own update, the page),
 and the modules' readings from Windows (winsys.py). node.windows says so (HT_CLUSTER_PLATFORM=windows).
 """
 
@@ -137,11 +137,17 @@ def run(cmd, timeout=20, env=None, stdin=None):
 
 
 def windows_folder():
-    """A Windows PC's folder for the service (its launcher names it with HT_CLUSTER_INSTALL): %LOCALAPPDATA%/Cluster,
-    or the folder from before the rename (2026-11-25: Pi Cluster) while only that one is there (setup.py moves it)."""
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    new, old = os.path.join(base, "Cluster"), os.path.join(base, "Pi Cluster")
-    return old if os.path.isdir(old) and not os.path.isdir(new) else new
+    """A Windows PC's folder for the service (its launcher names it with HT_CLUSTER_INSTALL): %USERPROFILE%/Cluster, or
+    one it was in before while only that one is there (setup.py moves it): %LOCALAPPDATA%/Cluster (until 2026-11-25),
+    %LOCALAPPDATA%/Pi Cluster (before the rename)."""
+    new = os.path.join(os.path.expanduser("~"), "Cluster")
+    local = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    if os.path.isfile(os.path.join(new, "launcher.py")):
+        return new
+    for old in (os.path.join(local, "Cluster"), os.path.join(local, "Pi Cluster")):
+        if os.path.isfile(os.path.join(old, "launcher.py")):
+            return old
+    return new
 
 
 def read(path, default=None):

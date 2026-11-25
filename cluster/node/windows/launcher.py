@@ -5,7 +5,7 @@ versions/dev: a copy of the code) and starts it again a few seconds after it end
 start the new one); one that keeps ending soon after it starts waits longer each time, up to 5 minutes. One
 launcher at a time (launcher.lock); the service's output goes to service.log.
 
-Its folder, %LOCALAPPDATA%/Cluster (setup.py puts it there and starts it at sign-in, with pythonw: no
+Its folder, %USERPROFILE%/Cluster (setup.py puts it there and starts it at sign-in, with pythonw: no
 window), keeps everything: config.json (the Python the service runs with, the one for the animal model's tools,
 ffmpeg, and the Pis' shared folders kept as drives), current.txt, versions/, state/ (the service's settings and
 memory), jobs/, work/ and jobs-env/.

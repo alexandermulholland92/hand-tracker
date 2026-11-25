@@ -76,19 +76,25 @@ HELPER = at("/usr/local/sbin/ht-cluster-root")
 LOCK = at("/run/ht-cluster-root.lock")
 LOG = at("/var/log/ht-cluster-root.log")
 # On a Windows PC (ht_cluster.py's node.root there, run as the user with HT_CLUSTER_WINDOWS=1): only this service's
-# own update and the page, into its folder (HT_CLUSTER_INSTALL, else %LOCALAPPDATA%/Cluster, or the folder from
-# before the rename, %LOCALAPPDATA%/Pi Cluster, while that's the one there), where the version in use is named in
+# own update and the page, into its folder (HT_CLUSTER_INSTALL, else %USERPROFILE%/Cluster, or one it was in before
+# while that's the one there: %LOCALAPPDATA%/Cluster, %LOCALAPPDATA%/Pi Cluster), where the version in use is named in
 # current.txt (no symbolic link), which its launcher (windows/launcher.py) reads.
 WINDOWS = os.name == "nt" and os.environ.get("HT_CLUSTER_WINDOWS") == "1"
 WINDOWS_JOBS = ("update-cluster", "verify-cluster", "page", "cluster-password")
 
 
 def windows_folder():
-    """%LOCALAPPDATA%/Cluster, or the PC's folder from before the rename (2026-11-25: Pi Cluster) while only that one
-    is there (setup.py moves it)."""
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    new, old = os.path.join(base, "Cluster"), os.path.join(base, "Pi Cluster")
-    return old if os.path.isdir(old) and not os.path.isdir(new) else new
+    """%USERPROFILE%/Cluster, or one the PC's folder was in before while only that one is there (setup.py moves it):
+    %LOCALAPPDATA%/Cluster (until 2026-11-25: AppData isn't seen alike by every program), %LOCALAPPDATA%/Pi Cluster
+    (before the rename)."""
+    new = os.path.join(os.path.expanduser("~"), "Cluster")
+    local = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    if os.path.isfile(os.path.join(new, "launcher.py")):
+        return new
+    for old in (os.path.join(local, "Cluster"), os.path.join(local, "Pi Cluster")):
+        if os.path.isfile(os.path.join(old, "launcher.py")):
+            return old
+    return new
 
 
 if WINDOWS:

@@ -23,7 +23,7 @@ Their choices:
 
 How:
 - Each computer with this module on runs a Transmission of its own for these (its address 127.0.0.1:9094, peers on
-  51415), its downloads in a folder of its own (a Pi: ~/ht-cluster-downloads; the PC: %LOCALAPPDATA%/Cluster/
+  51415), its downloads in a folder of its own (a Pi: ~/ht-cluster-downloads; the PC: %USERPROFILE%/Cluster/
   downloads), each torrent in a folder of its own there; started while it has any, stopped 5 minutes after the last.
   It says how it's doing to the home every 5 s (free or not, its room, how busy its network is, its torrents); the
   home answers with what it should have (each torrent, which of its files, paused or not, its turn to copy) and what
