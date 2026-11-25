@@ -1,0 +1,110 @@
+# The iPhone app alone, from the branch its work is done on (the user, 2026-11-25: "iPhone-only branch builds"): built
+# and checked in the simulator as build-apps.yml's iPhone job does, the Cluster app with its own Python (this iPhone as
+# a member of the cluster: ClusterMember.swift), and published nowhere: its .ipa files are this run's artifacts only.
+# main, and the devices that update from its "Latest build" release, get the work once it works here.
+name: Build the iPhone app (branch)
+
+on:
+  push:
+    branches: [iphone-member]
+  workflow_dispatch:
+
+concurrency:
+  group: build-iphone
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # (No install scripts: the iPhone app needs neither Electron nor ffmpeg.)
+      - run: npm ci --ignore-scripts
+
+      - name: Build the web app into the iPhone app
+        run: |
+          node scripts/build-web.js 2>&1 | tee ios-build.log
+          npx cap sync ios 2>&1 | tee -a ios-build.log
+
+      # BeeWare's Python 3.13 for iOS (b18, its SHA-256 checked), the Cluster app's own Python.
+      - name: Python for iOS
+        run: |
+          curl -fsSL -o python-ios.tar.gz https://github.com/beeware/Python-Apple-support/releases/download/3.13-b18/Python-3.13-iOS-support.b18.tar.gz
+          echo "d06acf2a9c7964a8689566353a0e707402eff822037de5e29ba0e16040f7047d  python-ios.tar.gz" | shasum -a 256 -c
+          mkdir -p python-ios
+          tar -xzf python-ios.tar.gz -C python-ios
+          test -d python-ios/Python.xcframework/ios-arm64/Python.framework
+
+      # Started now: a simulator's first start takes minutes, done while the app builds.
+      - name: Start the simulator
+        run: |
+          udid=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          echo "SIM=$udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$udid"
+
+      - name: Build for the simulator
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios-sim CODE_SIGNING_ALLOWED=NO build 2>&1 \
+            | tee -a ios-build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/ios-sim/Build/Products/Debug-iphonesimulator/App.app
+
+      # Cluster in the simulator, with its own Python: a Pi simulated here (cluster/node), reached through the app's
+      # Cluster plugin; then the app's member service started beside it and asked through that Pi (cluster.js's
+      # self-test, in the app's log as HT-SELFTEST).
+      - name: Check Cluster in the simulator
+        timeout-minutes: 30
+        run: |
+          udid="$SIM"
+          xcrun simctl bootstatus "$udid" -b > /dev/null
+          python3 cluster/node/ht_cluster.py --simulate --port 47830 > cluster-sim.log 2>&1 &
+          node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app cluster build/ios-sim-cluster --python python-ios/Python.xcframework
+          xcrun simctl install "$udid" build/ios-sim-cluster/App.app
+          xcrun simctl launch --console-pty "$udid" com.handtracker.cluster -HTSelfTest http://127.0.0.1:8765/ > sim-cluster.log 2>&1 &
+          for i in $(seq 1 150); do grep -q "HT-SELFTEST" sim-cluster.log && break; sleep 2; done
+          grep -a "HT-SELFTEST" sim-cluster.log | tail -1 | tee selftest-cluster.txt
+          if ! python3 -c "import json,sys; t=open('selftest-cluster.txt').read(); d=json.loads(t.split('HT-SELFTEST ',1)[1]); sys.exit(0 if d.get('ok') and (d.get('member') or {}).get('ok') else 1)"; then
+            echo "== the app's log" >> ios-build.log; tail -n 150 sim-cluster.log >> ios-build.log
+            echo "== the simulated Pi's log" >> ios-build.log; tail -n 40 cluster-sim.log >> ios-build.log
+            tail -n 150 sim-cluster.log
+            exit 1
+          fi
+          echo "Cluster: its self-test passed, this iPhone's member service included"
+
+      - name: Build for iPhones (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 \
+            | tee -a ios-build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          app=build/ios/Build/Products/Release-iphoneos/App.app
+          test -d "$app"
+          version=$(node -p "require('./package.json').version")
+          mkdir -p dist
+          node scripts/ios-variant.js "$app" cluster build/ios-cluster --python python-ios/Python.xcframework
+          test -f build/ios-cluster/App.app/Frameworks/Python.framework/Python
+          lipo -archs build/ios-cluster/App.app/Frameworks/Python.framework/Python | grep -q arm64
+          rm -rf Payload && mkdir Payload && cp -R build/ios-cluster/App.app Payload/
+          zip -qr "dist/Cluster-$version-ios-unsigned.ipa" Payload
+          ls -la dist
+
+      - name: Why the build failed
+        if: failure()
+        run: |
+          test -f ios-build.log || exit 0
+          echo "::error title=iPhone build::$(grep -E "error:|HT-SELFTEST|Error|Traceback" ios-build.log | tail -n 40 | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-branch
+          path: dist/*.ipa
+          if-no-files-found: error

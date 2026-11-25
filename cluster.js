@@ -464,8 +464,10 @@
   function renderMember() {
     const box = $("memberBox");
     if (!Member || !box) return;
-    box.hidden = false;
     const m = member || {};
+    // (an iPhone app without its own Python, as Hand Tracker's are: nothing to switch on)
+    box.hidden = m.available === false;
+    if (box.hidden) return;
     const btn = el("button", { textContent: m.on ? "On" : "Off", title: m.on ? "Leave the cluster (this phone only looks at it)" : "Join the cluster: its health, jobs and downloads, as the Pis'" });
     btn.setAttribute("aria-pressed", String(!!m.on));
     btn.onclick = async () => {
@@ -482,6 +484,8 @@
       : !m.running ? "Starting…"
       : m.address ? `In the cluster as ${m.name} (${m.address}): its health, jobs and downloads, listed with the Pis.`
       : `In the cluster as ${m.name}, but Tailscale isn't on here, so the Pis can't reach it.`;
+    // (an iPhone: only while the app is open, as an iPhone gives an app no time of its own in the background)
+    const iphone = m.platform === "ios" && m.on ? " While this app is open: an iPhone gives an app no time of its own in the background." : "";
     // (its Hand Tracker takes, shared with the cluster as a Pi's are, once Android's All files access is on for this app)
     let takes = "";
     if (m.on && m.takes === false) {
@@ -492,7 +496,7 @@
       };
       takes = el("div", { className: "sub" }, "This phone's Hand Tracker takes aren't shared yet: turn on All files access for this app. ", allow);
     }
-    box.replaceChildren(el("div", { className: "top" }, el("b", {}, "This phone in the cluster"), el("span", { className: "sub" }, words), el("span", { className: "spans" }, btn)),
+    box.replaceChildren(el("div", { className: "top" }, el("b", {}, "This phone in the cluster"), el("span", { className: "sub" }, words + iphone), el("span", { className: "spans" }, btn)),
       takes, m.error ? el("div", { className: "warn-line" }, m.error) : "");
   }
 
@@ -1909,8 +1913,49 @@
       const found = await api.addPi(target);
       const set = found.ok ? await api.settings({ target, module: "health", key: "power", value: "wall" }) : {};
       const out = { ok: !!(found.ok && set.status === 200 && set.ok), found, set: set.status };
+      // This iPhone in the cluster, where the app has its own Python (the Cluster app's member service,
+      // ClusterMember.swift): started beside the simulated Pi, which it gives its key; then asked through that Pi,
+      // as the Pis' page asks a phone: an iPhone, with its own readings; then stopped.
+      const has = Member ? await Member.status().catch(() => ({})) : {};
+      if (has.available) {
+        out.member = await memberSelfTest(target);
+        out.ok = out.ok && out.member.ok;
+      }
       console.log("HT-SELFTEST " + JSON.stringify(out));
     })();
+  }
+  async function memberSelfTest(pi) {
+    const me = "127.0.0.1:47831";
+    const P = window.Capacitor.Plugins.Cluster;
+    const r = { ok: false };
+    const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    try {
+      r.start = await Member.start({ seeds: [pi], selfTest: { port: 47831 } });
+      let node = null;
+      for (const until = Date.now() + 120000; Date.now() < until && !node; ) {
+        await wait(3000);
+        r.status = await Member.status();
+        if (r.status.error && !r.status.running) break;
+        try {
+          const a = await P.request({ target: pi, to: me, method: "GET", path: "/api/node", timeoutMs: 8000 });
+          r.asked = a.status;
+          if (a.status === 200) node = JSON.parse(a.body);
+        } catch (e) {
+          r.asked = String((e && e.message) || e);
+        }
+      }
+      const health = node && (node.modules || []).find((m) => m.name === "health");
+      const summary = (health && health.status && health.status.summary) || "";
+      r.node = node && { name: node.name, platform: node.platform, version: node.version, modules: (node.modules || []).map((m) => m.name), health: summary };
+      r.ok = !!(node && node.platform === "ios" && /Memory/.test(summary));
+      r.stop = await Member.stop();
+      for (let i = 0; i < 10 && (await Member.status()).running; i++) await wait(1000);
+      r.stopped = !(await Member.status()).running;
+      r.ok = r.ok && r.stopped;
+    } catch (e) {
+      r.error = String((e && e.message) || e);
+    }
+    return r;
   }
   refresh();
   memberStatus();

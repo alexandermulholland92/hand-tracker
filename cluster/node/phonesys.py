@@ -17,7 +17,7 @@ import os
 import time
 
 PLATFORM = os.environ.get("HT_CLUSTER_PLATFORM") or ""
-_native = {"fn": None}
+_native = {"fn": None, "ios": None}  # (the backend chosen; the iPhone app's two functions)
 
 
 def _android(name, args):
@@ -29,12 +29,22 @@ def _android(name, args):
 def _ios(name, args):
     import ctypes
 
-    lib = ctypes.CDLL(None)  # (the app's own functions)
-    fn = lib.ht_native_call
-    fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-    fn.restype = ctypes.c_void_p
-    free = lib.ht_native_free
-    free.argtypes = [ctypes.c_void_p]
+    if _native["ios"] is None:
+        # (the app gives the addresses of its two functions, ClusterMember.swift: an app's own symbols aren't for
+        # looking up)
+        call_at, free_at = os.environ.get("HT_CLUSTER_NATIVE_CALL"), os.environ.get("HT_CLUSTER_NATIVE_FREE")
+        if call_at and free_at:
+            fn = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p)(int(call_at))
+            free = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(int(free_at))
+        else:
+            lib = ctypes.CDLL(None)
+            fn = lib.ht_native_call
+            fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+            fn.restype = ctypes.c_void_p
+            free = lib.ht_native_free
+            free.argtypes = [ctypes.c_void_p]
+        _native["ios"] = (fn, free)
+    fn, free = _native["ios"]
     ptr = fn(name.encode("utf-8"), json.dumps(args).encode("utf-8"))
     try:
         return ctypes.string_at(ptr).decode("utf-8") if ptr else "{}"

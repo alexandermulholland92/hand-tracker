@@ -193,7 +193,8 @@ final class RigExchange {
 
 // ---------- Cluster: the Pis running Cluster's service ----------
 // ClusterPlugin, for Cluster's own app (cluster.js; the same as ClusterPlugin.java on Android):
-//   request({ target: "pi" | "100.x.y.z" | "host:port", method, path, body?, data? (base64), timeoutMs? })
+//   request({ target: "pi" | "100.x.y.z" | "host:port", method, path, body?, data? (base64), timeoutMs?, to? })
+//     to: a phone of the cluster (its Tailscale address), asked through the Pi that's target
 //     -> { status, type, body (text, for JSON), data (base64, for anything else) }
 //     plain HTTP over TCP to the service (port 47830), with its own header, only to its /api/ paths
 //   save({ target, path, name, size }) -> { saved }
@@ -214,15 +215,25 @@ public class ClusterPlugin: CAPPlugin, CAPBridgedPlugin {
     static let NAME = "^[^/\\\\\\x00-\\x1f]{1,200}\\.zip$"
     private let queue = DispatchQueue(label: "hand-tracker.cluster")
 
+    // A phone of the cluster, asked through the Pi that's the target (X-HT-Cluster-To; only the Pis have each phone's
+    // key): its Tailscale address (the build's simulator check: the simulated phone beside it, 127.0.0.1:port).
+    static let TO = "^100\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"
+    static let TO_TEST = "^127\\.0\\.0\\.1:\\d{1,5}$"
+
     // One request to a Pi's service: its answer, or why not.
-    func exchange(_ target: String, _ method: String, _ path: String, _ payload: Data?, _ type: String?, seconds: Int,
+    func exchange(_ target: String, _ method: String, _ path: String, _ payload: Data?, _ type: String?, seconds: Int, to: String? = nil,
                   _ finish: @escaping (Result<RigAnswer, RigError>) -> Void) {
         guard let g = RigLinkPlugin.groups(Self.TARGET, target) else { return finish(.failure(RigError(message: "That isn't a Pi's name."))) }
         let port = Int(g[6]) ?? Self.PORT
         guard port >= 1, port <= 65535, ["GET", "POST", "PUT"].contains(method), RigLinkPlugin.groups(Self.PATH, path) != nil else {
             return finish(.failure(RigError(message: "Not one of the service's requests.")))
         }
+        if let t = to, RigLinkPlugin.groups(Self.TO, t) == nil,
+           !(ProcessInfo.processInfo.arguments.contains("-HTSelfTest") && RigLinkPlugin.groups(Self.TO_TEST, t) != nil) {
+            return finish(.failure(RigError(message: "That isn't a phone of the cluster.")))
+        }
         var head = "\(method) \(path) HTTP/1.1\r\nHost: \(g[1]):\(port)\r\nX-HT-Cluster: 1\r\nConnection: close\r\n"
+        if let t = to { head += "X-HT-Cluster-To: \(t)\r\n" }
         if let p = payload, let t = type {
             head += "Content-Type: \(t)\r\nContent-Length: \(p.count)\r\n"
         } else if method != "GET" {
@@ -248,7 +259,7 @@ public class ClusterPlugin: CAPPlugin, CAPBridgedPlugin {
             type = "application/json"
         }
         let seconds = max(2, min(180, (call.getInt("timeoutMs") ?? 20000) / 1000))
-        exchange(call.getString("target") ?? "", method, call.getString("path") ?? "", payload, type, seconds: seconds) { result in
+        exchange(call.getString("target") ?? "", method, call.getString("path") ?? "", payload, type, seconds: seconds, to: call.getString("to")) { result in
             switch result {
             case .success(let a):
                 if a.type.hasPrefix("application/json") {

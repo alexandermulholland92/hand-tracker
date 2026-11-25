@@ -1,7 +1,8 @@
 """
-htmember.py - this phone as a member of the cluster (the Cluster app on Android, MemberService.java): Cluster's own
-service (cluster/node/ht_cluster.py, the same as on the Pis, copied from the app's assets into its files) run here, in
-the app's Python (Chaquopy), until the member switch is turned off.
+htmember.py - this phone as a member of the cluster (the Cluster app: on Android MemberService.java, on an iPhone
+ClusterMember.swift): Cluster's own service (cluster/node/ht_cluster.py, the same as on the Pis; on Android copied from
+the app's assets into its files, on an iPhone read from the app itself) run in the app's Python (Android: Chaquopy;
+iPhone: BeeWare's Python for iOS), until the member switch is turned off.
 
   run(code_dir, env_json)   blocks while it runs: env_json's settings first (HT_CLUSTER_PLATFORM=android, its name,
                             Tailscale address, the Pis the app knows, its state folder), then the service
@@ -25,7 +26,8 @@ def run(code_dir, env_json):
         sys.path.insert(0, code_dir)
     import ht_cluster  # (its modules read the settings above as they load)
 
-    node = ht_cluster.Node(port=int(env.get("HT_CLUSTER_PORT") or ht_cluster.PORT))
+    # (HT_CLUSTER_SIMULATE: the iPhone build's simulator check, its Tailscale simulated as the checks' phones' is)
+    node = ht_cluster.Node(simulate=env.get("HT_CLUSTER_SIMULATE") == "1", port=int(env.get("HT_CLUSTER_PORT") or ht_cluster.PORT))
     ht_cluster.Handler.node = node
     server = ht_cluster.Server(("::", node.port), ht_cluster.Handler)
     _state.update(node=node, server=server, error="")

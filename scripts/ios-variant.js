@@ -55,6 +55,64 @@ if (kind === "mouse" || kind === "cluster") {
   fs.writeFileSync(file, JSON.stringify(config, null, "\t"));
 }
 
+// Cluster's own Python and service, for this iPhone as a member of the cluster (ClusterMember.swift), with
+// --python <Python.xcframework> (BeeWare's Python 3.13 for iOS): its framework, its standard library and its compiled
+// modules, each made a framework of its own (iOS loads code only from frameworks; as Python's own build/utils.sh
+// does in an Xcode build: a .fwork file where the module was, a .origin file beside it), and the service's code
+// (cluster/node's Python files, as build-android.js puts them in the Android app, and the app's starter).
+const pyAt = process.argv.indexOf("--python");
+if (kind === "cluster" && pyAt > 0) addPython(app, path.resolve(process.argv[pyAt + 1]));
+
+function addPython(app, xcf) {
+  const platform = execFileSync("plutil", ["-extract", "DTPlatformName", "raw", "-o", "-", path.join(app, "Info.plist")]).toString().trim();
+  const sim = platform === "iphonesimulator";
+  const slice = !sim ? "ios-arm64" : fs.existsSync(path.join(xcf, "ios-arm64-simulator")) ? "ios-arm64-simulator" : "ios-arm64_x86_64-simulator";
+  const frameworks = path.join(app, "Frameworks");
+  fs.mkdirSync(frameworks, { recursive: true });
+  execFileSync("ditto", [path.join(xcf, slice, "Python.framework"), path.join(frameworks, "Python.framework")]);
+  const lib = path.join(app, "python", "lib");
+  fs.mkdirSync(lib, { recursive: true });
+  for (const from of [path.join(xcf, "lib"), path.join(xcf, slice, "lib-arm64")]) {
+    execFileSync("rsync", ["-a", "--exclude", "libpython*.dylib", from + "/", lib + "/"]);
+  }
+  const version = fs.readdirSync(lib).find((d) => /^python3\.\d+$/.test(d));
+  const dynload = path.join(lib, version, "lib-dynload");
+  const template = fs.readFileSync(path.join(xcf, "build", "iOS-dylib-Info-template.plist"));
+  let modules = 0;
+  for (const file of fs.readdirSync(dynload).filter((f) => f.endsWith(".so"))) {
+    const name = file.split(".")[0];
+    const folder = path.join(frameworks, `${name}.framework`);
+    fs.mkdirSync(folder, { recursive: true });
+    const info = path.join(folder, "Info.plist");
+    fs.writeFileSync(info, template);
+    execFileSync("plutil", ["-replace", "CFBundleExecutable", "-string", name, info]);
+    execFileSync("plutil", ["-replace", "CFBundleIdentifier", "-string", `${own.id}.${name}`.replace(/_/g, "-"), info]);
+    execFileSync("plutil", ["-replace", "CFBundleSupportedPlatforms", "-json", sim ? '["iPhoneSimulator"]' : '["iPhoneOS"]', info]);
+    fs.renameSync(path.join(dynload, file), path.join(folder, name));
+    const fwork = path.join(dynload, file.replace(/\.so$/, ".fwork"));
+    fs.writeFileSync(fwork, `Frameworks/${name}.framework/${name}\n`);
+    fs.writeFileSync(path.join(folder, `${name}.origin`), path.relative(app, fwork).split(path.sep).join("/") + "\n");
+    modules++;
+  }
+  // (the simulator runs on the Mac, which loads only signed code: each of these signed as they are, by no one, as the
+  // app itself is there; on an iPhone Sideloadly or AltStore signs them all with the app)
+  if (sim) {
+    for (const f of fs.readdirSync(frameworks).filter((f) => f.endsWith(".framework"))) {
+      execFileSync("codesign", ["--force", "--sign", "-", "--timestamp=none", path.join(frameworks, f)]);
+    }
+  }
+  const from = path.join(ROOT, "cluster", "node"), code = path.join(app, "cluster-node");
+  const files = [...fs.readdirSync(from).filter((f) => f.endsWith(".py")), ...fs.readdirSync(path.join(from, "modules")).filter((f) => f.endsWith(".py")).map((f) => `modules/${f}`)];
+  for (const f of files) {
+    fs.mkdirSync(path.dirname(path.join(code, f)), { recursive: true });
+    fs.copyFileSync(path.join(from, f), path.join(code, f));
+  }
+  fs.copyFileSync(path.join(ROOT, "android", "app", "src", "cluster", "python", "htmember.py"), path.join(code, "htmember.py"));
+  const sha = process.env.GITHUB_SHA || "";
+  fs.writeFileSync(path.join(code, "VERSION"), /^[0-9a-f]{40}$/.test(sha) ? sha : "dev");
+  console.log(`Cluster's Python (${slice}, ${version}): ${modules} compiled modules as frameworks; the service: ${files.length + 1} files`);
+}
+
 const plist = path.join(app, "Info.plist");
 const set = (key, value) => execFileSync("plutil", ["-replace", key, "-string", value, plist]);
 set("CFBundleIdentifier", own.id);
