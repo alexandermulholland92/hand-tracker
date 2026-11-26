@@ -241,7 +241,7 @@ def safe_rel(rel):
 
 def parse_meta(data):
     """A .torrent file's bytes -> {hash, name, files: [[its name under the folder, bytes]], pieceLength, pieces, size,
-    padded}; ValueError if it isn't one this can take."""
+    padded, pads (its padding files' indexes: BEP 47's, a v2 hybrid's)}; ValueError if it isn't one this can take."""
     top, span = bdecode(data)
     if not isinstance(top, dict) or not isinstance(top.get(b"info"), dict) or not span:
         raise ValueError("That isn't a .torrent file.")
@@ -251,14 +251,14 @@ def parse_meta(data):
     pieces = info.get(b"pieces") or b""
     if not name or pl <= 0 or not pieces or len(pieces) % 20:
         raise ValueError("That torrent has no pieces this can read (a v2-only torrent?).")
-    padded = False
+    pads = []
     if isinstance(info.get(b"files"), list):
         files = []
         for f in info[b"files"]:
             path = f.get(b"path.utf-8") or f.get(b"path") or []
             rel = "/".join([name] + [text(p) for p in path])
             if b"p" in (f.get(b"attr") or b""):
-                padded = True
+                pads.append(len(files))
             files.append([rel, int(f.get(b"length") or 0)])
     else:
         files = [[name, int(info.get(b"length") or 0)]]
@@ -266,7 +266,7 @@ def parse_meta(data):
         if not safe_rel(rel):
             raise ValueError("That torrent has a file name this won't write: %s" % rel[:80])
     return {"hash": hashlib.sha1(data[span[0]:span[1]]).hexdigest(), "name": name, "files": files, "pieceLength": pl,
-            "pieces": len(pieces) // 20, "size": sum(f[1] for f in files), "padded": padded}
+            "pieces": len(pieces) // 20, "size": sum(f[1] for f in files), "padded": bool(pads), "pads": pads}
 
 
 def parse_magnet(m):
@@ -942,8 +942,10 @@ def meta_b64(node, did):
 
 
 def ranges_of(e, p):
-    """A part's ranges of the download's files: [[file, from, to]] (bytes in that file), in order."""
+    """A part's ranges of the download's files: [[file, from, to]] (bytes in that file), in order. Never a padding
+    file's (a v2 hybrid's: only zeros, which libtorrent doesn't even write; the home makes them as it finishes)."""
     files = e.get("files") or []
+    pads = set(e.get("pads") or [])
     if p.get("pieces"):
         lo, hi = p["pieces"]
         pl = e["pieceLength"]
@@ -951,12 +953,12 @@ def ranges_of(e, p):
         out, pos = [], 0
         for i, (_, ln) in enumerate(files):
             s, t = max(b0, pos), min(b1, pos + ln)
-            if s < t:
+            if s < t and i not in pads:
                 out.append([i, s - pos, t - pos])
             pos += ln
         return out
     idx = p.get("files")
-    return [[i, 0, files[i][1]] for i in (idx if isinstance(idx, list) else range(len(files)))]
+    return [[i, 0, files[i][1]] for i in (idx if isinstance(idx, list) else range(len(files))) if i not in pads]
 
 
 def part_size(e, p):
@@ -1051,8 +1053,6 @@ def act_add(node, args):
             return a
     if where in ("home", node.name):
         return A.act_add(node, args)
-    if split and meta and meta["padded"]:
-        return {"ok": False, "error": "That torrent has padding files (a v2 hybrid): download it whole."}
     if split:
         devices = [c for c in usable if c[0] != node.name and (split != "pieces" or (_beats.get(c[0]) or {}).get("pieces"))][:MAX_SPLIT]
         while len(devices) >= 2:  # (each with room for its share)
@@ -1086,7 +1086,7 @@ def act_add(node, args):
     if meta:
         with open(meta_path(node, did), "wb") as f:
             f.write(raw)
-        e.update(files=meta["files"], pieceLength=meta["pieceLength"], pieces=meta["pieces"], size=meta["size"])
+        e.update(files=meta["files"], pieceLength=meta["pieceLength"], pieces=meta["pieces"], size=meta["size"], pads=meta["pads"])
     if split and not meta:
         e["state"] = "metadata"
         e["parts"] = [{"device": names[0], "files": "none", "state": "downloading", "copied": [0, 0], "copiedBytes": 0}]
@@ -1109,13 +1109,14 @@ def split_parts(e, names, how):
     """A download's parts, one a computer: its files (the biggest first, each to the one with the least so far), or
     its pieces (as many to each)."""
     files = e["files"]
+    pads = set(e.get("pads") or [])
     if how == "files":
-        if len(files) < 2:
+        if len(files) - len(pads) < 2:
             how = "pieces"
         else:
             load = {n: 0 for n in names}
             mine = {n: [] for n in names}
-            for i in sorted(range(len(files)), key=lambda i: -files[i][1]):
+            for i in sorted((i for i in range(len(files)) if i not in pads), key=lambda i: -files[i][1]):
                 n = min(names, key=lambda n: (load[n], names.index(n)))
                 mine[n].append(i)
                 load[n] += files[i][1]
@@ -1140,18 +1141,14 @@ def take_meta(node, mem, worker, h, b64):
     os.makedirs(meta_dir(node), exist_ok=True)
     with open(meta_path(node, e["id"]), "wb") as f:
         f.write(raw)
-    e.update(meta=True, magnet=None, name=meta["name"], files=meta["files"], pieceLength=meta["pieceLength"], pieces=meta["pieces"], size=meta["size"])
+    e.update(meta=True, magnet=None, name=meta["name"], files=meta["files"], pieceLength=meta["pieceLength"], pieces=meta["pieces"], size=meta["size"],
+             pads=meta["pads"])
     top = meta["files"][0][0].split("/")[0]
     if os.path.exists(os.path.join(e["folder"], top)):
         fail(node, e, "%s already has %s in %s: not overwritten." % (node.name, top, e["folder"]))
         return
     if e["state"] == "metadata":
         how = e["split"]
-        if meta["padded"]:
-            e["parts"][0]["files"] = None
-            e["state"] = "downloading"
-            node.event("downloads", "%s has padding files: downloading it whole on %s." % (e["name"], e["parts"][0]["device"]))
-            return
         names = [n for n in e.get("splitOver") or [] if fresh(n)] or [e["parts"][0]["device"]]
         if how == "pieces":
             names = [n for n in names if (_beats.get(n) or {}).get("pieces")] or [e["parts"][0]["device"]]
@@ -1357,9 +1354,16 @@ def finish(node, e):
     mem = book(node)
     try:
         if e["state"] == "downloading":
+            pads = set(e.get("pads") or [])
             for i, (rel, ln) in enumerate(e["files"]):
                 final = dest_of(e, i)
                 part = final + ".part"
+                if i in pads:  # (a padding file: zeros, made here, as pi's Transmission reads it; one there already kept)
+                    if not os.path.exists(final):
+                        os.makedirs(os.path.dirname(part), exist_ok=True)
+                        with open(part, "wb") as f:
+                            f.truncate(ln)
+                    continue
                 if os.path.exists(final):
                     with _lock:
                         fail(node, e, "%s already has %s: not overwritten (it's left as %s.part)." % (node.name, rel, os.path.basename(final)))
@@ -1377,7 +1381,8 @@ def finish(node, e):
                     with open(part, "r+b") as f:  # (pieces never sent: a file shorter than it is)
                         f.truncate(ln)
             for i in range(len(e["files"])):
-                os.replace(dest_of(e, i) + ".part", dest_of(e, i))
+                if i not in pads or os.path.exists(dest_of(e, i) + ".part"):
+                    os.replace(dest_of(e, i) + ".part", dest_of(e, i))
             with _lock:
                 e["state"] = "checking" if e["after"] == "home" else "seeding"
                 mem.save()

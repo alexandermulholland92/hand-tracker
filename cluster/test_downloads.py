@@ -72,9 +72,10 @@ def content(seed, n):
     return random.Random(seed).randbytes(n)
 
 
-def make_torrent(swarm, name, files, pl=262144):
-    """files: [(path under name, or None for a single-file torrent, bytes)] -> (its .torrent, its hash, [[name, length]])."""
-    datas = [content(name + str(p), n) for p, n in files]
+def make_torrent(swarm, name, files, pl=262144, pads=()):
+    """files: [(path under name, or None for a single-file torrent, bytes)] -> (its .torrent, its hash, [[name, length]]).
+    pads: which of them are padding files (BEP 47, as a v2 hybrid has: zeros, attr "p")."""
+    datas = [b"\0" * n if i in pads else content(name + str(p), n) for i, (p, n) in enumerate(files)]
     blob = b"".join(datas)
     pieces = b"".join(hashlib.sha1(blob[i:i + pl]).digest() for i in range(0, len(blob), pl))
     info = {"name": name, "piece length": pl, "pieces": pieces}
@@ -82,7 +83,7 @@ def make_torrent(swarm, name, files, pl=262144):
         info["length"] = len(blob)
         rels = [name]
     else:
-        info["files"] = [{"length": n, "path": p.split("/")} for p, n in files]
+        info["files"] = [dict({"length": n, "path": p.split("/")}, **({"attr": "p"} if i in pads else {})) for i, (p, n) in enumerate(files)]
         rels = [name + "/" + p for p, _ in files]
     raw = bencode({"announce": "http://tracker.invalid/announce", "info": info})
     h = hashlib.sha1(bencode(info)).hexdigest()
@@ -595,6 +596,17 @@ def main():
         stopped = wait_for(lambda: not os.path.exists(os.path.join(tmp, "pie-downloads", e4["id"] + ".p")) and
                            not os.path.exists(os.path.join(tmp, "rhubarb-downloads", e4["id"] + ".p")), 30)
         check("...and the computers' parts are deleted once pi has it all", bool(stopped))
+
+        # 4b. A v2 hybrid (padding files, BEP 47) split by pieces: the padding files aren't copied, pi makes them (zeros)
+        # (the user, 2026-11-25: "That torrent has padding files (a v2 hybrid): download it whole." was refused before)
+        raw7, h7, files7 = make_torrent(swarm, "Hybrid", [("film.mkv", 100000), (".pad/31072", 31072), ("film.srt", 5000)], pl=65536, pads=(1,))
+        code, a = dl(pi, "add", {"torrent": b64(raw7), "folder": movies, "where": "freest", "split": "pieces", "after": "home"})
+        e7 = entry(a.get("id")) if code == 200 else None
+        done7 = wait_for(lambda: entry(e7["id"]) is None and (cluster_has(h7) or {}).get("percentDone") == 1, 120) if e7 else None
+        pad7 = os.path.join(movies, "Hybrid", ".pad", "31072")
+        check("A v2 hybrid (padding files) split by pieces: its files copied to pi, its padding files made there (zeros)",
+              code == 200 and bool(done7) and all(same(os.path.join(movies, *r.split("/")), os.path.join(swarm, h7, *r.split("/"))) for r, _ in files7)
+              and os.path.getsize(pad7) == 31072 and open(pad7, "rb").read() == b"\0" * 31072, (a, e7 and entry(e7["id"])))
 
         # 5. Paused, going on, waiting while a computer records, removed
         raw5, h5, files5 = make_torrent(swarm, "Long One.mkv", [(None, 60000000)])
