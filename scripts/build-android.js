@@ -102,6 +102,8 @@ run(`${gradlew} assembleFullDebug assembleMouseDebug assembleRemoteDebug assembl
 // (on its own: only the Cluster app has Python, which Gradle adds to every app it builds in the same run; its own
 // Transmission first, built once: scripts/build-transmission-android.js, the NDK's)
 run("node scripts/build-transmission-android.js");
+// (and its own libtorrent, for a big download's pieces: scripts/build-libtorrent-android.js)
+run("node scripts/build-libtorrent-android.js");
 run(`${gradlew} assembleClusterDebug`, ANDROID);
 
 const version = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;

@@ -74,6 +74,19 @@ enum ClusterNative {
                 answer = ["ok": true]
             case "transmission-running":
                 answer = ["ok": true, "running": ClusterTransmission.shared.running]
+            // a part of a big torrent by pieces, with its own libtorrent (ClusterPieces), as on Android
+            case "pieces-available":
+                answer = ["ok": true, "available": ClusterPieces.shared.available]
+            case "pieces-start":
+                try ClusterPieces.shared.start(torrent: a["torrent"] as? String ?? "", folder: a["folder"] as? String ?? "",
+                                               first: (a["first"] as? NSNumber)?.intValue ?? 0, end: (a["end"] as? NSNumber)?.intValue ?? 0,
+                                               state: a["state"] as? String ?? "", port: (a["port"] as? NSNumber)?.intValue ?? 51416)
+                answer = ["ok": true]
+            case "pieces-stop":
+                ClusterPieces.shared.stop(a["state"] as? String ?? "")
+                answer = ["ok": true]
+            case "pieces-running":
+                answer = ["ok": true, "running": ClusterPieces.shared.running(a["state"] as? String ?? "")]
             case "net":
                 answer = netCounters()
             default:
@@ -431,6 +444,65 @@ final class ClusterTransmission {
     var running: Bool {
         guard (try? load()) != nil, let running = runningFn else { return false }
         return running() != 0
+    }
+}
+
+// The app's own libtorrent (ClusterPieces.framework: libtorrent 2.0.16 and the part-runner both phone apps share,
+// cluster/pieces-native, scripts/build-libtorrent-ios.sh; only the Cluster app has it), loaded once it's first needed:
+// a part of a big download by pieces (downloads.py), as pieces.py on a Pi, each part named by its state folder.
+final class ClusterPieces {
+    static let shared = ClusterPieces()
+    private typealias StartFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32, Int32, UnsafePointer<CChar>?, Int32, UnsafeMutablePointer<CChar>?, Int32) -> Int32
+    private typealias StopFn = @convention(c) (UnsafePointer<CChar>?) -> Void
+    private typealias RunningFn = @convention(c) (UnsafePointer<CChar>?) -> Int32
+
+    private let lock = NSLock()
+    private var startFn: StartFn?
+    private var stopFn: StopFn?
+    private var runningFn: RunningFn?
+
+    var path: String { Bundle.main.bundlePath + "/Frameworks/ClusterPieces.framework/ClusterPieces" }
+    var available: Bool { (try? load()) != nil }
+
+    private func load() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if startFn != nil { return }
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw NSError(domain: "Cluster", code: 12, userInfo: [NSLocalizedDescriptionKey: "This app has no libtorrent of its own."])
+        }
+        guard let h = dlopen(path, RTLD_NOW) else {
+            throw NSError(domain: "Cluster", code: 13, userInfo: [NSLocalizedDescriptionKey: "This app's libtorrent didn't load: " + (dlerror().map { String(cString: $0) } ?? "?")])
+        }
+        guard let s = dlsym(h, "ht_pc_start"), let t = dlsym(h, "ht_pc_stop"), let r = dlsym(h, "ht_pc_running") else {
+            throw NSError(domain: "Cluster", code: 14, userInfo: [NSLocalizedDescriptionKey: "This app's libtorrent isn't as expected."])
+        }
+        startFn = unsafeBitCast(s, to: StartFn.self)
+        stopFn = unsafeBitCast(t, to: StopFn.self)
+        runningFn = unsafeBitCast(r, to: RunningFn.self)
+    }
+
+    func start(torrent: String, folder: String, first: Int, end: Int, state: String, port: Int) throws {
+        try load()
+        guard let start = startFn, !torrent.isEmpty, !folder.isEmpty, !state.isEmpty else {
+            throw NSError(domain: "Cluster", code: 15, userInfo: [NSLocalizedDescriptionKey: "Which torrent, folder and state folder?"])
+        }
+        var err = [CChar](repeating: 0, count: 512)
+        let size = Int32(err.count)
+        let rc = torrent.withCString { t in folder.withCString { f in state.withCString { s in start(t, f, Int32(first), Int32(end), s, Int32(port), &err, size) } } }
+        if rc != 0 {
+            throw NSError(domain: "Cluster", code: 16, userInfo: [NSLocalizedDescriptionKey: String(cString: err)])
+        }
+    }
+
+    func stop(_ state: String) {
+        guard (try? load()) != nil, let stop = stopFn else { return }
+        state.withCString { stop($0) }
+    }
+
+    func running(_ state: String) -> Bool {
+        guard (try? load()) != nil, let running = runningFn else { return false }
+        return state.withCString { running($0) } != 0
     }
 }
 

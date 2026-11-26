@@ -96,6 +96,22 @@ jobs:
           path: build/transmission-ios
           key: transmission-ios-${{ hashFiles('scripts/build-transmission-ios.sh', 'ios/transmission/**') }}
 
+      # Its own libtorrent, for a big download's pieces (scripts/build-libtorrent-ios.sh: libtorrent 2.0.16 with Boost's
+      # headers and the part-runner both phone apps share, ClusterPieces.framework), kept in the Actions cache once built.
+      - id: libtorrent-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/libtorrent-ios
+          key: libtorrent-ios-${{ hashFiles('scripts/build-libtorrent-ios.sh', 'ios/pieces/**', 'cluster/pieces-native/**') }}
+      - name: libtorrent for iOS
+        if: steps.libtorrent-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-libtorrent-ios.sh build/libtorrent-ios
+      - if: steps.libtorrent-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/libtorrent-ios
+          key: libtorrent-ios-${{ hashFiles('scripts/build-libtorrent-ios.sh', 'ios/pieces/**', 'cluster/pieces-native/**') }}
+
       # Started now: a simulator's first start takes minutes, done while the app builds.
       - name: Start the simulator
         run: |
@@ -137,7 +153,7 @@ jobs:
           mkdir -p ftp-shared/shared
           echo 'Hello from the simulated Pi.' > ftp-shared/shared/hello.txt
           PYTHONPATH="$PWD/pyftpdlib-2.2.0" HT_CLUSTER_FTP_FOLDERS="$PWD/ftp-shared/shared" "${{ steps.pi-python.outputs.python-path }}" cluster/node/ht_cluster.py --simulate --port 47830 > cluster-sim.log 2>&1 &
-          node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app cluster build/ios-sim-cluster --python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels --transmission build/transmission-ios
+          node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app cluster build/ios-sim-cluster --python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels --transmission build/transmission-ios --libtorrent build/libtorrent-ios
           xcrun simctl install "$udid" build/ios-sim-cluster/App.app
           xcrun simctl launch --console-pty "$udid" com.handtracker.cluster -HTSelfTest http://127.0.0.1:8765/ > sim-cluster.log 2>&1 &
           for i in $(seq 1 300); do grep -q "HT-SELFTEST" sim-cluster.log && break; sleep 2; done
@@ -162,11 +178,11 @@ jobs:
           test -d "$app"
           version=$(node -p "require('./package.json').version")
           mkdir -p dist
-          node scripts/ios-variant.js "$app" cluster build/ios-cluster --python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels --transmission build/transmission-ios
+          node scripts/ios-variant.js "$app" cluster build/ios-cluster --python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels --transmission build/transmission-ios --libtorrent build/libtorrent-ios
           test -f build/ios-cluster/App.app/Frameworks/Python.framework/Python
           test -f build/ios-cluster/App.app/Frameworks/numpy._core._multiarray_umath.framework/numpy._core._multiarray_umath
           test -f build/ios-cluster/App.app/Frameworks/PIL._imaging.framework/PIL._imaging
-          for f in ClusterFFmpeg ClusterORT ClusterTransmission Python; do lipo -archs "build/ios-cluster/App.app/Frameworks/$f.framework/$f" | grep -q arm64; done
+          for f in ClusterFFmpeg ClusterORT ClusterTransmission ClusterPieces Python; do lipo -archs "build/ios-cluster/App.app/Frameworks/$f.framework/$f" | grep -q arm64; done
           rm -rf Payload && mkdir Payload && cp -R build/ios-cluster/App.app Payload/
           zip -qr "dist/Cluster-$version-ios-unsigned.ipa" Payload
           ls -la dist

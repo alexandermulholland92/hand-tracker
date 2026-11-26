@@ -41,6 +41,9 @@ import java.util.concurrent.TimeUnit;
  *   "ffmpeg-run" { args, probe, timeout (s) }: to the end -> { code, log, output (ffprobe's) }
  *   "transmission-start" { config }: this phone's own Transmission (TransmissionNative), its settings in that folder
  *   "transmission-stop", "transmission-running" -> { running }
+ *   "pieces-start" { torrent, folder, first, end, state, port }: a part of a big torrent by pieces (PiecesNative: its
+ *               own libtorrent, as pieces.py on a Pi); "pieces-stop" { state }, "pieces-running" { state } -> { running },
+ *               "pieces-available" -> { available }
  *   "net": what this phone's network has received and sent since it started (bytes), and its Wi-Fi's speed (Mbit/s)
  * (cluster/node/phonetools.py: a job's ffmpeg on a phone.) Only the Cluster app has it (the "cluster" flavor).
  */
@@ -73,6 +76,21 @@ public final class PhoneNative {
             }
             if ("transmission-running".equals(name)) {
                 return new JSONObject().put("ok", true).put("running", TransmissionNative.load() && TransmissionNative.running()).toString();
+            }
+            // (a part of a big torrent by pieces: PiecesNative, this app's own libtorrent)
+            if ("pieces-available".equals(name)) return new JSONObject().put("ok", true).put("available", PiecesNative.load()).toString();
+            if ("pieces-start".equals(name)) {
+                if (!PiecesNative.load()) return error("This app has no libtorrent of its own.");
+                String why = PiecesNative.start(args.optString("torrent", ""), args.optString("folder", ""), args.optInt("first", 0),
+                    args.optInt("end", 0), args.optString("state", ""), args.optInt("port", 51416));
+                return why.isEmpty() ? new JSONObject().put("ok", true).toString() : error(why);
+            }
+            if ("pieces-stop".equals(name)) {
+                if (PiecesNative.load()) PiecesNative.stop(args.optString("state", ""));
+                return new JSONObject().put("ok", true).toString();
+            }
+            if ("pieces-running".equals(name)) {
+                return new JSONObject().put("ok", true).put("running", PiecesNative.load() && PiecesNative.running(args.optString("state", ""))).toString();
             }
             if ("net".equals(name)) {
                 JSONObject n = new JSONObject().put("ok", true).put("rx", TrafficStats.getTotalRxBytes()).put("tx", TrafficStats.getTotalTxBytes());

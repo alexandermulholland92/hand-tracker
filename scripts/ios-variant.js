@@ -17,6 +17,7 @@
  *       --ort <folder>                 its ONNX Runtime (scripts/build-ort-ios.sh's)
  *       --wheels <folder>              NumPy and Pillow for its Python (scripts/get-ios-wheels.sh's; with --python)
  *       --transmission <folder>        its own Transmission (scripts/build-transmission-ios.sh's)
+ *       --libtorrent <folder>          its own libtorrent, a big download's pieces (scripts/build-libtorrent-ios.sh's)
  * Writes <out folder>/App.app. The app isn't signed (nor is Hand Tracker's): Sideloadly or
  * AltStore sign it with the user's own Apple ID when they install it.
  */
@@ -83,7 +84,11 @@ if (kind === "cluster" && wheelsAt > 0) addWheels(app, path.resolve(process.argv
 // ClusterTransmission.framework for iPhones and for the simulator).
 const trAt = process.argv.indexOf("--transmission");
 if (kind === "cluster" && trAt > 0) addFramework(app, path.resolve(process.argv[trAt + 1]), "ClusterTransmission");
-if (kind === "cluster" && (pyAt > 0 || ffAt > 0 || ortAt > 0 || wheelsAt > 0 || trAt > 0)) signForSimulator(app);
+// Its own libtorrent, for a big download's pieces, with --libtorrent <folder> (scripts/build-libtorrent-ios.sh's:
+// ClusterPieces.framework for iPhones and for the simulator).
+const ltAt = process.argv.indexOf("--libtorrent");
+if (kind === "cluster" && ltAt > 0) addFramework(app, path.resolve(process.argv[ltAt + 1]), "ClusterPieces");
+if (kind === "cluster" && (pyAt > 0 || ffAt > 0 || ortAt > 0 || wheelsAt > 0 || trAt > 0 || ltAt > 0)) signForSimulator(app);
 
 function onSimulator(app) {
   return execFileSync("plutil", ["-extract", "DTPlatformName", "raw", "-o", "-", path.join(app, "Info.plist")]).toString().trim() === "iphonesimulator";

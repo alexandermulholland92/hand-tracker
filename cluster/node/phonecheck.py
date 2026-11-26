@@ -119,6 +119,69 @@ def downloads(work):
         _downloads(work, out)
     except BaseException:
         out["error"] = traceback.format_exc()[-2000:]
+    # (and its own libtorrent, where the app has it: a big download's pieces, 2026-11-25)
+    try:
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import phonesys
+
+        if phonesys.call("pieces-available").get("available"):
+            out["pieces"] = pieces(work)
+            out["ok"] = bool(out.get("ok") and out["pieces"].get("ok"))
+    except BaseException:
+        out["pieces"] = {"ok": False, "error": traceback.format_exc()[-1500:]}
+        out["ok"] = False
+    return out
+
+
+def _bencode(x):
+    if isinstance(x, int):
+        return b"i%de" % x
+    if isinstance(x, str):
+        x = x.encode("utf-8")
+    if isinstance(x, bytes):
+        return b"%d:%s" % (len(x), x)
+    if isinstance(x, list):
+        return b"l" + b"".join(_bencode(v) for v in x) + b"e"
+    return b"d" + b"".join(_bencode(k) + _bencode(x[k]) for k in sorted(x)) + b"e"
+
+
+def pieces(work):
+    """The app's own libtorrent (phonesys "pieces-start", as downloads.py starts a part by pieces): a file made here and
+    its torrent; the part given all its pieces, already in its folder, which libtorrent checks and then has (done);
+    then stopped, its progress kept (resume.dat)."""
+    import phonesys
+
+    folder, state = os.path.join(work, "pieces-data"), os.path.join(work, "pieces-state")
+    for d in (folder, state):
+        os.makedirs(d, exist_ok=True)
+    size, plen = 16384 * 12 + 1000, 16384
+    data = b"".join(hashlib.sha256(b"cluster %d" % i).digest() for i in range(size // 32 + 1))[:size]
+    with open(os.path.join(folder, "pieces-check.bin"), "wb") as f:
+        f.write(data)
+    hashes = b"".join(hashlib.sha1(data[i:i + plen]).digest() for i in range(0, size, plen))
+    n = len(hashes) // 20
+    torrent = os.path.join(work, "pieces-check.torrent")
+    with open(torrent, "wb") as f:
+        f.write(_bencode({"info": {"name": "pieces-check.bin", "piece length": plen, "length": size, "pieces": hashes}}))
+    out = {"ok": False, "pieces": n}
+    out["start"] = phonesys.call("pieces-start", {"torrent": torrent, "folder": folder, "first": 0, "end": n, "state": state, "port": 51497})
+    status = None
+    for _ in range(60):
+        try:
+            with open(os.path.join(state, "status.json"), encoding="utf-8") as f:
+                status = json.load(f)
+            if status.get("done"):
+                break
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.5)
+    out["status"] = status
+    out["running"] = bool(phonesys.call("pieces-running", {"state": state}).get("running"))
+    phonesys.call("pieces-stop", {"state": state})
+    out["stopped"] = not phonesys.call("pieces-running", {"state": state}).get("running")
+    out["resume"] = os.path.exists(os.path.join(state, "resume.dat"))
+    out["ok"] = bool(out["start"].get("ok") and status and status.get("done") and status.get("have") == n and out["running"] and out["stopped"])
     return out
 
 

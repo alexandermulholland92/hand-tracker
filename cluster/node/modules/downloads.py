@@ -793,16 +793,38 @@ def pieces_ready(node):
     now = time.time()
     if _dev["pieces"] is not None and now - _dev["piecesAt"] < 3600:
         return _dev["pieces"]
-    if PHONE:
-        ok = False  # (no libtorrent in the app)
-    elif node.simulate:
+    if node.simulate:
         ok = bool(os.environ.get("HT_CLUSTER_SIM_PIECES"))
+    elif PHONE:  # (the app's own libtorrent, 2026-11-25: PiecesNative / ClusterPieces)
+        ok = bool(phonesys().call("pieces-available").get("available"))
     elif WINDOWS:
         ok = os.path.exists(os.path.join(node.state_dir, "libtorrent-ok"))
     else:
         ok = node.run(["python3", "-c", "import libtorrent"], 30)[0] == 0
     _dev.update(pieces=ok, piecesAt=now)
     return ok
+
+
+class PhonePart:
+    """A part by pieces the app's own libtorrent runs (a phone: PhoneNative's / ClusterMember.swift's "pieces-start"),
+    seen as pieces.py's process is: poll() None while it runs, wait(), kill(); named by its state folder."""
+
+    def __init__(self, state):
+        self.state = state
+
+    def poll(self):
+        return None if phonesys().call("pieces-running", {"state": self.state}).get("running") else 0
+
+    def wait(self, timeout=None):
+        until = time.time() + (timeout or 0)
+        while self.poll() is None:
+            if timeout is not None and time.time() > until:
+                raise subprocess.TimeoutExpired("pieces", timeout)
+            time.sleep(1)
+        return 0
+
+    def kill(self):
+        phonesys().call("pieces-stop", {"state": self.state})
 
 
 def pieces_cmd(node, args):
@@ -859,13 +881,20 @@ def pieces_reconcile(node, home, wants, ok):
         if not os.path.exists(tfile):
             continue  # (its file comes at the home's next word)
         lo, hi = w["pieces"]
-        log = open(os.path.join(ctl, "log.txt"), "ab")
         taken = {_ports.get(k) for k, q in _procs.items() if k != w["id"] and q.poll() is None}
         _ports[w["id"]] = next(port for port in range(PIECES_PORT, PIECES_PORT + 64) if port not in taken)
-        _procs[w["id"]] = subprocess.Popen(pieces_cmd(node, [tfile, d, str(int(lo)), str(int(hi)), ctl, "--port", str(_ports[w["id"]])]),
-                                           stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                           creationflags=0x08000000 if os.name == "nt" else 0)
-        log.close()
+        if PHONE and not node.simulate:  # (the app's own libtorrent runs it, as pieces.py would: the same files)
+            a = phonesys().call("pieces-start", {"torrent": tfile, "folder": d, "first": int(lo), "end": int(hi), "state": ctl, "port": _ports[w["id"]]})
+            if not a.get("ok"):
+                _dev["error"] = "Its part by pieces didn't start: %s" % a.get("error")
+                continue
+            _procs[w["id"]] = PhonePart(ctl)
+        else:
+            log = open(os.path.join(ctl, "log.txt"), "ab")
+            _procs[w["id"]] = subprocess.Popen(pieces_cmd(node, [tfile, d, str(int(lo)), str(int(hi)), ctl, "--port", str(_ports[w["id"]])]),
+                                               stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                               creationflags=0x08000000 if os.name == "nt" else 0)
+            log.close()
         _dev["lastHad"] = time.time()
     keep = {w["id"] for w in wants}
     for did in [k for k in _procs if k not in keep]:
@@ -1503,8 +1532,11 @@ def act_get_libtorrent(node, args):
     downloads split by pieces."""
     if node.simulate:
         return {"ok": False, "error": "Not while simulated."}
-    if PHONE:
-        return {"ok": False, "error": "A phone downloads whole files with its app's own Transmission: libtorrent isn't for phones."}
+    if PHONE:  # (built into the Cluster app: nothing to get)
+        if phonesys().call("pieces-available").get("available"):
+            _dev["piecesAt"] = 0
+            return {"ok": True, "message": "libtorrent is built into %s's Cluster app." % node.name}
+        return {"ok": False, "error": "This phone's Cluster app has no libtorrent of its own yet: update the app."}
     if WINDOWS:
         code, out = apps_mod(node).wsl_call(node, ["install-libtorrent"], 1800)
         a = {"ok": code == 0, "error": out.splitlines()[-1] if out else str(code)}
@@ -1525,7 +1557,7 @@ ACTIONS = {
     "after": {"run": act_after, "hidden": True},
     "remove": {"run": act_remove, "hidden": True},
     "getLibtorrent": {"title": "Get libtorrent (to split a big file by pieces)", "run": act_get_libtorrent,
-                      "confirm": "Download and install libtorrent here (a few MB from Debian)?", "hidden": PHONE},  # (not on a phone)
+                      "confirm": "Download and install libtorrent here (a few MB from Debian)?", "hidden": PHONE},  # (a phone's app has it built in)
 }
 ROUTES = {"PUT /api/downloads/piece": route_piece}
 

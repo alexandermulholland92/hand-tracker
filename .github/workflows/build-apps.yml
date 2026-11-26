@@ -335,6 +335,22 @@ jobs:
           path: build/transmission-ios
           key: transmission-ios-${{ hashFiles('scripts/build-transmission-ios.sh', 'ios/transmission/**') }}
 
+      # Its own libtorrent, for a big download's pieces (scripts/build-libtorrent-ios.sh: libtorrent 2.0.16 with Boost's
+      # headers and the part-runner both phone apps share, ClusterPieces.framework), kept in the Actions cache once built.
+      - id: libtorrent-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/libtorrent-ios
+          key: libtorrent-ios-${{ hashFiles('scripts/build-libtorrent-ios.sh', 'ios/pieces/**', 'cluster/pieces-native/**') }}
+      - name: libtorrent for iOS
+        if: steps.libtorrent-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-libtorrent-ios.sh build/libtorrent-ios
+      - if: steps.libtorrent-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/libtorrent-ios
+          key: libtorrent-ios-${{ hashFiles('scripts/build-libtorrent-ios.sh', 'ios/pieces/**', 'cluster/pieces-native/**') }}
+
       # Started now: a simulator's first start takes minutes, done while the app builds.
       - name: Start the simulator
         run: |
@@ -391,7 +407,7 @@ jobs:
           for kind in mouse remote converter cluster; do
             extra=""; wait=90
             if [ "$kind" = cluster ]; then
-              extra="--python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels --transmission build/transmission-ios"; wait=300
+              extra="--python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels --transmission build/transmission-ios --libtorrent build/libtorrent-ios"; wait=300
             fi
             # shellcheck disable=SC2086
             node scripts/ios-variant.js build/ios-sim/Build/Products/Debug-iphonesimulator/App.app "$kind" "build/ios-sim-$kind" $extra
@@ -425,13 +441,13 @@ jobs:
           # Hand Mouse, Remote Recording, Recording Converter and Cluster, made from it.
           for both in mouse:HandMouse remote:RemoteRecording converter:RecordingConverter cluster:Cluster; do
             extra=""
-            [ "${both%%:*}" = cluster ] && extra="--python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels --transmission build/transmission-ios"
+            [ "${both%%:*}" = cluster ] && extra="--python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels --transmission build/transmission-ios --libtorrent build/libtorrent-ios"
             # shellcheck disable=SC2086
             node scripts/ios-variant.js "$app" "${both%%:*}" "build/ios-${both%%:*}" $extra
             rm -rf Payload && mkdir Payload && cp -R "build/ios-${both%%:*}/App.app" Payload/
             zip -qr "dist/${both##*:}-$version-ios-unsigned.ipa" Payload
           done
-          for f in ClusterFFmpeg ClusterORT ClusterTransmission Python; do lipo -archs "build/ios-cluster/App.app/Frameworks/$f.framework/$f" | grep -q arm64; done
+          for f in ClusterFFmpeg ClusterORT ClusterTransmission ClusterPieces Python; do lipo -archs "build/ios-cluster/App.app/Frameworks/$f.framework/$f" | grep -q arm64; done
           test -f build/ios-cluster/App.app/Frameworks/numpy._core._multiarray_umath.framework/numpy._core._multiarray_umath
           test -f build/ios-cluster/App.app/Frameworks/PIL._imaging.framework/PIL._imaging
           # (Cluster's under its name from before the rename too, 2026-11-25: an iPhone's Cluster app from before
@@ -503,12 +519,13 @@ jobs:
           python-version: "3.13"
 
       # The Cluster app's own Transmission (scripts/build-transmission-android.js: its library with curl and
-      # mbedTLS, built with the runner's NDK), kept from the last build while its sources and script are the same.
+      # mbedTLS, built with the runner's NDK) and libtorrent (scripts/build-libtorrent-android.js: a big download's
+      # pieces), kept from the last build while their sources and scripts are the same.
       - id: transmission-cache
         uses: actions/cache@v4
         with:
           path: android/app/src/cluster/jniLibs
-          key: transmission-android-${{ hashFiles('scripts/build-transmission-android.js', 'android/app/src/cluster/cpp/**') }}
+          key: phone-native-android-${{ hashFiles('scripts/build-transmission-android.js', 'android/app/src/cluster/cpp/**', 'scripts/build-libtorrent-android.js', 'android/app/src/cluster/cpp-pieces/**', 'cluster/pieces-native/**') }}
 
       # Built with the SDK's CMake 3.22.1, as on the PC it was tried on: the runner's own CMake (4.x) doesn't find
       # Android's threads for Transmission's libevent (Android has no pthread_cancel, and 4.x no longer falls back to
