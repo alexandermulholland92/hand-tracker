@@ -803,6 +803,7 @@ def main():
 
     check_health_units()
     check_update_trial_units()
+    check_ftp_share_units()
     shutil.rmtree(tmp, ignore_errors=True)
     print("%d/%d checks passed." % (sum(results), len(results)))
     return 0 if all(results) else 1
@@ -900,6 +901,72 @@ def check_update_trial_units():
     U.tick(d)
     check("A new build: this service goes in at once though no Pi has tried it first; Hand Tracker still waits for that",
           first == ["cluster"] and calls == ["cluster", "cluster"] and U._state["handTracker"].startswith("Waiting:"), (calls, U._state["handTracker"]))
+
+
+def check_ftp_share_units():
+    """ftp.py's switches (the user, 2026-11-25: "New buttons"): the phones see the folders they share, and the root
+    helper shares them over NFS (not one /etc/exports or Transmission's share has already); switched off, unshared."""
+    spec = importlib.util.spec_from_file_location("ftp_unit", os.path.join(NODE, "modules", "ftp.py"))
+    F = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(F)
+
+    class Node:
+        def __init__(self, on, simulate=True):
+            self.on, self.simulate, self.files, self.calls, self.events, self.answer = dict(on), simulate, {}, [], [], {"ok": True}
+
+        def setting(self, module, key):
+            return self.on.get(key, False)
+
+        def read(self, path, default=None):
+            return self.files.get(path, default)
+
+        def root(self, *words, timeout=None):
+            self.calls.append(words)
+            return self.answer
+
+        def event(self, module, text, bad=False):
+            self.events.append(text)
+
+    home = tempfile.mkdtemp()
+    saved = {k: os.environ.get(k) for k in ("HT_CLUSTER_SIM_HOME", "HT_CLUSTER_FTP_FOLDERS")}
+    try:
+        for name in ("Downloads", "Videos", "Music"):
+            os.makedirs(os.path.join(home, name))
+        os.environ["HT_CLUSTER_SIM_HOME"] = home
+        os.environ.pop("HT_CLUSTER_FTP_FOLDERS", None)
+        shown = F.shared_folders(Node({"shareDownloads": True, "shareVideos": True, "sharePictures": True}))  # (no Pictures there)
+        check("The phones' FTP link shows the folders its switches share (those there)",
+              shown == [os.path.join(home, "Downloads"), os.path.join(home, "Videos")], shown)
+        F.wanted = lambda node: [(k, "/home/alex/" + k) for k in ("Downloads", "Videos") if node.on.get("share" + k)]
+        p = Node({"shareDownloads": True, "shareVideos": True}, simulate=False)
+        p.files["/etc/exports"] = "/home/alex/Videos 100.64.0.0/10(rw)\n"
+        F.sync_shares(p)
+        first = list(p.calls)
+        p.files[F.SHARES] = '# Cluster\n"/home/alex/Downloads" 100.64.0.0/10(rw,sync)\n'
+        F.sync_shares(p)
+        check("...and the root helper shares them over NFS, not one /etc/exports has already; once done, not again",
+              first == [("share-folders", "Downloads")] and len(p.calls) == 1, p.calls)
+        p.on["shareDownloads"] = False
+        F.sync_shares(p)
+        check("...switched off: not shared any more", p.calls[-1:] == [("share-folders",)], p.calls)
+        q = Node({"shareDownloads": True}, simulate=False)
+        q.answer = {"ok": False, "error": "apt is busy"}
+        F._share.update(failed=None, at=0, error=None)
+        F.sync_shares(q)
+        F.sync_shares(q)
+        waited = len(q.calls)
+        F._share["at"] -= F.SHARE_RETRY_S + 1
+        F.sync_shares(q)
+        check("...one that didn't go in: said, and tried again after a while (not at every tick)",
+              waited == 1 and len(q.calls) == 2 and "apt is busy" in (F._share["error"] or "") and any("didn't get shared" in e for e in q.events),
+              (q.calls, F._share, q.events))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def check_health_units():

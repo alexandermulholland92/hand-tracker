@@ -595,6 +595,7 @@
     if (m.name === "rig" && a.name === "start") return st.app === "not running";
     if (m.name === "rig" && a.name === "restart") return st.app === "running" && st.answering;
     if (m.name === "downloads" && a.name === "getLibtorrent") return st.ready && !st.home && st.pieces === false;
+    if (m.name === "downloads" && a.name === "getTransmission") return st.ready === false && !st.home;
     return true;
   }
 

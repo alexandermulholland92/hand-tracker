@@ -3,7 +3,9 @@ ftp.py - Cluster module, on a Pi: an FTP link to this Pi's shared folders for th
 2026-11-23/25: phones "mount them as an ftp link built into the app"; the Cluster app on a phone opens it).
 
 What it shares: the folders this Pi shares on the network already (its NFS exports, /etc/exports: those the PC has
-as drives), each at the top by its name. Who: only over Tailscale, and only a phone of the cluster, logging in with
+as drives), and those its switches share (your whole home, Downloads, Videos, ...: the user, 2026-11-25, "New
+buttons"; the root helper shares them over NFS too, to Tailscale's addresses only, for the PC's drives), each at the
+top by its name. Who: only over Tailscale, and only a phone of the cluster, logging in with
 its name and its own key (the one it gave this Pi: ht_cluster.py's take_phone; it changes only if the phone's app is
 put in again). What a phone can do there: list, fetch, send files and make folders; not delete or rename anything.
 FTP itself is plain text, but over Tailscale it's encrypted on the way.
@@ -27,8 +29,15 @@ PORT = 2121
 PASSIVE = (2122, 2141)  # (a link's data on one of these)
 PERMS = "elrawm"  # list folders and files, fetch, append, send, make folders (no delete, rename or changing modes)
 ROOT_NAME = "ftp-root"  # (in the state folder: a link to each shared folder, which pyftpdlib serves)
+SHARE = [("shareHome", "~", "your whole home folder"), ("shareDownloads", "Downloads", "Downloads"), ("shareVideos", "Videos", "Videos"),
+         ("shareMusic", "Music", "Music"), ("sharePictures", "Pictures", "Pictures"), ("shareDocuments", "Documents", "Documents")]
+SETTINGS = [{"key": k, "title": "Share %s" % words, "default": False} for k, _, words in SHARE]
+SHARES = "/etc/exports.d/ht-cluster-shares.exports"  # (the root helper's share-folders: the switches' folders)
+OTHERS = ("/etc/exports", "/etc/exports.d/ht-cluster.exports")  # (yours, and Transmission's: not shared twice)
+SHARE_RETRY_S = 600  # (a share that didn't go in, tried again after this)
 
 _state = {"server": None, "error": None, "folders": [], "at": 0, "have": None, "haveAt": 0}
+_share = {"failed": None, "at": 0, "error": None}
 _lock = threading.Lock()
 
 
@@ -46,21 +55,69 @@ def available(node):
     return ok
 
 
-def shared_folders(node):
-    """This Pi's NFS exports (the folders it shares on the network): [path] (simulated: HT_CLUSTER_FTP_FOLDERS)."""
-    if node.simulate:
-        return [p for p in (os.environ.get("HT_CLUSTER_FTP_FOLDERS") or "").split(os.pathsep) if p and os.path.isdir(p)]
+def exported(node, path):
+    """The folders an NFS exports file shares: [path]."""
     out = []
-    text = node.read("/etc/exports", "") or ""
-    for line in text.splitlines():
+    for line in (node.read(path, "") or "").splitlines():
         line = line.split("#", 1)[0].strip()
         if not line:
             continue
         m = re.match(r'^"([^"]+)"|^(\S+)', line)
-        path = (m.group(1) or m.group(2)) if m else ""
-        if path.startswith("/") and os.path.isdir(path) and path not in out:
-            out.append(path)
+        p = (m.group(1) or m.group(2)) if m else ""
+        p = p.rstrip("/") or p
+        if p.startswith("/") and p not in out:
+            out.append(p)
     return out
+
+
+def home_dir():
+    return os.path.normpath(os.environ.get("HT_CLUSTER_SIM_HOME") or os.path.expanduser("~"))
+
+
+def wanted(node):
+    """The folders its switches share, those there: [(name for the root helper: "~" for your whole home, path)]."""
+    home, out = home_dir(), []
+    for key, name, _ in SHARE:
+        p = home if name == "~" else os.path.join(home, name)
+        if node.setting("ftp", key) and os.path.isdir(p) and not os.path.islink(p):
+            out.append((name, p))
+    return out
+
+
+def shared_folders(node):
+    """This Pi's NFS exports in /etc/exports (the folders it shares on the network: those the PC has as drives), and
+    those its switches share: [path] (simulated: HT_CLUSTER_FTP_FOLDERS for the exports)."""
+    if node.simulate:
+        out = [p for p in (os.environ.get("HT_CLUSTER_FTP_FOLDERS") or "").split(os.pathsep) if p and os.path.isdir(p)]
+    else:
+        out = [p for p in exported(node, "/etc/exports") if os.path.isdir(p)]
+    for _, p in wanted(node):
+        if p not in out:
+            out.append(p)
+    return out
+
+
+def sync_shares(node):
+    """The switches' folders shared over NFS too (the root helper, to Tailscale's addresses only), but not those
+    /etc/exports or Transmission's share has already; one that didn't go in is tried again after SHARE_RETRY_S."""
+    if node.simulate:
+        return
+    others = set(p for f in OTHERS for p in exported(node, f))
+    need = [(n, p) for n, p in wanted(node) if p not in others]
+    if sorted(p for _, p in need) == sorted(exported(node, SHARES)):
+        _share.update(failed=None, error=None)
+        return
+    key = "|".join(n for n, _ in need)
+    if _share["failed"] == key and time.time() - _share["at"] < SHARE_RETRY_S:
+        return
+    a = node.root("share-folders", *[n for n, _ in need], timeout=1800)
+    _share.update(at=time.time(), failed=None if a.get("ok") else key, error=None if a.get("ok") else a.get("error") or "it didn't go in")
+    if not a.get("ok"):
+        node.event("ftp", "The folders didn't get shared over the network: %s" % _share["error"], bad=True)
+    elif need:
+        node.event("ftp", "Shared over the network (NFS, to Tailscale's addresses only): %s." % ", ".join(p for _, p in need))
+    else:
+        node.event("ftp", "Its switches share no folders over the network now.")
 
 
 def root_dir(node, folders):
@@ -98,8 +155,6 @@ def make_server(node, root, folders):
     import ht_cluster
     import hmac
 
-    allowed = [os.path.realpath(f) for f in folders]
-
     class Phones(DummyAuthorizer):
         """A phone of the cluster, by its name and its own key (those it gave this Pi)."""
 
@@ -136,6 +191,7 @@ def make_server(node, root, folders):
             real = os.path.realpath(path)
             if real == os.path.realpath(root):
                 return True
+            allowed = [os.path.realpath(f) for f in _state["folders"]]  # (as they are now: the switches change them)
             return any(real == a or real.startswith(a.rstrip(os.sep) + os.sep) for a in allowed)
 
     class Handler(FTPHandler):
@@ -153,6 +209,7 @@ def make_server(node, root, folders):
 
 
 def tick(node):
+    sync_shares(node)  # (for the PC's drives too: whether or not the FTP server's here)
     if not available(node):
         return
     folders = shared_folders(node)
@@ -181,14 +238,17 @@ def stopping(node):
 
 def status(node):
     if not available(node):
-        return {"summary": "Its FTP server isn't here yet: Get the FTP server puts it in (Debian's, about 0.2 MB)", "ready": False}
+        return {"summary": "Its FTP server isn't here yet: Get the FTP server puts it in (Debian's, about 0.2 MB)", "ready": False,
+                "warnings": ["Sharing over the network didn't work: %s" % _share["error"]] if _share["error"] else []}
     if _state["error"]:
         return {"summary": "The phones' FTP link didn't start", "warnings": [_state["error"]], "ready": False}
     folders = _state["folders"]
+    warnings = ["Sharing over the network didn't work: %s" % _share["error"]] if _share["error"] else []
     if not folders:
-        return {"summary": "On, but this device shares no folders on the network (its NFS exports) for it to show", "ready": True, "port": PORT, "folders": []}
+        return {"summary": "On, but this device shares no folders yet (its ⚙ settings, under FTP link, can share some)",
+                "ready": True, "port": PORT, "folders": [], "warnings": warnings}
     names = [os.path.basename(f.rstrip("/")) or f for f in folders]
-    return {"summary": "Phones see %s over FTP (port %d)" % (", ".join(names), PORT), "ready": True, "port": PORT, "folders": names}
+    return {"summary": "Phones see %s over FTP (port %d)" % (", ".join(names), PORT), "ready": True, "port": PORT, "folders": names, "warnings": warnings}
 
 
 def act_get(node, args):

@@ -18,6 +18,8 @@ from this project's GitHub "Latest build" release and checks first.
   ht-cluster-root nfs-share FOLDER...    those folders of your home, and Transmission's settings, shared over NFS
                                          to Tailscale's addresses only (on the Pi that keeps Transmission's files)
   ht-cluster-root nfs-unshare            not shared any more
+  ht-cluster-root share-folders [FOLDER...]  the FTP link's switches' folders (~: your whole home, or folders in it)
+                                         shared over NFS to Tailscale's addresses only; none: not shared any more
   ht-cluster-root transmission-start local|ADDRESS FOLDER...
                                          the cluster's Transmission started here as your account; from another
                                          Pi (its Tailscale address), its shared folders mounted and put at their
@@ -501,6 +503,7 @@ TR_MNT = "/mnt/ht-cluster/transmission"
 TR_UNIT = "ht-cluster-transmission"
 TR_GROUP = "ht-capped"  # (pi/download-cap.sh's group: its connections are what the caps below count)
 TR_EXPORTS = "/etc/exports.d/ht-cluster.exports"
+SHARES = "/etc/exports.d/ht-cluster-shares.exports"  # (the FTP link's switches: modules/ftp.py)
 TR_TABLE = "inet ht_cluster_cap"
 FOLDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.+-]{0,59}$")
 TAILSCALE_V4 = re.compile(r"^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$")
@@ -576,6 +579,39 @@ def nfs_unshare():
         os.remove(TR_EXPORTS)
         run(["exportfs", "-ra"], 120)
     return {}
+
+
+def share_folders(*names):
+    """The folders the FTP link's switches share (modules/ftp.py; the user, 2026-11-25), for the phones and the PC's
+    drives: "~" (your whole home) or plain names of folders in it, over NFS to Tailscale's addresses only. With none,
+    not shared any more."""
+    _, uid, gid, home = account()
+    paths = []
+    for n in names:
+        p = home if n == "~" else os.path.join(home, folders([n])[0])
+        if p not in paths:
+            paths.append(p)
+    if not paths:
+        if os.path.exists(SHARES):
+            os.remove(SHARES)
+            run(["exportfs", "-ra"], 120)
+        return {"shared": []}
+    if not installed("nfs-kernel-server"):
+        code, out, err = apt(["install", "-y", "-q", "nfs-kernel-server"], 1800, {"DEBIAN_FRONTEND": "noninteractive"})
+        if code != 0:
+            raise Failed("The share didn't go in: %s" % apt_why(out, err))
+    opts = "rw,sync,no_subtree_check,all_squash,anonuid=%d,anongid=%d" % (uid, gid)
+    lines = ["# Cluster: the FTP link's shared folders, to Tailscale's addresses only (ht-cluster-root share-folders)"]
+    lines += ['"%s" 100.64.0.0/10(%s)' % (p, opts) for p in paths]
+    os.makedirs(os.path.dirname(SHARES), exist_ok=True)
+    with open(SHARES + ".new", "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(SHARES + ".new", SHARES)
+    run(["systemctl", "enable", "--now", "nfs-server"], 120)
+    code, out, err = run(["exportfs", "-ra"], 120)
+    if code != 0:
+        raise Failed("The share didn't take: %s" % last_lines(err or out, 1))
+    return {"shared": list(names)}
 
 
 def transmission_stop():
@@ -960,7 +996,7 @@ JOBS = {"install-hand-tracker": (install_hand_tracker, 0, "updates"), "update-cl
         "poweroff": (poweroff, 0, None),
         "renice-jobs": (renice_jobs, 0, None),
         "install-transmission": (install_transmission, 0, "updates"), "nfs-share": (nfs_share, None, "transmission"),
-        "nfs-unshare": (nfs_unshare, 0, "transmission"), "transmission-start": (transmission_start, None, "transmission"),
+        "nfs-unshare": (nfs_unshare, 0, "transmission"), "share-folders": (share_folders, None, "updates"), "transmission-start": (transmission_start, None, "transmission"),
         "transmission-stop": (transmission_stop, 0, "transmission"), "transmission-cap": (transmission_cap, 2, None),
         "own-transmission-start": (own_transmission_start, 0, "own-transmission"), "own-transmission-stop": (own_transmission_stop, 0, "own-transmission"),
         "install-libtorrent": (install_libtorrent, 0, "updates"), "install-pyftpdlib": (install_pyftpdlib, 0, "updates"),

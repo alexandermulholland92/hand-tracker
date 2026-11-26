@@ -128,13 +128,14 @@ def unit_checks(tmp):
                             "    s = importlib.util.spec_from_file_location(n, os.path.join(sys.argv[1], 'modules', n + '.py')); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m\n"
                             "d, j = load('downloads'), load('jobs')\n"
                             "print(d.ready(type('N', (), {'simulate': False})()), d.ACTIONS['getLibtorrent'].get('hidden'), j.password_set(None), "
-                            "d.room(type('N', (), {'simulate': False, 'state_dir': os.path.join(sys.argv[2], 'state')})())[1] == 4 << 30)", NODE, tmp],
+                            "d.room(type('N', (), {'simulate': False, 'state_dir': os.path.join(sys.argv[2], 'state')})())[1] == 4 << 30, "
+                            "d.ACTIONS['getTransmission'].get('hidden'))", NODE, tmp],
                            capture_output=True, text=True, timeout=60)
         check("A phone (not simulated) can download: its app's own Transmission, not a Pi's transmission-daemon",
               r.stdout.split()[:1] == ["True"], (r.stdout + r.stderr)[-300:])
         # (2026-11-25: "LE2127: [Errno 2] No such file or directory: 'sudo'": what needs a Pi's root helper isn't offered)
-        check("A phone isn't offered what needs a root helper (Get libtorrent hidden, no cluster password)",
-              r.stdout.split()[1:3] == ["True", "False"], (r.stdout + r.stderr)[-300:])
+        check("A phone isn't offered what needs a root helper (Get libtorrent and Get Transmission hidden, no cluster password)",
+              r.stdout.split()[1:3] == ["True", "False"] and r.stdout.split()[4:5] == ["True"], (r.stdout + r.stderr)[-300:])
         # (2026-11-25, the user: "Change it to 4 gb", phones only: a tenth of the OnePlus was more than its free room)
         check("A phone keeps 4 GB free beyond its downloads (not a tenth of its storage, as Pis and PCs do)",
               r.stdout.split()[3:4] == ["True"], (r.stdout + r.stderr)[-300:])

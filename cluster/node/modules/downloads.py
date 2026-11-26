@@ -1532,6 +1532,17 @@ def act_remove(node, args):
         e["name"], "; %s keeps its copy" % node.name if e["state"] in ("seeding", "checking") else "")}
 
 
+def act_get_transmission(node, args):
+    """Transmission put on this Pi (Debian's transmission-daemon, by the root helper), so it can take its share of the
+    cluster's downloads (the user, 2026-11-25: "New buttons"; a phone's app has its own, a PC's is in its Linux)."""
+    if node.simulate:
+        return {"ok": False, "error": "Not while simulated."}
+    if PHONE or WINDOWS:
+        return {"ok": False, "error": "Not on %s: %s." % (node.name, "its app has Transmission built in" if PHONE else "setup.py --linux sets up its Linux for it")}
+    a = node.root("install-transmission", timeout=1800)
+    return {"ok": True, "message": "Transmission is on %s now: it can take its share of downloads." % node.name} if a.get("ok") else {"ok": False, "error": a.get("error")}
+
+
 def act_get_libtorrent(node, args):
     """libtorrent put on this computer (a Pi: Debian's python3-libtorrent; the PC: in its Linux, with python3), for
     downloads split by pieces."""
@@ -1561,6 +1572,8 @@ ACTIONS = {
     "pause": {"run": act_pause, "hidden": True},
     "after": {"run": act_after, "hidden": True},
     "remove": {"run": act_remove, "hidden": True},
+    "getTransmission": {"title": "Get Transmission (to take part in downloads)", "run": act_get_transmission,
+                        "confirm": "Download and install Transmission here (Debian's transmission-daemon, a few MB)?", "hidden": PHONE or WINDOWS},
     "getLibtorrent": {"title": "Get libtorrent (to split a big file by pieces)", "run": act_get_libtorrent,
                       "confirm": "Download and install libtorrent here (a few MB from Debian)?", "hidden": PHONE},  # (a phone's app has it built in)
 }
@@ -1588,7 +1601,7 @@ def status(node):
         copying = next((e["name"] for e in mem["list"] if _turn["holder"] and e["id"] == _turn["holder"][0]), None)
         parts.append("Keeps the list of downloads on other computers: %d%s" % (n, " (copying %s here)" % copying if copying else ""))
     elif not out["ready"]:
-        parts.append("Can't download here yet: %s" % ("its Linux for it isn't set up (setup.py --linux)" if WINDOWS else "no Transmission here"))
+        parts.append("Can't download here yet: %s" % ("its Linux for it isn't set up (setup.py --linux)" if WINDOWS else "no Transmission here (Get Transmission puts it in)"))
     else:
         rep = (_dev["answer"] or {}).get("want") or []
         parts.append("Downloads here: %d torrent%s" % (len(rep), "" if len(rep) == 1 else "s") + ("" if ok else " (paused: %s)" % why))
