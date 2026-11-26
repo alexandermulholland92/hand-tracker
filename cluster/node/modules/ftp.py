@@ -5,7 +5,9 @@ ftp.py - Cluster module, on a Pi: an FTP link to this Pi's shared folders for th
 What it shares: the folders this Pi shares on the network already (its NFS exports, /etc/exports: those the PC has
 as drives), and those its switches share (your whole home, Downloads, Videos, ...: the user, 2026-11-25, "New
 buttons"; the root helper shares them over NFS too, to Tailscale's addresses only, for the PC's drives), each at the
-top by its name. Who: only over Tailscale, and only a phone of the cluster, logging in with
+top by its name. With your whole home shared, nothing in it whose name starts with a dot is shown or reachable (the
+user, 2026-11-25: "exclude hidden folders from the whole home share", hidden files too); over NFS, which can't leave
+folders out of a share, it goes as each folder in it that isn't hidden ("Each visible folder"). Who: only over Tailscale, and only a phone of the cluster, logging in with
 its name and its own key (the one it gave this Pi: ht_cluster.py's take_phone; it changes only if the phone's app is
 put in again). What a phone can do there: list, fetch, send files and make folders; not delete or rename anything.
 FTP itself is plain text, but over Tailscale it's encrypted on the way.
@@ -35,9 +37,11 @@ SETTINGS = [{"key": k, "title": "Share %s" % words, "default": False} for k, _, 
 SHARES = "/etc/exports.d/ht-cluster-shares.exports"  # (the root helper's share-folders: the switches' folders)
 OTHERS = ("/etc/exports", "/etc/exports.d/ht-cluster.exports")  # (yours, and Transmission's: not shared twice)
 SHARE_RETRY_S = 600  # (a share that didn't go in, tried again after this)
+FOLDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.+-]{0,59}$")  # (the root helper's own check: names it shares)
+NFS_MAX = 40  # (the root helper takes at most this many)
 
-_state = {"server": None, "error": None, "folders": [], "at": 0, "have": None, "haveAt": 0}
-_share = {"failed": None, "at": 0, "error": None}
+_state = {"server": None, "error": None, "folders": [], "at": 0, "have": None, "haveAt": 0, "home": None}
+_share = {"failed": None, "at": 0, "error": None, "capped": False}
 _lock = threading.Lock()
 
 
@@ -70,18 +74,56 @@ def exported(node, path):
     return out
 
 
-def home_dir():
-    return os.path.normpath(os.environ.get("HT_CLUSTER_SIM_HOME") or os.path.expanduser("~"))
+def home_dir(node):
+    sim = (os.environ.get("HT_CLUSTER_FTP_HOME") or os.environ.get("HT_CLUSTER_SIM_HOME")) if node.simulate else None
+    return os.path.normpath(sim or os.path.expanduser("~"))
 
 
 def wanted(node):
-    """The folders its switches share, those there: [(name for the root helper: "~" for your whole home, path)]."""
-    home, out = home_dir(), []
+    """The folders its switches share, those there: [(name: "~" for your whole home, path)]."""
+    home, out = home_dir(node), []
     for key, name, _ in SHARE:
         p = home if name == "~" else os.path.join(home, name)
         if node.setting("ftp", key) and os.path.isdir(p) and not os.path.islink(p):
             out.append((name, p))
     return out
+
+
+def nfs_wanted(node):
+    """What its switches share over NFS: [(folder name in your home, path)], your whole home as each folder in it that
+    isn't hidden (NFS can't leave folders out of a share); names the root helper can share."""
+    out = []
+    for name, p in wanted(node):
+        if name != "~":
+            subs = [name]
+        else:
+            try:
+                subs = sorted(e.name for e in os.scandir(p) if not e.name.startswith(".") and e.is_dir(follow_symlinks=False))
+            except OSError:
+                subs = []
+        for n in subs:
+            q = p if name != "~" else os.path.join(p, n)
+            if FOLDER.match(n) and q not in [x[1] for x in out]:
+                out.append((n, q))
+    return out
+
+
+def hidden_in(real, folders, home):
+    """Whether a path (resolved) is, or is in, something hidden (its name starting with a dot) in your home, with
+    your whole home among the shared folders."""
+    home = os.path.realpath(home)
+    if home not in [os.path.realpath(f) for f in folders]:
+        return False
+    base = home.rstrip(os.sep) + os.sep
+    return real.startswith(base) and any(part.startswith(".") for part in real[len(base):].split(os.sep))
+
+
+def visible(names, real, folders, home):
+    """A folder's names as the phones see them: with your whole home shared, those in it not hidden."""
+    h = os.path.realpath(home)
+    if h in [os.path.realpath(f) for f in folders] and (real == h or real.startswith(h.rstrip(os.sep) + os.sep)):
+        return [n for n in names if not n.startswith(".")]
+    return names
 
 
 def shared_folders(node):
@@ -103,7 +145,9 @@ def sync_shares(node):
     if node.simulate:
         return
     others = set(p for f in OTHERS for p in exported(node, f))
-    need = [(n, p) for n, p in wanted(node) if p not in others]
+    need = [(n, p) for n, p in nfs_wanted(node) if p not in others]
+    _share["capped"] = len(need) > NFS_MAX
+    need = need[:NFS_MAX]
     if sorted(p for _, p in need) == sorted(exported(node, SHARES)):
         _share.update(failed=None, error=None)
         return
@@ -115,7 +159,7 @@ def sync_shares(node):
     if not a.get("ok"):
         node.event("ftp", "The folders didn't get shared over the network: %s" % _share["error"], bad=True)
     elif need:
-        node.event("ftp", "Shared over the network (NFS, to Tailscale's addresses only): %s." % ", ".join(p for _, p in need))
+        node.event("ftp", "Shared over the network (NFS, to Tailscale's addresses only): %s." % ", ".join(n for n, _ in need))
     else:
         node.event("ftp", "Its switches share no folders over the network now.")
 
@@ -155,6 +199,8 @@ def make_server(node, root, folders):
     import ht_cluster
     import hmac
 
+    home = home_dir(node)
+
     class Phones(DummyAuthorizer):
         """A phone of the cluster, by its name and its own key (those it gave this Pi)."""
 
@@ -191,8 +237,16 @@ def make_server(node, root, folders):
             real = os.path.realpath(path)
             if real == os.path.realpath(root):
                 return True
-            allowed = [os.path.realpath(f) for f in _state["folders"]]  # (as they are now: the switches change them)
+            folders = list(_state["folders"])  # (as they are now: the switches change them)
+            if hidden_in(real, folders, home):
+                return False
+            allowed = [os.path.realpath(f) for f in folders]
             return any(real == a or real.startswith(a.rstrip(os.sep) + os.sep) for a in allowed)
+
+        def listdir(self, path):
+            return visible(os.listdir(path), os.path.realpath(path), list(_state["folders"]), home)
+
+        listdirinfo = listdir
 
     class Handler(FTPHandler):
         authorizer = Phones()
@@ -244,6 +298,8 @@ def status(node):
         return {"summary": "The phones' FTP link didn't start", "warnings": [_state["error"]], "ready": False}
     folders = _state["folders"]
     warnings = ["Sharing over the network didn't work: %s" % _share["error"]] if _share["error"] else []
+    if _share["capped"]:
+        warnings.append("Only the first %d folders of your home are shared over the network (NFS)" % NFS_MAX)
     if not folders:
         return {"summary": "On, but this device shares no folders yet (its ⚙ settings, under FTP link, can share some)",
                 "ready": True, "port": PORT, "folders": [], "warnings": warnings}

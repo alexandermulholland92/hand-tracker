@@ -928,15 +928,35 @@ def check_ftp_share_units():
             self.events.append(text)
 
     home = tempfile.mkdtemp()
-    saved = {k: os.environ.get(k) for k in ("HT_CLUSTER_SIM_HOME", "HT_CLUSTER_FTP_FOLDERS")}
+    saved = {k: os.environ.get(k) for k in ("HT_CLUSTER_SIM_HOME", "HT_CLUSTER_FTP_FOLDERS", "HT_CLUSTER_FTP_HOME")}
     try:
         for name in ("Downloads", "Videos", "Music"):
             os.makedirs(os.path.join(home, name))
         os.environ["HT_CLUSTER_SIM_HOME"] = home
         os.environ.pop("HT_CLUSTER_FTP_FOLDERS", None)
+        os.environ.pop("HT_CLUSTER_FTP_HOME", None)
         shown = F.shared_folders(Node({"shareDownloads": True, "shareVideos": True, "sharePictures": True}))  # (no Pictures there)
         check("The phones' FTP link shows the folders its switches share (those there)",
               shown == [os.path.join(home, "Downloads"), os.path.join(home, "Videos")], shown)
+        # your whole home without what's hidden (the user, 2026-11-25: "exclude hidden folders from the whole home share",
+        # hidden files too; over NFS "Each visible folder")
+        for name in (".ssh", "Weird (name)"):
+            os.makedirs(os.path.join(home, name))
+        with open(os.path.join(home, "notes.txt"), "w") as f:
+            f.write("notes")
+        nfs = F.nfs_wanted(Node({"shareHome": True, "shareDownloads": True}))
+        check("Your whole home over NFS: each folder in it that isn't hidden (and the root helper can name), once",
+              nfs == [(n, os.path.join(home, n)) for n in ("Downloads", "Music", "Videos")], nfs)
+        real = lambda *p: os.path.realpath(os.path.join(home, *p))
+        whole, part = [home], [os.path.join(home, "Downloads")]
+        hid = [F.hidden_in(real(*p), whole, home) for p in ((".ssh",), (".ssh", "id_ed25519"), ("Downloads", ".partial"), (".bashrc",))]
+        shown_ok = [F.hidden_in(real(*p), whole, home) for p in (("Downloads",), ("notes.txt",), ())]
+        check("...over FTP nothing hidden in it is reachable (folders or files, at any depth); the rest is",
+              hid == [True] * 4 and shown_ok == [False] * 3 and F.hidden_in(real("Downloads", ".partial"), part, home) is False, (hid, shown_ok))
+        names = [".ssh", "Downloads", ".bashrc", "notes.txt"]
+        check("...or listed; with only Downloads shared, its own hidden files stay as they were",
+              F.visible(names, real(), whole, home) == ["Downloads", "notes.txt"] and F.visible(names, real("Downloads"), part, home) == names,
+              F.visible(names, real(), whole, home))
         F.wanted = lambda node: [(k, "/home/alex/" + k) for k in ("Downloads", "Videos") if node.on.get("share" + k)]
         p = Node({"shareDownloads": True, "shareVideos": True}, simulate=False)
         p.files["/etc/exports"] = "/home/alex/Videos 100.64.0.0/10(rw)\n"

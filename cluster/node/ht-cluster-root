@@ -18,7 +18,7 @@ from this project's GitHub "Latest build" release and checks first.
   ht-cluster-root nfs-share FOLDER...    those folders of your home, and Transmission's settings, shared over NFS
                                          to Tailscale's addresses only (on the Pi that keeps Transmission's files)
   ht-cluster-root nfs-unshare            not shared any more
-  ht-cluster-root share-folders [FOLDER...]  the FTP link's switches' folders (~: your whole home, or folders in it)
+  ht-cluster-root share-folders [FOLDER...]  those folders of your home (the FTP link's switches; never a hidden one)
                                          shared over NFS to Tailscale's addresses only; none: not shared any more
   ht-cluster-root transmission-start local|ADDRESS FOLDER...
                                          the cluster's Transmission started here as your account; from another
@@ -582,15 +582,12 @@ def nfs_unshare():
 
 
 def share_folders(*names):
-    """The folders the FTP link's switches share (modules/ftp.py; the user, 2026-11-25), for the phones and the PC's
-    drives: "~" (your whole home) or plain names of folders in it, over NFS to Tailscale's addresses only. With none,
-    not shared any more."""
+    """The folders the FTP link's switches share over NFS (modules/ftp.py; the user, 2026-11-25), for the PC's drives:
+    plain names of folders in your home, to Tailscale's addresses only. Never your whole home: it goes as each folder
+    in it that isn't hidden (NFS can't leave hidden ones out of a share: "exclude hidden folders from the whole home
+    share"), and a hidden name isn't a plain one. With none, not shared any more."""
     _, uid, gid, home = account()
-    paths = []
-    for n in names:
-        p = home if n == "~" else os.path.join(home, folders([n])[0])
-        if p not in paths:
-            paths.append(p)
+    paths = [os.path.join(home, n) for n in folders(names)]
     if not paths:
         if os.path.exists(SHARES):
             os.remove(SHARES)
@@ -611,7 +608,7 @@ def share_folders(*names):
     code, out, err = run(["exportfs", "-ra"], 120)
     if code != 0:
         raise Failed("The share didn't take: %s" % last_lines(err or out, 1))
-    return {"shared": list(names)}
+    return {"shared": [os.path.basename(p) for p in paths]}
 
 
 def transmission_stop():

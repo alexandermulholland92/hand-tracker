@@ -187,6 +187,10 @@ def main():
     os.makedirs(shared)
     with open(os.path.join(shared, "film.txt"), "w", encoding="utf-8") as f:
         f.write("a film")
+    os.makedirs(os.path.join(shared, ".secret"))  # (pi's whole home, below: what's hidden in it isn't shown or reachable)
+    for p in (".hidden.txt", os.path.join(".secret", "key.txt")):
+        with open(os.path.join(shared, p), "w", encoding="utf-8") as f:
+            f.write("hidden")
     ftp_lib = os.environ.get("HT_TEST_PYFTPDLIB") or ""
     try:
         if not ftp_lib:
@@ -216,7 +220,7 @@ def main():
 
     via = lambda port: {"X-HT-Cluster-To": "127.0.0.1:%d" % port}
     try:
-        start("pi", pi, [phone, iphone], {"HT_CLUSTER_FTP_FOLDERS": shared, "HT_CLUSTER_FTP_PORT": str(ftp_port),
+        start("pi", pi, [phone, iphone], {"HT_CLUSTER_FTP_FOLDERS": shared, "HT_CLUSTER_FTP_PORT": str(ftp_port), "HT_CLUSTER_FTP_HOME": shared,
                                           **({"PYTHONPATH": ftp_lib + os.pathsep + os.environ.get("PYTHONPATH", "")} if ftp_lib else {})})
         wait_for(lambda: ask(pi, "GET", "/api/node")[0] == 200, 20)
         ask(pi, "POST", "/api/settings", {"module": "jobs", "key": "home", "value": True})
@@ -303,6 +307,15 @@ def main():
                 out["fetched"] = got.getvalue()
                 ftp.storbinary("STOR sent.txt", io.BytesIO(b"from the phone"))
                 out["sent"] = open(os.path.join(shared, "sent.txt"), "rb").read() if os.path.exists(os.path.join(shared, "sent.txt")) else None
+                out["list"] = sorted(ftp.nlst())
+                for what, fn in (("getHidden", lambda: ftp.retrbinary("RETR .hidden.txt", io.BytesIO().write)),
+                                 ("cdHidden", lambda: ftp.cwd("/shared/.secret")),
+                                 ("putHidden", lambda: ftp.storbinary("STOR .evil", io.BytesIO(b"x")))):
+                    try:
+                        fn()
+                        out[what] = "let"
+                    except ftplib.error_perm:
+                        out[what] = "refused"
                 try:
                     ftp.delete("film.txt")
                     out["deleted"] = True
@@ -328,6 +341,9 @@ def main():
             check("The FTP link to pi's shared folders: the phone logs in with its own key, sees the shared folder, fetches and sends files; no deleting, nothing outside; another key refused",
                   not out.get("error") and out.get("top") == ["shared"] and out.get("fetched") == b"a film" and out.get("sent") == b"from the phone"
                   and out.get("deleted") is False and out.get("outside") in ("/", "refused") and os.path.exists(os.path.join(shared, "film.txt")) and out.get("badKey") == "refused", out)
+            check("...with it as pi's whole home, nothing hidden in it is listed, fetched, opened or sent there",
+                  out.get("list") == ["film.txt", "sent.txt"] and [out.get(k) for k in ("getHidden", "cdHidden", "putHidden")] == ["refused"] * 3
+                  and not os.path.exists(os.path.join(shared, ".evil")), out)
         else:
             print("SKIP  the FTP link (no pyftpdlib: HT_TEST_PYFTPDLIB)")
 
