@@ -1503,6 +1503,8 @@ def act_get_libtorrent(node, args):
     downloads split by pieces."""
     if node.simulate:
         return {"ok": False, "error": "Not while simulated."}
+    if PHONE:
+        return {"ok": False, "error": "A phone downloads whole files with its app's own Transmission: libtorrent isn't for phones."}
     if WINDOWS:
         code, out = apps_mod(node).wsl_call(node, ["install-libtorrent"], 1800)
         a = {"ok": code == 0, "error": out.splitlines()[-1] if out else str(code)}
@@ -1523,7 +1525,7 @@ ACTIONS = {
     "after": {"run": act_after, "hidden": True},
     "remove": {"run": act_remove, "hidden": True},
     "getLibtorrent": {"title": "Get libtorrent (to split a big file by pieces)", "run": act_get_libtorrent,
-                      "confirm": "Download and install libtorrent here (a few MB from Debian)?"},
+                      "confirm": "Download and install libtorrent here (a few MB from Debian)?", "hidden": PHONE},  # (not on a phone)
 }
 ROUTES = {"PUT /api/downloads/piece": route_piece}
 

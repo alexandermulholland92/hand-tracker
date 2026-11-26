@@ -123,11 +123,17 @@ def unit_checks(tmp):
               error is None and boots and boots[-1].get("ended") == "restart" and hasattr(n.stopping, "is_set"), (error, boots))
         # (2026-11-25, the user's phone: "Can't download here yet: no Transmission here", and pi couldn't reach it)
         r = subprocess.run([sys.executable, "-c", "import importlib.util, os, sys; sys.path.insert(0, sys.argv[1]); "
-                            "os.environ['HT_CLUSTER_PLATFORM'] = 'android'; s = importlib.util.spec_from_file_location('dl', os.path.join(sys.argv[1], 'modules', 'downloads.py')); "
-                            "m = importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.ready(type('N', (), {'simulate': False})()))", NODE],
+                            "os.environ['HT_CLUSTER_PLATFORM'] = 'android'\n"
+                            "def load(n):\n"
+                            "    s = importlib.util.spec_from_file_location(n, os.path.join(sys.argv[1], 'modules', n + '.py')); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m\n"
+                            "d, j = load('downloads'), load('jobs')\n"
+                            "print(d.ready(type('N', (), {'simulate': False})()), d.ACTIONS['getLibtorrent'].get('hidden'), j.password_set(None))", NODE],
                            capture_output=True, text=True, timeout=60)
         check("A phone (not simulated) can download: its app's own Transmission, not a Pi's transmission-daemon",
-              r.stdout.strip() == "True", (r.stdout + r.stderr)[-300:])
+              r.stdout.split()[:1] == ["True"], (r.stdout + r.stderr)[-300:])
+        # (2026-11-25: "LE2127: [Errno 2] No such file or directory: 'sudo'": what needs a Pi's root helper isn't offered)
+        check("A phone isn't offered what needs a root helper (Get libtorrent hidden, no cluster password)",
+              r.stdout.split()[1:3] == ["True", "False"], (r.stdout + r.stderr)[-300:])
         asked = []
 
         class FakeNode:

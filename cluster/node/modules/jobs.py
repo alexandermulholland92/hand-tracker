@@ -1638,7 +1638,10 @@ def do_run(node, item, src, out_dir, work, home):
 
 
 def password_set(node):
-    """Whether a cluster password is set here (asked of its root helper, at most once a minute)."""
+    """Whether a cluster password is set here (asked of its root helper, at most once a minute). A phone: never (it
+    runs nothing as root, and has no root helper)."""
+    if PHONE:
+        return False
     if time.time() - _pw["at"] > 60:
         a = node.root("cluster-password", timeout=60, stdin=json.dumps({"check": ""}) + "\n")
         _pw.update(at=time.time(), set=bool(a.get("ok") and a.get("set")))

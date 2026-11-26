@@ -496,6 +496,8 @@ class Node:
         any (it checks them itself): its JSON answer. stdin: text for it (a password: never in its words)."""
         words = [str(w) for w in words]
         env = None
+        if self.phone and not self.simulate:  # (no sudo there: it said "[Errno 2] No such file or directory: 'sudo'", 2026-11-25)
+            return {"ok": False, "error": "%s is a phone: that's for the Pis and computers (it has no root helper)." % self.name}
         if self.simulate:
             helper = os.environ.get("HT_CLUSTER_ROOT_HELPER")
             if not helper:

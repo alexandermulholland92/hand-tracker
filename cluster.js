@@ -1413,6 +1413,7 @@
   // chosen member, or split over files, lines or numbers; as root only with the cluster password, set here on every member.
   const runHow = () => (document.querySelector('input[name="runHow"]:checked') || {}).value || "each";
   const members = () => ((data && data.nodes) || []).filter((p) => p.answering && mod(p.node, "jobs") && mod(p.node, "jobs").on);
+  const onPhone = (p) => !!(p.node && ["android", "ios"].includes(p.node.platform));
   function showRunOptions() {
     const live = members();
     $("runMembers").replaceChildren(...live.map((p) => {
@@ -1428,8 +1429,9 @@
     $("runNoScript").hidden = !pickedJobs.script;
     $("runCommand").disabled = !!pickedJobs.script;
     $("runPassword").disabled = !$("runRoot").checked;
-    const set = live.filter((p) => ((mod(p.node, "jobs") || {}).status || {}).passwordSet);
-    const unset = live.filter((p) => !set.includes(p));
+    // (phones run nothing as root: no cluster password on them)
+    const set = live.filter((p) => !onPhone(p) && ((mod(p.node, "jobs") || {}).status || {}).passwordSet);
+    const unset = live.filter((p) => !onPhone(p) && !set.includes(p));
     $("passwordState").textContent = !set.length ? "No cluster password set yet." : unset.length
       ? `Set on ${set.map((p) => p.name).join(", ")}; not on ${unset.map((p) => p.name).join(", ")}.` : `Set on every member (${set.length}).`;
   }
@@ -1454,7 +1456,7 @@
     if (neu !== $("pwAgain").value) return ($("pwSaid").textContent = "The two new ones aren't the same.");
     const old = $("pwOld").value;
     $("pwSaid").textContent = "Setting it…";
-    const said = await Promise.all(members().map((p) => api.action({ target: p.target, module: "jobs", action: "setPassword", args: { new: neu, old } })
+    const said = await Promise.all(members().filter((p) => !onPhone(p)).map((p) => api.action({ target: p.target, module: "jobs", action: "setPassword", args: { new: neu, old } })
       .then((a) => `${p.name}: ${a.ok ? "set" : a.error}`).catch((e) => `${p.name}: ${e.message}`)));
     for (const id of ["pwOld", "pwNew", "pwAgain"]) $(id).value = "";
     $("pwSaid").textContent = said.join(" · ");
