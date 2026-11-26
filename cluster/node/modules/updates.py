@@ -4,17 +4,18 @@ for this Pi, and its own "now" button:
   Hand Tracker - the newest build on GitHub's "Latest build" release, as soon as it's out, once
     Hand Tracker isn't recording or saving a take; then Hand Tracker is restarted (if it was
     running) and Sentry turned back on (if it was on).
-  This service - the same build's cluster/node files; it then restarts itself with them.
+  This service - the same build's cluster/node files, as soon as the build is out, on every Pi (it doesn't wait for
+    a first Pi's try: the user, 2026-11-25, "Service never waits"); it then restarts itself with them.
   Raspberry Pi OS - apt's updates (none removing a package), looked for every 6 hours and put in
     once Hand Tracker isn't recording. If they need the Pi restarted, it says so (Restart Pi);
     it isn't restarted by itself.
 ht-cluster-root does the installing, and downloads and checks everything itself.
 
-A new build goes to one Pi first (the user, 2026-11-22, from a capture rig fleet's own rollouts: "an idle Pi, no
-cameras"): an idle Pi (not recording, not running Transmission; the first by name, so every Pi picks the same one)
-puts in the build's service and Hand Tracker by itself, then checks it without opening a camera: this service on
-that build with all its modules started, Hand Tracker on it and answering (if it was running). The others put it in
-by themselves 30 minutes after that check passed; not at all if it failed (each Pi's button still updates it). With
+A new build's Hand Tracker goes to one Pi first (the user, 2026-11-22, from a capture rig fleet's own rollouts: "an
+idle Pi, no cameras"): an idle Pi (not recording, not running Transmission; the first by name, so every Pi picks the
+same one) puts it in by itself, then checks the build without opening a camera: this service on that build with all
+its modules started, Hand Tracker on it and answering (if it was running). The others put Hand Tracker in by
+themselves 30 minutes after that check passed; not at all if it failed (each Pi's button still updates it). With
 no idle Pi, a Pi not recording goes ahead once the build is 2 hours old (a lone Pi too). Each Pi's status says which
 build it tried first and how that went, and how many commits behind its service and Hand Tracker are. While
 Hand Tracker is being put in, it won't start a recording (/tmp/hand-tracker-updating); an update waits while it
@@ -384,14 +385,14 @@ def tick(node):
                 check_os(node)
             rel = mem.get("release") or {}
             _state["idle"] = idle(node)
-            go, why = plan(node, rel) if needs(node, rel) else (True, None)
-            _state["plan"] = why
+            # (this service: each build at once, on every Pi (the user, 2026-11-25: "Service never waits"); only
+            # Hand Tracker waits for a first Pi's try)
             if node.setting("updates", "cluster") or "cluster" in asked:
                 _doing["what"] = "cluster"
-                if "cluster" not in asked and not go and cluster_outdated(node, rel):
-                    _state["cluster"] = waiting(node, "cluster", why)
-                elif update_cluster(node, asked.get("cluster")):
+                if update_cluster(node, asked.get("cluster")):
                     return
+            go, why = plan(node, rel) if ht_needed(node, rel) else (True, None)
+            _state["plan"] = why
             if WINDOWS:
                 _state.update(handTracker=NOT_HERE_HT, os=NOT_HERE_OS)
             elif node.setting("updates", "handTracker") or "handTracker" in asked:
@@ -425,10 +426,14 @@ def ht_outdated(node, rel):
     return bool(inst and rel.get("deb") and hand_tracker_outdated(inst, rel))
 
 
+def ht_needed(node, rel):
+    """Whether Hand Tracker here has the latest build to put in by itself (the part that waits for a first Pi's try)."""
+    return bool(rel.get("commit")) and not WINDOWS and bool(node.setting("updates", "handTracker")) and ht_outdated(node, rel)
+
+
 def needs(node, rel):
     """Whether this Pi's own automatic updates have something to put in from the latest build."""
-    return bool(rel.get("commit")) and ((node.setting("updates", "cluster") and cluster_outdated(node, rel)) or
-                                        (not WINDOWS and node.setting("updates", "handTracker") and ht_outdated(node, rel)))
+    return bool(rel.get("commit")) and ((node.setting("updates", "cluster") and cluster_outdated(node, rel)) or ht_needed(node, rel))
 
 
 def idle(node):
@@ -480,7 +485,7 @@ def plan(node, rel):
             return False, "%s tries it first" % first[0]
         mem["trial"] = {"commit": c, "state": "updating", "at": now}
         mem.save()
-        node.event("updates", "Trying build %s here first: the others put it in 30 minutes after its check passes." % short(c))
+        node.event("updates", "Trying build %s's Hand Tracker here first: the others put it in 30 minutes after its check passes." % short(c))
         return True, None
     if recording(node):
         return False, "recording"
@@ -510,9 +515,9 @@ def trial_progress(node, rel):
     t.update(state="passed" if ok else "failed", at=time.time(), error=None if ok else why)
     mem.save()
     if ok:
-        node.event("updates", "Build %s checked out here (no camera opened): the others put it in by themselves 30 minutes from now." % short(rel["commit"]))
+        node.event("updates", "Build %s checked out here (no camera opened): the others put its Hand Tracker in by themselves 30 minutes from now." % short(rel["commit"]))
     else:
-        node.event("updates", "Build %s didn't pass its check here: %s. The others won't put it in by themselves." % (short(rel["commit"]), why), bad=True)
+        node.event("updates", "Build %s didn't pass its check here: %s. The others won't put its Hand Tracker in by themselves." % (short(rel["commit"]), why), bad=True)
 
 
 def self_check(node, rel):

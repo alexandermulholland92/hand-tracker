@@ -883,6 +883,24 @@ def check_update_trial_units():
     check("The first Pi checks the build once it's in: passed; a module of the service that didn't start fails it",
           passed["state"] == "passed" and a.mem["trial"]["state"] == "failed" and "jobs" in a.mem["trial"]["error"], (passed, a.mem["trial"]))
 
+    # This service doesn't wait for a first Pi's try (the user, 2026-11-25: "Service never waits"); Hand Tracker does
+    calls = []
+    U.WINDOWS = False
+    U.verify = U.check_release = U.note_behind = U.check_os = U.idle = lambda node: False
+    U.update_os = lambda node, asked=None: None
+    U.ht_outdated = lambda node, r: True
+    U.plan = lambda node, r: (False, "no idle device has tried it first yet")
+    U.update_cluster = lambda node, asked=None: calls.append("cluster") or node.version != NEW
+    U.update_hand_tracker = lambda node, asked=None: calls.append("handTracker")
+    d = Node("delta")
+    d.mem.update(release=rel, checkedAt=time.time(), os={"checkedAt": time.time()})
+    U.tick(d)
+    first = list(calls)
+    d.version = NEW
+    U.tick(d)
+    check("A new build: this service goes in at once though no Pi has tried it first; Hand Tracker still waits for that",
+          first == ["cluster"] and calls == ["cluster", "cluster"] and U._state["handTracker"].startswith("Waiting:"), (calls, U._state["handTracker"]))
+
 
 def check_health_units():
     """health.py on its own (the user, 2026-11-22): its starts and why, and a Pi on battery at 10% saving its
