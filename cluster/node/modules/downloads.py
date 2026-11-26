@@ -75,7 +75,7 @@ MAX_PIECE = 8 << 20
 PIECE_TRIES = 6
 PIECE_WAITS = (5, 10, 20, 30, 30)
 RESERVE_MIN = 4 << 30  # room left on a computer's disk beyond a download: 4 GB, or a tenth of the disk
-RESERVE_SHARE = 0.10
+RESERVE_SHARE = 0.10  # (not on a phone: 4 GB there, the user's choice, 2026-11-25, as a tenth of a phone was most of its free room)
 UNKNOWN_SIZE = 8 << 30  # (a magnet link's size before its file list comes: room for this much asked for)
 MAX_SPLIT = 4
 HOT_C = 80
@@ -362,7 +362,7 @@ def room(node, path=None):
         u = shutil.disk_usage(p or "/")
     except OSError:
         return 0, RESERVE_MIN
-    return u.free, max(RESERVE_MIN, int(u.total * RESERVE_SHARE))
+    return u.free, RESERVE_MIN if PHONE else max(RESERVE_MIN, int(u.total * RESERVE_SHARE))
 
 
 def net_counters(node):
