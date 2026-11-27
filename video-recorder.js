@@ -11,6 +11,7 @@
  *   file, so the clip can later be re-timed to the source frame rate.
  *   onFrame({ index, t, place }): told of each frame recorded, and where the first source went
  *   (app.js keeps the camera view's labels as a layer of their own so).
+ *   sound: { track, stop() } (Theremin mode's, theremin.js): recorded as the clip's sound, and stopped with it.
  *
  * The browser records WebM (VP9/VP8) where possible; the desktop app converts
  * that master clip to other formats with ffmpeg (see electron/exporter.js).
@@ -34,11 +35,22 @@
     return typeof global.MediaRecorder !== "undefined" && !!global.HTMLCanvasElement.prototype.captureStream;
   }
 
+  // With sound: the same, each with Opus (WebM) or AAC (MP4) for it.
+  const MIME_SOUND = [
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+    "video/mp4;codecs=avc1,mp4a.40.2",
+    "video/mp4;codecs=avc1,opus",
+    "video/mp4",
+  ];
+
   // preferMp4: try H.264/MP4 first (phones, where there is no ffmpeg to convert afterwards).
-  function pickMimeType(preferMp4) {
+  function pickMimeType(preferMp4, sound) {
+    const list = sound ? MIME_SOUND : MIME_CANDIDATES;
     const order = preferMp4
-      ? [...MIME_CANDIDATES.filter((t) => t.includes("mp4")), ...MIME_CANDIDATES.filter((t) => !t.includes("mp4"))]
-      : MIME_CANDIDATES;
+      ? [...list.filter((t) => t.includes("mp4")), ...list.filter((t) => !t.includes("mp4"))]
+      : list;
     return order.find((t) => global.MediaRecorder.isTypeSupported(t)) || "";
   }
 
@@ -75,7 +87,16 @@
 
   // onFrame({ index, t, place }): each frame recorded (index from 0; t, seconds since it started; place, where the
   // first source went: { s, dx, dy }), for the camera view's labels kept as a layer of their own (app.js).
-  function start({ sources, fps = 30, preferMp4 = false, everyFrame = false, onFrame = null }) {
+  function start(options) {
+    try {
+      begin(options);
+    } catch (err) {
+      if (options && options.sound) options.sound.stop(); // (not recorded after all)
+      throw err;
+    }
+  }
+
+  function begin({ sources, fps = 30, preferMp4 = false, everyFrame = false, onFrame = null, sound = null }) {
     if (rec) throw new Error("A recording is already in progress.");
     if (!isSupported()) throw new Error("Video recording isn't supported in this browser.");
     const usable = (sources || []).filter((s) => s && s.width > 0 && s.height > 0);
@@ -89,7 +110,8 @@
 
     const stream = canvas.captureStream(0); // 0 = only capture when frame() asks
     const track = stream.getVideoTracks()[0];
-    const mimeType = pickMimeType(preferMp4);
+    if (sound && sound.track) stream.addTrack(sound.track);
+    const mimeType = pickMimeType(preferMp4, !!(sound && sound.track));
     const videoBitsPerSecond = Math.round(
       Math.min(16e6, Math.max(2e6, layout.width * layout.height * fps * BITS_PER_PIXEL))
     );
@@ -107,6 +129,7 @@
       everyFrame,
       frames: 0,
       onFrame: typeof onFrame === "function" ? onFrame : null,
+      sound: sound && sound.track ? sound : null,
     };
     recorder.start(1000); // flush data every second rather than holding it all until stop
     frame();
@@ -147,6 +170,7 @@
     return new Promise((resolve, reject) => {
       r.recorder.onstop = () => {
         r.track.stop();
+        if (r.sound) r.sound.stop();
         const type = r.mimeType.split(";")[0];
         resolve({
           blob: new Blob(r.chunks, { type }),
@@ -157,6 +181,7 @@
           height: r.layout.height,
           fps: r.fps,
           frames: r.frames,
+          sound: !!r.sound,
           startedAt: performance.timeOrigin + r.startedAt, // (ms since 1970: an MCAP puts its frames on the hands' clock)
         });
       };

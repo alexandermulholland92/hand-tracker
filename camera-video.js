@@ -23,6 +23,9 @@
  * it, and closed when the last one stops. A clip whose sound can't be had (no microphone, or
  * it's not allowed) is recorded without it, and says so (clip.sound false). A clip is at least
  * a little over a second long: the browser's recorder gives nothing for one stopped sooner.
+ *
+ * With Theremin mode on as a clip starts (theremin.js), its sound is in the clip too: mixed with the
+ * microphone's, or as the clip's only sound when it was started without the microphone.
  */
 
 (function (global) {
@@ -119,22 +122,26 @@
     if (!canvas || !canvas.width || !canvas.height) throw new Error("There's no picture to record yet.");
     const stream = canvas.captureStream(fps); // (up to fps: a picture drawn less often is recorded less often)
     const startedAt = performance.now();
-    let recorder = null, chunks = [], sound = false, ownTrack = null, stopped = false, mimeType = "", bitsPerSecond = 0;
+    let recorder = null, chunks = [], sound = false, ownTrack = null, mix = null, stopped = false, mimeType = "", bitsPerSecond = 0;
     // (written to a file as it comes: fileId once opened; writing, each piece after the one before; size, bytes)
     let fileId = null, opening = null, writing = Promise.resolve(), size = 0, fileError = null;
     const ready = (async () => {
       if (audio) {
         ownTrack = await micTrack();
-        if (ownTrack && !stopped) {
-          stream.addTrack(ownTrack);
-          sound = true;
-        } else if (ownTrack) {
+        if (ownTrack && stopped) {
           ownTrack.stop();
           closeMic();
           ownTrack = null;
         }
       }
       if (stopped) return;
+      // (Theremin mode's sound, with the microphone's if there is any.)
+      mix = global.Theremin && global.Theremin.playing() ? global.Theremin.recordingTrack(ownTrack) : null;
+      const soundTrack = mix ? mix.track : ownTrack;
+      if (soundTrack) {
+        stream.addTrack(soundTrack);
+        sound = true;
+      }
       mimeType = pickMime(sound, preferMp4);
       bitsPerSecond = videoBits(canvas.width, canvas.height, fps, quality);
       recorder = new MediaRecorder(stream, {
@@ -181,6 +188,7 @@
         }
         await done;
         for (const t of stream.getVideoTracks()) t.stop();
+        if (mix) mix.stop();
         if (ownTrack) {
           ownTrack.stop();
           closeMic();

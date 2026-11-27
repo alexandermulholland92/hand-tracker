@@ -123,6 +123,7 @@ const STEPS = [
   ["photos", [], checkRealHandPhotos],
   ["own-gestures", [], checkOwnGestures],
   ["readable-text", [], checkReadableText],
+  ["theremin", [], ({ js, win }) => checkTheremin(js, win)],
   ["tag-size", [], ({ js }) => checkTagSize(js)],
   ["views", [], checkViewsAndKeys],
   ["rotate", [], checkRotate],
@@ -671,6 +672,161 @@ async function checkRealHandPhotos({ js }) {
 
   // Readable text: OCR also reads hand shapes as letters; those must never become flipped
   // boxes (they stayed on screen after the hand moved away). Same readings, three scans.
+// Theremin mode (theremin.js, 2026-11-27): its switch and options, each way to play read from hands tracked
+// through the app's own pipeline, snapping to a scale, its sound (playing with a hand, silent without), its
+// sound in the Record card's video and in a camera clip (remote recording's and Sentry's), and off again.
+async function checkTheremin(js, win) {
+  await js("if (!window.__realSend) window.__realSend = Hands.prototype.send; Hands.prototype.send = async function () {}; true");
+  // (What it looks like, in the output folder: theremin-<way>.png.)
+  const shoot = async (name) => {
+    if (!win) return;
+    await sleep(150);
+    fs.writeFileSync(path.join(outDir, `theremin-${name}.png`), (await win.webContents.capturePage()).toPNG());
+  };
+  // Hands held where asked for ms (as MediaPipe reports them: its labels the other way round), then the theremin's state.
+  await js(`window.__thereminFeed = async (list, ms = 600) => {
+    const sleep = (t) => new Promise((r) => setTimeout(r, t));
+    const T = [[0,0],[-.04,-.03],[-.08,-.07],[-.11,-.10],[-.13,-.13],[-.035,-.12],[-.04,-.17],[-.043,-.20],[-.045,-.23],[0,-.125],[0,-.18],[0,-.215],[0,-.245],[.03,-.115],[.035,-.165],[.038,-.195],[.04,-.22],[.055,-.10],[.065,-.135],[.07,-.16],[.075,-.18]];
+    const make = ({ side, cx, cy, s = 1, pinch = false }) => {
+      const lm = T.map(([x, y]) => ({ x: cx + (side === "Left" ? -x : x) * s, y: cy + (y + 0.08) * s, z: 0 }));
+      if (pinch) lm[4] = { ...lm[8] };
+      return lm;
+    };
+    const end = performance.now() + ms;
+    while (performance.now() < end) {
+      const results = {
+        image: document.getElementById("video"),
+        multiHandLandmarks: list.map(make),
+        multiHandedness: list.map((h) => ({ label: h.side === "Right" ? "Left" : "Right", score: 0.97 })),
+      };
+      if (list.some((h) => h.z)) results.extras = list.map((h) => (h.z ? { xyz: [0, 0, h.z] } : {}));
+      HandTracker._processResults(results);
+      await sleep(33);
+    }
+    const last = Theremin._test.last();
+    return last ? { ...last, level: Theremin._test.level(), readout: document.getElementById("thereminNote").textContent } : null;
+  }; true`);
+  const choose = (id, value) => js(`(() => { const el = document.getElementById(${JSON.stringify(id)}); if (el.type === "checkbox") el.checked = ${JSON.stringify(value)}; else el.value = ${JSON.stringify(String(value))}; el.dispatchEvent(new Event(el.type === "range" ? "input" : "change")); return Theremin._test.settings(); })()`);
+  const feed = (list, ms) => js(`window.__thereminFeed(${JSON.stringify(list)}, ${ms || 600})`);
+
+  const before = await js(`({ text: document.getElementById("thereminToggle").textContent, bar: document.getElementById("thereminOptions").hidden, playing: Theremin.playing() })`);
+  check("Theremin mode: its switch starts off, its options hidden", before.text === "Theremin: OFF" && before.bar && !before.playing, JSON.stringify(before));
+  await js(`document.getElementById("thereminToggle").click(); true`);
+  await sleep(500);
+  const on = await js(`({ text: document.getElementById("thereminToggle").textContent, bar: document.getElementById("thereminOptions").hidden, layer: document.getElementById("thereminLayer").hidden, playing: Theremin.playing(), state: Theremin._test.state(), error: Theremin._test.error() })`);
+  check("Theremin mode: on with its switch, its sound running, its options and guides shown", on.playing && on.state === "running" && !on.bar && !on.layer && on.text === "Theremin: ON", JSON.stringify(on));
+
+  // Like a real theremin: the right hand nearer the pitch line (the player's right: the picture's x 0) plays higher;
+  // the left hand lower, quieter; no left hand, full volume.
+  await choose("thereminStyle", "theremin");
+  const near = await feed([{ side: "Right", cx: 0.16, cy: 0.5 }]);
+  const far = await feed([{ side: "Right", cx: 0.55, cy: 0.5 }]);
+  check("Theremin, like a real one: the right hand nearer the pitch line plays a higher note, at full volume with no left hand",
+    near && far && near.hz > far.hz * 1.3 && near.volume === 1 && near.level > 0.02, JSON.stringify({ near: near && [near.hz, near.volume, near.level], far: far && far.hz }));
+  const quiet = await feed([{ side: "Right", cx: 0.3, cy: 0.5 }, { side: "Left", cx: 0.75, cy: 0.84 }]);
+  const loud = await feed([{ side: "Right", cx: 0.3, cy: 0.5 }, { side: "Left", cx: 0.75, cy: 0.3 }]);
+  await shoot("theremin");
+  check("...the left hand lower plays quieter (its sound too)", quiet && loud && quiet.volume < 0.2 && loud.volume > 0.9 && quiet.level < loud.level * 0.5,
+    JSON.stringify({ quiet: quiet && [quiet.volume, quiet.level], loud: loud && [loud.volume, loud.level] }));
+  const none = await feed([], 700);
+  check("...with no hands it's silent", none && none.pitch === null && none.level < 0.004 && /right hand/i.test(none.readout), JSON.stringify(none && { level: none.level, readout: none.readout }));
+
+  // Both hands up and down.
+  await choose("thereminStyle", "updown");
+  const up = await feed([{ side: "Right", cx: 0.3, cy: 0.2 }, { side: "Left", cx: 0.7, cy: 0.3 }]);
+  const down = await feed([{ side: "Right", cx: 0.3, cy: 0.75 }, { side: "Left", cx: 0.7, cy: 0.8 }]);
+  await shoot("updown");
+  check("Theremin, both hands up and down: the right hand higher plays higher, the left hand higher louder",
+    up && down && up.hz > down.hz * 1.5 && up.volume > down.volume + 0.5, JSON.stringify({ up: up && [up.hz, up.volume], down: down && [down.hz, down.volume] }));
+  // Distance from the camera: by a depth camera's measure, and by the hand's size without one.
+  await choose("thereminStyle", "distance");
+  const dNear = await feed([{ side: "Right", cx: 0.4, cy: 0.5, z: 350 }]);
+  const dFar = await feed([{ side: "Right", cx: 0.4, cy: 0.5, z: 1200 }]);
+  const big = await feed([{ side: "Right", cx: 0.4, cy: 0.45, s: 1.5 }]);
+  const small = await feed([{ side: "Right", cx: 0.4, cy: 0.45, s: 0.6 }]);
+  await shoot("distance");
+  check("Theremin, distance from the camera: nearer plays higher, by a depth camera's millimetres and by the hand's size",
+    dNear && dFar && big && small && dNear.depth === 350 && dNear.hz > dFar.hz * 1.3 && big.hz > small.hz * 1.3 && !big.depth,
+    JSON.stringify({ depth: dNear && dFar && [dNear.hz, dFar.hz], size: big && small && [big.hz, small.hz] }));
+  // One hand: its height the note, its pinch the volume.
+  await choose("thereminStyle", "onehand");
+  const open = await feed([{ side: "Right", cx: 0.4, cy: 0.4 }]);
+  const shut = await feed([{ side: "Right", cx: 0.4, cy: 0.4, pinch: true }]);
+  await feed([{ side: "Right", cx: 0.4, cy: 0.4 }], 400);
+  await shoot("onehand");
+  check("Theremin, one hand: thumb and index finger apart play, pinched shut is silent", open && shut && open.volume > 0.5 && shut.volume === 0 && shut.level < open.level * 0.2,
+    JSON.stringify({ open: open && [open.volume, open.level], shut: shut && [shut.volume, shut.level] }));
+
+  // Snap to notes: A minor pentatonic lands on its notes, said in the readout.
+  await choose("thereminStyle", "updown");
+  await choose("thereminSnap", true);
+  await choose("thereminKey", 9);
+  const set = await choose("thereminScale", "minorPentatonic");
+  const keyShown = await js(`!document.getElementById("thereminKeyLabel").hidden && !document.getElementById("thereminScaleLabel").hidden`);
+  const notes = [];
+  for (const cy of [0.3, 0.45, 0.6]) notes.push(await feed([{ side: "Right", cx: 0.3, cy }], 450));
+  await shoot("snap");
+  const inScale = notes.every((n) => n && Number.isInteger(n.note) && [9, 0, 2, 4, 7].includes(((n.note % 12) + 12) % 12) && Math.abs(n.hz - 440 * Math.pow(2, (n.note - 69) / 12)) < 0.01);
+  check("Theremin, snap to notes: A minor pentatonic's notes only, the key and scale shown, the note in its readout",
+    set.snap && keyShown && inScale && notes.every((n) => n && n.readout.startsWith("♪ " + Theremin_nameOf(n.note))), JSON.stringify(notes.map((n) => n && [n.note, Math.round(n.hz), n.readout])));
+  await choose("thereminSnap", false);
+  const remembered = await js(`(JSON.parse(localStorage.getItem("hand-tracker:prefs")) || {}).theremin || null`);
+  check("Theremin: its choices are remembered (not its switch)", remembered && remembered.style === "updown" && remembered.key === 9 && remembered.scale === "minorPentatonic" && remembered.snap === false && !("on" in remembered),
+    JSON.stringify(remembered));
+
+  // Its sound in recordings: the Record card's video and a camera clip without the microphone, each with a hand playing.
+  const recorded = await js(`(async () => {
+    const rms = async (blob) => {
+      try {
+        const a = await new OfflineAudioContext(1, 1, 48000).decodeAudioData(await blob.arrayBuffer());
+        const d = a.getChannelData(0);
+        let s = 0;
+        for (let i = 0; i < d.length; i++) s += d[i] * d[i];
+        return { rms: Math.sqrt(s / Math.max(1, d.length)), seconds: a.duration };
+      } catch (err) {
+        return { error: String(err) };
+      }
+    };
+    const out = {};
+    const sound = Theremin.recordingTrack(null);
+    VideoRecorder.start({ sources: [document.getElementById("stage")], fps: 30, sound });
+    out.mixesDuring = Theremin._test.mixes();
+    await window.__thereminFeed([{ side: "Right", cx: 0.3, cy: 0.4 }], 1800);
+    const clip = await VideoRecorder.stop();
+    out.card = { sound: clip.sound, mime: clip.mimeType, size: clip.blob.size, ...(await rms(clip.blob)) };
+    const rec = CameraVideo.start({ canvas: document.getElementById("stage"), fps: 15, audio: false });
+    await window.__thereminFeed([{ side: "Right", cx: 0.3, cy: 0.4 }], 1800);
+    const c = await rec.stop();
+    out.camera = { sound: c.sound, mime: c.mimeType, ...(await rms(c.blob)) };
+    out.mixesAfter = Theremin._test.mixes();
+    return out;
+  })()`);
+  check("Theremin's sound in the Record card's video (the hand playing heard in it)",
+    recorded.card && recorded.card.sound && recorded.mixesDuring === 1 && recorded.card.rms > 0.01 && recorded.card.seconds > 1, JSON.stringify(recorded.card));
+  check("...and in a camera clip started without the microphone (remote recording's, Sentry's), its mix let go after",
+    recorded.camera && recorded.camera.sound && recorded.camera.rms > 0.01 && recorded.mixesAfter === 0, JSON.stringify({ camera: recorded.camera, mixesAfter: recorded.mixesAfter }));
+
+  // Off: silent, its options and guides hidden, a camera clip without the microphone silent as before, its sound
+  // stopped a moment later.
+  await js(`document.getElementById("thereminToggle").click(); true`);
+  const off = await js(`(async () => {
+    await window.__thereminFeed([{ side: "Right", cx: 0.3, cy: 0.4 }], 300);
+    const rec = CameraVideo.start({ canvas: document.getElementById("stage"), fps: 15, audio: false });
+    await new Promise((r) => setTimeout(r, 1400));
+    const c = await rec.stop();
+    await new Promise((r) => setTimeout(r, 600));
+    return { playing: Theremin.playing(), bar: document.getElementById("thereminOptions").hidden, layer: document.getElementById("thereminLayer").hidden,
+      text: document.getElementById("thereminToggle").textContent, clipSound: c.sound, state: Theremin._test.state(), level: Theremin._test.level() };
+  })()`);
+  check("Theremin off: silent, its options and guides hidden, clips as before (no sound without the microphone), its sound stopped",
+    !off.playing && off.bar && off.layer && off.text === "Theremin: OFF" && off.clipSound === false && off.state === "suspended", JSON.stringify(off));
+  await js("if (window.__realSend) Hands.prototype.send = window.__realSend; true");
+}
+// (theremin.js's note names, for the readout check.)
+function Theremin_nameOf(m) {
+  return `${["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"][((Math.round(m) % 12) + 12) % 12]}${Math.floor(Math.round(m) / 12) - 1}`;
+}
+
 async function checkReadableText({ js }) {
   const ocr = await js(`(() => {
     const word = (text, x0, y0, x1, y1) => ({ text, confidence: 90, bbox: { x0, y0, x1, y1 } });

@@ -84,6 +84,9 @@
     font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0.03em;
   }
   #recBadge { position: absolute; top: 12px; left: 12px; }
+  #thereminLayer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #thereminLayer[hidden] { display: none; }
+  .theremin-note { font-variant-numeric: tabular-nums; min-width: 13em; }
   .rec-clock { align-self: center; }
   #recBadge::before, .rec-clock::before {
     content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
@@ -483,6 +486,45 @@
     <div class="toolbar">
       <button id="overlayToggle" class="active" aria-pressed="true" title="Show the skeleton and labels (O)">Overlay: ON<kbd>O</kbd></button>
       <button id="mirrorToggle" class="active" aria-pressed="true" title="Mirror the view like a selfie camera. On by default for front cameras and webcams, off for rear cameras and video files; your choice is remembered for each camera. Times in the camera picture (a clock) are always kept the right way round; the Readable text button does the same for all text.">Mirror: ON</button>
+      <button id="thereminToggle" aria-pressed="false" title="Play a theremin with your hands: where they are sets the note and the volume (Play with: how). Its sound plays here and goes into recordings started while it's on. It starts off each time; your choices are remembered.">Theremin: OFF</button>
+    </div>
+    <div class="toolbar options-bar" id="thereminOptions" hidden>
+      <span class="bar-label">Theremin</span>
+      <label title="Like a real theremin: your right hand nearer the pitch line on your right-hand side of the picture, a higher note; your left hand lower, quieter (as over a real one's volume loop). Both hands up and down: right hand higher, a higher note; left hand higher, louder. Distance from the camera: right hand nearer the camera, a higher note (measured by an OAK-D or Kinect; told by the hand's size with other cameras); left hand lower, quieter. One hand: its height sets the note; thumb and index finger apart, louder; pinched shut, silent. With no hand for the volume, it plays at full volume.">Play with
+        <select id="thereminStyle">
+          <option value="theremin">Like a real theremin</option>
+          <option value="updown">Both hands up and down</option>
+          <option value="distance">Distance from the camera</option>
+          <option value="onehand">One hand</option>
+        </select>
+      </label>
+      <label title="Land on the notes of a key's scale, to play in tune more easily. Off, the note slides freely, as on a real theremin."><input type="checkbox" id="thereminSnap" /> Snap to notes</label>
+      <label id="thereminKeyLabel" hidden>Key
+        <select id="thereminKey">
+          <option value="0">C</option><option value="1">C♯</option><option value="2">D</option><option value="3">D♯</option>
+          <option value="4">E</option><option value="5">F</option><option value="6">F♯</option><option value="7">G</option>
+          <option value="8">G♯</option><option value="9">A</option><option value="10">A♯</option><option value="11">B</option>
+        </select>
+      </label>
+      <label id="thereminScaleLabel" hidden>Scale
+        <select id="thereminScale">
+          <option value="major">Major</option>
+          <option value="minor">Minor</option>
+          <option value="pentatonic">Major pentatonic</option>
+          <option value="minorPentatonic">Minor pentatonic</option>
+          <option value="blues">Blues</option>
+          <option value="chromatic">Every note</option>
+        </select>
+      </label>
+      <label title="Which three octaves it plays">Range
+        <select id="thereminRange">
+          <option value="low">Low (C2–C5)</option>
+          <option value="mid">Middle (C3–C6)</option>
+          <option value="high">High (C4–C7)</option>
+        </select>
+      </label>
+      <label title="How loud it plays at most">Volume <input type="range" id="thereminVolume" min="0" max="100" step="1" value="60" /></label>
+      <span id="thereminNote" class="status theremin-note"></span>
     </div>
     <details class="settings-box" id="moreSettings">
     <summary>More settings</summary>
@@ -980,6 +1022,7 @@
 <script src="sentry.js"></script>
 <script src="sound-classifier.js"></script>
 <script src="baby-monitor.js"></script>
+<script src="theremin.js"></script>
 <script src="download-menu.js"></script>
 <script src="app.js"></script>
 </body>

@@ -749,6 +749,10 @@
     syncTiles();
   });
 
+  // Theremin mode (theremin.js): your hands play a theremin, each frame's hands (below) setting its note and
+  // volume; its sound goes into recordings started while it's on (camera-video.js's clips, the Record card's video).
+  if (window.Theremin) Theremin.init({ wrap, stage, toggle: $("thereminToggle"), prefs, setPref });
+
   function setMirror(on) {
     mirrorOn = on;
     HandTracker.setMirror(on);
@@ -1329,7 +1333,10 @@
           sources[0] = cap.use(); // (the clean picture instead of the one drawn on)
           recLabels = { cap, frames: [] };
         }
-        VideoRecorder.start({ sources, fps: RECORD_FPS, preferMp4: !!mobile, everyFrame: HandTracker.getSource() === "file", onFrame: recLabels ? noteLabels : null });
+        // (Theremin mode's sound in it while it's on: not from a video file, whose clip is re-timed to the file's own rate.)
+        const fromFile = HandTracker.getSource() === "file";
+        const sound = !fromFile && window.Theremin ? Theremin.recordingTrack(null) : null;
+        VideoRecorder.start({ sources, fps: RECORD_FPS, preferMp4: !!mobile, everyFrame: fromFile, onFrame: recLabels ? noteLabels : null, sound });
       } catch (err) {
         if (recLabels) recLabels.cap.release();
         recLabels = null;
@@ -2027,6 +2034,7 @@
       Hand3D.update(hands);
       const camNow = HandTracker.getCamera();
       PcControl.update(hands, gestureOf, mirrorOn, camNow.width && camNow.height ? camNow.width / camNow.height : 16 / 9);
+      if (window.Theremin) Theremin.update(hands, { mirror: mirrorOn, aspect: camNow.width && camNow.height ? camNow.width / camNow.height : 16 / 9 });
 
       if (RobotMotion.isRecording()) {
         RobotMotion.feed(hands, timestamp);
