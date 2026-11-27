@@ -101,6 +101,9 @@ public class RigServerPlugin extends Plugin {
     private static final long ANSWER_MS = 30000;
     private static final int HEAD_BYTES = 16 * 1024;
     private static final int BODY_BYTES = 8192;
+    // (talking to the baby: a quarter of a second of 16 kHz µ-law, 4000 bytes, as base64; twice that at most)
+    private static final int TALK_MAX_CHARS = 10700;
+    private static final Pattern TALK_BASE64 = Pattern.compile("^[A-Za-z0-9+/]+={0,2}$");
     private static final Set<String> ACTIONS = new HashSet<>(java.util.Arrays.asList(
             "cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry", "baby", "timing", "restartApp", "upright", "forward"));
     private static final Set<String> ROLES = new HashSet<>(java.util.Arrays.asList("", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"));
@@ -937,6 +940,61 @@ public class RigServerPlugin extends Plugin {
             Frame p = previews.get(i);
             if (p == null || System.currentTimeMillis() - p.at > PREVIEW_STALE_MS) send(out, 204, "application/json; charset=utf-8", new byte[0], null);
             else send(out, 200, "image/jpeg", p.jpeg, null);
+            return;
+        }
+        // Talking to the baby (the user, 2026-11-27), as electron/remote-record.js has it: { seq, ulaw: base64 16 kHz
+        // G.711 µ-law } a quarter of a second at a time, { stop: true } at the end, for the page's baby monitor to play
+        // (baby-monitor.js talkChunk, its alerts paused meanwhile).
+        if ("POST".equals(r.method) && "/api/talk".equals(r.path)) {
+            String origin = r.headers.get("origin");
+            String type = r.headers.getOrDefault("content-type", "");
+            if (!type.toLowerCase(Locale.ROOT).startsWith("application/json") || (origin != null && !origin.equals("http://" + r.headers.get("host")))) {
+                json(out, 403, error("Only Hand Tracker's own page can do that."));
+                return;
+            }
+            if (r.body.length > 2 * BODY_BYTES) {
+                json(out, 413, error("Too long"));
+                return;
+            }
+            JSONObject msg;
+            try {
+                msg = new JSONObject(new String(r.body, StandardCharsets.UTF_8));
+            } catch (Exception e) {
+                json(out, 400, error("Not JSON"));
+                return;
+            }
+            JSONObject st;
+            try {
+                st = new JSONObject(stateJson);
+            } catch (Exception e) {
+                st = new JSONObject();
+            }
+            JSONObject baby = st.optJSONObject("baby");
+            if (baby == null || !baby.optBoolean("armed", false)) {
+                json(out, 409, error("The baby monitor isn't on."));
+                return;
+            }
+            if (!baby.optBoolean("canTalk", false)) {
+                json(out, 409, error("This Hand Tracker can't play your voice: update it."));
+                return;
+            }
+            JSObject t = new JSObject();
+            if (msg.optBoolean("stop", false)) {
+                t.put("stop", true);
+            } else {
+                String ulaw = msg.optString("ulaw", "");
+                long seq = msg.optLong("seq", -1);
+                if (seq < 0 || ulaw.isEmpty() || ulaw.length() > TALK_MAX_CHARS || !TALK_BASE64.matcher(ulaw).matches()) {
+                    json(out, 400, error("That isn't a piece of sound."));
+                    return;
+                }
+                t.put("seq", seq);
+                t.put("ulaw", ulaw);
+            }
+            notifyListeners("talk", t);
+            JSONObject ok = new JSONObject();
+            ok.put("ok", true);
+            json(out, 200, ok);
             return;
         }
         if ("POST".equals(r.method) && "/api/command".equals(r.path)) {

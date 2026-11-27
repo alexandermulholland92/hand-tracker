@@ -1122,6 +1122,118 @@
     if (state) renderBaby(state);
   }
 
+  // Talking to the baby (the user, 2026-11-27: "two way communication so you can speak to the baby"; tap to talk,
+  // again to stop): this device's microphone (its echo cancelling on), 16 kHz G.711 µ-law a quarter of a second at a
+  // time to the computer's /api/talk, which plays it (its alerts paused meanwhile). The room's live sound is paused
+  // here while talking (no echo), and goes on again after if it was on.
+  let talk = null;
+  const TALK_PIECE = 4000; // samples: a quarter of a second
+  const canMic = () => !!(window.isSecureContext !== false && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && (window.AudioContext || window.webkitAudioContext));
+  $("babyTalk").addEventListener("click", () => (talk ? stopTalk() : startTalk()));
+  function ulawOf(s) {
+    let x = Math.round(Math.max(-1, Math.min(1, s)) * 32767);
+    const sign = x < 0 ? 0x80 : 0;
+    if (sign) x = -x;
+    x = Math.min(32635, x) + 0x84;
+    let exp = 7;
+    for (let mask = 0x4000; !(x & mask) && exp > 0; mask >>= 1) exp--;
+    return ~(sign | (exp << 4) | ((x >> (exp + 3)) & 0x0f)) & 0xff;
+  }
+  async function startTalk() {
+    if (talk) return;
+    if (bt) return say("Talking needs Wi-Fi or Tailscale: Bluetooth is too slow for it.", true);
+    if (!canMic()) return say("This page can't use the microphone here.", true);
+    const t = (talk = { stop: false, seq: 0, sending: 0, fails: 0, resumeLive: !!live, stream: null, ctx: null, proc: null });
+    if (live) stopLive();
+    if (state) renderBaby(state);
+    try {
+      t.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }, video: false });
+    } catch (err) {
+      if (talk === t) talk = null;
+      if (state) renderBaby(state);
+      return say(`The microphone can't be used: ${err.message || err}`, true);
+    }
+    if (t.stop) return t.stream.getTracks().forEach((x) => x.stop());
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ctx = (t.ctx = new AC());
+    await ctx.resume().catch(() => {});
+    const ratio = ctx.sampleRate / 16000;
+    const piece = new Uint8Array(TALK_PIECE);
+    let filled = 0, acc = 0, n = 0, phase = 0;
+    // (averaged down to 16 kHz as it comes; a script processor: no module to load, on every browser)
+    const proc = (t.proc = ctx.createScriptProcessor(4096, 1, 1));
+    proc.onaudioprocess = (e) => {
+      if (t.stop) return;
+      const x = e.inputBuffer.getChannelData(0);
+      for (let i = 0; i < x.length; i++) {
+        acc += x[i];
+        n++;
+        if (++phase >= ratio) {
+          phase -= ratio;
+          piece[filled++] = ulawOf(acc / n);
+          acc = 0;
+          n = 0;
+          if (filled === TALK_PIECE) {
+            sendTalk(t, piece.slice());
+            filled = 0;
+          }
+        }
+      }
+    };
+    ctx.createMediaStreamSource(t.stream).connect(proc);
+    proc.connect(ctx.destination); // (its output stays silent: nothing's written to it)
+  }
+  async function sendTalk(t, bytes) {
+    if (t.stop || t.sending > 2) return; // (the computer slow to take it: dropped, so what it plays stays close to now)
+    t.sending++;
+    try {
+      const r = await api("/api/talk", { method: "POST", body: JSON.stringify({ seq: t.seq++, ulaw: toBase64(bytes) }) });
+      if (r.status === 200) t.fails = 0;
+      else if (r.status === 409 || ++t.fails > 4) {
+        let why = "";
+        try {
+          why = r.json().error || "";
+        } catch {
+          // (no words with it)
+        }
+        if (talk === t) {
+          say(why || `Talking stopped: it answered ${r.status}.`, true);
+          stopTalk(false);
+        }
+      }
+    } catch (err) {
+      if (++t.fails > 4 && talk === t) {
+        say(err.auth ? needsKey() : `Talking stopped: ${err.message || err}`, true);
+        stopTalk(false);
+      }
+    } finally {
+      t.sending--;
+    }
+  }
+  function stopTalk(tell = true) {
+    const t = talk;
+    talk = null;
+    if (!t) return;
+    t.stop = true;
+    try {
+      if (t.proc) t.proc.onaudioprocess = null;
+      if (t.stream) t.stream.getTracks().forEach((x) => x.stop());
+      if (t.ctx) t.ctx.close().catch(() => {});
+    } catch {
+      // (already gone)
+    }
+    // (after the pieces still on their way: the computer then knows it's over, not started again by a late one)
+    if (tell) {
+      (async () => {
+        for (let i = 0; i < 40 && t.sending > 0; i++) await sleep(50);
+        await api("/api/talk", { method: "POST", body: JSON.stringify({ stop: true }) });
+      })().catch(() => {});
+    }
+    if (state) renderBaby(state);
+    // (the room's sound again, as before: a moment later, once the last of the voice has been played there)
+    if (t.resumeLive) setTimeout(() => !live && !talk && baby && baby.armed && baby.listen && startLive(), 800);
+  }
+
   function renderBaby(s) {
     baby = s.baby || null;
     const b = baby;
@@ -1129,6 +1241,7 @@
     $("babyPanel").hidden = !open;
     if (!open) {
       if (live) stopLive();
+      if (talk) stopTalk(false);
       return;
     }
     const where = s.host || "the computer";
@@ -1169,6 +1282,20 @@
     if (live && !canListen) stopLive();
     $("babyListen").hidden = !canListen;
     $("babyListen").textContent = live ? "⏹ Stop listening" : "🔊 Listen";
+    $("babyListen").disabled = !!talk; // (paused while talking: no echo)
+    // Talking: on a monitor that can play a voice (this one's Hand Tracker new enough), from a page with a microphone.
+    const canTalk = !!(b.armed && b.canTalk);
+    if (talk && !canTalk) stopTalk(false);
+    const talkHere = canTalk && !bt && canMic();
+    $("babyTalk").hidden = !talkHere;
+    $("babyTalk").textContent = talk ? "⏹ Stop talking" : "🎙 Talk";
+    $("babyTalk").setAttribute("aria-pressed", String(!!talk));
+    $("babyTalk").classList.toggle("on", !!talk);
+    $("babyTalkNote").hidden = !(canTalk && !talkHere) && !talk;
+    $("babyTalkNote").textContent = talk
+      ? `Talking to the room on ${where}: tap Stop talking when you're done. Its alerts are paused meanwhile.`
+      : bt ? "Talking to the room needs Wi-Fi or Tailscale (Bluetooth is too slow for it)."
+        : "Talking to the room needs a Hand Tracker app (a browser can't use the microphone on this page's address).";
     $("babyTest").hidden = !(newer && babySettings);
     $("babyTest").disabled = sending;
     const events = b.events || [];

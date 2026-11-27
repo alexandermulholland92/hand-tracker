@@ -9,10 +9,11 @@
 #     sudo bash wifi-watchdog.sh --remove   # take it away
 #
 # A timer looks once a minute, from 3 minutes after the Pi starts. When wlan0 has been off a network for
-# 5 looks in a row and, in at least 2 of them, the chip's driver (brcmfmac) wrote that the chip is in
+# 3 looks in a row and, in at least 2 of them, the chip's driver (brcmfmac) wrote that the chip is in
 # trouble (PSM's watchdog, scans timing out or suppressed, a firmware trap, the bus down, or wlan0 gone),
-# the driver is taken out and put back: the chip's firmware is loaded afresh, and NetworkManager joins
-# the network again. If the chip is still in trouble 10 looks later, the Pi is restarted, but not while
+# or wlan0 is on a network whose router hasn't answered in any of them (it passes nothing: pi, 2026-11-26,
+# from 10 minutes after a restart, its chip in trouble only 9 minutes later), the driver is taken out and
+# put back: the chip's firmware is loaded afresh, and NetworkManager joins the network again. If the chip is still in trouble 10 looks later, the Pi is restarted, but not while
 # Hand Tracker records or saves a take, or packages are being installed (it waits for those), not when
 # the Pi has another way out (a cable), and at most once an hour and three times a day (in between, the
 # driver is reloaded again every half hour). Off a network with nothing wrong with the chip (out of
@@ -53,7 +54,8 @@ cat > "$CHECK" <<'PY'
 #   hand-tracker-wifi-watchdog status       what it has seen and done
 #   hand-tracker-wifi-watchdog reload-now   the driver reloaded now, to see the Wi-Fi come back (a test)
 # wlan0 counts as on a network when NetworkManager has it on one (the hotspot only with a phone on it)
-# and it receives something, or nothing says the chip is in trouble. The chip counts as in trouble when
+# and it receives something, or nothing says the chip is in trouble, and its router answers (a ping, or
+# at least the ARP it sends then; one that can't be told either way counts as answering). The chip counts as in trouble when
 # its driver (brcmfmac) writes one of TROUBLE's lines to the kernel's log, or wlan0 disappears.
 import fcntl, json, os, re, subprocess, sys, syslog, time, urllib.request
 
@@ -61,8 +63,8 @@ IF = "wlan0"
 HOTSPOT = "Hand Tracker hotspot"   # (hotspot-setup.sh's connection)
 RUN = os.environ.get("WIFI_WATCHDOG_RUN", "/run/hand-tracker-wifi-watchdog")       # this start's looks
 KEEP = os.environ.get("WIFI_WATCHDOG_KEEP", "/var/lib/hand-tracker-wifi-watchdog")  # its restarts
-BAD = 5            # looks in a row off a network ...
-TROUBLED = 2       # ... in at least this many of which the chip was in trouble: the driver reloaded
+BAD = 3            # looks in a row off a network ...
+TROUBLED = 2       # ... in at least this many of which the chip was in trouble (or the router silent in all): the driver reloaded
 AFTER = 10         # looks after a reload with the chip still in trouble (2 of them): the Pi restarted
 AGAIN = 30         # when it can't restart: the driver reloaded again this many looks later
 GAP = 3600         # at most one restart an hour ...
@@ -110,6 +112,22 @@ class Pi:
                 return None, "the hotspot is on"
             return "the hotspot (%d phone%s on it)" % (phones, "" if phones == 1 else "s"), ""
         return con or "a network", ""
+
+    def gateway(self):
+        """wlan0's router (its default route's) and whether it answers: (address, True or False), or
+        (address, None) when that can't be told, (None, None) with no router on wlan0."""
+        m = re.search(r"\bvia (\S+)", run(["ip", "-4", "route", "show", "default", "dev", IF], 10) or "")
+        if not m:
+            return None, None
+        gw = m.group(1)
+        if run(["ping", "-n", "-q", "-c", "3", "-i", "0.3", "-W", "1", "-I", IF, gw], 10) is not None:
+            return gw, True
+        neigh = run(["ip", "neigh", "show", gw, "dev", IF], 10) or ""
+        if re.search(r"\bREACHABLE\b", neigh):
+            return gw, True   # (it answers ARP, only not pings)
+        if re.search(r"\b(FAILED|INCOMPLETE)\b", neigh) or not neigh.strip():
+            return gw, False
+        return gw, None
 
     def kernel(self, cursor):
         """The driver's lines in the kernel's log since cursor (the last look), and the new cursor."""
@@ -226,6 +244,10 @@ class Fake(Pi):
         if not self.exists():
             return None, IF + " is gone"
         return (self.w["network"], "") if self.w.get("network") else (None, self.w.get("why", "disconnected"))
+
+    def gateway(self):
+        g = self.w.get("gateway")   # ([address, answers]: True, False or None)
+        return (g[0], g[1]) if g else (None, None)
 
     def kernel(self, cursor):
         lines, self.w["kernel"] = self.w.get("kernel", []), []   # (each line seen once)
@@ -352,7 +374,13 @@ def look(pi, s):
     moving = rx is not None and s.get("rx") is not None and rx != s["rx"]
     s["rx"] = rx
     name, why = pi.network()
-    on = bool(name) and (moving or not trouble)
+    silent = False
+    if name and not name.startswith("the hotspot"):
+        gw, answers = pi.gateway()
+        if answers is False:
+            silent = True
+            why = "its router (%s) doesn't answer" % gw
+    on = bool(name) and (moving or not trouble) and not silent
     s["last"] = {"at": pi.now(), "on": name if on else None, "trouble": len(trouble),
                  "why": "" if on else (why or "nothing received, with the chip in trouble")}
     if trouble:
@@ -361,15 +389,19 @@ def look(pi, s):
     if on:
         if s.get("reloaded") is not None:
             pi.say("Back on %s, %s after the Wi-Fi driver was reloaded." % (name, minutes(s.get("sinceReload", 0) + 1)))
-        for k in ("bad", "troubled", "reloaded", "sinceReload", "afterTrouble", "waiting"):
+        for k in ("bad", "troubled", "silent", "reloaded", "sinceReload", "afterTrouble", "waiting"):
             s.pop(k, None)
         return
     s["bad"] = s.get("bad", 0) + 1
     if s.get("reloaded") is None:
         s["troubled"] = (s.get("troubled", []) + [len(trouble)])[-BAD:]
+        s["silent"] = (s.get("silent", []) + [1 if silent else 0])[-BAD:]
         if s["bad"] >= BAD and sum(1 for n in s["troubled"] if n) >= TROUBLED:
             pi.say("Off the network for %s (%s), the Wi-Fi chip in trouble (%d of its driver's lines, the last \"%s\"): reloading its driver."
                    % (minutes(s["bad"]), why or "nothing received", sum(s["troubled"]), s.get("lastTrouble")))
+            reload(pi, s)
+        elif s["bad"] >= BAD and len(s["silent"]) >= BAD and all(s["silent"]):
+            pi.say("On %s, but nothing gets through for %s (%s): reloading the Wi-Fi driver." % (name, minutes(s["bad"]), why))
             reload(pi, s)
         return
     s["sinceReload"] = s.get("sinceReload", 0) + 1
@@ -380,7 +412,7 @@ def look(pi, s):
         # (the chip seems all right now: whatever keeps wlan0 off a network, it isn't the chip)
         pi.say("Still off the network %s after the Wi-Fi driver was reloaded (%s), but the chip seems all right now: not restarting."
                % (minutes(s["sinceReload"]), why))
-        for k in ("bad", "troubled", "reloaded", "sinceReload", "afterTrouble", "waiting"):
+        for k in ("bad", "troubled", "silent", "reloaded", "sinceReload", "afterTrouble", "waiting"):
             s.pop(k, None)
         return
     restart_or_wait(pi, s)

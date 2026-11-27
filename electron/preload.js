@@ -441,6 +441,15 @@ contextBridge.exposeInMainWorld("desktop", {
         return () => ipcRenderer.removeListener("remote:want-listen", listener);
       },
     },
+    // Someone talking to the baby (remote-record.js's /api/talk): onChunk(cb) gets { seq, data: 16 kHz µ-law } a
+    // quarter of a second at a time, then { stop: true }.
+    talk: {
+      onChunk: (cb) => {
+        const listener = (_event, t) => cb(t);
+        ipcRenderer.on("remote:talk", listener);
+        return () => ipcRenderer.removeListener("remote:talk", listener);
+      },
+    },
     onStatus: (cb) => {
       const listener = (_event, data) => cb(data);
       ipcRenderer.on("remote:status", listener);

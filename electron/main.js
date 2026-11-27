@@ -1375,7 +1375,7 @@ function rigRequest({ rig, path: where, method = "GET", body = null, key = "" } 
   const m = RIG_HOST.exec(String(rig || ""));
   const port = m ? Number(m[5]) : 0;
   if (!m || port < 1 || port > 65535) throw new Error("That isn't a computer's name and port.");
-  if (!RIG_PATH.test(String(where || "")) || (method === "POST") !== (where === "/api/command" || /^\/api\/imu/.test(where)) || !["GET", "POST"].includes(method)) throw new Error("Not a remote recording request.");
+  if (!RIG_PATH.test(String(where || "")) || (method === "POST") !== (where === "/api/command" || where === "/api/talk" || /^\/api\/imu/.test(where)) || !["GET", "POST"].includes(method)) throw new Error("Not a remote recording request.");
   if (body != null && (typeof body !== "string" || body.length > 8192)) throw new Error("Too long.");
   const headers = {};
   if (/^[A-Za-z0-9_-]{8,64}$/.test(String(key || ""))) headers["X-Key"] = key;
@@ -1490,6 +1490,8 @@ function registerRemoteIpc() {
   remoteRecord.on("status", (s) => toWindow("remote:status", s));
   // (someone listening to the baby monitor live, or not any more: baby-monitor.js sends its sound meanwhile)
   remoteRecord.on("want-listen", (on) => toWindow("remote:want-listen", !!on));
+  // (someone talking to the baby: a quarter of a second of their voice, or { stop }, for baby-monitor.js to play)
+  remoteRecord.on("talk", (t) => toWindow("remote:talk", t && t.stop ? { stop: true } : { seq: t.seq, data: new Uint8Array(t.data) }));
   // (A page playing a camera's video wants the network as one looking at its pictures does.)
   remoteRecord.on("video-watch", (on) => {
     videoWatched = !!on;

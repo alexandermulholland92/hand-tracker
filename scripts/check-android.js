@@ -194,7 +194,7 @@ function checkRigRulesMatch() {
     "/api/preview?i=0&full=1&after=-1", "/api/preview?i=0&full=1&after=", "/api/preview?i=0&full=1&after=1&x=1",
     "/api/video?i=0&after=0", "/api/video?i=3&after=123456789012", "/api/video?i=4&after=0", "/api/video?i=0", "/api/video?i=0&after=-1", "/api/video?i=0&after=1&full=1",
     "/api/take?f=Sam-Smith_2s.json&at=0", "/api/take?f=a%20b%2Fc.mcap&at=2097152", "/api/take?f=a/b.json&at=0", "/api/take?f=a.json", "/api/take?f=a.json&at=-1", "/api/take?f=&at=0",
-    "/api/takes/x", "/api/state?x", "/api/../state", "/", "/remote-client.js"];
+    "/api/takes/x", "/api/state?x", "/api/../state", "/", "/remote-client.js", "/api/talk", "/api/talk?x=1", "/api/talks"];
   out.differ = [...hosts.filter((h) => javaHost.test(h) !== RIG_HOST.test(h)), ...paths.filter((p) => javaPath.test(p) !== RIG_PATH.test(p))];
   out.samePathText = out.path === RIG_PATH.source.replace(/\\\//g, "/");
   // The iPhone app's (RemoteLink.swift), written the same way.

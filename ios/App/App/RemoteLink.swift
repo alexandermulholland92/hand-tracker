@@ -30,7 +30,7 @@ public class RigLinkPlugin: CAPPlugin, CAPBridgedPlugin {
     ]
 
     static let RIG = "^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*):(\\d{1,5})$"
-    static let RIG_PATH = "^/api/(state|command|imu(\\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\\?span=(1h|24h|7d)(&after=\\d{1,15})?|preview\\?i=[0-3](&full=1)?(&after=\\d{1,12})?|video\\?i=[0-3]&after=\\d{1,12}|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12}|listen(\\?after=\\d{1,12})?)$"
+    static let RIG_PATH = "^/api/(state|command|imu(\\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\\?span=(1h|24h|7d)(&after=\\d{1,15})?|preview\\?i=[0-3](&full=1)?(&after=\\d{1,12})?|video\\?i=[0-3]&after=\\d{1,12}|take\\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\\d{1,12}|listen(\\?after=\\d{1,12})?|talk)$"
     static let RIG_KEY = "^[A-Za-z0-9_-]{8,64}$"
     static let maxBytes = 4 * 1024 * 1024
     private let queue = DispatchQueue(label: "hand-tracker.rig-link")
@@ -49,7 +49,7 @@ public class RigLinkPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         let post = method == "POST"
-        guard Self.groups(Self.RIG_PATH, path) != nil, post || method == "GET", post == (path == "/api/command" || path.hasPrefix("/api/imu")) else {
+        guard Self.groups(Self.RIG_PATH, path) != nil, post || method == "GET", post == (path == "/api/command" || path == "/api/talk" || path.hasPrefix("/api/imu")) else {
             call.reject("Not a remote recording request.")
             return
         }

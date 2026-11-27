@@ -7241,8 +7241,13 @@ async function checkBabyMonitor(js) {
       $("babyShow").click();
       out.settings = !!(await until(() => !$("babySettings").hidden));
       out.offNote = $("babyNote").textContent;
-      $("babyBtn").click();
-      out.on = !!(await until(() => $("babyBtn").getAttribute("aria-pressed") === "true"));
+      // (its switch is briefly off while the page sends something: tapped once it's on, again if that tap was lost)
+      for (let tries = 0; tries < 3 && $("babyBtn").getAttribute("aria-pressed") !== "true"; tries++) {
+        await until(() => !$("babyBtn").disabled, 10000);
+        $("babyBtn").click();
+        await until(() => $("babyBtn").getAttribute("aria-pressed") === "true", 6000);
+      }
+      out.on = $("babyBtn").getAttribute("aria-pressed") === "true";
       out.meter = !!(await until(() => !$("babyMeter").hidden, 20000));
       out.listeningNote = $("babyNote").textContent;
       return out;
@@ -7292,6 +7297,67 @@ async function checkBabyMonitor(js) {
     const s2 = Number((/seq=(\d+)/.exec(a2.headers.get("content-type") || "") || [])[1]);
     out.live = { status: [a1.status, a2.status], type: a2.headers.get("content-type"), bytes: [b1, Buffer.from(await a2.arrayBuffer()).length], seq: [s1, s2] };
     out.liveButton = await pjs(`(async () => { ${PAGE} return !!(await until(() => !$("babyListen").hidden)); })()`);
+    // Talking to the baby (2026-11-27): a quarter of a second of 16 kHz µ-law at a time (/api/talk), played here, the
+    // alerts paused meanwhile and a moment after (here 0.8 s); then from the page: Talk, the live sound paused there.
+    const ulaw = (s) => {
+      let x = Math.round(Math.max(-1, Math.min(1, s)) * 32767);
+      const sign = x < 0 ? 0x80 : 0;
+      if (sign) x = -x;
+      x = Math.min(32635, x) + 0x84;
+      let exp = 7;
+      for (let mask = 0x4000; !(x & mask) && exp > 0; mask >>= 1) exp--;
+      return ~(sign | (exp << 4) | ((x >> (exp + 3)) & 0x0f)) & 0xff;
+    };
+    const piece = (amp) => Buffer.from(Array.from({ length: 4000 }, (_, i) => ulaw(amp * Math.sin((2 * Math.PI * 300 * i) / 16000)))).toString("base64");
+    const talkPost = (body) => fetch(base + "/api/talk", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    await js(`(() => { BabyMonitor._test.only(true); BabyMonitor._test.talkQuiet(800); return true; })()`);
+    const talked0 = await js(`BabyMonitor._test.talked()`);
+    const tp = [];
+    for (let i = 0; i < 4; i++) tp.push((await talkPost({ seq: i, ulaw: piece(0.3) })).status);
+    out.talkApi = { status: tp, bad: (await talkPost({ seq: 9, ulaw: "not sound!" })).status, noKey: (await fetch(base + "/api/talk", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status };
+    await sleep(300);
+    out.talkApi.played = (await js(`BabyMonitor._test.talked()`)) - talked0;
+    out.talkApi.state = await js(`(() => { const s = BabyMonitor.remoteState(); return { canTalk: s.canTalk, talking: s.talking }; })()`);
+    await feed(15, 0.2);
+    out.talkApi.episodeWhileTalking = await js(`!!BabyMonitor._test.episode()`);
+    out.talkApi.stop = (await talkPost({ stop: true })).status;
+    await sleep(200);
+    out.talkApi.pausedAfter = await js(`BabyMonitor._test.talking()`);
+    await sleep(2500);
+    out.talkApi.pausedLater = await js(`BabyMonitor._test.talking()`);
+    await feed(15, 0.2);
+    out.talkApi.episodeAfter = await js(`(() => { const e = BabyMonitor._test.episode(); return e ? e.event.sound : null; })()`);
+    await js(`(() => { BabyMonitor._test.end(); return true; })()`); // (the test microphone still left out: its beeps aren't alerts here)
+    Object.assign(out, await pjs(`(async () => {
+      ${PAGE}
+      const out = {};
+      out.talkShown = !!(await until(() => !$("babyTalk").hidden));
+      $("babyListen").click();
+      out.liveBefore = !!(await until(() => /Stop listening/.test($("babyListen").textContent)));
+      $("babyTalk").click();
+      out.talkOn = !!(await until(() => $("babyTalk").getAttribute("aria-pressed") === "true"));
+      out.livePaused = /Listen$/.test($("babyListen").textContent) && $("babyListen").disabled;
+      out.talkNote = !$("babyTalkNote").hidden && $("babyTalkNote").textContent;
+      return out;
+    })()`));
+    const talked1 = await js(`BabyMonitor._test.talked()`);
+    for (let i = 0; i < 80 && (await js(`BabyMonitor._test.talked()`)) - talked1 < 8000; i++) await sleep(100);
+    out.pageTalked = (await js(`BabyMonitor._test.talked()`)) - talked1;
+    out.pageTalking = await js(`BabyMonitor.remoteState().talking`);
+    Object.assign(out, await pjs(`(async () => {
+      ${PAGE}
+      const out = {};
+      $("babyTalk").click();
+      out.talkOff = !!(await until(() => $("babyTalk").getAttribute("aria-pressed") === "false"));
+      out.liveAgain = !!(await until(() => /Stop listening/.test($("babyListen").textContent), 6000));
+      if (out.liveAgain) $("babyListen").click();
+      return out;
+    })()`));
+    for (let i = 0; i < 40 && (await js(`BabyMonitor.remoteState().talking`)); i++) await sleep(100);
+    out.pageTalkEnded = !(await js(`BabyMonitor.remoteState().talking`));
+    // (and the alerts listening again, the moment after it over: for what follows)
+    for (let i = 0; i < 100 && (await js(`BabyMonitor._test.talking()`)); i++) await sleep(100);
+    out.alertsBack = !(await js(`BabyMonitor._test.talking()`));
     await post("baby", { baby: { listen: false } });
     out.liveOff = (await get("/api/listen")).status;
     await js(`BabyMonitor._test.only(true)`);
@@ -7341,6 +7407,7 @@ async function checkBabyMonitor(js) {
     out.afterDelete = soundEvent ? files(soundEvent).map((f) => fs.existsSync(path.join(dir, f))) : null;
     out.off = await post("baby", { baby: { armed: false, videoClip: false, soundClip: true } });
     out.offState = await js(`(() => { const s = BabyMonitor.remoteState(); return { armed: s.armed, listening: s.listening }; })()`);
+    out.talkWhenOff = (await talkPost({ seq: 0, ulaw: piece(0.3) })).status;
   } catch (err) {
     out.error = String((err && err.stack) || err);
   } finally {
@@ -7367,6 +7434,13 @@ async function checkBabyMonitor(js) {
     r.liveOn && r.liveOn.ok && r.live && r.live.status.join() === "200,200" && /^application\/octet-stream; seq=\d+; rate=16000$/.test(r.live.type || "") &&
       r.live.bytes.every((b) => b > 0 && b % 2 === 0) && r.live.seq[1] > r.live.seq[0] && r.liveButton && r.liveOff === 409,
     JSON.stringify({ liveOn: r.liveOn, live: r.live, liveButton: r.liveButton, liveOff: r.liveOff }));
+  const ta = r.talkApi || {};
+  check("…talking to the baby: quarter-second pieces of 16 kHz µ-law (/api/talk, the key needed) played on the computer, loud sound meanwhile no alert, nor a moment after, then alerts again; from the page: Talk (tap, tap again), the room's live sound paused there meanwhile and on again after; refused once it's off",
+    ta.status && ta.status.join() === "200,200,200,200" && ta.bad === 400 && ta.noKey === 401 && ta.played >= 16000 && ta.state && ta.state.canTalk === true && ta.state.talking === true &&
+      ta.episodeWhileTalking === false && ta.stop === 200 && ta.pausedAfter === true && ta.pausedLater === false && ta.episodeAfter === "loud" &&
+      r.talkShown && r.liveBefore && r.talkOn && r.livePaused && /Talking to the room/.test(r.talkNote || "") && r.pageTalked >= 8000 && r.pageTalking === true &&
+      r.talkOff && r.liveAgain && r.pageTalkEnded && r.alertsBack && r.talkWhenOff === 409,
+    JSON.stringify({ talkApi: r.talkApi, talkShown: r.talkShown, liveBefore: r.liveBefore, talkOn: r.talkOn, livePaused: r.livePaused, talkNote: r.talkNote, pageTalked: r.pageTalked, pageTalking: r.pageTalking, talkOff: r.talkOff, liveAgain: r.liveAgain, pageTalkEnded: r.pageTalkEnded, alertsBack: r.alertsBack, talkWhenOff: r.talkWhenOff, error: r.error }));
   check("…crying only: MediaPipe's sound classifier (YAMNet) made ready, silence not crying, crying setting it off; every camera's video with an alert; an alert deleted with its files; off",
     r.crying && r.crying.ok && r.model && r.model.status === "ready" && r.model.silence < 0.2 && r.cryEpisode === "crying" &&
       r.videoEvent && Array.isArray(r.videoEvent.videos) && r.videoEvent.videos.length >= 1 && r.videoEvent.videos.every((v) => /^Baby_.+-video( \(labels\))?\.(mp4|mkv|webm)$/.test(v)) &&

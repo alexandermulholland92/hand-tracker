@@ -103,6 +103,9 @@ const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's
 const LISTEN_KEEP = 30;
 const LISTEN_WANTED_MS = 5000;
 const LISTEN_WAIT_MS = 1500;
+// Talking to the baby (the user, 2026-11-27: "two way communication so you can speak to the baby"): a quarter of a
+// second of the page's microphone at a time, 16 kHz G.711 µ-law (4000 bytes), passed on to the page here to play.
+const TALK_MAX_BYTES = 8000;
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIDEO_FRESH_MS = 3000; // a camera's video is offered while a picture of it came this recently
 const VIDEO_START_MS = 3000; // a webcam's video, made once asked for: its first picture waited for this long
@@ -139,7 +142,7 @@ const VIDEO_QUALITIES = ["low", "standard", "high", "best"]; // (camera-video.js
 // networks, the takes and a slice of one). The one list: main.js and the Android checks' stand-in
 // use it, and the checks compare RemotePlugin.java's copy (Java can't load this) with it.
 const RIG_HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*):(\d{1,5})$/i;
-const RIG_PATH = /^\/api\/(state|command|imu(\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\?span=(1h|24h|7d)(&after=\d{1,15})?|preview\?i=[0-3](&full=1)?(&after=\d{1,12})?|video\?i=[0-3]&after=\d{1,12}|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12}|listen(\?after=\d{1,12})?)$/;
+const RIG_PATH = /^\/api\/(state|command|imu(\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\?span=(1h|24h|7d)(&after=\d{1,15})?|preview\?i=[0-3](&full=1)?(&after=\d{1,12})?|video\?i=[0-3]&after=\d{1,12}|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12}|listen(\?after=\d{1,12})?|talk)$/;
 
 const PAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
@@ -1458,6 +1461,38 @@ class RemoteRecordServer extends EventEmitter {
       const n = this.imu(`http:${name}`, name, body);
       if (n < 0) return this.send(res, 409, { error: "Separate motion sensors are off on that computer: turn them on on its remote recording page." });
       return this.send(res, n ? 200 : 400, n ? { ok: true, readings: n } : { error: "No motion sensor readings in that." });
+    }
+    // Talking to the baby: { seq, ulaw: base64 } a quarter of a second at a time, { stop: true } at the end; played
+    // by the baby monitor on this computer (baby-monitor.js talk), its alerts paused meanwhile. JSON from the page
+    // itself, as a command is.
+    if (req.method === "POST" && url.pathname === "/api/talk") {
+      const origin = req.headers.origin;
+      if (!/^application\/json\b/i.test(String(req.headers["content-type"] || "")) || (origin && origin !== `http://${req.headers.host}`)) {
+        return this.send(res, 403, { error: "Only Hand Tracker's own page can do that." });
+      }
+      let body = "";
+      for await (const chunk of req) {
+        body += chunk;
+        if (body.length > 16384) return this.send(res, 413, { error: "Too long" });
+      }
+      let msg = null;
+      try {
+        msg = JSON.parse(body);
+      } catch {
+        return this.send(res, 400, { error: "Not JSON" });
+      }
+      const baby = this.state && this.state.baby;
+      if (!baby || !baby.armed) return this.send(res, 409, { error: "The baby monitor isn't on." });
+      if (!baby.canTalk) return this.send(res, 409, { error: "This Hand Tracker can't play your voice: update it." });
+      if (msg && msg.stop === true) {
+        this.emit("talk", { stop: true });
+        return this.send(res, 200, { ok: true });
+      }
+      const seq = msg && Number.isInteger(msg.seq) && msg.seq >= 0 ? msg.seq : -1;
+      const data = msg && typeof msg.ulaw === "string" && /^[A-Za-z0-9+/]+={0,2}$/.test(msg.ulaw) ? Buffer.from(msg.ulaw, "base64") : null;
+      if (seq < 0 || !data || !data.length || data.length > TALK_MAX_BYTES) return this.send(res, 400, { error: "That isn't a piece of sound." });
+      this.emit("talk", { seq, data });
+      return this.send(res, 200, { ok: true });
     }
     if (req.method === "POST" && url.pathname === "/api/command") {
       // From the page itself: JSON (another website's form can't send that without asking

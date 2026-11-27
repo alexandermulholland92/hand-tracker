@@ -167,6 +167,7 @@
   #babyPanel .meter .fill { height: 100%; width: 0; background: #2f9e44; transition: width .1s; }
   #babyPanel .meter .mark { position: absolute; top: 0; bottom: 0; width: 2px; background: #e03131; left: 0; }
   #babyPanel .meter.on .fill { background: #e03131; }
+  #babyTalk.on { background: #e03131; color: #fff; border-color: #e03131; }
   #videoPanel select, #sentryPanel select, #babyPanel select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
   #sentryPanel .sub { font-size: 13px; color: var(--muted); margin: 2px 0 8px; overflow-wrap: anywhere; }
   #sentryPanel hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
@@ -333,7 +334,8 @@
       <div class="sub">Alerts come as Sentry's do: as notifications on a phone whose Hand Tracker app gets this device's alerts, and through ntfy (set up in Sentry mode's settings).</div>
       <hr />
     </div>
-    <div class="takebtns"><button type="button" id="babyListen" hidden>🔊 Listen</button><button type="button" id="babyTest" class="quiet" hidden>Send a test</button></div>
+    <div class="takebtns"><button type="button" id="babyListen" hidden>🔊 Listen</button><button type="button" id="babyTalk" aria-pressed="false" hidden>🎙 Talk</button><button type="button" id="babyTest" class="quiet" hidden>Send a test</button></div>
+    <div id="babyTalkNote" class="sub" hidden></div>
     <div id="babyAlerts"></div>
     <button type="button" id="babyDelAll" class="small" hidden>Delete every baby monitor clip</button>
   </section>

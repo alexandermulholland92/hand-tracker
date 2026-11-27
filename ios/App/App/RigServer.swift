@@ -1011,7 +1011,42 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
         if r.method == "POST" && r.path == "/api/command" {
             return command(r)
         }
+        if r.method == "POST" && r.path == "/api/talk" {
+            return talk(r)
+        }
         return Self.error(404, "Not found")
+    }
+
+    // Talking to the baby (the user, 2026-11-27), as electron/remote-record.js has it: { seq, ulaw: base64 16 kHz
+    // G.711 µ-law } a quarter of a second at a time, { stop: true } at the end, for the page's baby monitor to play
+    // (baby-monitor.js talkChunk, its alerts paused meanwhile).
+    private func talk(_ r: Request) -> Response {
+        let origin = r.headers["origin"]
+        if !(r.headers["content-type"] ?? "").lowercased().hasPrefix("application/json") || (origin != nil && origin != "http://" + (r.headers["host"] ?? "")) {
+            return Self.error(403, "Only Hand Tracker's own page can do that.")
+        }
+        if r.body.count > Self.bodyBytes { return Self.error(413, "Too long") }
+        guard let msg = (try? JSONSerialization.jsonObject(with: r.body)) as? [String: Any] else { return Self.error(400, "Not JSON") }
+        lock.lock()
+        let s = stateJson
+        lock.unlock()
+        let st = (try? JSONSerialization.jsonObject(with: Data(s.utf8))) as? [String: Any] ?? [:]
+        guard let b = st["baby"] as? [String: Any], Self.bool(b["armed"]) == true else {
+            return Self.error(409, "The baby monitor isn't on.")
+        }
+        guard Self.bool(b["canTalk"]) == true else { return Self.error(409, "This Hand Tracker can't play your voice: update it.") }
+        if Self.bool(msg["stop"]) == true {
+            tell("talk", ["stop": true])
+            return Self.json(200, ["ok": true])
+        }
+        let ulaw = msg["ulaw"] as? String ?? ""
+        let seq = (msg["seq"] as? NSNumber)?.int64Value ?? -1
+        guard seq >= 0, !ulaw.isEmpty, ulaw.count <= 10700,
+              ulaw.range(of: "^[A-Za-z0-9+/]+={0,2}$", options: .regularExpression) != nil else {
+            return Self.error(400, "That isn't a piece of sound.")
+        }
+        tell("talk", ["seq": seq, "ulaw": ulaw])
+        return Self.json(200, ["ok": true])
     }
 
     private func command(_ r: Request) -> Response {

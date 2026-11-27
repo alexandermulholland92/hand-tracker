@@ -14,6 +14,8 @@
  *   - Video clip: every camera records with sound meanwhile, as Sentry's clips (its labels a layer of their own
  *     where the app can: label-layers.js) (Baby_<camera>_<when>-video.mp4);
  *   - Listen live: the page plays what the microphone hears (the server's /api/listen: 16 kHz mono PCM).
+ * Talking to the baby (2026-11-27): remote recording's page sends its microphone's sound (the server's /api/talk),
+ * played here; its alerts paused meanwhile (talkChunk).
  * One episode: from the sound until QUIET_S of quiet (at most MAX_S); a notification at most every ALERT_GAP_S.
  *
  *   BabyMonitor.init({ prefs, setPref, host, views, hostName, link, phone, shown, onArmed })
@@ -168,27 +170,31 @@
   function onChunk(samples, now = Date.now()) {
     remember(samples);
     const db = dbOf(samples);
-    levels.push(db);
-    if (levels.length > (FLOOR_S * RATE) / CHUNK) levels.shift();
-    if (now - lastFloorAt > 1000 && levels.length >= 10) {
+    // (someone talking to the room through its speaker: nothing it hears meanwhile counts, talking)
+    const hush = talking();
+    if (!hush) {
+      levels.push(db);
+      if (levels.length > (FLOOR_S * RATE) / CHUNK) levels.shift();
+    }
+    if (!hush && now - lastFloorAt > 1000 && levels.length >= 10) {
       const sorted = levels.slice().sort((a, b) => a - b);
       floor = sorted[Math.floor(sorted.length * 0.2)];
       lastFloorAt = now;
     }
-    const over = db >= Math.max(ABS_MIN_DB, floor + LOUD[cfg.sensitivity]);
+    const over = !hush && db >= Math.max(ABS_MIN_DB, floor + LOUD[cfg.sensitivity]);
     recent.push(over);
     if (recent.length > 20) recent.shift();
     if (listeners && cfg.listen) sendLive(samples);
     showLevel(db);
     if (episode && episode.pcm) episode.pcm.push(samples.slice());
     // Crying: looked for while there's any sound (it's quiet otherwise: no look needed).
-    if (cfg.trigger === "crying" && !looking && now - lastCryLookAt >= CRY_LOOK_MS && db > floor + 6 && heard >= RATE) {
+    if (!hush && cfg.trigger === "crying" && !looking && now - lastCryLookAt >= CRY_LOOK_MS && db > floor + 6 && heard >= RATE) {
       lastCryLookAt = now;
       lookForCrying(now);
     }
     const loudNow = recent.filter(Boolean).length >= 10;
-    const set = cfg.trigger === "crying" ? cryLooks.filter((s) => s >= CRY[cfg.sensitivity]).length >= 2 : loudNow;
-    const goingOn = cfg.trigger === "crying" ? crying >= CRY[cfg.sensitivity] : over;
+    const set = !hush && (cfg.trigger === "crying" ? cryLooks.filter((s) => s >= CRY[cfg.sensitivity]).length >= 2 : loudNow);
+    const goingOn = !hush && (cfg.trigger === "crying" ? crying >= CRY[cfg.sensitivity] : over);
     if (set) setOff(now, db);
     else if (episode && goingOn) episode.lastAt = now;
     if (episode && (now - episode.lastAt > QUIET_S * 1000 || now - episode.at > MAX_S * 1000)) endEpisode(now);
@@ -371,6 +377,92 @@
     listeners = on && typeof on === "object" ? !!on.on : !!on;
   }
 
+  // ---------- talking to the baby (the user, 2026-11-27: "two way communication so you can speak to the baby") ----------
+  // Someone's voice from remote recording's page (tap to talk, again to stop: its /api/talk, 16 kHz G.711 µ-law a
+  // quarter of a second at a time), played here a moment behind so it's smooth. The alerts are paused meanwhile and
+  // TALK_QUIET_MS after its last sound (its own speaker doesn't set it off), and the room's usual level isn't learnt
+  // from it. Nothing more of it for TALK_IDLE_MS: it's over.
+  const TALK_QUIET_MS = 5000;
+  const TALK_IDLE_MS = 3000;
+  let talk = null; // { ctx, out, own, next, idle }
+  let talkQuietUntil = 0, talkQuietMs = TALK_QUIET_MS, talked = 0;
+  const ULAW = (() => {
+    const t = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const u = ~i & 0xff, exp = (u >> 4) & 7;
+      const s = ((((u & 0x0f) << 3) + 0x84) << exp) - 0x84;
+      t[i] = (u & 0x80 ? -s : s) / 32768;
+    }
+    return t;
+  })();
+  const talking = () => !!talk || Date.now() < talkQuietUntil;
+  function bytesOf(data) {
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (typeof data === "string" && global.atob) {
+      // (a phone's RigServer: base64)
+      try {
+        const s = global.atob(data);
+        const out = new Uint8Array(s.length);
+        for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+        return out;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+  function talkChunk(t) {
+    if (!t) return;
+    if (t.stop) return endTalk();
+    if (!cfg || !cfg.armed) return;
+    const bytes = bytesOf(t.data);
+    const AC = global.AudioContext || global.webkitAudioContext;
+    if (!bytes || !bytes.length || !AC) return;
+    if (!talk) {
+      // (the microphone's own sound, which is running already, a phone's started at a touch; else one of its own)
+      const own = !(mic && mic.ctx && mic.ctx.state !== "closed");
+      const ctx = own ? new AC() : mic.ctx;
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      const out = ctx.createGain();
+      out.connect(ctx.destination);
+      talk = { ctx, out, own, next: 0, idle: null };
+      cryLooks = [];
+      recent.length = 0;
+    }
+    const buf = talk.ctx.createBuffer(1, bytes.length, RATE);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < bytes.length; i++) ch[i] = ULAW[bytes[i]];
+    const src = talk.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(talk.out);
+    const now = talk.ctx.currentTime;
+    if (talk.next < now + 0.05 || talk.next > now + 2) talk.next = now + 0.25;
+    src.start(talk.next);
+    talk.next += buf.duration;
+    talked += bytes.length;
+    clearTimeout(talk.idle);
+    talk.idle = setTimeout(endTalk, TALK_IDLE_MS);
+  }
+  function endTalk() {
+    const t = talk;
+    talk = null;
+    if (!t) return;
+    clearTimeout(t.idle);
+    // (its last sound still to be played: the alerts listen again TALK_QUIET_MS after that)
+    const left = t.ctx.state === "running" ? Math.max(0, t.next - t.ctx.currentTime) : 0;
+    talkQuietUntil = Date.now() + left * 1000 + talkQuietMs;
+    recent.length = 0;
+    setTimeout(() => {
+      try {
+        t.out.disconnect();
+        if (t.own) t.ctx.close().catch(() => {});
+      } catch {
+        // (already gone)
+      }
+    }, left * 1000 + 500);
+  }
+
   // ---------- a phone listening: its screen kept awake (the app keeps it so) and dimmed ----------
   // (2026-11-26: "App open, screen dim") A black screen over the app with how loud it is; a tap wakes it for a
   // minute. The screen's own brightness turned down meanwhile (RigServer's dim, where the app has it).
@@ -423,6 +515,7 @@
       showDimmer();
     } else {
       if (episode) endEpisode();
+      endTalk();
       stopListening();
       clearTimeout(dimTimer);
       hideDimmer();
@@ -439,6 +532,7 @@
     return {
       shown, armed: cfg.armed, trigger: cfg.trigger, sensitivity: cfg.sensitivity, soundClip: cfg.soundClip, videoClip: cfg.videoClip, listen: cfg.listen, mic: cfg.mic,
       listening: !!mic, phone,
+      canTalk: !!(host && host.remote && host.remote.talk), talking: !!talk,
       level: last === null ? null : { db: Math.round(last), usual: Math.round(floor), over: Math.round(floor + LOUD[cfg.sensitivity]), crying: cfg.trigger === "crying" ? Math.round(crying * 100) / 100 : null },
       episode: episode ? { at: episode.at, sound: episode.event.sound } : null,
       model: global.SoundClassifier ? global.SoundClassifier.status() : "none",
@@ -533,6 +627,9 @@
         }
       });
     }
+    // (someone talking to the room: their voice played here, talkChunk)
+    const talkIn = host && host.remote && host.remote.talk;
+    if (talkIn && talkIn.onChunk) talkIn.onChunk(talkChunk);
     if (cfg.armed) setArmed(true);
   }
 
@@ -542,6 +639,7 @@
     _test: {
       feed: (samples, now) => onChunk(samples, now), events, wav, dbOf, lastSamples, baseName,
       only: (on) => (testOnly = !!on), heard: () => heardReal,
+      talk: (t) => talkChunk(t), talked: () => talked, talking: () => talking(), talkQuiet: (ms) => (talkQuietMs = ms),
       cfg: () => cfg, floor: () => floor, episode: () => episode, end: () => endEpisode(),
       setCrying: (score) => {
         crying = score;

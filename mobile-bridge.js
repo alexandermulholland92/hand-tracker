@@ -844,7 +844,7 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
     // The key, kept: in the Android app's Keystore (Remote), the iPhone app's Keychain (RigServer.swift's own).
     const Secrets = plugin("Remote") || Rig;
     if (!Rig) return null;
-    const listeners = { status: new Set(), wantPreviews: new Set(), command: new Set(), wantListen: new Set() };
+    const listeners = { status: new Set(), wantPreviews: new Set(), command: new Set(), wantListen: new Set(), talk: new Set() };
     for (const name of Object.keys(listeners)) {
       Rig.addListener(name, (data) => {
         for (const cb of listeners[name]) {
@@ -913,6 +913,11 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
       listen: {
         write: (bytes) => (typeof Rig.listenChunk === "function" ? Promise.resolve(Rig.listenChunk({ pcm: bytes64(bytes) })).catch(() => {}) : null),
         onWant: on("wantListen"),
+      },
+      // Someone talking to the baby (RigServer's /api/talk): { seq, data: base64 16 kHz µ-law } a quarter of a second
+      // at a time, then { stop: true }, for baby-monitor.js to play.
+      talk: {
+        onChunk: (cb) => on("talk")((d) => cb(d && d.stop ? { stop: true } : { seq: d && d.seq, data: d && d.ulaw })),
       },
       dim: (dimmed) => (typeof Rig.dim === "function" ? Promise.resolve(Rig.dim({ on: !!dimmed })).catch(() => {}) : Promise.resolve()),
       result: (id, result) => Rig.result({ id, result: JSON.stringify(result || {}) }).catch(() => {}),
