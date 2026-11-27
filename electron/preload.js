@@ -540,6 +540,8 @@ contextBridge.exposeInMainWorld("desktop", {
     hello: (device) => ipcRenderer.invoke("call:hello", device),
     devices: (device) => ipcRenderer.invoke("call:devices", device),
     send: (device, address, signal) => ipcRenderer.invoke("call:send", device, address, signal),
+    // Hand Tracker's cameras on this device: rig(device, { do: "list" | "start" | "stop" | "frame", camera, after })
+    rig: (device, what) => ipcRenderer.invoke("call:rig", device, what),
     settings: (change) => ipcRenderer.invoke("call:settings", change),
     onSignal: (cb) => {
       const listener = (_event, s) => cb(s);

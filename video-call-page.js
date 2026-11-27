@@ -24,6 +24,7 @@
         settings: (change) => desktop.settings(change),
         onSignal: (cb) => desktop.onSignal(cb),
         onShown: (cb) => desktop.onShown(cb),
+        rig: (what) => (desktop.rig ? desktop.rig(device, what) : null),
       }
     : null;
   let shown = false; // (the window in view: told by the app; until then, a camera stays closed)
@@ -41,21 +42,40 @@
     $("note").textContent = text || "";
     $("note").className = "note" + (err ? " err" : "");
   };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
 
   // ---------- Camera and microphone ----------
   const chosen = { camera: localStorage.getItem("vc.camera") || "", mic: localStorage.getItem("vc.mic") || "" };
 
-  async function fillDevices() {
+  // The cameras and microphones here. A camera just let go of can be missing from the list for a moment: a look that
+  // finds none is tried again, and until one is plugged in or out (changed) the cameras last listed are kept.
+  let lastWebcams = [], lastMics = [];
+  async function fillDevices(changed = false) {
     let all = [];
+    for (let i = 0; i < 3; i++) {
+      try {
+        all = await navigator.mediaDevices.enumerateDevices();
+      } catch {}
+      if (all.some((d) => d.kind === "videoinput")) break;
+      await sleep(400);
+    }
+    let webcams = all.filter((d) => d.kind === "videoinput").map((d, i) => [d.deviceId, d.label || `Camera ${i + 1}`]);
+    let mics = all.filter((d) => d.kind === "audioinput" && d.deviceId !== "communications").map((d, i) => [d.deviceId, d.label || `Microphone ${i + 1}`]);
+    if (!changed && !webcams.length) webcams = lastWebcams;
+    if (!changed && !mics.length) mics = lastMics;
+    [lastWebcams, lastMics] = [webcams, mics];
+    // (Hand Tracker's cameras on this device too: an OAK, a Kinect, a PS4 camera, as "rig:<its number>")
+    let rigCams = [];
     try {
-      all = await navigator.mediaDevices.enumerateDevices();
+      rigCams = (host && (await host.rig({ do: "list" }))) || [];
     } catch {}
-    const cams = all.filter((d) => d.kind === "videoinput");
-    const mics = all.filter((d) => d.kind === "audioinput" && d.deviceId !== "communications");
+    rigCount = rigCams.length;
+    // (Default camera, first: this device's own camera when a call starts, else Hand Tracker's first: see openMedia)
+    const cams = [["", "Default camera"], ...webcams, ...rigCams.map((c) => [`rig:${c.index}`, `${c.role || c.name} (Hand Tracker)`])];
     const fill = (sel, items, none, value) => {
       sel.innerHTML = "";
-      for (const [v, label] of [...items.map((d, i) => [d.deviceId, d.label || `${none === "No camera" ? "Camera" : "Microphone"} ${i + 1}`]), ["none", none]]) {
+      for (const [v, label] of [...items, ["none", none]]) {
         const o = document.createElement("option");
         o.value = v;
         o.textContent = label;
@@ -64,11 +84,71 @@
       sel.value = [...sel.options].some((o) => o.value === value) ? value : sel.options[0] ? sel.options[0].value : "none";
     };
     fill($("camera"), cams, "No camera", chosen.camera);
-    fill($("mic"), mics, "No microphone", chosen.mic);
+    fill($("mic"), [["", "Default microphone"], ...mics], "No microphone", chosen.mic);
     fill($("callCamera"), cams, "No camera", $("camera").value);
   }
+  let rigCount = 0;
 
-  async function openMedia({ camera = $("camera").value, mic = $("mic").value } = {}) {
+  let rigUsed = false; // (this call started Hand Tracker's cameras: let go of after it)
+
+  // One of Hand Tracker's cameras as a camera of this page's own: its pictures (asked for one after another) drawn
+  // into a canvas, whose own video is what the call sends.
+  async function rigTrack(index) {
+    const r = await host.rig({ do: "start" });
+    if (!r || !r.ok) throw new Error((r && r.message) || "Hand Tracker's cameras didn't start.");
+    rigUsed = true;
+    const canvas = document.createElement("canvas");
+    canvas.width = 1280;
+    canvas.height = 720;
+    const g = canvas.getContext("2d");
+    g.fillStyle = "#000";
+    g.fillRect(0, 0, canvas.width, canvas.height);
+    const track = canvas.captureStream(30).getVideoTracks()[0];
+    (async () => {
+      let after = -1;
+      while (track.readyState === "live") {
+        let f = null;
+        try {
+          f = await host.rig({ do: "frame", camera: index, after: after >= 0 ? after : undefined });
+        } catch {}
+        if (track.readyState !== "live") break;
+        if (!f || !f.data) {
+          await sleep(150); // (the camera starting, or no newer picture yet)
+          continue;
+        }
+        after = f.seq;
+        try {
+          const bmp = await createImageBitmap(new Blob([f.data], { type: "image/jpeg" }));
+          if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
+            canvas.width = bmp.width;
+            canvas.height = bmp.height;
+          }
+          g.drawImage(bmp, 0, 0);
+          bmp.close();
+        } catch {}
+      }
+    })();
+    return track;
+  }
+
+  async function openMedia({ camera = $("camera").value, mic = $("mic").value, preview = false } = {}) {
+    if (/^rig:\d+$/.test(camera)) {
+      const video = await rigTrack(Number(camera.slice(4)));
+      const sound = mic === "none" ? null : await openMedia({ camera: "none", mic }).catch(() => null);
+      return new MediaStream([video, ...(sound ? sound.getAudioTracks() : [])]);
+    }
+    // Default camera: this device's own (whichever the system gives, however the list looks just now); none here, then
+    // Hand Tracker's first (a Pi with only an OAK, say).
+    if (camera === "" && rigCount > 0) {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } });
+        const sound = mic === "none" ? null : await openMedia({ camera: "none", mic }).catch(() => null);
+        return new MediaStream([...s.getVideoTracks(), ...(sound ? sound.getAudioTracks() : [])]);
+      } catch (e) {
+        if (preview) throw e; // (Hand Tracker's cameras aren't started for a preview)
+        return openMedia({ camera: "rig:0", mic });
+      }
+    }
     const want = {
       video: camera === "none" ? false : { deviceId: camera ? { ideal: camera } : undefined, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
       audio: mic === "none" ? false : { deviceId: mic ? { ideal: mic } : undefined, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -103,15 +183,16 @@
     stopMedia(previewStream);
     previewStream = null;
     const cam = $("camera").value;
-    $("previewOff").hidden = cam !== "none";
-    $("previewOff").textContent = "Camera off";
-    if (cam === "none" || state.mode !== "idle" || !shown) {
+    const rig = /^rig:/.test(cam); // (Hand Tracker's cameras aren't started just for this: in a call only)
+    $("previewOff").hidden = cam !== "none" && !rig;
+    $("previewOff").textContent = rig ? "Hand Tracker's camera: its picture in a call" : "Camera off";
+    if (cam === "none" || rig || state.mode !== "idle" || !shown) {
       $("preview").srcObject = null;
       return previewOpening;
     }
     previewOpening = (async () => {
       try {
-        const s = await openMedia({ camera: cam, mic: "none" });
+        const s = await openMedia({ camera: cam, mic: "none", preview: true });
         // (a call started, or the window hidden, while it opened: let go at once)
         if (turn !== previewTurn || state.mode !== "idle" || !shown) return stopMedia(s);
         previewStream = s;
@@ -298,6 +379,7 @@
     note("");
     try {
       await dropPreview();
+      await fillDevices(); // (the cameras and microphones there now)
       local = await openMedia();
       if (call !== c) return stopMedia(local);
       c.pc = connection(c);
@@ -333,6 +415,7 @@
     clearTimeout(c.timer);
     try {
       await dropPreview();
+      await fillDevices(); // (the cameras and microphones there now)
       local = await openMedia();
       if (call !== c) return stopMedia(local);
       c.pc = connection(c);
@@ -370,6 +453,33 @@
     $("callCamera").value = $("camera").value;
     syncButtons();
     setMode("in-call");
+    watchCamera();
+    for (const t of local ? local.getVideoTracks() : []) if (t.readyState === "ended") recoverCamera(t);
+  }
+
+  // A camera that stops by itself during a call (unplugged and back, its driver starting over): opened again and its
+  // picture sent in place of the old one's (three tries). (A track this page stops itself doesn't count.)
+  function watchCamera() {
+    for (const t of local ? local.getVideoTracks() : []) {
+      if (t.__watched) continue;
+      t.__watched = true;
+      t.addEventListener("ended", () => recoverCamera(t));
+    }
+  }
+  async function recoverCamera(old) {
+    const id = $("callCamera").value;
+    if (id === "none" || old.__recovering) return;
+    old.__recovering = true;
+    for (let i = 0; i < 3; i++) {
+      await sleep(700);
+      if (!call || state.mode !== "in-call" || !local || !local.getVideoTracks().includes(old)) return;
+      try {
+        await switchCamera(id, true);
+        $("callNote").textContent = "The camera stopped by itself: it's been started again.";
+        return;
+      } catch {}
+    }
+    $("callNote").textContent = "The camera stopped and couldn't be started again: choose another.";
   }
 
   function hangup() {
@@ -389,6 +499,10 @@
     }
     stopMedia(local);
     local = null;
+    if (rigUsed) {
+      rigUsed = false;
+      Promise.resolve(host.rig({ do: "stop" })).catch(() => {}); // (Hand Tracker's cameras, if this call started them)
+    }
     $("remote").srcObject = null;
     $("self").srcObject = null;
     setMode("idle");
@@ -453,7 +567,7 @@
   }
 
   // Another camera for the call (or none): its picture sent in place of the last one's.
-  async function switchCamera(id) {
+  async function switchCamera(id, recovering = false) {
     if (!call || !call.pc || !local) return;
     const sender = videoSender(call.pc);
     let track = null;
@@ -462,9 +576,11 @@
         const s = await openMedia({ camera: id, mic: "none" });
         track = s.getVideoTracks()[0] || null;
       } catch (e) {
+        if (recovering) throw e;
         $("callNote").textContent = `That camera couldn't be opened: ${e.message}`;
         return;
       }
+      if (recovering && (!track || track.readyState !== "live")) throw new Error("not started");
     }
     if (track) track.enabled = !cameraOff;
     for (const t of local.getVideoTracks()) {
@@ -475,6 +591,7 @@
     if (sender) await sender.replaceTrack(track);
     $("self").srcObject = local;
     $("camera").value = id;
+    watchCamera();
   }
 
   // ---------- Start ----------
@@ -516,7 +633,7 @@
     $("ringClosed").checked = !!(hello.settings && hello.settings.ringWhenClosed);
     if (hello.error) note(hello.error, true);
     await fillDevices();
-    navigator.mediaDevices.addEventListener("devicechange", fillDevices);
+    navigator.mediaDevices.addEventListener("devicechange", () => fillDevices(true));
     showPreview();
     for (const s of hello.waiting || []) await onSignal(s).catch(() => {});
     await refresh();

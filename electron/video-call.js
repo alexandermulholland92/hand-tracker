@@ -249,4 +249,88 @@ function createVideoCall({ name = "", version = "", port = PORT, sim = null, onS
   return { start, stop, me, devices, send, trusted, port: () => listenPort };
 }
 
-module.exports = { createVideoCall, PORT, isTailnet };
+// Bytes from a URL (a camera's picture): { status, type, data } (a Buffer).
+function fetchBytes(url, timeout = 8000) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, { timeout }, (res) => {
+      const chunks = [];
+      let size = 0;
+      res.on("data", (c) => {
+        size += c.length;
+        if (size > 16 << 20) req.destroy(new Error("too much"));
+        else chunks.push(c);
+      });
+      res.on("end", () => resolve({ status: res.statusCode, type: String(res.headers["content-type"] || ""), data: Buffer.concat(chunks) }));
+    });
+    req.on("timeout", () => req.destroy(new Error("it didn't answer")));
+    req.on("error", reject);
+  });
+}
+
+// Hand Tracker on this device (its rig service, port 47821, asked over this device's own Tailscale address, which it
+// trusts as its own): its cameras as a call's camera (an OAK, a Kinect, a PS4 camera: ones a browser can't open).
+// Listed; started when a call wants one (someone here chose it: a Pi never opens a camera by itself); their pictures
+// one after another, full size; and stopped after the call if this started them, unless Hand Tracker is recording or
+// Sentry mode is on.
+//   const rig = createRig({ base: async () => "http://100.x.y.z:47821" | null });
+//   await rig.list()                 // [{ index, name, role, running }]
+//   await rig.start()                // { ok, message }
+//   await rig.frame(index, after)    // { seq, data } (a JPEG), or null (none newer yet)
+//   await rig.stop()
+function createRig({ base }) {
+  let started = false;
+  async function state() {
+    const b = await base();
+    if (!b) return null;
+    try {
+      const r = await request(`${b}/api/state`, { timeout: 4000 });
+      return r.status === 200 && r.json && typeof r.json === "object" ? r.json : null;
+    } catch {
+      return null;
+    }
+  }
+  async function list() {
+    const s = await state();
+    if (!s || !Array.isArray(s.cameras)) return [];
+    return s.cameras.map((c, i) => ({
+      index: i,
+      name: String((c && c.name) || `Camera ${i + 1}`).slice(0, 60),
+      role: String((c && c.role) || "").slice(0, 40),
+      running: !!(c && Number(c.fps) > 0),
+    }));
+  }
+  async function start() {
+    const b = await base();
+    if (!b || !(await state())) return { ok: false, message: "Hand Tracker isn't running on this device." };
+    let r;
+    try {
+      r = await request(`${b}/api/command`, { method: "POST", body: { action: "cameras" } });
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+    const ok = r.status === 200 && !!(r.json && r.json.ok);
+    if (ok && !/already running/i.test(String(r.json.message || ""))) started = true;
+    return { ok, message: String((r.json && (r.json.message || r.json.error)) || "") };
+  }
+  async function frame(index, after) {
+    const b = await base();
+    if (!b || !Number.isInteger(index) || index < 0) return null;
+    const q = `i=${index}&full=1${Number.isInteger(after) && after >= 0 ? `&after=${after}` : ""}`;
+    const r = await fetchBytes(`${b}/api/preview?${q}`).catch(() => null);
+    if (!r || r.status !== 200 || !r.data.length) return null;
+    const m = /seq=(\d+)/.exec(r.type);
+    return { seq: m ? Number(m[1]) : (Number(after) || 0) + 1, data: r.data };
+  }
+  async function stop() {
+    if (!started) return;
+    started = false;
+    const s = await state();
+    const sentry = s && (s.sentry === true || (s.sentry && typeof s.sentry === "object" && (s.sentry.on || s.sentry.armed)));
+    if (!s || s.recording || s.saving || sentry) return; // (in use: left running)
+    const b = await base();
+    await request(`${b}/api/command`, { method: "POST", body: { action: "close" } }).catch(() => {});
+  }
+  return { list, start, frame, stop };
+}
+
+module.exports = { createVideoCall, createRig, PORT, isTailnet };

@@ -2309,7 +2309,7 @@ function registerIpc() {
 let videoCall = null;
 if (APP.kind === "call") {
   const { Notification, Tray } = require("electron");
-  const { createVideoCall } = require("./video-call");
+  const { createVideoCall, createRig } = require("./video-call");
   let sim = null;
   try {
     sim = process.env.HT_VIDEO_CALL_SIM ? JSON.parse(process.env.HT_VIDEO_CALL_SIM) : null;
@@ -2349,6 +2349,16 @@ if (APP.kind === "call") {
       },
     }));
   const index = (i) => (sim ? Math.max(0, Math.min(services.length - 1, Number(i) || 0)) : 0);
+  // Each device's Hand Tracker, for its cameras (when simulated: HT_VIDEO_CALL_RIG, a stand-in, for the second device).
+  const rigs = services.map((s, i) =>
+    createRig({
+      base: async () => {
+        if (sim) return i === 1 && process.env.HT_VIDEO_CALL_RIG ? `http://${process.env.HT_VIDEO_CALL_RIG}` : null;
+        const m = await s.me();
+        const ip = m && (m.ips || []).find((a) => !a.includes(":"));
+        return ip ? `http://${ip}:47821` : null;
+      },
+    }));
   let started = null, startError = "";
   videoCall = {
     quitting: false,
@@ -2393,6 +2403,15 @@ if (APP.kind === "call") {
     return { me: await services[n].me(), waiting: w, settings: videoCall.settings(), error: startError, sim: !!sim, shown: shown(BrowserWindow.fromWebContents(event.sender)) };
   });
   handle("call:devices", (_e, i) => services[index(i)].devices());
+  handle("call:rig", (_e, i, what) => {
+    const rig = rigs[index(i)];
+    const w = what && typeof what === "object" ? what : {};
+    if (w.do === "list") return rig.list();
+    if (w.do === "start") return rig.start();
+    if (w.do === "frame") return rig.frame(Number(w.camera), Number(w.after));
+    if (w.do === "stop") return rig.stop();
+    return null;
+  });
   handle("call:send", (_e, i, address, signal) => services[index(i)].send(String(address || ""), signal && typeof signal === "object" ? signal : {}));
   handle("call:settings", (_e, change) => {
     if (change && typeof change.ringWhenClosed === "boolean") {
