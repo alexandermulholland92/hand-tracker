@@ -4,11 +4,11 @@
 <meta charset="UTF-8" />
 <link rel="icon" type="image/png" href="favicon.png" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<!-- Video Call (an app of its own: the computer apps' "call" builds, scripts/dist.js --app call): video calls between
-     your own devices over Tailscale. The page: video-call-page.js; each call set up through electron/video-call.js,
+<!-- Cluster Call (an app of its own: the computer apps' "clustercall" builds, scripts/dist.js --app clustercall): video calls between
+     your own devices over Tailscale. The page: cluster-call-page.js; each call set up through electron/cluster-call.js,
      its pictures and sound sent straight between the two apps (WebRTC). -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'self'; base-uri 'none'; form-action 'none'" />
-<title>Video Call</title>
+<title>Cluster Call</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -74,7 +74,7 @@
 </head>
 <body>
 <main>
-  <header><h1>Video Call</h1><span id="me"></span></header>
+  <header><h1>Cluster Call</h1><span id="me"></span></header>
   <p id="note" class="note"></p>
   <div class="home">
     <div>
@@ -82,13 +82,13 @@
       <div class="choices">
         <label>Camera <select id="camera"></select></label>
         <label>Microphone <select id="mic"></select></label>
-        <label title="Video Call opens when you log in, with its window hidden, and keeps going in the background when you close its window, so your other devices can always ring it. Quit it from its icon (beside the clock) to stop calls coming in."><input type="checkbox" id="ringClosed" /> Ring when closed</label>
+        <label title="Cluster Call opens when you log in, with its window hidden, and keeps going in the background when you close its window, so your other devices can always ring it. Quit it from its icon (beside the clock) to stop calls coming in."><input type="checkbox" id="ringClosed" /> Ring when closed</label>
       </div>
     </div>
     <div>
       <h2>Your devices <button id="refresh">Refresh</button></h2>
       <ul id="devices"></ul>
-      <p class="sub">Your own devices on Tailscale. One with Video Call open (or waiting in the background) can be called.</p>
+      <p class="sub">Your own devices on Tailscale. One with Cluster Call open (or waiting in the background) can be called.</p>
     </div>
   </div>
 </main>
@@ -119,6 +119,6 @@
   </div>
 </section>
 
-<script src="video-call-page.js"></script>
+<script src="cluster-call-page.js"></script>
 </body>
 </html>

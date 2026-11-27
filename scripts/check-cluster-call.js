@@ -1,7 +1,7 @@
 /**
- * check-call.js — checks the Video Call app (its own app: --app=call) with two devices simulated on this computer
- * (HT_VIDEO_CALL_SIM: "Desk" and "Pi", each with its own service and page), and Chromium's test camera and
- * microphone:  npm run check:call
+ * check-cluster-call.js — checks the Cluster Call app (its own app: --app=call) with two devices simulated on this computer
+ * (HT_CLUSTER_CALL_SIM: "Desk" and "Pi", each with its own service and page), and Chromium's test camera and
+ * microphone:  npm run check:cluster-call
  * Checked: each lists the other, ready for calls; a call rings the other; declined; not answered in time (missed);
  * answered: both in the call, each receiving the other's pictures and sound; mute and camera off shown on the other
  * side; the camera switched off and back mid-call; a third device calling one in a call: busy; hung up: both back,
@@ -36,15 +36,15 @@ async function until(fn, ms = 15000) {
 
 const PORTS = [47971, 47972];
 const RING_MS = 5000;
-app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "video-call-check-")));
+app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "cluster-call-check-")));
 app.commandLine.appendSwitch("use-fake-device-for-media-stream");
 app.commandLine.appendSwitch("use-fake-ui-for-media-stream");
 // (the test camera playing a file: Chromium's own pattern crashes now and then, and then no camera opens: fake-camera.js)
 const fakeCamera = require("./fake-camera.js").fakeCameraFile();
 if (fakeCamera) app.commandLine.appendSwitch("use-file-for-fake-video-capture", fakeCamera);
-process.argv.push("--app=call");
-process.env.HT_VIDEO_CALL_SIM = JSON.stringify([{ name: "Desk", port: PORTS[0] }, { name: "Pi", port: PORTS[1] }, { name: "Phone", port: 47975, external: true }]);
-process.env.HT_VIDEO_CALL_RIG = "127.0.0.1:47974"; // (the Pi's Hand Tracker: the stand-in below)
+process.argv.push("--app=clustercall");
+process.env.HT_CLUSTER_CALL_SIM = JSON.stringify([{ name: "Desk", port: PORTS[0] }, { name: "Pi", port: PORTS[1] }, { name: "Phone", port: 47975, external: true }]);
+process.env.HT_CLUSTER_CALL_RIG = "127.0.0.1:47974"; // (the Pi's Hand Tracker: the stand-in below)
 require("../electron/main.js");
 
 // A stand-in Hand Tracker on the Pi (its rig service): one camera ("North", an OAK say) whose pictures are 320 × 180
@@ -109,7 +109,7 @@ function post(port, body, headers = {}) {
 }
 
 
-// The phone's service (VideoCallServer.java) on this computer's Java: compiled, started on port 47975 as "Phone";
+// The phone's service (ClusterCallServer.java) on this computer's Java: compiled, started on port 47975 as "Phone";
 // { lines (what it said), ask(request) -> its answer, stop() }, or null without Java.
 async function startPhone() {
   const isWin = process.platform === "win32";
@@ -117,14 +117,14 @@ async function startPhone() {
     .find((d) => d && fs.existsSync(path.join(d, "bin", isWin ? "javac.exe" : "javac")));
   if (!home) return null;
   const bin = (t) => path.join(home, "bin", isWin ? `${t}.exe` : t);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "video-call-java-"));
-  const javac = spawnSync(bin("javac"), ["-nowarn", "-encoding", "UTF-8", "-d", dir, path.join(ROOT, "android/app/src/call/java/com/handtracker/app/VideoCallServer.java"),
-    path.join(__dirname, "jvm/com/handtracker/app/VideoCallHarness.java")], { encoding: "utf8" });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cluster-call-java-"));
+  const javac = spawnSync(bin("javac"), ["-nowarn", "-encoding", "UTF-8", "-d", dir, path.join(ROOT, "android/app/src/clustercall/java/com/handtracker/app/ClusterCallServer.java"),
+    path.join(__dirname, "jvm/com/handtracker/app/ClusterCallHarness.java")], { encoding: "utf8" });
   if (javac.status !== 0) {
-    check("The phone's Video Call service compiles (VideoCallServer.java)", false, String(javac.stderr || javac.error).slice(0, 800));
+    check("The phone's Cluster Call service compiles (ClusterCallServer.java)", false, String(javac.stderr || javac.error).slice(0, 800));
     return null;
   }
-  const java = spawn(bin("java"), ["-cp", dir, "com.handtracker.app.VideoCallHarness", "47975", "Phone"], { stdio: ["pipe", "pipe", "pipe"] });
+  const java = spawn(bin("java"), ["-cp", dir, "com.handtracker.app.ClusterCallHarness", "47975", "Phone"], { stdio: ["pipe", "pipe", "pipe"] });
   const lines = [], waiting = [];
   let buf = "";
   java.stdout.on("data", (d) => {
@@ -148,7 +148,7 @@ async function startPhone() {
   const ready = await until(() => lines.find((l) => l.ready), 10000);
   if (!ready) {
     java.kill();
-    check("The phone's Video Call service starts (VideoCallServer.java)", false, "it didn't say it was ready");
+    check("The phone's Cluster Call service starts (ClusterCallServer.java)", false, "it didn't say it was ready");
     return null;
   }
   return {
@@ -178,15 +178,15 @@ app.whenReady().then(async () => {
     }
     await new Promise((r) => rigServer.listen(47974, "127.0.0.1", r));
     const desk = await until(() => BrowserWindow.getAllWindows()[0], 20000);
-    await desk.loadURL(`app://hand-tracker/video-call.html?ringMs=${RING_MS}`);
+    await desk.loadURL(`app://hand-tracker/cluster-call.html?ringMs=${RING_MS}`);
     const pi = new BrowserWindow({
       show: false, width: 1000, height: 760,
       webPreferences: { preload: path.join(ROOT, "electron", "preload.js"), contextIsolation: true, sandbox: true, backgroundThrottling: false },
     });
-    await pi.loadURL(`app://hand-tracker/video-call.html?device=1&ringMs=${RING_MS}`);
+    await pi.loadURL(`app://hand-tracker/cluster-call.html?device=1&ringMs=${RING_MS}`);
     const A = (code) => desk.webContents.executeJavaScript(code, true);
     const B = (code) => pi.webContents.executeJavaScript(code, true);
-    const st = (w) => w("window.__videoCall.state()");
+    const st = (w) => w("window.__clusterCall.state()");
     const click = (w, id) => w(`document.getElementById(${JSON.stringify(id)}).click(); true`);
     const callButton = (w, name) => w(`(() => { const li = [...document.querySelectorAll("#devices li")].find((l) => l.querySelector(".name").textContent === ${JSON.stringify(name)}); const b = li && li.querySelector("button"); if (!b || b.disabled) return false; b.click(); return true; })()`);
 
@@ -238,10 +238,10 @@ app.whenReady().then(async () => {
     }, 20000);
     check("Pi answers: both in the call, connected straight to each other", !!both, both || { a: await st(A), b: await st(B) });
     const flowing = await until(async () => {
-      const [a, b] = [await A("window.__videoCall.received()"), await B("window.__videoCall.received()")];
+      const [a, b] = [await A("window.__clusterCall.received()"), await B("window.__clusterCall.received()")];
       return a && b && a.frames > 20 && b.frames > 20 && a.audioPackets > 50 && b.audioPackets > 50 ? { a, b } : null;
     }, 20000);
-    check("...each receives the other's pictures and sound", !!flowing, flowing || { a: await A("window.__videoCall.received()"), b: await B("window.__videoCall.received()"), da: await A("window.__videoCall.debug()"), db: await B("window.__videoCall.debug()") });
+    check("...each receives the other's pictures and sound", !!flowing, flowing || { a: await A("window.__clusterCall.received()"), b: await B("window.__clusterCall.received()"), da: await A("window.__clusterCall.debug()"), db: await B("window.__clusterCall.debug()") });
 
     // Mute and camera off, shown on the other side.
     await click(A, "mute");
@@ -261,13 +261,13 @@ app.whenReady().then(async () => {
     check("...and back on: Pi shows that too", !!back, await st(B));
 
     // The camera switched to none and back mid-call: its pictures come again.
-    const before = await B("window.__videoCall.received()");
+    const before = await B("window.__clusterCall.received()");
     await A(`(() => { const s = document.getElementById("callCamera"); s.value = "none"; s.dispatchEvent(new Event("change")); return true; })()`);
     await sleep(1500);
     const none = await A("({ tracks: document.getElementById('self').srcObject.getVideoTracks().length })");
     await A(`(() => { const s = document.getElementById("callCamera"); s.value = s.options[0].value; s.dispatchEvent(new Event("change")); return true; })()`);
     const again = await until(async () => {
-      const r = await B("window.__videoCall.received()");
+      const r = await B("window.__clusterCall.received()");
       return r && r.frames > before.frames + 20 ? r : null;
     }, 15000);
     check("The camera switched off and back mid-call (no new setting up): its pictures come again", none.tracks === 0 && !!again, { none, before, again });
@@ -297,20 +297,20 @@ app.whenReady().then(async () => {
     await until(async () => (await st(B)).mode === "ringing");
     await click(B, "answer");
     const fromRig = await until(async () => {
-      const r = await A("window.__videoCall.received()");
+      const r = await A("window.__clusterCall.received()");
       return r && r.width === 320 && r.frames > 15 ? r : null;
     }, 20000);
-    check("...Pi answers with it: Hand Tracker's cameras started, Desk sees its pictures (320 × 180)", rig.commands.includes("cameras") && !!fromRig, { commands: rig.commands, fromRig, got: await A("window.__videoCall.received()") });
+    check("...Pi answers with it: Hand Tracker's cameras started, Desk sees its pictures (320 × 180)", rig.commands.includes("cameras") && !!fromRig, { commands: rig.commands, fromRig, got: await A("window.__clusterCall.received()") });
     await click(A, "hangup");
     const rigClosed = await until(() => rig.commands.includes("close") && !rig.running);
     check("...the call over: Hand Tracker's cameras stopped again (this call started them)", !!rigClosed, rig.commands);
 
 
-    // A phone's Video Call service (VideoCallServer.java: on this computer's Java, VideoCallHarness standing in for the
+    // A phone's Cluster Call service (ClusterCallServer.java: on this computer's Java, ClusterCallHarness standing in for the
     // phone app around it): listed by Desk, told Desk's list of your devices, rung by Desk, and declining back; it
     // takes anything on your Tailscale network, never a web page.
     const phone = await startPhone();
-    if (!phone) check("A phone's Video Call service (VideoCallServer.java)", true, "no Java here: skipped");
+    if (!phone) check("A phone's Cluster Call service (ClusterCallServer.java)", true, "no Java here: skipped");
     else {
       await click(A, "refresh");
       const listedPhone = await until(async () => (await st(A)).devices.find((d) => d.name === "Phone" && d.app));
@@ -338,8 +338,8 @@ app.whenReady().then(async () => {
     // The service itself: a web page refused; only this computer when simulated.
     const page = await post(PORTS[1], { kind: "offer", call: "page-call-0001", sdp: "v=0" }, { Origin: "https://example.com" });
     check("The service refuses a web page's request", page.status === 403, page);
-    const { createVideoCall } = require("../electron/video-call.js");
-    const real = createVideoCall({});
+    const { createClusterCall } = require("../electron/cluster-call.js");
+    const real = createClusterCall({});
     check("...and, not simulated, anything but your own devices on Tailscale", !(await real.trusted("127.0.0.1")) && !(await real.trusted("192.168.1.20")) && !(await real.trusted("8.8.8.8")));
 
     code = results.every(Boolean) ? 0 : 1;

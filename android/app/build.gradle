@@ -56,11 +56,10 @@ android {
             dimension "app"
             applicationId "com.handtracker.converter"
         }
-        // Video Call (call: video-call.html first): video calls between your own devices over Tailscale. (Made with
-        // create: in Gradle's Groovy, call { } would call the block itself.)
-        create("call") {
+        // Cluster Call (clustercall: cluster-call.html first): video calls between your own devices over Tailscale.
+        clustercall {
             dimension "app"
-            applicationId "com.handtracker.call"
+            applicationId "com.handtracker.clustercall"
         }
         // Cluster (cluster: cluster.html first): the Raspberry Pis running Cluster's service; the phone a member
         // too (its own switch): only for 64-bit ARM phones (its Python, ffmpeg and ONNX Runtime are built for those).

@@ -14,7 +14,7 @@
 //       disconnect({ id }); events "notification" { id, characteristic, value }, "disconnected" { id }
 //     One device at a time; each step waits for the one before.
 //   Cluster: Cluster's own app reaching the Pis running Cluster's service (ClusterPlugin, below).
-//   VideoCall: Video Call's own app, its calls (VideoCallPlugin, at the end).
+//   ClusterCall: Cluster Call's own app, its calls (ClusterCallPlugin, at the end).
 
 import Foundation
 import Network
@@ -615,9 +615,9 @@ public class BtLinkPlugin: CAPPlugin, CAPBridgedPlugin, CBCentralManagerDelegate
     }
 }
 
-// ---------- Video Call (its own app: scripts/ios-variant.js call) ----------
-// VideoCallPlugin: Video Call on an iPhone or iPad, as VideoCallPlugin.java and VideoCallServer.java are on Android
-// and electron/video-call.js on a computer: its own service on port 47860 (GET /vc/hello, POST /vc/signal, POST
+// ---------- Cluster Call (its own app: scripts/ios-variant.js clustercall) ----------
+// ClusterCallPlugin: Cluster Call on an iPhone or iPad, as ClusterCallPlugin.java and ClusterCallServer.java are on Android
+// and electron/cluster-call.js on a computer: its own service on port 47860 (GET /vc/hello, POST /vc/signal, POST
 // /vc/announce), started when its page says hello, kept while the app is open (iOS keeps an app's server only then: an
 // iPhone rings only with the app open, the user's choice, 2026-11-27), and the page's plugin:
 //   hello() -> { me, waiting, settings, shown, error }; devices() -> { devices }; send({ address, signal }) -> its reply
@@ -625,10 +625,10 @@ public class BtLinkPlugin: CAPPlugin, CAPBridgedPlugin, CBCentralManagerDelegate
 //   kept on while a call rings or goes on); events "signal" (each call's signal), "shown" ({ on }: the app in front).
 // Who may ask: anything on your Tailscale network (100.64.0.0/10, fd7a:115c:a1e0::/48; a phone can't check whose a
 // device is, the user's choice), never a web page (an Origin header), a POST only as JSON, at most 256 KB.
-@objc(VideoCallPlugin)
-public class VideoCallPlugin: CAPPlugin, CAPBridgedPlugin {
-    public let identifier = "VideoCallPlugin"
-    public let jsName = "VideoCall"
+@objc(ClusterCallPlugin)
+public class ClusterCallPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "ClusterCallPlugin"
+    public let jsName = "ClusterCall"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "hello", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "devices", returnType: CAPPluginReturnPromise),
@@ -639,7 +639,7 @@ public class VideoCallPlugin: CAPPlugin, CAPBridgedPlugin {
     static let port: UInt16 = 47860
     static let bodyBytes = 256 * 1024
     static let kinds: Set<String> = ["offer", "answer", "decline", "busy", "cancel", "hangup", "state", "join"]
-    private let queue = DispatchQueue(label: "video-call")
+    private let queue = DispatchQueue(label: "cluster-call")
     private let lock = NSLock()
     private var listener: NWListener?
     private var wanted = false
@@ -770,7 +770,7 @@ public class VideoCallPlugin: CAPPlugin, CAPBridgedPlugin {
         if headers["origin"] != nil { return (403, ["ok": false, "error": "Not from a web page."]) }
         if !Self.onTailnet(from) { return (403, ["ok": false, "error": "Only devices on your Tailscale network."]) }
         if method == "GET" && path == "/vc/hello" {
-            return (200, ["app": "video-call", "name": UIDevice.current.name, "os": "ios"])
+            return (200, ["app": "cluster-call", "name": UIDevice.current.name, "os": "ios"])
         }
         guard method == "POST" && (path == "/vc/signal" || path == "/vc/announce") else { return (404, ["ok": false, "error": "Nothing here."]) }
         if !(headers["content-type"] ?? "").lowercased().hasPrefix("application/json") { return (415, ["ok": false, "error": "JSON only."]) }
@@ -783,7 +783,7 @@ public class VideoCallPlugin: CAPPlugin, CAPBridgedPlugin {
                 guard address.range(of: "^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(:\\d{1,5})?$", options: .regularExpression) != nil else { continue }
                 devices.append(["name": String((d["name"] as? String ?? "").prefix(80)), "address": address, "os": String((d["os"] as? String ?? "").prefix(20)), "app": (d["app"] as? Bool) == true])
             }
-            if let data = try? JSONSerialization.data(withJSONObject: devices) { UserDefaults.standard.set(data, forKey: "videoCallDevices") }
+            if let data = try? JSONSerialization.data(withJSONObject: devices) { UserDefaults.standard.set(data, forKey: "clusterCallDevices") }
             return (200, ["ok": true])
         }
         guard let signal = Self.signal(j, from: from) else { return (400, ["ok": false, "error": "Not a call's signal."]) }
@@ -798,7 +798,7 @@ public class VideoCallPlugin: CAPPlugin, CAPBridgedPlugin {
         return (200, ["ok": true])
     }
 
-    // A signal as it came, checked and kept to what a signal has (as electron/video-call.js and VideoCallServer.java).
+    // A signal as it came, checked and kept to what a signal has (as electron/cluster-call.js and ClusterCallServer.java).
     static func signal(_ j: [String: Any], from: String) -> [String: Any]? {
         guard let kind = j["kind"] as? String, kinds.contains(kind), let call = j["call"] as? String,
               call.range(of: "^[A-Za-z0-9_-]{8,64}$", options: .regularExpression) != nil else { return nil }
@@ -890,7 +890,7 @@ public class VideoCallPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func devices(_ call: CAPPluginCall) {
         var list: [[String: Any]] = []
-        if let data = UserDefaults.standard.data(forKey: "videoCallDevices"), let l = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] { list = l }
+        if let data = UserDefaults.standard.data(forKey: "clusterCallDevices"), let l = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] { list = l }
         if list.isEmpty {
             call.resolve(["devices": [Any]()])
             return
@@ -901,7 +901,7 @@ public class VideoCallPlugin: CAPPlugin, CAPBridgedPlugin {
         for (i, d) in list.enumerated() {
             group.enter()
             ask(d["address"] as? String ?? "", method: "GET", path: "/vc/hello", json: nil, seconds: 3) { reply, _ in
-                let isApp = reply?["app"] as? String == "video-call"
+                let isApp = reply?["app"] as? String == "cluster-call"
                 resultLock.lock()
                 results[i]["app"] = isApp
                 results[i]["online"] = isApp

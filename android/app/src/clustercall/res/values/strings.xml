@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Cluster Call (the "clustercall" flavor): its own names, over src/main's. -->
+<resources>
+    <string name="app_name">Cluster Call</string>
+    <string name="title_activity_main">Cluster Call</string>
+    <string name="package_name">com.handtracker.clustercall</string>
+    <string name="custom_url_scheme">com.handtracker.clustercall</string>
+</resources>

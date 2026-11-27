@@ -41,7 +41,7 @@ jobs:
       - run: node scripts/dist.js portable --app remote
       - run: node scripts/dist.js portable --app converter
       - run: node scripts/dist.js portable --app cluster
-      - run: node scripts/dist.js portable --app call
+      - run: node scripts/dist.js portable --app clustercall
 
       - uses: actions/upload-artifact@v4
         with:
@@ -119,7 +119,7 @@ jobs:
       - run: node scripts/dist.js deb --app remote
       - run: node scripts/dist.js deb --app converter
       - run: node scripts/dist.js deb --app cluster
-      - run: node scripts/dist.js deb --app call
+      - run: node scripts/dist.js deb --app clustercall
 
       # The same for 64-bit ARM (Raspberry Pi 4 and 5): ARM Electron, and ARM ffmpeg swapped
       # in for this build (see scripts/dist.js).
@@ -128,7 +128,7 @@ jobs:
       - run: node scripts/dist.js deb --arm64 --app remote
       - run: node scripts/dist.js deb --arm64 --app converter
       - run: node scripts/dist.js deb --arm64 --app cluster
-      - run: node scripts/dist.js deb --arm64 --app call
+      - run: node scripts/dist.js deb --arm64 --app clustercall
 
       # The packages install and remove cleanly, side by side: Hand Tracker with the USB rules OAK
       # cameras and the Kinect need (build/linux/*-oak.sh, *-kinect.sh), the OAK helper where Python
@@ -138,12 +138,12 @@ jobs:
       - name: Install and remove the packages
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q ./dist/hand-tracker_*_amd64.deb ./dist/hand-mouse_*_amd64.deb ./dist/remote-recording_*_amd64.deb ./dist/recording-converter_*_amd64.deb ./dist/hand-tracker-cluster_*_amd64.deb ./dist/video-call_*_amd64.deb
-          test -L /usr/bin/video-call
-          test -d "/opt/Video Call/resources"
-          test -z "$(ls /lib/udev/rules.d | grep video-call)"
-          sudo apt-get remove -y -q video-call
-          test ! -e "/opt/Video Call/resources"
+          sudo apt-get install -y -q ./dist/hand-tracker_*_amd64.deb ./dist/hand-mouse_*_amd64.deb ./dist/remote-recording_*_amd64.deb ./dist/recording-converter_*_amd64.deb ./dist/hand-tracker-cluster_*_amd64.deb ./dist/cluster-call_*_amd64.deb
+          test -L /usr/bin/cluster-call
+          test -d "/opt/Cluster Call/resources"
+          test -z "$(ls /lib/udev/rules.d | grep cluster-call)"
+          sudo apt-get remove -y -q cluster-call
+          test ! -e "/opt/Cluster Call/resources"
           test -L /usr/bin/hand-tracker-cluster
           test -z "$(ls /lib/udev/rules.d | grep hand-tracker-cluster)"
           sudo apt-get remove -y -q hand-tracker-cluster
@@ -240,7 +240,7 @@ jobs:
           : > mac-build.log
           for cpu in "arm64:mac-arm64:arm64" "x64:mac:x86_64"; do
             flag="--${cpu%%:*}"; rest="${cpu#*:}"; dir="${rest%%:*}"; arch="${rest##*:}"
-            for app in ":Hand Tracker:com.handtracker.app" "mouse:Hand Mouse:com.handtracker.mouse" "remote:Remote Recording:com.handtracker.remote" "converter:Recording Converter:com.handtracker.converter" "cluster:Cluster:com.handtracker.cluster" "call:Video Call:com.handtracker.call"; do
+            for app in ":Hand Tracker:com.handtracker.app" "mouse:Hand Mouse:com.handtracker.mouse" "remote:Remote Recording:com.handtracker.remote" "converter:Recording Converter:com.handtracker.converter" "cluster:Cluster:com.handtracker.cluster" "clustercall:Cluster Call:com.handtracker.clustercall"; do
               kind="${app%%:*}"; rest="${app#*:}"; name="${rest%%:*}"; id="${rest##*:}"
               node scripts/dist.js mac "$flag" ${kind:+--app "$kind"} 2>&1 | tee -a mac-build.log
               check "$dir" "$name" "$arch" "$id" "${cpu%%:*}"
@@ -447,7 +447,7 @@ jobs:
           cp -R "$app" Payload/
           zip -qr "dist/HandTracker-$version-ios-unsigned.ipa" Payload
           # Hand Mouse, Remote Recording, Recording Converter and Cluster, made from it.
-          for both in mouse:HandMouse remote:RemoteRecording converter:RecordingConverter cluster:Cluster call:VideoCall; do
+          for both in mouse:HandMouse remote:RemoteRecording converter:RecordingConverter cluster:Cluster clustercall:ClusterCall; do
             extra=""
             [ "${both%%:*}" = cluster ] && extra="--python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels --transmission build/transmission-ios --libtorrent build/libtorrent-ios"
             # shellcheck disable=SC2086

@@ -532,7 +532,7 @@ contextBridge.exposeInMainWorld("desktop", {
       return () => ipcRenderer.removeListener("cluster:progress", listener);
     },
   },
-  // Video Call (its own app: electron/video-call.js): hello(device) -> { me, waiting: signals that came before the page
+  // Cluster Call (its own app: electron/cluster-call.js): hello(device) -> { me, waiting: signals that came before the page
   // was ready, settings }; devices(device) -> your other devices on Tailscale; send(device, address, signal) -> its
   // reply; settings(change) -> { ringWhenClosed, canRingWhenClosed }; onSignal(cb): each call's signal as it comes.
   // (device: which of the simulated devices this page is, in the checks; 0 otherwise.)

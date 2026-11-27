@@ -8,6 +8,6 @@
     <bool name="recording_converter">false</bool>
     <!-- Cluster (the "cluster" flavor, src/cluster) is the app for the Raspberry Pis running Cluster's service. -->
     <bool name="cluster_app">false</bool>
-    <!-- Video Call (the "call" flavor, src/call) is the app for video calls between your own devices. -->
-    <bool name="video_call">false</bool>
+    <!-- Cluster Call (the "clustercall" flavor, src/clustercall) is the app for video calls between your own devices. -->
+    <bool name="cluster_call">false</bool>
 </resources>

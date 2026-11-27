@@ -21,22 +21,22 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * VideoCallService — Video Call on an Android phone, kept ready in the background (a foreground service, its
- * notification "Ready for calls"): it runs the phone's call service (VideoCallServer.java, port 47860), so your
+ * ClusterCallService — Cluster Call on an Android phone, kept ready in the background (a foreground service, its
+ * notification "Ready for calls"): it runs the phone's call service (ClusterCallServer.java, port 47860), so your
  * devices can ring the phone with the app closed. A call that comes then rings (the incoming call notification,
  * over the lock screen where the phone allows it) and opens the app on it; while the app is open, each signal goes
- * straight to its page (VideoCallPlugin.java). Started by the app, and when the phone starts when "Ring when closed"
- * is on (VideoCallBoot.java).
+ * straight to its page (ClusterCallPlugin.java). Started by the app, and when the phone starts when "Ring when closed"
+ * is on (ClusterCallBoot.java).
  *
  * Your devices, as a computer of yours announced them (a phone can't ask Tailscale), are kept in its preferences.
  */
-public class VideoCallService extends Service implements VideoCallServer.Listener {
-    static final String PREFS = "video_call";
-    static final String CHANNEL_READY = "video_call_ready";
-    static final String CHANNEL_RING = "video_call_ring";
+public class ClusterCallService extends Service implements ClusterCallServer.Listener {
+    static final String PREFS = "cluster_call";
+    static final String CHANNEL_READY = "cluster_call_ready";
+    static final String CHANNEL_RING = "cluster_call_ring";
     static final int NOTE_READY = 4701;
     static final int NOTE_RING = 4702;
-    static final String EXTRA_RING = "com.handtracker.app.VIDEO_CALL_RING";
+    static final String EXTRA_RING = "com.handtracker.app.CLUSTER_CALL_RING";
 
     /** The page while it's there: each signal goes to it. */
     interface Page {
@@ -45,12 +45,12 @@ public class VideoCallService extends Service implements VideoCallServer.Listene
 
     static volatile Page page;
     private static final List<Map<String, Object>> waiting = new ArrayList<>();
-    private VideoCallServer server;
+    private ClusterCallServer server;
     private String startError = "";
-    static volatile VideoCallService running;
+    static volatile ClusterCallService running;
 
     static void start(Context context) {
-        Intent i = new Intent(context, VideoCallService.class);
+        Intent i = new Intent(context, ClusterCallService.class);
         if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i);
         else context.startService(i);
     }
@@ -91,7 +91,7 @@ public class VideoCallService extends Service implements VideoCallServer.Listene
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (Build.VERSION.SDK_INT >= 26 && nm != null) {
             NotificationChannel ready = new NotificationChannel(CHANNEL_READY, "Ready for calls", NotificationManager.IMPORTANCE_MIN);
-            ready.setDescription("Shown while Video Call waits for calls in the background.");
+            ready.setDescription("Shown while Cluster Call waits for calls in the background.");
             nm.createNotificationChannel(ready);
             NotificationChannel ring = new NotificationChannel(CHANNEL_RING, "Incoming calls", NotificationManager.IMPORTANCE_HIGH);
             ring.setDescription("A video call from one of your devices.");
@@ -103,11 +103,11 @@ public class VideoCallService extends Service implements VideoCallServer.Listene
         Notification n = readyNotification();
         if (Build.VERSION.SDK_INT >= 34) startForeground(NOTE_READY, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         else startForeground(NOTE_READY, n);
-        server = new VideoCallServer(deviceName(this), VideoCallServer.PORT, false, this);
+        server = new ClusterCallServer(deviceName(this), ClusterCallServer.PORT, false, this);
         try {
             server.start();
         } catch (IOException e) {
-            startError = "Calls can't come in: port " + VideoCallServer.PORT + " is taken (" + e.getMessage() + ").";
+            startError = "Calls can't come in: port " + ClusterCallServer.PORT + " is taken (" + e.getMessage() + ").";
         }
     }
 
@@ -138,7 +138,7 @@ public class VideoCallService extends Service implements VideoCallServer.Listene
     private Notification readyNotification() {
         Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL_READY) : new Notification.Builder(this);
         return b.setSmallIcon(android.R.drawable.sym_call_incoming)
-                .setContentTitle("Video Call")
+                .setContentTitle("Cluster Call")
                 .setContentText("Ready for calls from your devices")
                 .setContentIntent(openApp(false))
                 .setOngoing(true)
@@ -152,7 +152,7 @@ public class VideoCallService extends Service implements VideoCallServer.Listene
         Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL_RING) : new Notification.Builder(this);
         b.setSmallIcon(android.R.drawable.sym_call_incoming)
                 .setContentTitle(who + " is calling")
-                .setContentText("Video Call: tap to answer")
+                .setContentText("Cluster Call: tap to answer")
                 .setCategory(Notification.CATEGORY_CALL)
                 .setContentIntent(openApp(true))
                 .setFullScreenIntent(openApp(true), true)
@@ -168,14 +168,14 @@ public class VideoCallService extends Service implements VideoCallServer.Listene
         if (nm != null) nm.cancel(NOTE_RING);
     }
 
-    // ---------- VideoCallServer.Listener ----------
+    // ---------- ClusterCallServer.Listener ----------
     @Override
     public Map<String, Object> onSignal(Map<String, Object> signal) {
         Page p = page;
         String kind = String.valueOf(signal.get("kind"));
         if (p != null) {
             p.onSignal(signal);
-            if ("offer".equals(kind) && !VideoCallPlugin.inFront) ring(signal); // (the page rings too, once it's in front)
+            if ("offer".equals(kind) && !ClusterCallPlugin.inFront) ring(signal); // (the page rings too, once it's in front)
         } else {
             keep(signal);
             if ("offer".equals(kind)) ring(signal);
@@ -187,7 +187,7 @@ public class VideoCallService extends Service implements VideoCallServer.Listene
     @Override
     public void onAnnounce(List<Map<String, Object>> devices, String from) {
         SharedPreferences.Editor e = getSharedPreferences(PREFS, MODE_PRIVATE).edit();
-        e.putString("devices", VideoCallServer.json(devices));
+        e.putString("devices", ClusterCallServer.json(devices));
         e.putLong("devicesAt", System.currentTimeMillis());
         e.apply();
     }

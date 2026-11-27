@@ -32,21 +32,21 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 /**
- * VideoCall — Video Call's page (video-call-page.js) on an Android phone, as electron/preload.js's desktop.call is on
+ * ClusterCall — Cluster Call's page (cluster-call-page.js) on an Android phone, as electron/preload.js's desktop.call is on
  * a computer: hello() -> { me, waiting, settings, shown, error }, devices() -> { devices }, send({ address, signal })
  * -> its reply, settings({ ringWhenClosed }), inCall({ on }) (the screen kept on, and over the lock screen, only
  * while a call rings or goes on); events "signal" (each call's signal) and "shown" ({ on }: the app in front).
- * The service itself: VideoCallService.java (kept going in the background), VideoCallServer.java.
+ * The service itself: ClusterCallService.java (kept going in the background), ClusterCallServer.java.
  */
-@CapacitorPlugin(name = "VideoCall")
-public class VideoCallPlugin extends Plugin implements VideoCallService.Page {
+@CapacitorPlugin(name = "ClusterCall")
+public class ClusterCallPlugin extends Plugin implements ClusterCallService.Page {
     static volatile boolean inFront;
     private final ExecutorService pool = Executors.newCachedThreadPool();
 
     @Override
     public void load() {
-        VideoCallService.start(getContext());
-        VideoCallService.page = this;
+        ClusterCallService.start(getContext());
+        ClusterCallService.page = this;
         // (the incoming call notification needs this on Android 13+)
         Activity a = getActivity();
         if (Build.VERSION.SDK_INT >= 33 && a != null && ContextCompat.checkSelfPermission(a, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -57,8 +57,8 @@ public class VideoCallPlugin extends Plugin implements VideoCallService.Page {
     @Override
     protected void handleOnResume() {
         inFront = true;
-        VideoCallService.page = this;
-        VideoCallService.stopRinging(getContext()); // (the page rings now)
+        ClusterCallService.page = this;
+        ClusterCallService.stopRinging(getContext()); // (the page rings now)
         JSObject o = new JSObject();
         o.put("on", true);
         notifyListeners("shown", o);
@@ -75,7 +75,7 @@ public class VideoCallPlugin extends Plugin implements VideoCallService.Page {
     @Override
     protected void handleOnDestroy() {
         inFront = false;
-        if (VideoCallService.page == this) VideoCallService.page = null;
+        if (ClusterCallService.page == this) ClusterCallService.page = null;
         pool.shutdownNow();
     }
 
@@ -86,7 +86,7 @@ public class VideoCallPlugin extends Plugin implements VideoCallService.Page {
 
     private static JSObject toJs(Object map) {
         try {
-            return JSObject.fromJSONObject(new JSONObject(VideoCallServer.json(map)));
+            return JSObject.fromJSONObject(new JSONObject(ClusterCallServer.json(map)));
         } catch (Exception e) {
             return new JSObject();
         }
@@ -97,7 +97,7 @@ public class VideoCallPlugin extends Plugin implements VideoCallService.Page {
         try {
             for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
                 for (InetAddress a : Collections.list(ni.getInetAddresses())) {
-                    if (a instanceof Inet4Address && VideoCallServer.onTailnet(a.getHostAddress())) return a.getHostAddress();
+                    if (a instanceof Inet4Address && ClusterCallServer.onTailnet(a.getHostAddress())) return a.getHostAddress();
                 }
             }
         } catch (Exception ignored) {
@@ -107,35 +107,35 @@ public class VideoCallPlugin extends Plugin implements VideoCallService.Page {
 
     @PluginMethod
     public void hello(PluginCall call) {
-        VideoCallService.page = this;
+        ClusterCallService.page = this;
         Map<String, Object> me = new LinkedHashMap<>();
-        me.put("name", VideoCallService.deviceName(getContext()));
+        me.put("name", ClusterCallService.deviceName(getContext()));
         String ip = tailscaleAddress();
         List<Object> ips = new ArrayList<>();
         if (ip != null) ips.add(ip);
         me.put("ips", ips);
         Map<String, Object> settings = new LinkedHashMap<>();
-        settings.put("ringWhenClosed", VideoCallService.ringWhenClosed(getContext()));
+        settings.put("ringWhenClosed", ClusterCallService.ringWhenClosed(getContext()));
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("me", me);
-        out.put("waiting", new ArrayList<Object>(VideoCallService.takeWaiting()));
+        out.put("waiting", new ArrayList<Object>(ClusterCallService.takeWaiting()));
         out.put("settings", settings);
         out.put("shown", true);
-        VideoCallService s = VideoCallService.running;
+        ClusterCallService s = ClusterCallService.running;
         String err = s == null ? "" : s.error();
         if (ip == null) err = (err.isEmpty() ? "" : err + " ") + "This phone isn't on Tailscale: turn Tailscale on to call and be called.";
         out.put("error", err);
         call.resolve(toJs(out));
     }
 
-    /** Your devices, as a computer of yours last announced them, each asked whether it has Video Call now. */
+    /** Your devices, as a computer of yours last announced them, each asked whether it has Cluster Call now. */
     @PluginMethod
     public void devices(PluginCall call) {
         pool.execute(() -> {
-            SharedPreferences p = getContext().getSharedPreferences(VideoCallService.PREFS, android.content.Context.MODE_PRIVATE);
+            SharedPreferences p = getContext().getSharedPreferences(ClusterCallService.PREFS, android.content.Context.MODE_PRIVATE);
             List<Map<String, Object>> list = new ArrayList<>();
             try {
-                Object o = VideoCallServer.parse(p.getString("devices", "[]"));
+                Object o = ClusterCallServer.parse(p.getString("devices", "[]"));
                 if (o instanceof List) for (Object d : (List<?>) o) if (d instanceof Map) {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> m = new LinkedHashMap<>((Map<String, Object>) d);
@@ -144,7 +144,7 @@ public class VideoCallPlugin extends Plugin implements VideoCallService.Page {
             } catch (RuntimeException ignored) {
             }
             List<Future<Map<String, Object>>> asks = new ArrayList<>();
-            for (Map<String, Object> d : list) asks.add(pool.submit(() -> VideoCallServer.hello(String.valueOf(d.get("address")))));
+            for (Map<String, Object> d : list) asks.add(pool.submit(() -> ClusterCallServer.hello(String.valueOf(d.get("address")))));
             List<Object> out = new ArrayList<>();
             for (int i = 0; i < list.size(); i++) {
                 Map<String, Object> d = list.get(i), h = null;
@@ -171,7 +171,7 @@ public class VideoCallPlugin extends Plugin implements VideoCallService.Page {
         pool.execute(() -> {
             Object parsed;
             try {
-                parsed = VideoCallServer.parse(signal.toString());
+                parsed = ClusterCallServer.parse(signal.toString());
             } catch (RuntimeException e) {
                 parsed = null;
             }
@@ -183,7 +183,7 @@ public class VideoCallPlugin extends Plugin implements VideoCallService.Page {
             } else {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> s = (Map<String, Object>) parsed;
-                reply = VideoCallServer.send(address, s, VideoCallService.deviceName(getContext()));
+                reply = ClusterCallServer.send(address, s, ClusterCallService.deviceName(getContext()));
             }
             call.resolve(toJs(reply));
         });
@@ -191,7 +191,7 @@ public class VideoCallPlugin extends Plugin implements VideoCallService.Page {
 
     @PluginMethod
     public void settings(PluginCall call) {
-        SharedPreferences p = getContext().getSharedPreferences(VideoCallService.PREFS, android.content.Context.MODE_PRIVATE);
+        SharedPreferences p = getContext().getSharedPreferences(ClusterCallService.PREFS, android.content.Context.MODE_PRIVATE);
         Boolean ring = call.getBoolean("ringWhenClosed");
         if (ring != null) p.edit().putBoolean("ringWhenClosed", ring).apply();
         JSObject o = new JSObject();
@@ -212,7 +212,7 @@ public class VideoCallPlugin extends Plugin implements VideoCallService.Page {
                 a.setTurnScreenOn(on);
             }
         });
-        if (!on) VideoCallService.stopRinging(getContext());
+        if (!on) ClusterCallService.stopRinging(getContext());
         call.resolve();
     }
 }

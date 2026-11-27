@@ -24,22 +24,22 @@ import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
 
 /**
- * VideoCallServer — Video Call's own service on a phone (Android: VideoCallService.java runs it), as
- * electron/video-call.js is on a computer, speaking the same: port 47860, GET /vc/hello, POST /vc/signal (a call's
+ * ClusterCallServer — Cluster Call's own service on a phone (Android: ClusterCallService.java runs it), as
+ * electron/cluster-call.js is on a computer, speaking the same: port 47860, GET /vc/hello, POST /vc/signal (a call's
  * offer, answer, hang up...), and POST /vc/announce (your devices, as a computer of yours lists them: a phone can't
- * ask Tailscale). Plain Java (no Android), so it's checked on a computer too (scripts/check-call.js).
+ * ask Tailscale). Plain Java (no Android), so it's checked on a computer too (scripts/check-cluster-call.js).
  *
  * Who may ask: anything on your Tailscale network (the user's choice, 2026-11-27: a phone can't check whose a device
  * is, as a computer does with `tailscale whois`); never a web page (an Origin header), a POST only as JSON, at most
  * 256 KB. allowLocal: this device itself too (the checks).
  *
- *   VideoCallServer s = new VideoCallServer(name, PORT, false, listener); s.start(); ... s.stop();
- *   VideoCallServer.send(address, signal, myName) -> its reply (a Map), or { ok: false, error }
- *   VideoCallServer.hello(address) -> its hello (a Map), or null
- *   VideoCallServer.parse(json) / VideoCallServer.json(value): this file's own JSON (Map, List, String, Double,
+ *   ClusterCallServer s = new ClusterCallServer(name, PORT, false, listener); s.start(); ... s.stop();
+ *   ClusterCallServer.send(address, signal, myName) -> its reply (a Map), or { ok: false, error }
+ *   ClusterCallServer.hello(address) -> its hello (a Map), or null
+ *   ClusterCallServer.parse(json) / ClusterCallServer.json(value): this file's own JSON (Map, List, String, Double,
  *   Boolean, null)
  */
-public class VideoCallServer {
+public class ClusterCallServer {
     public static final int PORT = 47860;
     static final int BODY_MAX = 256 * 1024;
     static final Set<String> KINDS = new HashSet<>(Arrays.asList("offer", "answer", "decline", "busy", "cancel", "hangup", "state", "join"));
@@ -63,7 +63,7 @@ public class VideoCallServer {
     private ExecutorService pool;
     private volatile boolean running;
 
-    public VideoCallServer(String name, int port, boolean allowLocal, Listener listener) {
+    public ClusterCallServer(String name, int port, boolean allowLocal, Listener listener) {
         this.name = name;
         this.port = port;
         this.allowLocal = allowLocal;
@@ -86,7 +86,7 @@ public class VideoCallServer {
                     if (!running) break;
                 }
             }
-        }, "video-call-server");
+        }, "cluster-call-server");
         t.setDaemon(true);
         t.start();
     }
@@ -156,7 +156,7 @@ public class VideoCallServer {
             if (q >= 0) path = path.substring(0, q);
             if ("GET".equals(method) && "/vc/hello".equals(path)) {
                 Map<String, Object> m = new LinkedHashMap<>();
-                m.put("app", "video-call");
+                m.put("app", "cluster-call");
                 m.put("name", name);
                 m.put("os", "android");
                 reply(out, 200, m);
@@ -211,7 +211,7 @@ public class VideoCallServer {
         }
     }
 
-    /** A signal as it came, checked and kept to what a signal has (the same as electron/video-call.js). */
+    /** A signal as it came, checked and kept to what a signal has (the same as electron/cluster-call.js). */
     static Map<String, Object> signalOf(Map<String, Object> j, String ip) {
         Object kind = j.get("kind"), call = j.get("call");
         if (!(kind instanceof String) || !KINDS.contains(kind) || !(call instanceof String) || !CALL_ID.matcher((String) call).matches()) return null;
@@ -344,11 +344,11 @@ public class VideoCallServer {
         }
     }
 
-    /** That device's app's hello, or null (not there, or not Video Call). */
+    /** That device's app's hello, or null (not there, or not Cluster Call). */
     public static Map<String, Object> hello(String address) {
         try {
             Object r = request("http://" + at(address) + "/vc/hello", null, 2500);
-            if (r instanceof Map && "video-call".equals(((Map<?, ?>) r).get("app"))) {
+            if (r instanceof Map && "cluster-call".equals(((Map<?, ?>) r).get("app"))) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> m = (Map<String, Object>) r;
                 return m;

@@ -57,8 +57,8 @@ const APPS = {
   converter: { name: "Recording Converter", page: "viewer.html", id: "com.handtracker.converter", slug: "recording-converter", size: { width: 920, height: 960 } },
   // (Cluster: the Raspberry Pis running Cluster's service, cluster/node: cluster.html)
   cluster: { name: "Cluster", page: "cluster.html", id: "com.handtracker.cluster", slug: "hand-tracker-cluster", size: { width: 1080, height: 920 } },
-  // (Video Call: calls between your own devices over Tailscale: video-call.html, electron/video-call.js)
-  call: { name: "Video Call", page: "video-call.html", id: "com.handtracker.call", slug: "video-call", size: { width: 1100, height: 820 } },
+  // (Cluster Call: calls between your own devices over Tailscale: cluster-call.html, electron/cluster-call.js)
+  clustercall: { name: "Cluster Call", page: "cluster-call.html", id: "com.handtracker.clustercall", slug: "cluster-call", size: { width: 1100, height: 820 } },
 };
 const APP = (() => {
   const arg = process.argv.find((a) => a.startsWith("--app="));
@@ -121,10 +121,10 @@ if (SMALL_BOARD) app.commandLine.appendSwitch("js-flags", "--max-old-space-size=
 // stops rendering it, which freezes the camera feed and stops tracking and
 // recording. Keep working when covered (minimizing still pauses).
 // (one disable-features: a second would replace the first)
-// (Video Call: its own addresses, the Tailscale one among them, offered to the other app as they are, not hidden
+// (Cluster Call: its own addresses, the Tailscale one among them, offered to the other app as they are, not hidden
 // behind made-up names that only a device on the same local network could look up.)
 app.commandLine.appendSwitch("disable-features", ["CalculateNativeWinOcclusion", ...(SMALL_BOARD ? ["AudioServiceOutOfProcess"] : []),
-  ...(APP.kind === "call" ? ["WebRtcHideLocalIpsWithMdns"] : [])].join(","));
+  ...(APP.kind === "clustercall" ? ["WebRtcHideLocalIpsWithMdns"] : [])].join(","));
 // On ARM boards (a Raspberry Pi), use the GPU even if Chromium's list doubts its driver:
 // hand tracking runs on WebGL, and without the GPU it crawls.
 if (process.platform === "linux" && process.arch === "arm64") app.commandLine.appendSwitch("ignore-gpu-blocklist");
@@ -298,7 +298,7 @@ function createWindow(page = "index.html", size = { width: 1320, height: 940 }, 
   const iconPath = path.join(APP_ROOT, "build", "icon.png");
   const win = new BrowserWindow({
     ...size,
-    show, // (Video Call opened at login: hidden, waiting for a call)
+    show, // (Cluster Call opened at login: hidden, waiting for a call)
     minWidth: 760,
     minHeight: 560,
     backgroundColor: "#0e0f12",
@@ -2301,20 +2301,20 @@ function registerIpc() {
   });
 }
 
-// ---------- Video Call (its own app): calls between your own devices over Tailscale (video-call-page.js) ----------
-// Its service (electron/video-call.js) passes each call's signals to the page; a call coming in brings the window
+// ---------- Cluster Call (its own app): calls between your own devices over Tailscale (cluster-call-page.js) ----------
+// Its service (electron/cluster-call.js) passes each call's signals to the page; a call coming in brings the window
 // up, with a notification. With "Ring when closed" (on unless turned off) the app stays open in the background when
 // its window is closed, and opens at login with its window hidden, so a call rings any time.
-// HT_VIDEO_CALL_SIM (the checks): several devices on this computer, [{ name, port }], each page saying which it is.
-let videoCall = null;
-if (APP.kind === "call") {
+// HT_CLUSTER_CALL_SIM (the checks): several devices on this computer, [{ name, port }], each page saying which it is.
+let clusterCall = null;
+if (APP.kind === "clustercall") {
   const { Notification, Tray } = require("electron");
-  const { createVideoCall, createRig } = require("./video-call");
+  const { createClusterCall, createRig } = require("./cluster-call");
   let sim = null;
   try {
-    sim = process.env.HT_VIDEO_CALL_SIM ? JSON.parse(process.env.HT_VIDEO_CALL_SIM) : null;
+    sim = process.env.HT_CLUSTER_CALL_SIM ? JSON.parse(process.env.HT_CLUSTER_CALL_SIM) : null;
   } catch {}
-  const file = () => path.join(app.getPath("userData"), "video-call.json");
+  const file = () => path.join(app.getPath("userData"), "cluster-call.json");
   const saved = () => {
     try {
       return JSON.parse(fs.readFileSync(file(), "utf8")) || {};
@@ -2339,7 +2339,7 @@ if (APP.kind === "call") {
   // (when simulated, an "external" device is one running elsewhere, a phone's service say: a peer, not served here)
   const devices = sim ? sim.filter((d) => !d.external) : [{ name: "" }];
   const services = devices.map((d, i) =>
-    createVideoCall({
+    createClusterCall({
       name: d.name || "",
       version: app.getVersion(),
       sim: sim ? { name: d.name, port: d.port, peers: sim.filter((p) => p !== d).map((p) => ({ name: p.name, address: `127.0.0.1:${p.port}` })) } : null,
@@ -2350,18 +2350,18 @@ if (APP.kind === "call") {
       },
     }));
   const index = (i) => (sim ? Math.max(0, Math.min(services.length - 1, Number(i) || 0)) : 0);
-  // Each device's Hand Tracker, for its cameras (when simulated: HT_VIDEO_CALL_RIG, a stand-in, for the second device).
+  // Each device's Hand Tracker, for its cameras (when simulated: HT_CLUSTER_CALL_RIG, a stand-in, for the second device).
   const rigs = services.map((s, i) =>
     createRig({
       base: async () => {
-        if (sim) return i === 1 && process.env.HT_VIDEO_CALL_RIG ? `http://${process.env.HT_VIDEO_CALL_RIG}` : null;
+        if (sim) return i === 1 && process.env.HT_CLUSTER_CALL_RIG ? `http://${process.env.HT_CLUSTER_CALL_RIG}` : null;
         const m = await s.me();
         const ip = m && (m.ips || []).find((a) => !a.includes(":"));
         return ip ? `http://${ip}:47821` : null;
       },
     }));
   let started = null, startError = "";
-  videoCall = {
+  clusterCall = {
     quitting: false,
     tray: null,
     start: () =>
@@ -2401,10 +2401,10 @@ if (APP.kind === "call") {
     const n = index(i);
     pages.set(n, event.sender);
     watch(event.sender);
-    await videoCall.start();
+    await clusterCall.start();
     const w = waiting.get(n) || [];
     waiting.delete(n);
-    return { me: await services[n].me(), waiting: w, settings: videoCall.settings(), error: startError, sim: !!sim, shown: shown(BrowserWindow.fromWebContents(event.sender)) };
+    return { me: await services[n].me(), waiting: w, settings: clusterCall.settings(), error: startError, sim: !!sim, shown: shown(BrowserWindow.fromWebContents(event.sender)) };
   });
   handle("call:devices", (_e, i) => services[index(i)].devices());
   handle("call:rig", (_e, i, what) => {
@@ -2423,22 +2423,22 @@ if (APP.kind === "call") {
       try {
         if (autostart.available()) autostart.set(change.ringWhenClosed);
       } catch (e) {
-        return { ...videoCall.settings(), error: e.message };
+        return { ...clusterCall.settings(), error: e.message };
       }
     }
-    return videoCall.settings();
+    return clusterCall.settings();
   });
 }
 
-// Video Call's window: closed, it goes on in the background (Ring when closed), in the tray where there is one.
-function videoCallWindow() {
+// Cluster Call's window: closed, it goes on in the background (Ring when closed), in the tray where there is one.
+function clusterCallWindow() {
   mainWindow.on("close", (e) => {
-    if (!videoCall.quitting && videoCall.ringWhenClosed()) {
+    if (!clusterCall.quitting && clusterCall.ringWhenClosed()) {
       e.preventDefault();
       mainWindow.hide();
     }
   });
-  app.on("before-quit", () => (videoCall.quitting = true));
+  app.on("before-quit", () => (clusterCall.quitting = true));
   const open = () => {
     if (!mainWindow) return;
     mainWindow.show();
@@ -2446,27 +2446,27 @@ function videoCallWindow() {
   };
   try {
     const icon = nativeImage.createFromPath(path.join(APP_ROOT, "build", "icon.png"));
-    videoCall.tray = new Tray(icon.isEmpty() ? icon : icon.resize({ width: 16, height: 16 }));
-    videoCall.tray.setToolTip("Video Call: ready for calls");
-    videoCall.tray.setContextMenu(Menu.buildFromTemplate([
-      { label: "Open Video Call", click: open },
+    clusterCall.tray = new Tray(icon.isEmpty() ? icon : icon.resize({ width: 16, height: 16 }));
+    clusterCall.tray.setToolTip("Cluster Call: ready for calls");
+    clusterCall.tray.setContextMenu(Menu.buildFromTemplate([
+      { label: "Open Cluster Call", click: open },
       { type: "separator" },
-      { label: "Quit (no calls come in)", click: () => ((videoCall.quitting = true), app.quit()) },
+      { label: "Quit (no calls come in)", click: () => ((clusterCall.quitting = true), app.quit()) },
     ]));
-    videoCall.tray.on("click", open);
+    clusterCall.tray.on("click", open);
   } catch {
     // (no tray here: opening the app again shows its window)
   }
-  videoCall.firstRun();
-  videoCall.start();
-  // (your phones told your device list now and then, even with the window closed: electron/video-call.js announce)
-  setInterval(() => videoCall.lookAround(), 5 * 60 * 1000).unref();
+  clusterCall.firstRun();
+  clusterCall.start();
+  // (your phones told your device list now and then, even with the window closed: electron/cluster-call.js announce)
+  setInterval(() => clusterCall.lookAround(), 5 * 60 * 1000).unref();
 }
 
 app.on("second-instance", () => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
-    if (!mainWindow.isVisible()) mainWindow.show(); // (Video Call waiting for calls with its window closed)
+    if (!mainWindow.isVisible()) mainWindow.show(); // (Cluster Call waiting for calls with its window closed)
     mainWindow.focus();
   }
 });
@@ -2491,12 +2491,12 @@ app.whenReady().then(() => {
   registerRemoteIpc();
   buildMenu();
   // Remote Recording opened at login is the rig, waiting for the phone (its choices otherwise).
-  mainWindow = createWindow(APP.kind === "remote" && remoteStandby ? "index.html?rig=1" : APP.page, APP.size, !(APP.kind === "call" && remoteStandby));
+  mainWindow = createWindow(APP.kind === "remote" && remoteStandby ? "index.html?rig=1" : APP.page, APP.size, !(APP.kind === "clustercall" && remoteStandby));
   mainWindow.on("closed", () => {
     mainWindow = null;
     closeKeyboard(); // the keyboard types for the hand mouse, which lives in the main window
   });
-  if (APP.kind === "call") videoCallWindow();
+  if (APP.kind === "clustercall") clusterCallWindow();
   if (APP.kind === "full" || APP.kind === "mouse") registerShortcuts(); // (the hand mouse's and its keyboard's)
 });
 

@@ -1,10 +1,10 @@
 /**
- * electron/video-call.js — the Video Call app's own service (main process): calls between your own devices over
+ * electron/cluster-call.js — the Cluster Call app's own service (main process): calls between your own devices over
  * Tailscale are set up through it, while the pictures and sound go straight between the two apps (WebRTC, in
- * video-call-page.js). Each device's app listens on port 47860; a call's offer, answer and hang up go from one app's
+ * cluster-call-page.js). Each device's app listens on port 47860; a call's offer, answer and hang up go from one app's
  * service to the other's as small JSON messages ("signals"), passed on to the page.
  *
- *   const vc = createVideoCall({ name, onSignal });
+ *   const vc = createClusterCall({ name, onSignal });
  *   await vc.start();
  *   await vc.me();                    // { name, user, ips } (this device on Tailscale), or null
  *   await vc.devices();               // your other devices: [{ name, address, os, online, app, busy }]
@@ -87,7 +87,7 @@ function request(url, { method = "GET", body = null, timeout = SEND_MS } = {}) {
   });
 }
 
-function createVideoCall({ name = "", version = "", port = PORT, sim = null, onSignal = () => ({ ok: true }) } = {}) {
+function createClusterCall({ name = "", version = "", port = PORT, sim = null, onSignal = () => ({ ok: true }) } = {}) {
   let server = null;
   let meCache = null, meAt = 0;
   const whois = new Map(); // address -> { user, at }
@@ -139,7 +139,7 @@ function createVideoCall({ name = "", version = "", port = PORT, sim = null, onS
     const url = new URL(req.url, "http://localhost");
     if (req.method === "GET" && url.pathname === "/vc/hello") {
       const m = await me();
-      return reply(res, 200, { app: "video-call", name: name || (m && m.name) || "", version, os: process.platform });
+      return reply(res, 200, { app: "cluster-call", name: name || (m && m.name) || "", version, os: process.platform });
     }
     if (req.method === "POST" && url.pathname === "/vc/signal") {
       if (!/^application\/json\b/i.test(String(req.headers["content-type"] || ""))) return reply(res, 415, { error: "JSON only." });
@@ -202,7 +202,7 @@ function createVideoCall({ name = "", version = "", port = PORT, sim = null, onS
   async function hello(address) {
     try {
       const r = await request(`http://${at(address)}/vc/hello`, { timeout: HELLO_MS });
-      return r.status === 200 && r.json && r.json.app === "video-call" ? r.json : null;
+      return r.status === 200 && r.json && r.json.app === "cluster-call" ? r.json : null;
     } catch {
       return null;
     }
@@ -233,7 +233,7 @@ function createVideoCall({ name = "", version = "", port = PORT, sim = null, onS
     return out;
   }
 
-  // Your phones can't ask Tailscale which devices are yours: each phone with Video Call is told the list (this
+  // Your phones can't ask Tailscale which devices are yours: each phone with Cluster Call is told the list (this
   // device first), at most every 5 minutes.
   const announced = new Map(); // address -> when
   async function announce(list) {
@@ -352,4 +352,4 @@ function createRig({ base }) {
   return { list, start, frame, stop };
 }
 
-module.exports = { createVideoCall, createRig, PORT, isTailnet };
+module.exports = { createClusterCall, createRig, PORT, isTailnet };

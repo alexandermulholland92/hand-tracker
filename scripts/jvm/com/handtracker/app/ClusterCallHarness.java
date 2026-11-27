@@ -8,17 +8,17 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * VideoCallHarness — the phone's Video Call service (VideoCallServer.java) run on a computer for the checks
- * (scripts/check-call.js): it listens on the port given (this computer's own requests allowed too), and says each
+ * ClusterCallHarness — the phone's Cluster Call service (ClusterCallServer.java) run on a computer for the checks
+ * (scripts/check-cluster-call.js): it listens on the port given (this computer's own requests allowed too), and says each
  * thing that comes as a line of JSON on stdout ({"signal": ...} or {"announce": [...], "from": ...}); each line on
  * stdin is a request: {"send": address, "signal": {...}} -> {"reply": ...}, {"trusted": ip} -> {"trusted": bool}.
- *   java -cp <classes> com.handtracker.app.VideoCallHarness <port> <name>
+ *   java -cp <classes> com.handtracker.app.ClusterCallHarness <port> <name>
  */
-public class VideoCallHarness {
+public class ClusterCallHarness {
     public static void main(String[] args) throws Exception {
         int port = Integer.parseInt(args[0]);
         String name = args.length > 1 ? args[1] : "Phone";
-        VideoCallServer server = new VideoCallServer(name, port, true, new VideoCallServer.Listener() {
+        ClusterCallServer server = new ClusterCallServer(name, port, true, new ClusterCallServer.Listener() {
             @Override
             public Map<String, Object> onSignal(Map<String, Object> signal) {
                 Map<String, Object> m = new LinkedHashMap<>();
@@ -42,18 +42,18 @@ public class VideoCallHarness {
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         String line;
         while ((line = in.readLine()) != null) {
-            Object o = VideoCallServer.parse(line);
+            Object o = ClusterCallServer.parse(line);
             if (!(o instanceof Map)) continue;
             Map<?, ?> m = (Map<?, ?>) o;
             Map<String, Object> out = new LinkedHashMap<>();
             if (m.get("send") instanceof String && m.get("signal") instanceof Map) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> signal = (Map<String, Object>) m.get("signal");
-                out.put("reply", VideoCallServer.send((String) m.get("send"), signal, name));
+                out.put("reply", ClusterCallServer.send((String) m.get("send"), signal, name));
             } else if (m.get("trusted") instanceof String) {
-                out.put("trusted", VideoCallServer.onTailnet((String) m.get("trusted")));
+                out.put("trusted", ClusterCallServer.onTailnet((String) m.get("trusted")));
             } else if (m.get("hello") instanceof String) {
-                out.put("hello", VideoCallServer.hello((String) m.get("hello")));
+                out.put("hello", ClusterCallServer.hello((String) m.get("hello")));
             }
             say(out);
         }
@@ -61,7 +61,7 @@ public class VideoCallHarness {
     }
 
     static synchronized void say(Map<String, Object> m) {
-        System.out.println(VideoCallServer.json(m));
+        System.out.println(ClusterCallServer.json(m));
         System.out.flush();
     }
 }

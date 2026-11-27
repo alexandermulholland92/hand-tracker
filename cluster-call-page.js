@@ -1,24 +1,24 @@
 /**
- * video-call-page.js — Video Call's page (video-call.html): your own devices on Tailscale, and calls between them.
+ * cluster-call-page.js — Cluster Call's page (cluster-call.html): your own devices on Tailscale, and calls between them.
  * A call's pictures and sound go straight between the two apps (WebRTC, over Tailscale: no server in between,
  * nothing looked up outside); its offer, answer and hang up go through each app's own service
- * (electron/video-call.js), as "signals".
+ * (electron/cluster-call.js), as "signals".
  *
  *   calling: offer (this app's description, every address it can be reached at in it) -> the other app rings ->
  *            answer (its description) | decline | busy (already in a call); cancel (given up before an answer);
  *   in a call: hangup; state (muted, camera off), also over the call's own data channel.
  *
  * Only a device that answers rings out (45 s); a call that isn't answered in that time is given up.
- * window.__videoCall: what the checks look at.
+ * window.__clusterCall: what the checks look at.
  */
 (function () {
   const $ = (id) => document.getElementById(id);
   const params = new URLSearchParams(location.search);
   const device = Number(params.get("device")) || 0; // (which simulated device this page is, in the checks)
   const desktop = window.desktop && window.desktop.call;
-  // (on a phone: the app's own plugin, VideoCallPlugin.java; an iPhone's, VideoCallPlugin.swift)
+  // (on a phone: the app's own plugin, ClusterCallPlugin.java; an iPhone's, ClusterCallPlugin.swift)
   const cap = window.Capacitor;
-  const phone = !desktop && cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins && cap.Plugins.VideoCall;
+  const phone = !desktop && cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins && cap.Plugins.ClusterCall;
   const host = desktop
     ? {
         hello: () => desktop.hello(device),
@@ -253,7 +253,7 @@
       name.textContent = d.name;
       const what = document.createElement("span");
       what.className = "what";
-      what.textContent = [NAMES[String(d.os).toLowerCase()] || d.os, !d.online ? "offline" : d.app ? "ready for calls" : "no Video Call there"].filter(Boolean).join(" · ");
+      what.textContent = [NAMES[String(d.os).toLowerCase()] || d.os, !d.online ? "offline" : d.app ? "ready for calls" : "no Cluster Call there"].filter(Boolean).join(" · ");
       const btn = document.createElement("button");
       btn.className = "go";
       btn.textContent = "Call";
@@ -634,7 +634,7 @@
       if (s && s.error) note(s.error, true);
     });
     if (!host) {
-      note("Video Call works in its app (and soon in a browser on your tailnet).", true);
+      note("Cluster Call works in its app (and soon in a browser on your tailnet).", true);
       return;
     }
     host.onSignal((s) => onSignal(s).catch(() => {}));
@@ -660,7 +660,7 @@
     }, 30000);
   }
 
-  window.__videoCall = {
+  window.__clusterCall = {
     state: () => ({
       mode: state.mode,
       peer: call ? call.peer.name : null,
@@ -700,5 +700,5 @@
     },
   };
 
-  start().catch((e) => note(`Video Call couldn't start: ${e.message}`, true));
+  start().catch((e) => note(`Cluster Call couldn't start: ${e.message}`, true));
 })();
