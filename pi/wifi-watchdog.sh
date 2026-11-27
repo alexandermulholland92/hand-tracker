@@ -12,9 +12,14 @@
 # 3 looks in a row and, in at least 2 of them, the chip's driver (brcmfmac) wrote that the chip is in
 # trouble (PSM's watchdog, scans timing out or suppressed, a firmware trap, the bus down, or wlan0 gone),
 # or wlan0 is on a network whose router hasn't answered in any of them (it passes nothing: pi, 2026-11-26,
-# from 10 minutes after a restart, its chip in trouble only 9 minutes later), the driver is taken out and
-# put back: the chip's firmware is loaded afresh, and NetworkManager joins the network again. If the chip is still in trouble 10 looks later, the Pi is restarted, but not while
-# Hand Tracker records or saves a take, or packages are being installed (it waits for those), not when
+# from 10 minutes after a restart, its chip in trouble only 9 minutes later) and nothing else on that
+# network answers either, the driver is taken out and put back: the chip's firmware is loaded afresh, and
+# NetworkManager joins the network again. A router that stops answering while other devices on its network
+# still do has stopped by itself (the router at home hangs at times: pi, 2026-11-27 07:54, its Wi-Fi then
+# reloaded for nothing and the Pi restarted): the Wi-Fi is left alone then. If the chip is still in trouble
+# 10 looks after a reload, the Pi is restarted, but not while Hand Tracker records (a take, or a clip:
+# Sentry mode's, the baby monitor's; pi, 2026-11-27 08:07, cut a Sentry clip short) or saves a take, or
+# packages are being installed (it waits for those), not when
 # the Pi has another way out (a cable), and at most once an hour and three times a day (in between, the
 # driver is reloaded again every half hour). Off a network with nothing wrong with the chip (out of
 # range, the router off, the hotspot on), it does nothing. Everything it does goes to the journal:
@@ -55,7 +60,8 @@ cat > "$CHECK" <<'PY'
 #   hand-tracker-wifi-watchdog reload-now   the driver reloaded now, to see the Wi-Fi come back (a test)
 # wlan0 counts as on a network when NetworkManager has it on one (the hotspot only with a phone on it)
 # and it receives something, or nothing says the chip is in trouble, and its router answers (a ping, or
-# at least the ARP it sends then; one that can't be told either way counts as answering). The chip counts as in trouble when
+# at least the ARP it sends then; one that can't be told either way counts as answering), or another device
+# on its network does (then it's the router that has stopped, not wlan0). The chip counts as in trouble when
 # its driver (brcmfmac) writes one of TROUBLE's lines to the kernel's log, or wlan0 disappears.
 import fcntl, json, os, re, subprocess, sys, syslog, time, urllib.request
 
@@ -71,6 +77,8 @@ GAP = 3600         # at most one restart an hour ...
 A_DAY = 3          # ... and three a day
 TROUBLE = re.compile(r"PSM's watchdog has fired|escan_timeout|[Ss]canning suppressed|firmware trap|"
                      r"[Ff]irmware has halted|bus is down|\(-110\)|status -110")
+# A clip Hand Tracker is recording, its file open while it's written (electron/main.js's CLIP_PART)
+CLIP = re.compile(r"/\.recording-[\w-]{1,40}\.(mp4|webm)\.part$")
 
 
 def run(cmd, timeout):
@@ -79,6 +87,27 @@ def run(cmd, timeout):
         return p.stdout if p.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def clip_open(proc="/proc"):
+    """A clip Hand Tracker is recording (Sentry mode's, the baby monitor's, a take's camera's): its file's
+    name, or "" (each process's open files looked at)."""
+    for pid in os.listdir(proc):
+        if not pid.isdigit():
+            continue
+        fds = os.path.join(proc, pid, "fd")
+        try:
+            names = os.listdir(fds)
+        except OSError:
+            continue
+        for fd in names:
+            try:
+                target = os.readlink(os.path.join(fds, fd))
+            except OSError:
+                continue
+            if CLIP.search(target):
+                return os.path.basename(target)
+    return ""
 
 
 class Pi:
@@ -129,6 +158,23 @@ class Pi:
             return gw, False
         return gw, None
 
+    def neighbour(self, gw):
+        """Another device on wlan0's network that answers (its address), or None: one wlan0 has lately
+        swapped packets with (REACHABLE), or one that answers a ping now."""
+        near = []
+        for line in (run(["ip", "-4", "neigh", "show", "dev", IF], 10) or "").splitlines():
+            parts = line.split()
+            if not parts or parts[0] == gw or "lladdr" not in parts:
+                continue
+            if re.search(r"\bREACHABLE\b", line):
+                return parts[0]
+            if re.search(r"\b(STALE|DELAY|PROBE)\b", line):
+                near.append(parts[0])
+        for ip in near[:4]:
+            if run(["ping", "-n", "-q", "-c", "2", "-i", "0.3", "-W", "1", "-I", IF, ip], 10) is not None:
+                return ip
+        return None
+
     def kernel(self, cursor):
         """The driver's lines in the kernel's log since cursor (the last look), and the new cursor."""
         base = ["journalctl", "-k", "-q", "--no-pager", "-o", "cat", "--show-cursor"]
@@ -154,6 +200,10 @@ class Pi:
                     continue
                 if name in ("dpkg", "apt", "apt-get", "unattended-upgr"):
                     return "packages are being installed (%s)" % name
+        # A clip being recorded (Sentry mode's, the baby monitor's, a take's): a restart would cut it short
+        clip = clip_open()
+        if clip:
+            return "Hand Tracker is recording a clip (%s)" % clip
         # Hand Tracker's remote recording, asked over this Pi's own Tailscale address (as the Cluster
         # asks it; that stays on this Pi, network or not)
         words = (run(["ip", "-4", "-o", "addr", "show", "dev", "tailscale0"], 10) or "").split()
@@ -248,6 +298,9 @@ class Fake(Pi):
     def gateway(self):
         g = self.w.get("gateway")   # ([address, answers]: True, False or None)
         return (g[0], g[1]) if g else (None, None)
+
+    def neighbour(self, gw):
+        return self.w.get("neighbour")   # (another device on the network that answers, or None)
 
     def kernel(self, cursor):
         lines, self.w["kernel"] = self.w.get("kernel", []), []   # (each line seen once)
@@ -378,8 +431,19 @@ def look(pi, s):
     if name and not name.startswith("the hotspot"):
         gw, answers = pi.gateway()
         if answers is False:
-            silent = True
-            why = "its router (%s) doesn't answer" % gw
+            other = pi.neighbour(gw)
+            if other:
+                # (wlan0 reaches its network: the router has stopped by itself, and reloading wlan0 wouldn't help)
+                if s.get("routerOnly") != gw:
+                    pi.say("Its router (%s) doesn't answer, but %s on its network does: the router has stopped, not "
+                           "this Pi's Wi-Fi, which is left alone." % (gw, other))
+                s["routerOnly"] = gw
+            else:
+                silent = True
+                why = "its router (%s) doesn't answer, nor anything else on its network" % gw
+        elif answers and s.get("routerOnly"):
+            pi.say("Its router (%s) answers again." % gw)
+            s.pop("routerOnly", None)
     on = bool(name) and (moving or not trouble) and not silent
     s["last"] = {"at": pi.now(), "on": name if on else None, "trouble": len(trouble),
                  "why": "" if on else (why or "nothing received, with the chip in trouble")}
