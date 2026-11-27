@@ -2,8 +2,10 @@ apply plugin: 'com.android.application'
 
 // The Cluster app's member service (Cluster's own service run on the phone, MemberService.java) is Python: Chaquopy,
 // applied only when a Cluster build is asked for (scripts/build-android.js builds that one on its own, or with
-// -PclusterPython), so the other apps don't carry Python.
-def clusterBuild = project.hasProperty("clusterPython") || gradle.startParameter.taskNames.any { it.toLowerCase().contains("cluster") }
+// -PclusterPython), so the other apps don't carry Python. (Not Cluster Call's tasks, "...Clustercall...": a build of
+// it with the others gave them all Python and only 64-bit ARM, which a phone or tablet running 32-bit Android can't
+// install: 2026-11-27.)
+def clusterBuild = project.hasProperty("clusterPython") || gradle.startParameter.taskNames.any { it.toLowerCase() =~ /cluster(?!call)/ }
 if (clusterBuild) {
     apply plugin: 'com.chaquo.python'
 }
