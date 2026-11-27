@@ -367,14 +367,31 @@ def verify(node):
     return False
 
 
+def keep_asked(mem, asked):
+    """A button's request kept while this service restarts itself (its own update, or its files put back), for the
+    new one to carry out (pi, 2026-11-27: "Update Hand Tracker now" pressed, then forgotten as the service updated)."""
+    left = {k: v for k, v in asked.items() if k not in ("check", "cluster")}
+    if left:
+        mem["asked"] = {"at": time.time(), "what": left}
+        mem.save()
+
+
 def tick(node):
     mem = node.memory("updates")
     with _lock:
         asked = dict(_want)
         _want.clear()
+        # (asked before this service restarted itself: done now, unless that was long ago)
+        kept = mem.pop("asked", None)
+        if kept is not None:
+            if isinstance(kept, dict) and isinstance(kept.get("what"), dict) and time.time() - float(kept.get("at") or 0) < 3600:
+                for k, v in kept["what"].items():
+                    asked.setdefault(k, v if isinstance(v, dict) else {})
+            mem.save()
         now = time.time()
         try:
             if verify(node):
+                keep_asked(mem, asked)
                 return
             if "check" in asked or now - mem.get("checkedAt", 0) > CHECK_EVERY:
                 _doing["what"] = "check"
@@ -390,6 +407,7 @@ def tick(node):
             if node.setting("updates", "cluster") or "cluster" in asked:
                 _doing["what"] = "cluster"
                 if update_cluster(node, asked.get("cluster")):
+                    keep_asked(mem, asked)
                     return
             go, why = plan(node, rel) if ht_needed(node, rel) else (True, None)
             _state["plan"] = why
