@@ -532,4 +532,25 @@ contextBridge.exposeInMainWorld("desktop", {
       return () => ipcRenderer.removeListener("cluster:progress", listener);
     },
   },
+  // Video Call (its own app: electron/video-call.js): hello(device) -> { me, waiting: signals that came before the page
+  // was ready, settings }; devices(device) -> your other devices on Tailscale; send(device, address, signal) -> its
+  // reply; settings(change) -> { ringWhenClosed, canRingWhenClosed }; onSignal(cb): each call's signal as it comes.
+  // (device: which of the simulated devices this page is, in the checks; 0 otherwise.)
+  call: {
+    hello: (device) => ipcRenderer.invoke("call:hello", device),
+    devices: (device) => ipcRenderer.invoke("call:devices", device),
+    send: (device, address, signal) => ipcRenderer.invoke("call:send", device, address, signal),
+    settings: (change) => ipcRenderer.invoke("call:settings", change),
+    onSignal: (cb) => {
+      const listener = (_event, s) => cb(s);
+      ipcRenderer.on("call:signal", listener);
+      return () => ipcRenderer.removeListener("call:signal", listener);
+    },
+    // (whether the window is in view: a hidden one never has a camera open)
+    onShown: (cb) => {
+      const listener = (_event, on) => cb(!!on);
+      ipcRenderer.on("call:shown", listener);
+      return () => ipcRenderer.removeListener("call:shown", listener);
+    },
+  },
 });

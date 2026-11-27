@@ -7,7 +7,7 @@
  *                                          Raspberry Pi OS) and other ARM boards; built on Linux
  *   node scripts/dist.js mac               macOS (.dmg) for this Mac's processor, built on a Mac
  *   node scripts/dist.js mac --x64         macOS (.dmg) for Intel Macs (or --arm64: Apple silicon)
- *   ... --app mouse | remote | converter | cluster   Hand Mouse, Remote Recording, Recording Converter or Cluster, the
+ *   ... --app mouse | remote | converter | cluster | call   Hand Mouse, Remote Recording, Recording Converter, Cluster or Video Call, the
  *                                          apps of their own built from this one: the same files,
  *                                          their own name, ID, start page (electron/main.js
  *                                          reads appKind) and files' names, so each installs
@@ -52,11 +52,18 @@ const APPS = {
     camera: "Cluster doesn't use the camera.",
     rules: [], // (no cameras, no hand mouse)
   },
+  call: {
+    name: "Video Call", id: "com.handtracker.call", slug: "video-call", file: "VideoCall",
+    synopsis: "Video calls between your own devices over Tailscale",
+    camera: "Video Call sends your camera's picture to the device you're calling.",
+    microphone: "Video Call sends your voice to the device you're calling.",
+    rules: [], // (webcams only; a rig's OAK, Kinect or PS4 camera through Hand Tracker)
+  },
 };
 const appAt = process.argv.indexOf("--app");
 const appKind = appAt >= 0 ? process.argv[appAt + 1] : null;
 if (appAt >= 0 && !APPS[appKind]) {
-  console.error("--app is mouse (Hand Mouse), remote (Remote Recording), converter (Recording Converter) or cluster (Cluster).");
+  console.error("--app is mouse (Hand Mouse), remote (Remote Recording), converter (Recording Converter), cluster (Cluster) or call (Video Call).");
   process.exit(1);
 }
 // The commit it's built from (Cluster's service reads it from a Pi's Hand Tracker, to tell whether
@@ -150,6 +157,7 @@ function ownApp() {
     `-c.deb.artifactName=${variant.slug}_${version}_${builtFor === "arm64" ? "arm64" : "amd64"}.deb`,
     `-c.dmg.artifactName=${variant.file}-${version}-mac-${builtFor === "arm64" ? "arm64" : "x64"}.dmg`,
     `-c.mac.extendInfo.NSCameraUsageDescription=${q(variant.camera)}`,
+    ...(variant.microphone ? [`-c.mac.extendInfo.NSMicrophoneUsageDescription=${q(variant.microphone)}`] : []),
   ];
 }
 

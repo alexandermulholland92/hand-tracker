@@ -57,6 +57,8 @@ const APPS = {
   converter: { name: "Recording Converter", page: "viewer.html", id: "com.handtracker.converter", slug: "recording-converter", size: { width: 920, height: 960 } },
   // (Cluster: the Raspberry Pis running Cluster's service, cluster/node: cluster.html)
   cluster: { name: "Cluster", page: "cluster.html", id: "com.handtracker.cluster", slug: "hand-tracker-cluster", size: { width: 1080, height: 920 } },
+  // (Video Call: calls between your own devices over Tailscale: video-call.html, electron/video-call.js)
+  call: { name: "Video Call", page: "video-call.html", id: "com.handtracker.call", slug: "video-call", size: { width: 1100, height: 820 } },
 };
 const APP = (() => {
   const arg = process.argv.find((a) => a.startsWith("--app="));
@@ -119,7 +121,10 @@ if (SMALL_BOARD) app.commandLine.appendSwitch("js-flags", "--max-old-space-size=
 // stops rendering it, which freezes the camera feed and stops tracking and
 // recording. Keep working when covered (minimizing still pauses).
 // (one disable-features: a second would replace the first)
-app.commandLine.appendSwitch("disable-features", ["CalculateNativeWinOcclusion", ...(SMALL_BOARD ? ["AudioServiceOutOfProcess"] : [])].join(","));
+// (Video Call: its own addresses, the Tailscale one among them, offered to the other app as they are, not hidden
+// behind made-up names that only a device on the same local network could look up.)
+app.commandLine.appendSwitch("disable-features", ["CalculateNativeWinOcclusion", ...(SMALL_BOARD ? ["AudioServiceOutOfProcess"] : []),
+  ...(APP.kind === "call" ? ["WebRtcHideLocalIpsWithMdns"] : [])].join(","));
 // On ARM boards (a Raspberry Pi), use the GPU even if Chromium's list doubts its driver:
 // hand tracking runs on WebGL, and without the GPU it crawls.
 if (process.platform === "linux" && process.arch === "arm64") app.commandLine.appendSwitch("ignore-gpu-blocklist");
@@ -289,10 +294,11 @@ function restrictPermissions() {
   });
 }
 
-function createWindow(page = "index.html", size = { width: 1320, height: 940 }) {
+function createWindow(page = "index.html", size = { width: 1320, height: 940 }, show = true) {
   const iconPath = path.join(APP_ROOT, "build", "icon.png");
   const win = new BrowserWindow({
     ...size,
+    show, // (Video Call opened at login: hidden, waiting for a call)
     minWidth: 760,
     minHeight: 560,
     backgroundColor: "#0e0f12",
@@ -2295,9 +2301,147 @@ function registerIpc() {
   });
 }
 
+// ---------- Video Call (its own app): calls between your own devices over Tailscale (video-call-page.js) ----------
+// Its service (electron/video-call.js) passes each call's signals to the page; a call coming in brings the window
+// up, with a notification. With "Ring when closed" (on unless turned off) the app stays open in the background when
+// its window is closed, and opens at login with its window hidden, so a call rings any time.
+// HT_VIDEO_CALL_SIM (the checks): several devices on this computer, [{ name, port }], each page saying which it is.
+let videoCall = null;
+if (APP.kind === "call") {
+  const { Notification, Tray } = require("electron");
+  const { createVideoCall } = require("./video-call");
+  let sim = null;
+  try {
+    sim = process.env.HT_VIDEO_CALL_SIM ? JSON.parse(process.env.HT_VIDEO_CALL_SIM) : null;
+  } catch {}
+  const file = () => path.join(app.getPath("userData"), "video-call.json");
+  const saved = () => {
+    try {
+      return JSON.parse(fs.readFileSync(file(), "utf8")) || {};
+    } catch {
+      return {};
+    }
+  };
+  const save = (s) => fs.writeFileSync(file(), JSON.stringify(s, null, 1));
+  const pages = new Map(), waiting = new Map();
+  const deliver = (i, signal) => {
+    const wc = pages.get(i);
+    if (wc && !wc.isDestroyed()) wc.send("call:signal", signal);
+    else waiting.set(i, [...(waiting.get(i) || []), signal].slice(-20));
+  };
+  const comeUp = (i, signal) => {
+    if (i !== 0 || !["offer", "join"].includes(signal.kind) || !mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+    if (!sim && Notification.isSupported()) new Notification({ title: `${signal.from.name} is calling`, body: APP.name, silent: true }).show();
+  };
+  const devices = sim || [{ name: "" }];
+  const services = devices.map((d, i) =>
+    createVideoCall({
+      name: d.name || "",
+      version: app.getVersion(),
+      sim: sim ? { name: d.name, port: d.port, peers: sim.filter((_, j) => j !== i).map((p) => ({ name: p.name, address: `127.0.0.1:${p.port}` })) } : null,
+      onSignal: (signal) => {
+        comeUp(i, signal);
+        deliver(i, signal);
+        return { ok: true };
+      },
+    }));
+  const index = (i) => (sim ? Math.max(0, Math.min(services.length - 1, Number(i) || 0)) : 0);
+  let started = null, startError = "";
+  videoCall = {
+    quitting: false,
+    tray: null,
+    start: () =>
+      started ||
+      (started = Promise.all(services.map((s) => s.start())).catch((e) => {
+        startError = e.code === "EADDRINUSE" ? `Something else on this computer already uses port ${services[0].port()}, so calls can't come in.` : e.message;
+      })),
+    ringWhenClosed: () => saved().ringWhenClosed !== false,
+    settings() {
+      return { ringWhenClosed: this.ringWhenClosed(), atLogin: autostart.available() ? autostart.get() : null };
+    },
+    // (The first time: opened at login too, so it rings after a restart; turned off with Ring when closed.)
+    firstRun() {
+      const s = saved();
+      if (s.loginSet || sim) return;
+      try {
+        if (autostart.available()) autostart.set(true);
+      } catch {}
+      save({ ...s, loginSet: true });
+    },
+  };
+  // Whether a page's window is in view (a page kept going in a hidden window still counts itself as visible): told to it
+  // as that changes, so it opens a camera only while someone can see it.
+  const shown = (win) => !!(win && !win.isDestroyed() && win.isVisible() && !win.isMinimized());
+  const watched = new WeakSet();
+  const watch = (wc) => {
+    const win = BrowserWindow.fromWebContents(wc);
+    if (!win || watched.has(win)) return;
+    watched.add(win);
+    const tell = () => !wc.isDestroyed() && wc.send("call:shown", shown(win));
+    for (const e of ["show", "hide", "minimize", "restore"]) win.on(e, tell);
+  };
+  handle("call:hello", async (event, i) => {
+    const n = index(i);
+    pages.set(n, event.sender);
+    watch(event.sender);
+    await videoCall.start();
+    const w = waiting.get(n) || [];
+    waiting.delete(n);
+    return { me: await services[n].me(), waiting: w, settings: videoCall.settings(), error: startError, sim: !!sim, shown: shown(BrowserWindow.fromWebContents(event.sender)) };
+  });
+  handle("call:devices", (_e, i) => services[index(i)].devices());
+  handle("call:send", (_e, i, address, signal) => services[index(i)].send(String(address || ""), signal && typeof signal === "object" ? signal : {}));
+  handle("call:settings", (_e, change) => {
+    if (change && typeof change.ringWhenClosed === "boolean") {
+      save({ ...saved(), ringWhenClosed: change.ringWhenClosed, loginSet: true });
+      try {
+        if (autostart.available()) autostart.set(change.ringWhenClosed);
+      } catch (e) {
+        return { ...videoCall.settings(), error: e.message };
+      }
+    }
+    return videoCall.settings();
+  });
+}
+
+// Video Call's window: closed, it goes on in the background (Ring when closed), in the tray where there is one.
+function videoCallWindow() {
+  mainWindow.on("close", (e) => {
+    if (!videoCall.quitting && videoCall.ringWhenClosed()) {
+      e.preventDefault();
+      mainWindow.hide();
+    }
+  });
+  app.on("before-quit", () => (videoCall.quitting = true));
+  const open = () => {
+    if (!mainWindow) return;
+    mainWindow.show();
+    mainWindow.focus();
+  };
+  try {
+    const icon = nativeImage.createFromPath(path.join(APP_ROOT, "build", "icon.png"));
+    videoCall.tray = new Tray(icon.isEmpty() ? icon : icon.resize({ width: 16, height: 16 }));
+    videoCall.tray.setToolTip("Video Call: ready for calls");
+    videoCall.tray.setContextMenu(Menu.buildFromTemplate([
+      { label: "Open Video Call", click: open },
+      { type: "separator" },
+      { label: "Quit (no calls come in)", click: () => ((videoCall.quitting = true), app.quit()) },
+    ]));
+    videoCall.tray.on("click", open);
+  } catch {
+    // (no tray here: opening the app again shows its window)
+  }
+  videoCall.firstRun();
+  videoCall.start();
+}
+
 app.on("second-instance", () => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show(); // (Video Call waiting for calls with its window closed)
     mainWindow.focus();
   }
 });
@@ -2322,11 +2466,12 @@ app.whenReady().then(() => {
   registerRemoteIpc();
   buildMenu();
   // Remote Recording opened at login is the rig, waiting for the phone (its choices otherwise).
-  mainWindow = createWindow(APP.kind === "remote" && remoteStandby ? "index.html?rig=1" : APP.page, APP.size);
+  mainWindow = createWindow(APP.kind === "remote" && remoteStandby ? "index.html?rig=1" : APP.page, APP.size, !(APP.kind === "call" && remoteStandby));
   mainWindow.on("closed", () => {
     mainWindow = null;
     closeKeyboard(); // the keyboard types for the hand mouse, which lives in the main window
   });
+  if (APP.kind === "call") videoCallWindow();
   if (APP.kind === "full" || APP.kind === "mouse") registerShortcuts(); // (the hand mouse's and its keyboard's)
 });
 

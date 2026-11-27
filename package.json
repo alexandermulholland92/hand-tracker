@@ -28,6 +28,7 @@
     "android:apk": "node scripts/build-android.js",
     "check:android": "node scripts/run-checks.js scripts/check-android.js",
     "check:cluster": "node scripts/run-checks.js scripts/check-cluster.js",
+    "check:call": "node scripts/run-checks.js scripts/check-call.js",
     "deploy:web": "node scripts/build-web.js && npx --yes wrangler@4 pages deploy www --project-name hand-tracker --commit-dirty=true --branch \"hand tracker\" && npx --yes wrangler@4 pages deploy www --project-name hand-tracker --commit-dirty=true --branch main"
   },
   "dependencies": {
