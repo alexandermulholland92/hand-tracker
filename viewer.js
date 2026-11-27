@@ -559,7 +559,8 @@
     );
   }
 
-  // ---------- Grid video: a take's camera videos side by side in one 1080p MP4 (the computer apps) ----------
+  // ---------- Grid video: a take's camera videos side by side in one 1080p video (the computer apps): a clean .mkv
+  // with the labels as tracks, and an MP4 with them drawn in ----------
   // 2 x 2 for up to four cameras, 3 x 2 for five or six, in the roles' order (head, chest, left wrist, right
   // wrist, then north, south, east, west), each with its role on it; shown once two videos or more are found.
   const GRID_MOST = 6;
@@ -609,10 +610,13 @@
     const videos = take.videos.map((v, i) => ({ ...v, i })).sort((a, b) => rank(a) - rank(b) || a.i - b.i).slice(0, GRID_MOST);
     const nameOf = (v) => String((window.CameraRoles && CameraRoles.label(v.role)) || v.camera || "Camera").slice(0, 40);
     const sound = videos.find((v) => v.hasAudio);
+    // (its labels a layer of their own, 2026-11-26: the camera names, each camera's own labels and the take's steps
+    // as tracks of the clean grid's .mkv, and drawn in on its MP4)
     $("gridNote").textContent =
-      `${listed(videos.map(nameOf))} side by side in one 1080p MP4 (${videos.length <= 4 ? "2 × 2" : "3 × 2"}), each with its name on it, ` +
+      `${listed(videos.map(nameOf))} side by side in one 1080p video (${videos.length <= 4 ? "2 × 2" : "3 × 2"}), each with its name, ` +
       (take.timed ? "lined up as the take was recorded" : "each from its own start (this take doesn't say when each began)") +
-      `, with ${sound ? `${nameOf(sound)}'s sound` : "no sound (none of them has any)"}. Saved beside the take as ${take.name}-video-grid.mp4.` +
+      `, with ${sound ? `${nameOf(sound)}'s sound` : "no sound (none of them has any)"}. Saved beside the take twice: ${take.name}-video-grid.mkv, ` +
+      `the clean picture with the labels (names, hands, objects, steps) as tracks a player can switch on, and ${take.name}-video-grid (labels).mp4 with them drawn in.` +
       (take.videos.length > GRID_MOST ? ` The first ${GRID_MOST} (it has ${take.videos.length}).` : "");
     card.hidden = false;
     $("gridBtn").onclick = async () => {
@@ -625,12 +629,12 @@
       });
       try {
         const job = { path: filePath, videos: [] };
-        for (const v of videos) job.videos.push({ file: v.file, label: await gridLabel(nameOf(v)) });
+        for (const v of videos) job.videos.push({ file: v.file, name: nameOf(v), label: await gridLabel(nameOf(v)) });
         const r = await window.desktop.gridVideo(job);
         if (!$("gridResults")) return;
         if (r && r.ok) {
           status.textContent = "";
-          ExportUI.renderResults($("gridResults"), [{ ok: true, path: r.path, size: r.size }]);
+          ExportUI.renderResults($("gridResults"), [{ ok: true, path: r.path, size: r.size }, ...(r.labelled ? [{ ok: true, path: r.labelled, size: r.labelledSize }] : [])]);
         } else status.textContent = (r && r.message) || "It couldn't be made.";
       } catch (err) {
         if ($("gridStatus")) $("gridStatus").textContent = `It couldn't be made: ${err.message}`;

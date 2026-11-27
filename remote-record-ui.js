@@ -189,6 +189,7 @@
       // (a computer's only: a phone doesn't read its CPU, GPU or memory)
       ...(onPhone ? {} : { alerts: Object.fromEntries(ALERT_KINDS.map((k) => [k, alertOn(k)])) }),
       sentry: global.Sentry ? global.Sentry.remoteState() : null,
+      baby: global.BabyMonitor ? global.BabyMonitor.remoteState() : null, // (the baby monitor: baby-monitor.js)
       timing: cams().timingState ? cams().timingState() : undefined,
       // (Pictures on its own screen: OAK cameras only, which a phone doesn't have.)
       mode: modeNow(), requirement: requirement(), screenPictures: onPhone ? undefined : cams().screenPictures(),
@@ -1055,7 +1056,11 @@
 
   // Each camera's video, while a take records (its picture as drawn, with the hands), at up to
   // VIDEO_FPS: a camera gives as many as its tracking does (each picture is drawn with its hands).
+  // In the desktop app with ffmpeg (2026-11-26), the picture is recorded clean and its labels as a layer of their
+  // own (label-layers.js): once saved, <take>-video-<role>.mkv with them as tracks, and "… (labels).mp4" with
+  // them drawn in. Phones keep them drawn in.
   const VIDEO_FPS = 30;
+  const labelsSink = () => (host && host.remote && host.remote.labels && global.LabelLayers && global.LabelLayers.ready(host.remote.labels) ? host.remote.labels : null);
   function startVideos() {
     stopVideos(false);
     if (!remoteVideo() || !global.CameraVideo || !global.CameraVideo.supported()) return;
@@ -1065,18 +1070,22 @@
       const cam = state.find((c) => c.index === src.i);
       if (!src.canvas || !cam || cam.error) continue;
       const view = views[src.i];
+      let layer = null;
       try {
         if (view && view.want) view.want(true);
+        layer = labelsSink() ? global.LabelLayers.record(src.canvas, labelsSink()) : null;
         // (in the desktop app written to disk as it's recorded, not held in memory)
-        const rec = global.CameraVideo.start({ canvas: src.canvas, fps: VIDEO_FPS, audio: remoteSound(), preferMp4: true, quality: remoteQuality(), file: host && host.remote && host.remote.clip ? host.remote.clip : null });
-        videos.push({ role: cam.role || cam.name, roleId: cam.roleId || "", rec, view });
+        const rec = global.CameraVideo.start({ canvas: layer ? layer.canvas : src.canvas, fps: VIDEO_FPS, audio: remoteSound(), preferMp4: true, quality: remoteQuality(), file: host && host.remote && host.remote.clip ? host.remote.clip : null });
+        videos.push({ role: cam.role || cam.name, roleId: cam.roleId || "", rec, view, layer });
       } catch (err) {
+        if (layer) layer.discard().catch(() => {});
         if (view && view.want) view.want(false);
         notice = { at: Date.now(), message: `${cam.role || cam.name}'s video didn't start: ${errText(err)}` };
       }
     }
   }
-  // -> [{ role, clip }] (clip null if it failed); keep false: they're thrown away.
+  // -> [{ role, clip, labels }] (clip null if it failed; labels: its labels' id, label-layers.js); keep false:
+  // they're thrown away.
   async function stopVideos(keep = true) {
     const list = videos;
     videos = [];
@@ -1085,12 +1094,15 @@
       if (v.view && v.view.want) v.view.want(false);
       try {
         if (!keep) {
+          if (v.layer) await v.layer.discard().catch(() => {});
           await v.rec.discard();
           continue;
         }
         const clip = await v.rec.stop();
-        out.push({ role: v.role, roleId: v.roleId, clip });
+        const labels = v.layer ? await v.layer.stop().catch(() => null) : null;
+        out.push({ role: v.role, roleId: v.roleId, clip, labels });
       } catch {
+        if (v.layer) await v.layer.discard().catch(() => {});
         if (keep) out.push({ role: v.role, roleId: v.roleId, clip: null });
       }
     }
@@ -1098,28 +1110,42 @@
   }
   // Saved beside the take: <take>-video-<role>. -> the files' names; into: each one saved, for
   // the take's MCAP file and its list of videos ({ path, name, roleId, startMs }).
-  async function saveVideos(baseName, list, into = []) {
+  // layers: each one saved with its labels as a layer of their own ({ path }), for finishLabels.
+  async function saveVideos(baseName, list, into = [], layers = []) {
     const saved = [];
-    for (const { role, roleId, clip } of list) {
-      if (!clip || !host) continue;
+    for (const { role, roleId, clip, labels } of list) {
+      const dropLabels = () => (labels && host && host.remote.labels ? host.remote.labels.discard(labels).catch(() => {}) : null);
+      if (!clip || !host) {
+        await dropLabels();
+        continue;
+      }
       if (!clip.size) {
         if (clip.fileId !== null && host.remote.clip) await host.remote.clip.discard(clip.fileId).catch(() => {});
+        await dropLabels();
         continue;
       }
       const slug = String(role).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "camera";
       try {
         const body = clip.fileId !== null ? { clipId: clip.fileId } : { data: new Uint8Array(await clip.blob.arrayBuffer()) };
-        const res = await host.remote.saveTake({ baseName, files: [{ format: clip.ext, suffix: `-video-${slug}`.slice(0, 24), ext: clip.ext, ...body, mimeType: clip.mimeType }] });
+        const res = await host.remote.saveTake({ baseName, files: [{ format: clip.ext, suffix: `-video-${slug}`.slice(0, 24), ext: clip.ext, ...body, mimeType: clip.mimeType, ...(labels ? { labels } : {}) }] });
         const r = (res.results || [])[0];
         if (r && r.ok) {
           saved.push(r.path.split(/[\\/]/).pop());
           if (clip.startedAt) into.push({ path: r.path, name: role, roleId: roleId || "", startMs: clip.startedAt });
-        }
+          if (labels) layers.push({ path: r.path });
+        } else await dropLabels();
       } catch {
         // (the take's result says what was saved)
+        await dropLabels();
       }
     }
     return saved;
+  }
+  // The take saved: its clips with their labels as a layer of their own made into their .mkv and labelled copy now
+  // (in the background; the take's JSON then lists the .mkv). jsonName: its JSON's name, if any.
+  function finishLabels(layers, jsonName) {
+    const paths = layers.map((v) => v.path);
+    if (paths.length && host && host.remote && host.remote.labels) host.remote.labels.finish({ paths, json: jsonName || null }).catch(() => {});
   }
 
   // The take gets the details it started with (they can't change meanwhile) and its length,
@@ -1143,8 +1169,8 @@
     const clips = await stopVideos(true);
     const at = new Date().toISOString();
     const name = takeName(d, (take && take.recorded_at) || startedAt, seconds);
-    const withTake = [];
-    const videoFiles = [...(await saveVideos(name, clips, withTake)), ...(await savePhotos(name))];
+    const withTake = [], layers = [];
+    const videoFiles = [...(await saveVideos(name, clips, withTake, layers)), ...(await savePhotos(name))];
     // Each Kinect's depth, infrared, colour and sound, saved beside it as they were kept.
     const kinect = cams().saveKinect ? await cams().saveKinect(name).catch(() => []) : [];
     for (const f of kinect) {
@@ -1154,6 +1180,7 @@
     }
     if (!take) {
       takeDetails = null;
+      finishLabels(layers, null);
       lastTake = videoFiles.length
         ? { ok: true, at, files: videoFiles, duration: seconds, hands: 0, details: d }
         : { ok: false, at, message: "No hands were recorded, so nothing was saved." };
@@ -1167,6 +1194,8 @@
       take.videos = own.map((v) => ({ file: v.path.split(/[\\/]/).pop(), camera: v.name, role: v.roleId || null, start_s: Math.round(v.startMs - t0) / 1000 }));
     }
     const saved = await app.saveMotionNow(name, withTake);
+    // (now its clips' .mkv and labelled copies: its JSON, saved, lists them once they're made)
+    finishLabels(layers, saved && saved.ok ? (saved.files || []).find((f) => /\.json$/i.test(String(f))) || null : null);
     takeDetails = null; // saved: the next take can have others
     lastTake = saved && saved.ok
       ? { ok: true, at, files: [...saved.files, ...videoFiles], dir: saved.dir, duration: seconds, hands: take.hands.length, details: d }
@@ -1243,6 +1272,19 @@
       if (res.ok && c.armed === true && !cams().isActive() && !pending) {
         inBackground("Starting the cameras…", startCameras);
         return { ok: true, message: "Sentry is on: starting the cameras…" };
+      }
+      return res;
+    }
+    // The baby monitor (baby-monitor.js): its videos come from remote recording's cameras, so they start when it's
+    // on with Video clip (as Sentry's do).
+    if (action === "baby") {
+      if (!global.BabyMonitor || !global.BabyMonitor.remoteState()) return { ok: false, message: "This Hand Tracker has no baby monitor." };
+      const c = data.baby || {};
+      const res = await global.BabyMonitor.command(c);
+      const now = global.BabyMonitor.remoteState();
+      if (res.ok && (c.armed === true || c.videoClip === true) && now && now.armed && now.videoClip && !cams().isActive() && !pending) {
+        inBackground("Starting the cameras…", startCameras);
+        return { ok: true, message: `${res.message ? `${res.message} ` : ""}Starting the cameras for its videos…` };
       }
       return res;
     }
@@ -1597,7 +1639,11 @@
       }
     }
     remote = (opts.desktop && opts.desktop.remote) || (opts.mobile && opts.mobile.remote) || null;
+    // (someone listening to the baby monitor live: its sound sent on meanwhile, baby-monitor.js)
+    if (remote && remote.listen && remote.listen.onWant) remote.listen.onWant((on) => global.BabyMonitor && global.BabyMonitor.wantListen(on));
     host = opts.desktop || opts.mobile || null;
+    // (whether takes' labels can be a layer of their own: asked now, so it's known by the first take)
+    if (host && host.remote && host.remote.labels && global.LabelLayers) global.LabelLayers.ready(host.remote.labels);
     if (!remote || !$("remoteRec")) return;
     if (rigApp && $("remoteAppName")) $("remoteAppName").textContent = "Remote Recording";
     onPhone = !opts.desktop;
@@ -1636,10 +1682,10 @@
     remote.onWantPreviews(setPreviews);
     // (The cameras whose video a page is playing full screen: a webcam's is made only then.)
     if (remote.onVideoWant) remote.onVideoWant((ids) => cams() && cams().setVideoWant && cams().setVideoWant(ids));
-    remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st, sentry, oak, kinect, ps4 }) => {
+    remote.onCommand(async ({ id, action, details: d, camera, pick: p, mode, settings: st, sentry, baby, oak, kinect, ps4 }) => {
       let result;
       try {
-        result = await carryOut(action, { details: d, camera, pick: p, mode, settings: st, sentry, oak, kinect, ps4 });
+        result = await carryOut(action, { details: d, camera, pick: p, mode, settings: st, sentry, baby, oak, kinect, ps4 });
       } catch (err) {
         result = { ok: false, message: errText(err) };
       }

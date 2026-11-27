@@ -15,6 +15,8 @@ const path = require("path");
 const { Readable } = require("stream");
 const { promisify } = require("util");
 const exporter = require("./exporter");
+const LabelLayers = require("./label-layers");
+const LabelAss = require("../label-ass.js");
 const tak = require("./tak");
 const transmission = require("./transmission"); // (slowed while a page looks at the cameras)
 const { InputDriver } = require("./input");
@@ -91,7 +93,8 @@ const SHORTCUTS = { mouse: "CommandOrControl+Alt+M", keyboard: "CommandOrControl
 // (bluetooth: remote recording over Bluetooth, remote-client.js, from the app's own pages only.)
 const ALLOWED_PERMISSIONS = new Set(["media", "fullscreen", "clipboard-sanitized-write", "bluetooth"]);
 // Motion capture exports, and remote recording's and Sentry mode's videos and photos.
-const SAVE_EXTENSIONS = new Set(["json", "csv", "bvh", "glb", "c3d", "trc", "npz", "mcap", "webm", "mp4", "jpg"]);
+// (wav: the baby monitor's sound clips, baby-monitor.js)
+const SAVE_EXTENSIONS = new Set(["json", "csv", "bvh", "glb", "c3d", "trc", "npz", "mcap", "webm", "mp4", "jpg", "wav", "mkv"]);
 const readFile = promisify(fs.readFile); // callback fs is asar-aware in packaged builds
 
 const MIME = {
@@ -1290,6 +1293,26 @@ const clips = {
   },
 };
 
+// A clip's labels as a layer of their own (electron/label-layers.js): the clips of the remote recording folder
+// (takes' cameras, Sentry's) made into <name>.mkv with the labels as tracks and <name> (labels).mp4 with them drawn
+// in, in the background, held while a clip records; the steps followed in the folders takes are in.
+let labelLayersOne = null;
+function labelLayers() {
+  if (!labelLayersOne) {
+    labelLayersOne = new LabelLayers({
+      folder: remoteFolder,
+      stateFile: path.join(app.getPath("userData"), "label-layers.json"),
+      busy: () => labelLayersOne.live.size > 0,
+      // (a clip as recorded is kept while a page is playing or downloading it)
+      inUse: (file) => !!(remoteRecord && remoteRecord.takes && remoteRecord.takes.readLately(path.basename(file))),
+      onDone: (d) => {
+        for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send("labels:done", d);
+      },
+    });
+  }
+  return labelLayersOne;
+}
+
 // Opening the app at login, waiting for the phone (--remote-standby): the desktop's autostart
 // entry on Linux, a login item on Windows, a launch agent on a Mac (a login item there can't be
 // given --remote-standby). Only for the installed app. Each app has its own (Remote Recording's
@@ -1465,6 +1488,8 @@ function registerRemoteIpc() {
     return imuWanted;
   });
   remoteRecord.on("status", (s) => toWindow("remote:status", s));
+  // (someone listening to the baby monitor live, or not any more: baby-monitor.js sends its sound meanwhile)
+  remoteRecord.on("want-listen", (on) => toWindow("remote:want-listen", !!on));
   // (A page playing a camera's video wants the network as one looking at its pictures does.)
   remoteRecord.on("video-watch", (on) => {
     videoWatched = !!on;
@@ -1599,6 +1624,8 @@ function registerRemoteIpc() {
   // reaches another computer's Hand Tracker through here.
   handle("rig:request", (event, opts) => rigRequest(opts));
   ipcMain.on("remote:state", (event, state) => fromApp(event) && remoteRecord.setState(state));
+  // The baby monitor's sound, live: a tenth of a second of 16 kHz mono 16-bit PCM at a time (remote-record.js's /api/listen).
+  ipcMain.on("remote:listen-chunk", (event, data) => fromApp(event) && data instanceof Uint8Array && remoteRecord.listenChunk(Buffer.from(data)));
   ipcMain.on("remote:previews", (event, list) => {
     if (!fromApp(event) || !Array.isArray(list)) return;
     for (const p of list) if (p && p.jpeg) remoteRecord.setPreview(Number(p.i), p.jpeg);
@@ -1846,6 +1873,9 @@ function registerIpc() {
         else await fs.promises.writeFile(out, typeof file.data === "string" ? file.data : Buffer.from(file.data));
         // A camera's clip as recorded (mimeType given): a plain MP4 with AAC sound.
         if (ext === "mp4" && typeof file.mimeType === "string") await exporter.finishClip(out, file.mimeType);
+        // Its labels recorded as a layer of their own (label-layers.js): made into its .mkv and labelled copy once
+        // its take is saved too (labels:finish).
+        if (typeof file.labels === "string") await labelLayers().claim(file.labels, out, base).catch(() => {});
         exportedPaths.add(out);
         results.push({ format, ok: true, path: out, size: (await fs.promises.stat(out)).size });
       } catch (err) {
@@ -1869,6 +1899,20 @@ function registerIpc() {
   handle("clip:open", async (event, ext) => clips.open(String(ext)));
   handle("clip:write", async (event, id, data) => clips.write(id, data));
   handle("clip:discard", async (event, id) => clips.discard(id));
+  // A clip's labels, sent as it records (label-layers.js): open -> id, write, close, discard; finish once the clip
+  // and its take are saved (files:save-remote's labels: id), then made in the background (labels:done).
+  // (only where this app's ffmpeg can draw them in: its libass; elsewhere clips keep them drawn in)
+  const labelsPossible = async () => (await exporter.isAvailable()) && (await LabelLayers.drawable());
+  handle("labels:available", async () => labelsPossible());
+  handle("labels:open", async () => {
+    if (!(await labelsPossible())) throw new Error("This app's ffmpeg can't draw labels, so they can't be a layer of their own.");
+    return labelLayers().open();
+  });
+  handle("labels:write", async (event, id, lines) => labelLayers().write(id, lines && typeof lines === "object" ? lines : {}));
+  handle("labels:close", async (event, id, info) => labelLayers().close(id, info && typeof info === "object" ? info : {}));
+  handle("labels:discard", async (event, id) => labelLayers().discard(id));
+  handle("labels:finish", async (event, job = {}) =>
+    labelLayers().finish({ paths: Array.isArray(job.paths) ? job.paths.map(String).slice(0, 50) : [], json: typeof job.json === "string" ? job.json : null }));
 
   // Remote recording's takes: saved without asking, into its folder (nobody may be at this screen).
   handle("files:save-remote", async (event, { baseName, files }) => {
@@ -1878,8 +1922,12 @@ function registerIpc() {
   });
   // Sentry mode's photos and videos deleted from the remote recording folder: the ones named,
   // or every one there ({ all: true }). Only Sentry's own files (sentry.js names them).
-  handle("files:delete-sentry", async (event, { names, all } = {}) => {
-    const SENTRY_FILE = /^Sentry_[A-Za-z0-9-]{1,80}_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d(-video)?( \(\d{1,4}\))?\.(jpg|webm|mp4)$/;
+  // (baby: the baby monitor's instead, baby-monitor.js: its sound clips and videos)
+  handle("files:delete-sentry", async (event, { names, all, baby } = {}) => {
+    // (a clip's .mkv and labelled copy too: <name>.mkv, <name> (labels).mp4, electron/label-layers.js)
+    const SENTRY_FILE = baby === true
+      ? /^Baby_[A-Za-z0-9-]{1,80}_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d-(sound|video)( \(\d{1,4}\))?( \(labels\))?\.(wav|webm|mp4|mkv)$/
+      : /^Sentry_[A-Za-z0-9-]{1,80}_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d(-video)?( \(\d{1,4}\))?( \(labels\))?\.(jpg|webm|mp4|mkv)$/;
     const dir = remoteFolder();
     const list = all === true ? (await fs.promises.readdir(dir).catch(() => [])).filter((n) => SENTRY_FILE.test(n)) : Array.isArray(names) ? names.filter((n) => typeof n === "string" && SENTRY_FILE.test(n)).slice(0, 200) : [];
     let deleted = 0;
@@ -1898,6 +1946,29 @@ function registerIpc() {
   handle("sentry:ntfy", async (event, req) => {
     const { cleanNtfy, sendNtfy } = require("./ntfy");
     return sendNtfy(cleanNtfy(req));
+  });
+  // An alert to Home Assistant's webhook (the user, 2026-11-26: alert clips "Webhook"): its words as JSON, with a signed
+  // link to each of its files (remote-record.js's haLink: that file only, by this computer's address Home Assistant
+  // reaches it at). { url, payload, files: { photo, video, sound } } -> { ok, status }
+  handle("ha:webhook", async (event, job = {}) => {
+    const url = String(job.url || "").trim();
+    if (url.length > 400 || !/^https?:\/\/[^\s/?#]+\/api\/webhook\/[A-Za-z0-9_-]{1,200}$/i.test(url)) throw new Error("That isn't a Home Assistant webhook's address (http://…/api/webhook/…).");
+    const p = job.payload && typeof job.payload === "object" ? job.payload : {};
+    const text = (v, n = 200) => (typeof v === "string" ? v.slice(0, n) : typeof v === "number" && Number.isFinite(v) ? v : undefined);
+    const body = {
+      source: "hand_tracker",
+      ...Object.fromEntries(["kind", "event", "id", "at", "camera", "animal", "sound", "host", "seconds"].map((k) => [k, text(p[k])]).filter(([, v]) => v !== undefined)),
+    };
+    const files = job.files && typeof job.files === "object" ? job.files : {};
+    for (const k of ["photo", "video", "sound"]) {
+      const name = typeof files[k] === "string" ? files[k] : "";
+      if (name && remoteRecord) {
+        body[`${k}_url`] = remoteRecord.haLink(name);
+        body[`${k}_file`] = name;
+      }
+    }
+    const res = await net.fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000) });
+    return { ok: res.ok, status: res.status };
   });
   // Sentry's models (electron/sentry-models.js: "finder" or "second"): its bytes, downloaded the first time.
   handle("sentry:model", async (event, which) => {
@@ -1958,23 +2029,42 @@ function registerIpc() {
     }
     writeSettings({ lastExportDir: dir });
 
-    const result = await exporter.exportVideo(
-      {
-        data: Buffer.from(job.bytes),
-        container: job.container,
-        formats: Array.isArray(job.formats) ? job.formats.map(String) : [],
-        dir,
-        baseName: job.baseName,
-        duration: Number(job.duration) || 0,
-        fps: Number(job.fps) || 30,
-        retimeFps: Number(job.retimeFps) > 0 ? Number(job.retimeFps) : 0,
-      },
-      (progress) => {
-        if (!event.sender.isDestroyed()) event.sender.send("video:export-progress", progress);
-      }
-    );
-    for (const r of result.results) if (r.ok) exportedPaths.add(r.path);
-    return { dir, ...result };
+    // The Record card's labels as a layer of their own (2026-11-26; label-layers.js): job.labels { width, height,
+    // hands, objects } (subtitle lines, the clip's time): each format gets them drawn in, as <name> (labels)…, and
+    // <name>.mkv is the clean picture with them as tracks.
+    let bundle = null;
+    const lab = job.labels && typeof job.labels === "object" ? job.labels : null;
+    if (lab && (await exporter.isAvailable()) && (await LabelLayers.drawable())) {
+      const lines = (v) => (Array.isArray(v) ? v.filter((l) => typeof l === "string" && l.startsWith("Dialogue: ")).slice(0, 2e6) : []);
+      const width = Math.max(2, Math.min(8192, Math.round(Number(lab.width) || 0))), height = Math.max(2, Math.min(8192, Math.round(Number(lab.height) || 0)));
+      bundle = await labelLayers().bundle({ hands: lines(lab.hands), objects: lines(lab.objects) }, { width, height });
+      bundle.args = LabelLayers.trackArgs(bundle, 1);
+      bundle.filter = LabelLayers.assFilter(bundle);
+    }
+    try {
+      const result = await exporter.exportVideo(
+        {
+          data: Buffer.from(job.bytes),
+          container: job.container,
+          formats: Array.isArray(job.formats) ? job.formats.map(String) : [],
+          dir,
+          baseName: job.baseName,
+          duration: Number(job.duration) || 0,
+          fps: Number(job.fps) || 30,
+          retimeFps: Number(job.retimeFps) > 0 ? Number(job.retimeFps) : 0,
+          layers: bundle,
+        },
+        (progress) => {
+          if (!event.sender.isDestroyed()) event.sender.send("video:export-progress", progress);
+        }
+      );
+      for (const r of result.results) if (r.ok) exportedPaths.add(r.path);
+      // (its steps, once Annotate gives it some, made into it too)
+      if (bundle) labelLayers().watch(dir);
+      return { dir, ...result };
+    } finally {
+      if (bundle) bundle.done();
+    }
   });
 
   handle("video:cancel-export", () => exporter.cancel());
@@ -2051,7 +2141,8 @@ function registerIpc() {
         .filter((v) => v && typeof v.file === "string" && path.basename(v.file) === v.file && here.has(v.file) && /\.(mp4|webm|mkv|mov)$/i.test(v.file))
         .map((v) => ({ file: v.file, camera: String(v.camera || "").slice(0, 60), role: typeof v.role === "string" ? v.role : "", start: Number.isFinite(Number(v.start_s)) ? Number(v.start_s) : 0 }));
     } else {
-      const own = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-video-([a-z0-9-]+)\\.(mp4|webm)$`, "i");
+      // (its clips' .mkv, with their labels as tracks, too; never a labelled copy: <name> (labels).mp4)
+      const own = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-video-([a-z0-9-]+)\\.(mp4|webm|mkv)$`, "i");
       list = names
         .map((n) => [n, own.exec(n)])
         .filter(([, m]) => m && m[1].toLowerCase() !== "grid")
@@ -2066,12 +2157,17 @@ function registerIpc() {
       }
     }
     const length = Number(data && data.metadata && data.metadata.length_s) || 0;
+    // (its steps followed from now on: when Annotate's change, its videos get them: electron/label-layers.js)
+    labelLayers().watch(dir);
     return { ok: true, name, videos, length, timed };
   }
   handle("video:take-videos", (_event, { path: jsonPath } = {}) => takeVideos(jsonPath));
-  // The grid video: { path: the take's JSON, videos: [{ file, label: its label as a PNG }] in the grid's order } ->
-  // made beside the take as <take>-video-grid.mp4 (exporter.js's gridVideo; progress as a conversion's).
-  // -> { ok, path, size, layout, sound } or { ok: false, message }
+  // The grid video: { path: the take's JSON, videos: [{ file, name, label: its label as a PNG }] in the grid's
+  // order } -> made beside the take (exporter.js's gridVideo; progress as a conversion's), with its labels as a layer
+  // of their own (2026-11-26): <take>-video-grid.mkv, the clean grid with the labels as tracks (Camera names, and
+  // each camera's own tracks, moved into its block, and the take's Steps), and <take>-video-grid (labels).mp4 with
+  // them drawn in. (job.layers false: one MP4 with the names drawn in, as before.)
+  // -> { ok, path, size, layout, sound, labelled, labelledSize } or { ok: false, message }
   handle("video:grid", async (event, job = {}) => {
     const take = await takeVideos(job.path);
     if (!take.ok) return take;
@@ -2080,6 +2176,7 @@ function registerIpc() {
     if (chosen.length < 2) return { ok: false, message: "A grid needs two of the take's videos or more." };
     const dir = path.dirname(String(job.path));
     const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "hand-tracker-grid-"));
+    let bundle = null;
     try {
       const videos = [];
       for (const [i, a] of chosen.entries()) {
@@ -2091,16 +2188,51 @@ function registerIpc() {
         }
         videos.push({ path: path.join(dir, a.file), start: byFile.get(a.file).start, label });
       }
-      const out = exporter.uniquePath(dir, `${take.name}-video-grid`, "mp4");
-      const r = await exporter.gridVideo({ videos, length: take.length, out }, (progress) => {
-        if (!event.sender.isDestroyed()) event.sender.send("video:export-progress", { format: "grid", index: 0, total: 1, progress });
-      });
+      const progress = (p) => {
+        if (!event.sender.isDestroyed()) event.sender.send("video:export-progress", { format: "grid", index: 0, total: 1, progress: p });
+      };
+      // (as before where this app's ffmpeg can't draw labels: the names drawn in, one MP4)
+      if (job.layers === false || !(await LabelLayers.drawable())) {
+        const out = exporter.uniquePath(dir, `${take.name}-video-grid`, "mp4");
+        const r = await exporter.gridVideo({ videos, length: take.length, out }, progress);
+        exportedPaths.add(r.path);
+        return { ok: true, ...r };
+      }
+      // The labels: each camera's own tracks (a clip recorded with them as a layer: its .mkv) moved into its
+      // block, on the take's clock; each camera's name in its block's corner; the take's steps.
+      const infos = [];
+      for (const v of videos) infos.push(await exporter.probe(v.path));
+      const length = Number(take.length) > 0 ? Number(take.length) : Math.max(...videos.map((v, i) => (Number(v.start) || 0) + (infos[i].duration || 0)));
+      const places = exporter.gridPlaces(videos.length, infos);
+      const tracks = { hands: [], objects: [], names: [], steps: [] };
+      const names = [];
+      for (const [i, a] of chosen.entries()) {
+        const at = places[i], start = Number(videos[i].start) || 0;
+        names.push({ x: at.x0 + 28, y: at.y0 + 28, text: String(a.name || byFile.get(a.file).camera || "Camera").slice(0, 40) });
+        if (!/\.mkv$/i.test(a.file)) continue;
+        const own = await labelLayers().trackLines(videos[i].path);
+        const scale = at.k * (infos[i].width && own.width ? infos[i].width / own.width : 1);
+        const into = { scale, dx: at.x, dy: at.y, shift: start, length, clip: [at.x0, at.y0, at.x0 + at.w, at.y0 + at.h] };
+        for (const k of ["hands", "objects"]) if (own.tracks[k]) tracks[k].push(...LabelAss.move(own.tracks[k], into));
+      }
+      tracks.hands = LabelAss.merge(tracks.hands);
+      tracks.objects = LabelAss.merge(tracks.objects);
+      tracks.names = LabelAss.nameLines(names, { length });
+      tracks.steps = await labelLayers().stepsFor(dir, `${take.name}-video-grid.mkv`, { grid: true, length, height: 1080 });
+      bundle = await labelLayers().bundle(tracks, { width: 1920, height: 1080 });
+      bundle.args = LabelLayers.trackArgs(bundle, videos.length);
+      bundle.filter = LabelLayers.assFilter(bundle);
+      const out = exporter.uniquePath(dir, `${take.name}-video-grid`, "mkv");
+      const labelled = exporter.uniquePath(dir, `${take.name}-video-grid${LabelLayers.LABELLED}`, "mp4");
+      const r = await exporter.gridVideo({ videos, length, out, layers: bundle, labelled }, progress);
       exportedPaths.add(r.path);
+      exportedPaths.add(r.labelled);
       return { ok: true, ...r };
     } catch (err) {
       return { ok: false, message: err.canceled ? "Canceled." : `The grid video couldn't be made: ${err.message}` };
     } finally {
       fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
+      if (bundle) bundle.done();
     }
   });
   // job.token: a folder already chosen (files:choose-folder), for converting a queue of videos
@@ -2175,6 +2307,8 @@ app.whenReady().then(() => {
   bluetoothPicker();
   registerIpc();
   clips.recover().catch(() => {}); // (a clip left by a crash)
+  // (clips saved but not yet made into their .mkv and labelled copy, the app closed meanwhile: made now)
+  labelLayers().recover().catch(() => {});
   registerPcIpc();
   registerOakIpc();
   registerKinectIpc();

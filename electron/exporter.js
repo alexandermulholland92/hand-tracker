@@ -47,9 +47,10 @@ function isAvailable() {
   return availability;
 }
 
-function runFfmpeg(args, duration, onProgress) {
+// cwd: where it runs (label-layers.js's tracks, named plainly in a filter's arguments).
+function runFfmpeg(args, duration, onProgress, cwd) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(ffmpegPath, args, { windowsHide: true });
+    const proc = spawn(ffmpegPath, args, { windowsHide: true, ...(cwd ? { cwd } : {}) });
     current = { proc, canceled: false };
     const job = current;
     let stderr = "";
@@ -142,6 +143,9 @@ function uniquePath(dir, base, ext) {
  * @param {number} job.duration        seconds (MediaRecorder files don't store it)
  * @param {number} job.fps
  * @param {number} [job.retimeFps]    source frame rate when the clip was recorded from a video file
+ * @param {object} [job.layers]        the clip's labels as tracks (electron/label-layers.js's bundle, with its args
+ *                                     and filter): each format gets them drawn in, as <name> (labels)<suffix>.<ext>,
+ *                                     and <name>.mkv is the clean picture with them as tracks (format "clean")
  * @param {(p: {format, index, total, progress}) => void} onProgress
  */
 async function exportVideo(job, onProgress) {
@@ -149,35 +153,37 @@ async function exportVideo(job, onProgress) {
   const base = sanitizeBaseName(job.baseName);
   const source = job.container === "mp4" ? "mp4" : "webm";
   const hasFfmpeg = await isAvailable();
+  const layers = hasFfmpeg && job.layers && job.layers.args ? job.layers : null;
   const tmp = path.join(os.tmpdir(), `hand-tracker-${process.pid}-${Date.now()}.${source}`);
   await fs.promises.writeFile(tmp, job.data);
 
   const results = [];
   cancelRequested = false;
+  const total = formats.length + (layers ? 1 : 0);
   try {
     for (let i = 0; i < formats.length; i++) {
       const id = formats[i];
       const { ext, suffix } = FORMATS.find((f) => f.id === id);
-      const report = (progress) => onProgress({ format: id, index: i, total: formats.length, progress });
+      const report = (progress) => onProgress({ format: id, index: i, total, progress });
 
       if (cancelRequested) {
         results.push({ format: id, ok: false, error: "Canceled" });
         continue;
       }
-      const out = uniquePath(job.dir, base + suffix, ext);
+      const out = uniquePath(job.dir, base + (layers ? " (labels)" : "") + suffix, ext);
       report(0);
       try {
         if (!hasFfmpeg) {
           if (id !== source) throw new Error("ffmpeg isn't available, so only the original format can be saved.");
           await fs.promises.copyFile(tmp, out);
         } else {
-          const options = { fps: job.fps, retimeFps: job.retimeFps, constantRate: true, copyFromWebm: source === "webm" };
+          const options = { fps: job.fps, retimeFps: job.retimeFps, constantRate: true, copyFromWebm: source === "webm", labels: layers ? layers.filter : "" };
           const args = [
             "-hide_banner", "-nostdin", "-y", "-i", tmp,
             ...VideoFormats.outputArgs(id, options),
             "-progress", "pipe:1", "-nostats", out,
           ];
-          await runFfmpeg(args, job.duration, report);
+          await runFfmpeg(args, job.duration, report, layers ? layers.cwd : undefined);
         }
         report(1);
         const { size } = await fs.promises.stat(out);
@@ -185,6 +191,30 @@ async function exportVideo(job, onProgress) {
       } catch (err) {
         await fs.promises.rm(out, { force: true }).catch(() => {});
         results.push({ format: id, ok: false, error: err.canceled ? "Canceled" : err.message });
+      }
+    }
+    // The clean picture with the labels as tracks a player switches on (copied as recorded; made again only
+    // when it's re-timed to its video file's own rate).
+    if (layers) {
+      const report = (progress) => onProgress({ format: "clean", index: formats.length, total, progress });
+      const out = uniquePath(job.dir, base, "mkv");
+      if (cancelRequested) results.push({ format: "clean", ok: false, error: "Canceled" });
+      else {
+        report(0);
+        try {
+          const a = layers.args;
+          const r = Number(job.retimeFps) > 0 ? Number(job.retimeFps) : 0;
+          const video = r
+            ? ["-vf", `setpts=N/(${r}*TB),scale=trunc(iw/2)*2:trunc(ih/2)*2`, "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-r", String(Math.round(r * 1000) / 1000)]
+            : ["-c:v", "copy"];
+          await runFfmpeg(["-hide_banner", "-nostdin", "-y", "-i", tmp, ...a.inputs, "-map", "0:v:0", "-map", "0:a?", ...a.maps, ...video, "-c:a", "copy", "-c:s", "copy",
+            ...a.meta, ...a.attach, "-progress", "pipe:1", "-nostats", out], job.duration, report, layers.cwd);
+          report(1);
+          results.push({ format: "clean", ok: true, path: out, size: (await fs.promises.stat(out)).size, clean: true });
+        } catch (err) {
+          await fs.promises.rm(out, { force: true }).catch(() => {});
+          results.push({ format: "clean", ok: false, error: err.canceled ? "Canceled" : err.message });
+        }
       }
     }
   } finally {
@@ -261,15 +291,31 @@ async function convertFile(job, onProgress) {
 // starts and after it ends; the sound of the first one that has any. Its length: the take's (length, in
 // seconds), else as long as the videos go.
 //   job = { videos: [{ path, start, label (a PNG's path, or none) }], length, out } -> { path, size, layout, sound }
+// With the labels as a layer of their own (job.layers: label-layers.js's bundle, its args (its tracks the inputs after
+// the videos) and filter; job.labelled):
+// no PNGs drawn in; job.out (.mkv) is the clean grid with the labels as tracks, job.labelled (.mp4) the grid with
+// them drawn in, both made at once -> also { labelled, labelledSize }.
+//   gridPlaces(n, infos): where each picture goes, { x, y, w, h, k } (k: its scale), for its labels to go there too.
 const GRID = { w: 1920, h: 1080, fps: 30, most: 6 };
 function gridLayout(n) {
   const cols = n <= 4 ? 2 : 3;
   return { cols, rows: 2, w: GRID.w / cols, h: GRID.h / 2 };
 }
+function gridPlaces(n, infos) {
+  const { cols, w, h } = gridLayout(n);
+  return infos.slice(0, n).map((info, i) => {
+    const x0 = (i % cols) * w, y0 = Math.floor(i / cols) * h;
+    const k = info && info.width && info.height ? Math.min(w / info.width, h / info.height) : 1;
+    // (as ffmpeg's scale with force_original_aspect_ratio=decrease, then pad centred)
+    const pw = Math.floor((info ? info.width : w) * k), ph = Math.floor((info ? info.height : h) * k);
+    return { x0, y0, w, h, k, x: x0 + Math.floor((w - pw) / 2), y: y0 + Math.floor((h - ph) / 2) };
+  });
+}
 async function gridVideo(job, onProgress = () => {}) {
   if (!(await isAvailable())) throw new Error("ffmpeg isn't available, so videos can't be put together.");
   const videos = (job.videos || []).slice(0, GRID.most);
   if (videos.length < 2) throw new Error("A grid needs two videos or more.");
+  const layers = job.layers && job.layers.args && job.labelled ? job.layers : null;
   const infos = [];
   for (const v of videos) infos.push(await probe(v.path));
   const { cols, rows, w, h } = gridLayout(videos.length);
@@ -280,7 +326,7 @@ async function gridVideo(job, onProgress = () => {}) {
   for (const v of videos) args.push("-i", v.path);
   const labels = [];
   for (const v of videos) {
-    if (v.label) {
+    if (v.label && !layers) {
       labels.push(videos.length + labels.length);
       args.push("-i", v.label);
     } else labels.push(-1);
@@ -295,24 +341,37 @@ async function gridVideo(job, onProgress = () => {}) {
   for (let k = videos.length; k < cols * rows; k++) graph.push(`color=c=black:s=${w}x${h}:r=${GRID.fps}[c${k}]`);
   const layout = Array.from({ length: cols * rows }, (_, k) => `${(k % cols) * w}_${Math.floor(k / cols) * h}`).join("|");
   graph.push(`${Array.from({ length: cols * rows }, (_, k) => `[c${k}]`).join("")}xstack=inputs=${cols * rows}:layout=${layout}[grid]`);
+  if (layers) graph.push(layers.filter ? `[grid]split=2[gridc][gridb];[gridb]${layers.filter}[gridl]` : "[grid]split=2[gridc][gridl]");
   const sound = infos.findIndex((x) => x.hasAudio);
   if (sound >= 0) {
     const s = Number(videos[sound].start) || 0;
-    graph.push(`[${sound}:a:0]asetpts=PTS-STARTPTS,atrim=start=${sec(-s)},asetpts=PTS-STARTPTS,adelay=${Math.round(Math.max(0, s) * 1000)}:all=1,apad[sound]`);
+    graph.push(`[${sound}:a:0]asetpts=PTS-STARTPTS,atrim=start=${sec(-s)},asetpts=PTS-STARTPTS,adelay=${Math.round(Math.max(0, s) * 1000)}:all=1,apad${layers ? ",asplit=2[sound][soundl]" : "[sound]"}`);
   }
-  args.push("-filter_complex", graph.join(";"), "-map", "[grid]");
-  if (sound >= 0) args.push("-map", "[sound]", "-c:a", "aac", "-b:a", "160k");
-  args.push("-t", length.toFixed(3), "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", String(GRID.fps),
-    "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", job.out);
+  const encode = ["-t", length.toFixed(3), "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", String(GRID.fps)];
+  if (layers) {
+    const a = layers.args;
+    args.push(...a.inputs, "-filter_complex", graph.join(";"), "-progress", "pipe:1", "-nostats");
+    // the clean grid, its tracks beside it
+    args.push("-map", "[gridc]", ...(sound >= 0 ? ["-map", "[sound]", "-c:a", "aac", "-b:a", "160k"] : []),
+      ...a.maps, ...encode, "-c:s", "copy", ...a.meta, ...a.attach, "-f", "matroska", job.out);
+    // and with them drawn in
+    args.push("-map", "[gridl]", ...(sound >= 0 ? ["-map", "[soundl]", "-c:a", "aac", "-b:a", "160k"] : []), ...encode, "-movflags", "+faststart", "-f", "mp4", job.labelled);
+  } else {
+    args.push("-filter_complex", graph.join(";"), "-map", "[grid]");
+    if (sound >= 0) args.push("-map", "[sound]", "-c:a", "aac", "-b:a", "160k");
+    args.push(...encode, "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", job.out);
+  }
   cancelRequested = false;
   try {
-    await runFfmpeg(args, length, onProgress);
+    await runFfmpeg(args, length, onProgress, layers ? layers.cwd : undefined);
   } catch (err) {
     await fs.promises.rm(job.out, { force: true }).catch(() => {});
+    if (layers) await fs.promises.rm(job.labelled, { force: true }).catch(() => {});
     throw err;
   }
   const { size } = await fs.promises.stat(job.out);
-  return { path: job.out, size, layout: `${cols} × ${rows}`, sound };
+  const extra = layers ? { labelled: job.labelled, labelledSize: (await fs.promises.stat(job.labelled)).size } : {};
+  return { path: job.out, size, layout: `${cols} × ${rows}`, sound, ...extra };
 }
 
 function cancel() {
@@ -345,4 +404,4 @@ async function convertForPlayback(inputPath, outDir, onProgress) {
   return out;
 }
 
-module.exports = { FORMATS, exportVideo, convertFile, probe, convertForPlayback, finishClip, gridVideo, gridLayout, cancel, isAvailable, sanitizeBaseName, uniquePath, ffmpegPath };
+module.exports = { FORMATS, exportVideo, convertFile, probe, convertForPlayback, finishClip, gridVideo, gridLayout, gridPlaces, cancel, isAvailable, sanitizeBaseName, uniquePath, ffmpegPath };

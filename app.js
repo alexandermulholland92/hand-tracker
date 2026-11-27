@@ -1281,16 +1281,58 @@
   }
   updateLayoutChoices();
 
+  // The camera view's labels as a layer of their own (2026-11-26; label-layers.js): in the desktop app with ffmpeg,
+  // the view is recorded clean and what's drawn over it kept, frame by frame, as subtitle lines; the export then
+  // saves each format with them drawn in ("<name> (labels)…") and <name>.mkv, the clean picture with them as tracks.
+  // Elsewhere (a browser, a phone) they're drawn in, as before.
+  let recLabels = null; // while recording: { cap, frames: [{ i, t, hands, objects }] }
+  const labelSink = () => (desktop && desktop.remote && desktop.remote.labels) || null;
+  if (labelSink() && window.LabelLayers) LabelLayers.ready(labelSink()); // (asked now, so it's known by the first recording)
+  const recordsLabels = () => !!(labelSink() && window.LabelLayers && window.LabelAss && LabelLayers.ready(labelSink()));
+  function noteLabels({ index, t, place }) {
+    if (!recLabels) return;
+    const f = recLabels.cap.current();
+    const w = f ? f.w : stage.width, h = f ? f.h : stage.height;
+    const lines = LabelAss.frameLines(f ? f.shapes : [], 0, 1, { w, h, width: w, height: h });
+    const at = place || { s: 1, dx: 0, dy: 0 };
+    const moved = (list) => LabelAss.move(list, { scale: at.s, dx: at.dx, dy: at.dy });
+    recLabels.frames.push({ i: index, t, hands: moved(lines.hands), objects: moved(lines.objects) });
+  }
+  // The recording's labels on its own clock (re-timed with it, from a video file): { width, height, hands, objects }.
+  function labelsOf(result) {
+    const r = recLabels;
+    recLabels = null;
+    if (!r) return null;
+    r.cap.release();
+    const at = (k) => (result.retimeFps ? r.frames[k].i / result.retimeFps : r.frames[k].t);
+    const out = { width: result.width, height: result.height, hands: [], objects: [] };
+    for (let k = 0; k < r.frames.length; k++) {
+      const start = at(k), end = k + 1 < r.frames.length ? at(k + 1) : start + 1 / (result.retimeFps || result.fps || RECORD_FPS);
+      for (const c of ["hands", "objects"]) out[c].push(...LabelAss.retime(r.frames[k][c], start, end));
+    }
+    return out;
+  }
+
   async function toggleVideo() {
     if (exporting) return;
     if (!VideoRecorder.isRecording()) {
       if (clip && !clip.exported && !confirm("Discard the previous clip? It hasn't been exported yet.")) return;
       discardClip();
+      if (recLabels) recLabels.cap.release();
+      recLabels = null;
       try {
         // Phones get MP4 straight from the encoder (there's no ffmpeg on Android to convert later).
         // From a video file, keep every tracked frame so the clip can be re-timed to the source.
-        VideoRecorder.start({ sources: recordingSources(), fps: RECORD_FPS, preferMp4: !!mobile, everyFrame: HandTracker.getSource() === "file" });
+        const sources = recordingSources();
+        if (recordsLabels()) {
+          const cap = LabelLayers.attach(stage);
+          sources[0] = cap.use(); // (the clean picture instead of the one drawn on)
+          recLabels = { cap, frames: [] };
+        }
+        VideoRecorder.start({ sources, fps: RECORD_FPS, preferMp4: !!mobile, everyFrame: HandTracker.getSource() === "file", onFrame: recLabels ? noteLabels : null });
       } catch (err) {
+        if (recLabels) recLabels.cap.release();
+        recLabels = null;
         videoStatus.textContent = err.message;
         return;
       }
@@ -1317,9 +1359,12 @@
       // Frames from a video file were captured at processing speed; exports re-time
       // them to the source frame rate (with ffmpeg, or ffmpeg.wasm outside the Windows app).
       if (HandTracker.getSource() === "file") result.retimeFps = HandTracker.file.fps();
+      result.labels = labelsOf(result);
       videoStatus.textContent = "";
       showExport(result);
     } catch (err) {
+      if (recLabels) recLabels.cap.release();
+      recLabels = null;
       videoStatus.textContent = `Recording failed: ${err.message}`;
     } finally {
       setCaptureControlsLocked(false); // only once the recorder has really stopped
@@ -1519,6 +1564,8 @@
         duration: clip.retimeFps ? clip.frames / clip.retimeFps : clip.duration,
         retimeFps: clip.retimeFps || 0,
         fps: clip.fps,
+        // (its labels as a layer of their own: each format with them drawn in, and <name>.mkv clean with them as tracks)
+        ...(clip.labels ? { labels: clip.labels } : {}),
       });
       if (res.canceled && !res.results.length) {
         exportNote.textContent = "Export canceled.";
@@ -1847,6 +1894,22 @@
         },
       });
       syncTiles(); // (the tiles' hands and OAK options as Sentry, left on or shown, wants them)
+      // The baby monitor (baby-monitor.js): sound sets it off; shown and hidden with Sentry on remote recording's
+      // page; its videos from remote recording's cameras, as Sentry's are; a phone listening dims its screen.
+      if (window.BabyMonitor) {
+        BabyMonitor.init({
+          prefs, setPref,
+          host: desktop || mobile,
+          phone: !!mobile,
+          views: () => (MultiCamera.isActive() ? MultiCamera.sentryViews() : []),
+          shown: () => Sentry.isShown(),
+          link: () => RemoteRecordUI.tailnetLink(),
+          hostName: () => {
+            const link = RemoteRecordUI.tailnetLink();
+            return link ? new URL(link).hostname.split(".")[0] : "";
+          },
+        });
+      }
     }
     // Capture sessions from a capture-operations dashboard: hidden until Ctrl+Alt+P (on a
     // phone: tapping the version under the title 7 times). So is watching a capture rig live,

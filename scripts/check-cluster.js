@@ -431,6 +431,17 @@ app.whenReady().then(async () => {
       !!farCard && /Far Film/.test(farCard) && /on faraway · then \S+ takes it over/.test(farCard) && /faraway: 0\.0%/.test(farCard), farCard || (await js("document.getElementById('message').textContent")));
     const asked = await farBeat();
     check("...and that computer is asked to download it (its magnet link)", (asked.want || []).some((w) => w.magnet === farMagnet && w.files === null), asked);
+    // Its time left (the user, 2026-11-26: "estimated time remaining for each torrent"): that computer's word of it,
+    // a quarter there at 2 MB/s, its Transmission saying 25 minutes: on its part's line and the whole download's.
+    const farReport = () => ask(port, "POST", "/api/action", { module: "downloads", action: "beat", args: { worker: "faraway", ready: true, free: true, why: "",
+      room: 100e9, reserve: 4e9, net: 2000, pieces: false, torrents: [{ hash: "c".repeat(40), name: "Far Film", pct: 0.25, status: 4, down: 2e6, up: 0, eta: 1500,
+        size: 1e9, left: 7.5e8, peers: 3, error: "", meta: 1, upEver: 0, downEver: 2.5e8 }] } });
+    const farLeft = await until(async () => {
+      await farReport();
+      const t = await js("document.getElementById('dlList').innerText");
+      return /faraway: 25\.0% · 25 min left · ↓ 2\.0 MB\/s/.test(t) && /on faraway · then \S+ takes it over · into .* · 25 min left/.test(t) && t;
+    }, 30000);
+    check("...its time left: on that computer's part (as its Transmission says) and on the whole download (its slowest part's)", !!farLeft, farLeft || (await js("document.getElementById('dlList').innerText")));
     const keptWhere = await js("localStorage.getItem('cluster.addOn')");
     check("...the choice remembered on this device", /"where":"faraway"/.test(keptWhere || ""), keptWhere);
     await shot("6b-transmission-elsewhere");

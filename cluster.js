@@ -766,6 +766,36 @@
   }
 
   const rate = (b) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB/s` : `${Math.round((b || 0) / 1e3)} KB/s`);
+  // Roughly how long a download has left (the user, 2026-11-26: "estimated time remaining for each torrent"), from
+  // seconds: "under a minute left", "12 min left", "1 h 5 min left", "2 days 3 h left"; "" when it isn't known.
+  function timeLeft(s) {
+    if (!Number.isFinite(s) || s < 0) return "";
+    if (s < 60) return "under a minute left";
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m} min left`;
+    const h = Math.floor(m / 60), mm = m % 60;
+    if (h < 24) return `${h} h${mm ? ` ${mm} min` : ""} left`;
+    const d = Math.floor(h / 24), hh = h % 24;
+    return `${d} day${d === 1 ? "" : "s"}${hh ? ` ${hh} h` : ""} left`;
+  }
+  // A Transmission torrent's, as it says (its eta: seconds; -1 or -2 while it can't tell), while it downloads.
+  function torrentLeft(t) {
+    if (t.status !== 4 || (Number(t.percentDone) || 0) >= 1) return "";
+    return Number(t.eta) >= 0 ? timeLeft(Number(t.eta)) : "time left not known yet";
+  }
+  // A split download's: each computer's part at its own rate (its Transmission's eta, or what it has left at its
+  // speed now); the whole of it, the slowest part's. -> seconds, or -1 while a part can't tell.
+  function partLeft(p) {
+    if (p.state !== "downloading" || p.pct >= 1) return 0;
+    if (Number(p.eta) >= 0) return Number(p.eta);
+    return p.down > 0 && p.size ? (p.size * (1 - (p.pct || 0))) / p.down : -1;
+  }
+  function spreadLeft(d) {
+    const going = d.parts.filter((p) => p.state === "downloading" && p.pct < 1);
+    if (!going.length) return -1;
+    const each = going.map(partLeft);
+    return each.some((s) => s < 0) ? -1 : Math.max(...each);
+  }
   const bytes = (b) => (!b ? "0 B" : b >= 1e12 ? `${(b / 1e12).toFixed(2)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${Math.round(b / 1e6)} MB` : `${Math.round(b / 1e3)} KB`);
   const homeRel = (p, home) => (home && p && p.startsWith(home) ? "~" + p.slice(home.length) : p || "");
 
@@ -1027,7 +1057,7 @@
     $("trList").replaceChildren(torrents.error ? el("div", { className: "warn-line" }, "⚠ " + torrents.error) : "", ...list.map((t) => {
       const b = el("button", { textContent: t.status === 0 ? "Resume" : "Pause" });
       b.onclick = () => act(home, "apps", "torrent", { do: t.status === 0 ? "start" : "stop", ids: [t.id] }).then(() => loadTorrents(true));
-      const bits = [STATUS[t.status] || "", homeRel(t.downloadDir, add.browsing && add.browsing.home)];
+      const bits = [STATUS[t.status] || "", torrentLeft(t), homeRel(t.downloadDir, add.browsing && add.browsing.home)];
       const key = /^[0-9a-f]{40}$/i.test(t.hashString || "") ? t.hashString.toLowerCase() : null;
       const [done, pct] = percent(t);
       return el("div", { className: "card" }, el("div", { className: "top" }, el("span", { className: "summary", style: "flex:1;word-break:break-word" }, t.name), el("span", { className: "tr-pct" }, pct), b),
@@ -1134,8 +1164,12 @@
     if (!p.heard) words = "not answering";
     else if (p.state === "downloading") {
       const peers = typeof p.peers === "number" ? ` · ${p.peers} peer${p.peers === 1 ? "" : "s"}` : "";
-      words = `${pct1(p.pct)} · ↓ ${rate(p.down)} ↑ ${rate(p.up)}${peers}${p.free === false ? ` (waiting: ${p.why || "busy"})` : ""}`;
-    } else if (p.state === "copying" && p.turn) words = `copying to ${home.name}: ${pct1(p.size ? p.copied / p.size : 0)}${p.copyRate ? ` (${rate(p.copyRate)})` : ""}`;
+      const left = timeLeft(partLeft(p));
+      words = `${pct1(p.pct)}${left ? ` · ${left}` : ""} · ↓ ${rate(p.down)} ↑ ${rate(p.up)}${peers}${p.free === false ? ` (waiting: ${p.why || "busy"})` : ""}`;
+    } else if (p.state === "copying" && p.turn) {
+      const left = p.copyRate > 0 && p.size ? timeLeft((p.size - p.copied) / p.copyRate) : "";
+      words = `copying to ${home.name}: ${pct1(p.size ? p.copied / p.size : 0)}${p.copyRate ? ` (${rate(p.copyRate)})` : ""}${left ? ` · ${left}` : ""}`;
+    }
     else if (p.state === "copied") words = `copied to ${home.name}`;
     else words = `downloaded: waiting its turn to copy to ${home.name}${p.free === false ? ` (${p.why || "busy"})` : ""}`;
     const what = p.files != null ? ` (${p.files} file${p.files === 1 ? "" : "s"})` : p.pieces ? ` (pieces ${p.pieces[0] + 1} to ${p.pieces[1]})` : "";
@@ -1177,7 +1211,8 @@
     return el("div", { className: "card" },
       el("div", { className: "top" }, el("span", { className: "summary", style: "flex:1;word-break:break-word" }, d.name), el("span", { className: "tr-pct" }, pct)),
       percentBar({ name: d.name, status: d.paused ? 0 : 4 }, done, pct),
-      el("div", { className: "cams" }, `${where}${then} · into ${homeRel(d.folder, add.browsing && add.browsing.home)}${d.paused ? " · paused" : ""}`),
+      el("div", { className: "cams" }, `${where}${then} · into ${homeRel(d.folder, add.browsing && add.browsing.home)}${d.paused ? " · paused" : ""}` +
+        (going && !d.paused ? ` · ${timeLeft(spreadLeft(d)) || "time left not known yet"}` : "")),
       d.error ? el("div", { className: "warn-line" }, "⚠ " + d.error) : "",
       ...(going ? d.parts.map((p) => partLine(home, p)) : []),
       el("div", { className: "buttons" }, buttons));

@@ -74,8 +74,12 @@ process.env.HAND_TRACKER_PS4CAM_NONE = "1";
 process.env.HAND_TRACKER_SYSTEM_SIMULATE = "1"; // (never restarting this computer)
 // Remote recording's takes go here, not into Documents.
 process.env.HAND_TRACKER_REMOTE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "hand-tracker-check-remote-"));
+// (A file of steps changing: its videos made again after 1.5 s here, not 20: electron/label-layers.js.)
+process.env.HAND_TRACKER_LABELS_QUIET_MS = "1500";
 require("../electron/main.js");
 const exporter = require("../electron/exporter.js");
+const LabelLayers = require("../electron/label-layers.js");
+const LabelAss = require("../label-ass.js");
 const validators = require("./motion-validators.js");
 const { verifyExports } = require("./video-validators.js");
 const { startNatNetSim } = require("./natnet-sim.js");
@@ -191,6 +195,9 @@ const STEPS = [
   ["viewer", ["capture", "optitrack"], checkViewerStep], // the capture's files, and Motive's markers
   ["viewer-video", [], () => checkViewerVideo()],
   ["grid-video", [], () => checkGridVideo()],
+  ["label-layers", [], ({ js }) => checkLabelLayers(js)],
+  ["baby-monitor", [], ({ js }) => checkBabyMonitor(js)],
+  ["home-assistant", [], ({ js }) => checkHomeAssistant(js)],
   ["own-apps", [], () => checkOwnApps()],
 ];
 if (process.argv.includes("--list")) {
@@ -362,18 +369,32 @@ async function checkVideoExport({ js }) {
   check("Export panel appears after recording", await js("!document.getElementById('exportCard').hidden"));
   const videoBase = await js("document.getElementById('exportName').value");
   await js(`document.querySelectorAll('#formatGrid input').forEach((i) => { i.checked = !i.disabled; }); document.getElementById('exportBtn').click();`);
+  // (with its labels a layer of their own, 2026-11-26: each format has them drawn in, "<name> (labels)…", and one
+  // more, <name>.mkv, is the clean picture with them as tracks)
   let rows = 0;
-  for (let i = 0; i < 900 && rows < exporter.FORMATS.length; i++) {
+  for (let i = 0; i < 900 && rows < exporter.FORMATS.length + 1; i++) {
     await new Promise((r) => setTimeout(r, 500));
     rows = await js("document.querySelectorAll('#exportResults li').length");
   }
   const okRows = await js("document.querySelectorAll('#exportResults li.ok').length");
-  check(`All ${exporter.FORMATS.length} video formats exported`, okRows === exporter.FORMATS.length,
+  check(`All ${exporter.FORMATS.length} video formats exported, with the labels drawn in, and the clean .mkv with them as tracks`, okRows === exporter.FORMATS.length + 1,
     await js("document.getElementById('exportNote').textContent + ' ' + [...document.querySelectorAll('#exportResults li.fail')].map((l) => l.textContent).join(' | ')"));
 
   // 5. Each video decodes as the format it claims to be
-  const exported = verifyExports(outDir, videoBase, exporter.FORMATS.map((f) => f.id), false);
+  const exported = verifyExports(outDir, `${videoBase} (labels)`, exporter.FORMATS.map((f) => f.id), false);
   check("Every exported video decodes as the right format", exported.ok, exported.summary);
+  // The clean .mkv: the recording's own picture (VP9, copied), the camera view's labels as tracks (the hands drawn
+  // over it: Hand points), and its picture without them, where the labelled copy has them.
+  const clean = path.join(outDir, `${videoBase}.mkv`);
+  const streams = fs.existsSync(clean) ? await LabelLayers.streamsOf(clean) : [];
+  const grey = (p) => spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-ss", "1", "-i", p, "-frames:v", "1", "-vf", "scale=160:-2,format=gray", "-f", "rawvideo", "-"]).stdout;
+  const a = fs.existsSync(clean) ? grey(clean) : Buffer.alloc(0), b = grey(path.join(outDir, `${videoBase} (labels).mp4`));
+  let changed = 0;
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (Math.abs(a[i] - b[i]) > 40) changed++;
+  const tracks = streams.filter((s) => s.kind === "Subtitle").map((s) => s.title);
+  check("…and the clean .mkv is the recording's own picture with the hands as a track (drawn in the labelled copies only)",
+    (streams.find((s) => s.kind === "Video") || {}).codec === "vp9" && tracks[0] === "All labels" && tracks.includes("Hand points") && a.length > 0 && changed / a.length > 0.0005,
+    JSON.stringify({ tracks, streams: streams.map((s) => `${s.kind}:${s.codec}`), changed: a.length ? changed / a.length : null }));
 }
 
 // Gestures from simulated hand poses, through the real tracking pipeline.
@@ -1555,7 +1576,14 @@ async function checkSentry(js) {
       ${PAGE}
       return !!(await until(() => !$("detailsPanel").hidden));
     })()`);
-    out.files = { photo: file(/^Sentry_.+\.jpg$/), video: file(/^Sentry_.+-video\.(webm|mp4)$/) };
+    // Its clip with its labels as a layer of their own (2026-11-26): once made (electron/label-layers.js, in the
+    // background), <clip>.mkv clean with the labels as tracks, and <clip> (labels).mp4 with them drawn in, which
+    // its alert shows.
+    // (the clip as recorded goes once no page has read it for a while: the page here played it)
+    const madeBoth = () => { const n = fs.readdirSync(dir); return n.some((x) => /^Sentry_.+-video\.mkv$/.test(x)) && n.some((x) => /^Sentry_.+-video \(labels\)\.mp4$/.test(x)); };
+    for (let i = 0; i < 480 && !madeBoth(); i++) await sleep(250);
+    out.files = { photo: file(/^Sentry_.+\.jpg$/), video: file(/^Sentry_.+-video \(labels\)\.mp4$/), clean: file(/^Sentry_.+-video\.mkv$/) };
+    if (out.files.clean) out.files.clean.tracks = (await LabelLayers.streamsOf(path.join(dir, out.files.clean.f))).filter((s) => s.kind === "Subtitle").map((s) => s.title);
     // Deleted from the page: the alert (two taps), with its photo and video; then every Sentry
     // photo and video (two taps), an older one too, and nothing else. A made-up alert id is refused.
     fs.writeFileSync(path.join(dir, OLD), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
@@ -1580,7 +1608,7 @@ async function checkSentry(js) {
       out.allMessage = $("message").textContent;
       return out;
     })()`));
-    out.afterDelete = { photo: file(/^Sentry_.+\.jpg$/), video: file(/^Sentry_.+-video\.(webm|mp4)$/), old: fs.existsSync(path.join(dir, OLD)), kept: fs.existsSync(path.join(dir, KEEP)), events: await js(`Sentry._test.events.length`) };
+    out.afterDelete = { photo: file(/^Sentry_.+\.jpg$/), video: file(/^Sentry_.+-video( \(labels\))?\.(webm|mp4|mkv)$/), old: fs.existsSync(path.join(dir, OLD)), kept: fs.existsSync(path.join(dir, KEEP)), events: await js(`Sentry._test.events.length`) };
     // Hidden again by tapping the title five times: no boxes left on the previews.
     out.hiddenAgain = await pjs(`(async () => {
       ${PAGE}
@@ -1617,11 +1645,11 @@ async function checkSentry(js) {
   const launch = r.launch || {};
   const sv = r.saves || {}, dl = r.downloads || [];
   check("Downloads from remote recording's page in a browser, each as the file itself (not a .zip): the player's Download (the video it plays; a take's photo from its 📷 in the takes list); a Sentry alert's photo and its video, each by its own Download; a take's photos by themselves, and the ticked takes' videos",
-    sv.saveShown && /^Saved Sentry_.+-video\.(mp4|webm) /.test(sv.saveNote || "") && sv.photoButton === "📷 Photo" && sv.photoShown && /^Saved Sentry_.+\.jpg /.test(sv.photoNote || "") &&
-      /^Saved Sentry_.+\.jpg /.test(sv.alert_photo || "") && /^Saved Sentry_.+-video\.(mp4|webm) /.test(sv.alert_video || "") &&
+    sv.saveShown && /^Saved Sentry_.+-video( \(labels\))?\.(mp4|webm) /.test(sv.saveNote || "") && sv.photoButton === "📷 Photo" && sv.photoShown && /^Saved Sentry_.+\.jpg /.test(sv.photoNote || "") &&
+      /^Saved Sentry_.+\.jpg /.test(sv.alert_photo || "") && /^Saved Sentry_.+-video( \(labels\))?\.(mp4|webm) /.test(sv.alert_video || "") &&
       (sv.takeButtons || []).join() === "Download photo,Download video" && /^1 photo on this device/.test(sv.takePhotos || "") &&
       sv.tickedButton === "Download 1 video" && /^1 video on this device/.test(sv.tickedVideos || "") &&
-      dl.length === 6 && dl.filter((n) => /^Sentry_.+-video\.(mp4|webm)$/.test(n)).length === 3 && dl.filter((n) => /^Sentry_.+\.jpg$/.test(n)).length === 3,
+      dl.length === 6 && dl.filter((n) => /^Sentry_.+-video( \(labels\))?\.(mp4|webm)$/.test(n)).length === 3 && dl.filter((n) => /^Sentry_.+\.jpg$/.test(n)).length === 3,
     JSON.stringify({ saves: sv, downloads: dl }));
   check("Sentry mode: the app opened with it left on (as after a restart) starts its cameras by itself, trying again when the first start fails",
     launch.closed && launch.tries === 2 && launch.running && launch.armed, JSON.stringify(launch));
@@ -1642,7 +1670,8 @@ async function checkSentry(js) {
       r.ntfy.length >= 2 && r.ntfy[0] === "POST Sentry: Test" && r.ntfy.slice(1).some((t) => t.startsWith("POST Sentry: ")) &&
       r.files.photo && r.files.photo.head.startsWith("ffd8") && r.files.photo.kb > 5 &&
       r.files.video && r.files.video.kb > 5 && r.files.video.f.endsWith(".mp4") && r.files.video.plain && r.files.video.video === "h264" && ["aac", "none"].includes(r.files.video.sound) &&
-      r.badId && r.badId.error === "Which Sentry setting?" && r.delShown && r.delArmed && r.delGone && /^The alert deleted \(2 files\)/.test(r.delMessage) && r.allArmed && r.allGone &&
+      r.files.clean && r.files.clean.kb > 5 && Array.isArray(r.files.clean.tracks) && (!r.files.clean.tracks.length || r.files.clean.tracks[0] === "All labels") &&
+      r.badId && r.badId.error === "Which Sentry setting?" && r.delShown && r.delArmed && r.delGone && /^The alert deleted \(3 files\)/.test(r.delMessage) && r.allArmed && r.allGone &&
       r.afterDelete.photo === null && r.afterDelete.video === null && !r.afterDelete.old && r.afterDelete.kept && r.afterDelete.events === 0 &&
       r.finder && r.finder.ok,
     JSON.stringify(r));
@@ -4108,6 +4137,12 @@ async function checkRemoteRecording(js) {
     await post("settings", { settings: { detailsRequired: false } }); // (as it was: optional)
     const after = await state();
     out.take = after.lastTake;
+    // Its videos with their labels as a layer of their own (2026-11-26), made in the background
+    // (electron/label-layers.js): <take>-video-<role>.mkv, the clean picture with the labels as tracks, and
+    // "… (labels).mp4" with them drawn in; its JSON lists the .mkv once they're made.
+    const rdir = process.env.HAND_TRACKER_REMOTE_DIR;
+    const madeAll = () => { const n = fs.readdirSync(rdir); return n.filter((x) => /-video-[a-z-]+\.mkv$/.test(x)).length >= 2 && n.filter((x) => /-video-[a-z-]+ \(labels\)\.mp4$/.test(x)).length >= 2; };
+    for (let i = 0; i < 480 && !madeAll(); i++) await sleep(250);
     const file = after.lastTake && after.lastTake.ok ? path.join(process.env.HAND_TRACKER_REMOTE_DIR, after.lastTake.files[0]) : null;
     const saved = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
     out.savedHands = saved ? saved.hands.map((h) => h.handedness) : null;
@@ -4119,8 +4154,26 @@ async function checkRemoteRecording(js) {
       ? saved.videos.map((v) => `${v.role}/${v.camera}/${Number.isFinite(v.start_s) && Math.abs(v.start_s) < 5}/${fs.existsSync(path.join(process.env.HAND_TRACKER_REMOTE_DIR, v.file))}`).sort() : null;
     // Each camera's role as the take started, its serial and its USB port (simulated here: 1-1.1, 1-1.2…).
     out.devices = saved && Array.isArray(saved.camera_devices) ? saved.camera_devices.map((d) => `${d.role}/${d.kind}/${d.serial}/${d.usb_port}/${d.usb_id}`).sort() : null;
-    // Each camera's video, saved beside the take (named after the role it started with).
-    out.videos = ((after.lastTake && after.lastTake.files) || []).filter((f) => /-video-[a-z-]+\.(webm|mp4)$/.test(f)).map((f) => {
+    // Each camera's video, saved beside the take (named after the role it started with): its labelled copy, and its
+    // .mkv: the picture copied as recorded, the labels as tracks (All labels first), and a picture without them.
+    const takeBase = after.lastTake && after.lastTake.ok ? after.lastTake.files[0].replace(/\.json$/, "") : "?";
+    const ofTake = (re) => fs.readdirSync(rdir).filter((f) => f.startsWith(`${takeBase}-video-`) && re.test(f));
+    out.layers = [];
+    for (const f of ofTake(/\.mkv$/)) {
+      const s = await LabelLayers.streamsOf(path.join(rdir, f));
+      // (how much of a frame the labels change: the labelled copy against the clean picture, a second in)
+      // (at a few moments: the hands aren't in every camera's picture all the time)
+      const grey = (p, at) => spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-ss", String(at), "-i", p, "-frames:v", "1", "-vf", "scale=160:90,format=gray", "-f", "rawvideo", "-"]).stdout;
+      let drawn = 0;
+      for (const at of [0.5, 1, 2, 3]) {
+        const a = grey(path.join(rdir, f), at), b = grey(path.join(rdir, f.replace(/\.mkv$/, " (labels).mp4")), at);
+        let changed = 0;
+        for (let i = 0; i < Math.min(a.length, b.length); i++) if (Math.abs(a[i] - b[i]) > 40) changed++;
+        if (a.length) drawn = Math.max(drawn, Math.round((changed / a.length) * 1e4) / 1e4);
+      }
+      out.layers.push({ f: f.replace(/^.*(-video-[a-z-]+\.mkv)$/, "$1"), video: (s.find((x) => x.kind === "Video") || {}).codec, tracks: s.filter((x) => x.kind === "Subtitle").map((x) => x.title), drawn });
+    }
+    out.videos = ofTake(/ \(labels\)\.mp4$/).map((f) => {
       const full = path.join(process.env.HAND_TRACKER_REMOTE_DIR, f);
       const b = fs.readFileSync(full);
       // Its frames a second, from ffmpeg decoding it: more than the 15 these videos used to be capped at.
@@ -4130,7 +4183,7 @@ async function checkRemoteRecording(js) {
       const t = (last.match(/time=(\d+):(\d+):([\d.]+)/) || []).slice(1).map(Number);
       const seconds = t.length === 3 ? t[0] * 3600 + t[1] * 60 + t[2] : 0;
       const { plain, video, sound } = clipInfo(full);
-      return { f: f.replace(/^.*(-video-[a-z-]+\.\w+)$/, "$1"), kb: Math.round(b.length / 1024), plain, video, sound, fps: seconds ? Math.round((frames / seconds) * 10) / 10 : 0 };
+      return { f: f.replace(/^.*(-video-[a-z-]+ \(labels\)\.\w+)$/, "$1"), kb: Math.round(b.length / 1024), plain, video, sound, fps: seconds ? Math.round((frames / seconds) * 10) / 10 : 0 };
     });
     // Each camera's photo from the take's start, saved beside it (named after its role), and
     // listed with the take.
@@ -4208,7 +4261,9 @@ async function checkRemoteRecording(js) {
       out.full.frames >= 12 && out.full.size && out.full.small && out.full.size.w > out.full.small.w && out.full.fps >= 6 &&
       out.numbered.got >= 12 && out.numbered.distinct === out.numbered.got &&
       out.stop.ok && out.take && out.take.ok && /^Sam-Smith_Lab-2_Pick-up-cup_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_\d+s\.json$/.test(out.take.files[0]) && out.take.hands === 2 &&
-      out.videos.map((v) => v.f).sort().join() === "-video-chest.mp4,-video-head.mp4" &&
+      out.videos.map((v) => v.f).sort().join() === "-video-chest (labels).mp4,-video-head (labels).mp4" &&
+      out.layers.map((l) => l.f).sort().join() === "-video-chest.mkv,-video-head.mkv" &&
+      out.layers.every((l) => l.video === "h264" && l.tracks[0] === "All labels" && l.tracks.includes("Hand points")) && out.layers.some((l) => l.drawn > 0.0005) &&
       out.videosListed && out.videosListed.join() === "chest/Chest/true/true,head/Head/true/true" &&
       out.devices && out.devices.length === 2 && /^chest\/oak\/SIMULATED-OAK-[AB]\/1-1\.\d+\/03e7:f63b$/.test(out.devices[0]) && /^head\/oak\/SIMULATED-OAK-[AB]\/1-1\.\d+\/03e7:f63b$/.test(out.devices[1]) &&
       out.devices[0].split("/")[2] !== out.devices[1].split("/")[2] && out.devices[0].split("/")[3] !== out.devices[1].split("/")[3] && out.videos.every((v) => v.plain && v.video === "h264" && ["aac", "none"].includes(v.sound) && v.kb > 5 && v.fps > 16) &&
@@ -4282,7 +4337,7 @@ async function checkRemoteLauncher(js) {
           first.click();
           document.getElementById("takesGet").click();
           for (let i = 0; i < 150 && !/on this device|Nothing came/.test(document.getElementById("takesNote").textContent); i++) await sleep(100);
-          takes = { ...takes, id: first.dataset.id, note: document.getElementById("takesNote").textContent, del: !document.getElementById("takesDel").hidden };
+          takes = { ...takes, id: first.dataset.id, note: document.getElementById("takesNote").textContent, del: !document.getElementById("takesDel").hidden, why: ((rows()[0] && rows()[0].querySelector(".err")) || {}).textContent || "", files: (rows()[0] && rows()[0].textContent.slice(0, 600)) || "" };
           document.getElementById("takesDel").click();
           document.getElementById("takesDel").click();
           for (let i = 0; i < 100 && rows().length >= takeRows; i++) await sleep(100);
@@ -6270,13 +6325,17 @@ async function checkVideoFiles(win, js) {
     for (let i = 0; i < 200 && !document.querySelector("#exportResults li"); i++) await new Promise((r) => setTimeout(r, 150));
     return { info, saved: document.querySelectorAll("#exportResults li.ok").length };
   })()`);
-  const outMp4 = path.join(outDir, "from-video-file.mp4");
+  // (its labels a layer of their own, 2026-11-26: the MP4 with them drawn in, "… (labels).mp4", and the clean .mkv
+  // with them as tracks, re-timed too)
+  const outMp4 = path.join(outDir, "from-video-file (labels).mp4"), outMkv = path.join(outDir, "from-video-file.mkv");
   const probe = fs.existsSync(outMp4) ? spawnSync(exporter.ffmpegPath, ["-hide_banner", "-i", outMp4, "-f", "null", "-"], { encoding: "utf8" }) : { stderr: "" };
   const dur = /Duration: 00:00:(\d+\.\d+)/.exec(probe.stderr);
   const frames = /frame=\s*(\d+)/g, counts = [...probe.stderr.matchAll(frames)];
   const outFrames = counts.length ? Number(counts[counts.length - 1][1]) : 0;
-  check("Video recorded from a file exports at the source's real speed", rec.saved === 1 && dur && Math.abs(Number(dur[1]) - 2) < 0.15 && Math.abs(outFrames - 60) <= 2,
-    `${rec.info}; exported ${dur ? dur[1] : "?"} s, ${outFrames} frames`);
+  const mkvInfo = fs.existsSync(outMkv) ? await exporter.probe(outMkv) : null;
+  check("Video recorded from a file exports at the source's real speed (the labels drawn in; and its clean .mkv, re-timed too)",
+    rec.saved === 2 && dur && Math.abs(Number(dur[1]) - 2) < 0.15 && Math.abs(outFrames - 60) <= 2 && mkvInfo && Math.abs(mkvInfo.duration - 2) < 0.15,
+    `${rec.info}; exported ${dur ? dur[1] : "?"} s, ${outFrames} frames; .mkv ${mkvInfo ? mkvInfo.duration : "?"} s`);
 
   // Motion capture over the whole video (these test videos have no hands, so nothing is captured).
   const cap = await js(`(async () => {
@@ -7072,11 +7131,15 @@ async function checkGridVideo() {
     return { shown: true, note, made: !!li, result: li ? li.querySelector(".name").title : document.getElementById("gridStatus").textContent };
   })()`);
   win.destroy();
-  const out = path.join(dir, `${take}-video-grid.mp4`);
+  // (its labels a layer of their own, 2026-11-26: <take>-video-grid (labels).mp4 has the names drawn in, and
+  // <take>-video-grid.mkv is the clean grid with them as a track)
+  const out = path.join(dir, `${take}-video-grid (labels).mp4`), clean = path.join(dir, `${take}-video-grid.mkv`);
   const info = r.made && fs.existsSync(out) ? await exporter.probe(out) : null;
+  const cleanInfo = fs.existsSync(clean) ? await exporter.probe(clean) : null;
+  const cleanTracks = fs.existsSync(clean) ? (await LabelLayers.streamsOf(clean)).filter((s) => s.kind === "Subtitle").map((s) => s.title) : [];
   // The mean and brightest of a block of the grid at a moment (grey, 0-255).
-  const look = (t, x, y, w, h) => {
-    const g = spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-ss", String(t), "-i", out, "-frames:v", "1", "-vf", `crop=${w}:${h}:${x}:${y},format=gray`, "-f", "rawvideo", "-"], { maxBuffer: 1 << 26 });
+  const look = (t, x, y, w, h, file = out) => {
+    const g = spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-ss", String(t), "-i", file, "-frames:v", "1", "-vf", `crop=${w}:${h}:${x}:${y},format=gray`, "-f", "rawvideo", "-"], { maxBuffer: 1 << 26 });
     let sum = 0, most = 0;
     for (const v of g.stdout) {
       sum += v;
@@ -7090,20 +7153,527 @@ async function checkGridVideo() {
     head: look(1, ...mid(0)).mean, chestBefore: look(0.5, ...mid(1)).mean, chestAfter: look(1.5, ...mid(1)).mean,
     wristDuring: look(1, ...mid(2)).mean, wristAfter: look(2, ...mid(2)).mean, empty: look(1, ...mid(3)).mean,
     chestLabel: look(0.5, 960 + 16, 16, 120, 46).most, emptyCorner: look(1, 960 + 16, 540 + 16, 120, 46).most,
+    // (the clean grid: no name drawn there, the picture itself, which is dark there before the chest camera starts)
+    cleanChestLabel: cleanInfo ? look(0.5, 960 + 16, 16, 120, 46, clean).most : null,
   } : null;
   const loud = (a, b) => {
     const run = spawnSync(exporter.ffmpegPath, ["-hide_banner", "-nostats", "-i", out, "-af", `atrim=start=${a}:end=${b},volumedetect`, "-f", "null", "-"], { encoding: "utf8" });
     return Number((/mean_volume: (-?[\d.]+) dB/.exec(run.stderr) || [])[1]);
   };
   const sound = info && info.hasAudio ? { before: loud(0, 0.9), after: loud(1.1, 3.4) } : null;
-  check("Grid video: a take's three camera videos side by side in one 1080p MP4 (2 × 2, in the roles' order), from the converter's card",
-    r.shown && /^Head, Chest and Left wrist side by side in one 1080p MP4 \(2 × 2\)/.test(r.note) && /lined up as the take was recorded/.test(r.note) && /with Chest's sound/.test(r.note) &&
-      r.made && info && info.width === 1920 && info.height === 1080 && info.videoCodec === "h264" && Math.abs(info.duration - 3.5) < 0.15,
-    JSON.stringify({ r, info }));
+  check("Grid video: a take's three camera videos side by side in one 1080p video (2 × 2, in the roles' order), from the converter's card: the clean .mkv with the names as a track, and the MP4 with them drawn in",
+    r.shown && /^Head, Chest and Left wrist side by side in one 1080p video \(2 × 2\)/.test(r.note) && /lined up as the take was recorded/.test(r.note) && /with Chest's sound/.test(r.note) &&
+      r.made && info && info.width === 1920 && info.height === 1080 && info.videoCodec === "h264" && Math.abs(info.duration - 3.5) < 0.15 &&
+      cleanInfo && cleanInfo.width === 1920 && cleanInfo.videoCodec === "h264" && Math.abs(cleanInfo.duration - 3.5) < 0.15 && cleanTracks.join() === "All labels,Camera names",
+    JSON.stringify({ r, info, cleanInfo, cleanTracks }));
   check("...each picture where it was on the take's clock (black before its camera started and after it ended), each with its name, the sound lined up too",
-    px && px.head > 40 && px.chestBefore < 20 && px.chestAfter > 40 && px.wristDuring > 40 && px.wristAfter < 20 && px.empty < 20 && px.chestLabel > 200 && px.emptyCorner < 20 &&
+    px && px.head > 40 && px.chestBefore < 20 && px.chestAfter > 40 && px.wristDuring > 40 && px.wristAfter < 20 && px.empty < 20 && px.chestLabel > 200 && px.emptyCorner < 20 && px.cleanChestLabel !== null && px.cleanChestLabel < 20 &&
       sound && sound.before < -80 && sound.after > -40,
     JSON.stringify({ px, sound }));
+}
+
+// The baby monitor (baby-monitor.js; the user, 2026-11-26): hidden with Sentry on remote recording's page; on from
+// there, it listens (this computer's test microphone); a quiet room, then a short bump (nothing), then a second and
+// a half of loud sound (an alert: ntfy, its sound clip from 5 s before until 15 s of quiet, a WAV played from the
+// alert); its live sound (/api/listen, 16 kHz PCM, numbered); crying only (MediaPipe's YAMNet, downloaded the
+// first time: silence isn't crying; crying scores set it off); every camera's video; an alert deleted with its files.
+// (The episodes are fed sound made up here, on a clock of their own: the microphone's is left out meanwhile.)
+async function checkBabyMonitor(js) {
+  const dir = process.env.HAND_TRACKER_REMOTE_DIR;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = {};
+  const ntfyGot = [];
+  const ntfy = require("http").createServer((req, res) => {
+    req.on("data", () => {});
+    req.on("end", () => {
+      const q = new URL(req.url, "http://x").searchParams;
+      ntfyGot.push({ title: q.get("title"), tags: q.get("tags") });
+      res.setHeader("Content-Type", "application/json");
+      res.end("{}");
+    });
+  });
+  await new Promise((r) => ntfy.listen(0, "127.0.0.1", r));
+  const ntfyAt = `http://127.0.0.1:${ntfy.address().port}`;
+  let win = null, wasOn = true, base = "", key = "";
+  const post = (action, extra = {}) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...extra }) }).then((r) => r.json());
+  const get = (p) => fetch(base + p, { headers: { "X-Key": key } });
+  // Made-up sound fed in: n tenths of a second at an amplitude, on its own clock (FEED).
+  const feed = (n, amp, step = 100) => js(`(() => {
+    const B = BabyMonitor._test;
+    for (let k = 0; k < ${n}; k++) {
+      const a = new Float32Array(1600);
+      for (let i = 0; i < a.length; i++) a[i] = ${amp} * Math.sin((2 * Math.PI * 440 * i) / 16000) + (Math.random() - 0.5) * 0.002;
+      window.__babyClock = (window.__babyClock || 5e12) + ${step};
+      B.feed(a, window.__babyClock);
+    }
+    return true;
+  })()`);
+  try {
+    const setup = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      let s = await desktop.remote.status();
+      const wasOn = s.on;
+      if (!s.on) document.getElementById("remoteToggle").click();
+      for (let i = 0; i < 50 && !s.on; i++) { await sleep(100); s = await desktop.remote.status(); }
+      return { status: s, wasOn, hidden: BabyMonitor.remoteState() };
+    })()`);
+    wasOn = setup.wasOn;
+    out.hiddenState = setup.hidden;
+    const keyed = (setup.status.urls || []).find((u) => u.keyed);
+    key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
+    base = `http://127.0.0.1:${setup.status.port}`;
+    // Shown with Sentry; Sentry's ntfy to the stand-in here.
+    out.shown = await post("sentry", { sentry: { shown: true, ntfy: { on: true, server: ntfyAt } } });
+    out.badSetting = await post("baby", { baby: { trigger: "screaming" } });
+    win = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-baby", backgroundThrottling: false } });
+    await win.loadURL(`${base}/#k=${key}`);
+    const pjs = (code) => withLimit(win.webContents.executeJavaScript(code), "the remote page, baby monitor");
+    const PAGE = `
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      const until = async (fn, ms = 15000) => { for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100); } return null; };
+      const set = (id, v) => { $(id).value = String(v); $(id).dispatchEvent(new Event("change")); };`;
+    // On from the page: it listens to this computer's (test) microphone.
+    Object.assign(out, await pjs(`(async () => {
+      ${PAGE}
+      const out = {};
+      out.panel = !!(await until(() => !$("babyPanel").hidden));
+      $("babyShow").click();
+      out.settings = !!(await until(() => !$("babySettings").hidden));
+      out.offNote = $("babyNote").textContent;
+      $("babyBtn").click();
+      out.on = !!(await until(() => $("babyBtn").getAttribute("aria-pressed") === "true"));
+      out.meter = !!(await until(() => !$("babyMeter").hidden, 20000));
+      out.listeningNote = $("babyNote").textContent;
+      return out;
+    })()`));
+    out.mic = await js(`(async () => {
+      for (let i = 0; i < 100 && BabyMonitor._test.heard() < 10; i++) await new Promise((r) => setTimeout(r, 100));
+      const st = BabyMonitor.remoteState();
+      BabyMonitor._test.only(true); // (from here, only the sound fed in)
+      return { heard: BabyMonitor._test.heard(), listening: st.listening, level: st.level };
+    })()`);
+    // A quiet room (30 s), a short bump (0.4 s: nothing), then a second and a half of loud sound: an alert.
+    await feed(300, 0.001);
+    await feed(4, 0.3);
+    out.afterBump = await js(`!!BabyMonitor._test.episode()`);
+    await feed(6, 0.001);
+    await feed(15, 0.2);
+    out.afterLoud = await js(`(() => { const e = BabyMonitor._test.episode(); return e ? e.event.sound : null; })()`);
+    await feed(200, 0.001); // (15 s of quiet ends it: its sound clip saved)
+    let ev = null;
+    for (let i = 0; i < 100 && !(ev && ev.audio); i++) {
+      await sleep(100);
+      ev = await js(`BabyMonitor._test.events[0] || null`);
+    }
+    out.event = ev;
+    const wavPath = ev && ev.audio ? path.join(dir, ev.audio) : null;
+    const wavBytes = wavPath && fs.existsSync(wavPath) ? fs.readFileSync(wavPath) : null;
+    out.wav = wavBytes ? { riff: wavBytes.toString("latin1", 0, 4), rate: wavBytes.readUInt32LE(24), bits: wavBytes.readUInt16LE(34), seconds: Math.round(((wavBytes.length - 44) / 32000) * 10) / 10 } : null;
+    // The alert on the page: its sound played there.
+    Object.assign(out, await pjs(`(async () => {
+      ${PAGE}
+      const out = {};
+      const play = await until(() => document.querySelector("#babyAlerts button[data-play]"));
+      out.alertText = $("babyAlerts").textContent;
+      if (play) play.click();
+      out.played = !!(await until(() => $("playerVideo").duration > 0 && !$("playerVideo").hidden, 20000));
+      out.playedSeconds = Math.round(($("playerVideo").duration || 0) * 10) / 10;
+      $("playerClose").click();
+      return out;
+    })()`));
+    // Its live sound: Listen live on, the microphone's sound again; numbered pieces of 16 kHz PCM.
+    out.liveOn = await post("baby", { baby: { listen: true } });
+    await js(`BabyMonitor._test.only(false)`);
+    const a1 = await get("/api/listen");
+    const s1 = Number((/seq=(\d+)/.exec(a1.headers.get("content-type") || "") || [])[1]);
+    const b1 = Buffer.from(await a1.arrayBuffer()).length;
+    const a2 = await get(`/api/listen?after=${s1}`);
+    const s2 = Number((/seq=(\d+)/.exec(a2.headers.get("content-type") || "") || [])[1]);
+    out.live = { status: [a1.status, a2.status], type: a2.headers.get("content-type"), bytes: [b1, Buffer.from(await a2.arrayBuffer()).length], seq: [s1, s2] };
+    out.liveButton = await pjs(`(async () => { ${PAGE} return !!(await until(() => !$("babyListen").hidden)); })()`);
+    await post("baby", { baby: { listen: false } });
+    out.liveOff = (await get("/api/listen")).status;
+    await js(`BabyMonitor._test.only(true)`);
+    // Crying only: YAMNet ready (downloaded the first time), silence not crying, crying scores setting it off.
+    out.crying = await post("baby", { baby: { trigger: "crying", sensitivity: "medium" } });
+    out.model = await js(`(async () => {
+      try {
+        await SoundClassifier.load();
+        const silence = await SoundClassifier.cryScore(new Float32Array(15600), 16000);
+        return { status: SoundClassifier.status(), silence };
+      } catch (err) {
+        return { status: SoundClassifier.status(), error: String(err && err.message || err) };
+      }
+    })()`);
+    await js(`(() => { BabyMonitor._test.setCrying(0.8); BabyMonitor._test.setCrying(0.9); return true; })()`);
+    await feed(1, 0.05);
+    out.cryEpisode = await js(`(() => { const e = BabyMonitor._test.episode(); return e ? e.event.sound : null; })()`);
+    await js(`BabyMonitor._test.end()`);
+    // Every camera's video meanwhile (Video clip on starts the cameras: the test webcam only).
+    await post("scan");
+    let avail = null;
+    for (let i = 0; i < 100 && !(avail && avail.at && !avail.scanning); i++) {
+      await sleep(200);
+      avail = (await (await get("/api/state")).json()).available;
+    }
+    for (const c of (avail && avail.cameras) || []) await post("pick", { pick: { id: c.id, use: !c.id.startsWith("oak:") && c.present } });
+    await post("mode", { mode: "freeform" });
+    await post("baby", { baby: { trigger: "loud", videoClip: true, soundClip: false } });
+    for (let i = 0; i < 100 && !(await js(`MultiCamera.isActive() && MultiCamera.sentryViews().length > 0`)); i++) await sleep(200);
+    await sleep(1500);
+    await js(`window.__babyClock = Date.now()`); // (the cameras' clips run on the real clock)
+    await feed(15, 0.2);
+    await sleep(2500);
+    await feed(200, 0.001, 1);
+    await js(`BabyMonitor._test.end()`);
+    let vev = null;
+    for (let i = 0; i < 200 && !(vev && vev.videos && vev.videos.length); i++) {
+      await sleep(150);
+      vev = await js(`BabyMonitor._test.events[0] || null`);
+    }
+    out.videoEvent = vev;
+    // An alert deleted from the page, with its files.
+    const files = (e) => [e.audio, ...(e.videos || [])].filter(Boolean);
+    const soundEvent = (await js(`BabyMonitor._test.events.find((e) => e.audio) || null`));
+    out.beforeDelete = soundEvent ? files(soundEvent).map((f) => fs.existsSync(path.join(dir, f))) : null;
+    out.deleted = soundEvent ? await post("baby", { baby: { deleteAlerts: [soundEvent.id] } }) : null;
+    out.afterDelete = soundEvent ? files(soundEvent).map((f) => fs.existsSync(path.join(dir, f))) : null;
+    out.off = await post("baby", { baby: { armed: false, videoClip: false, soundClip: true } });
+    out.offState = await js(`(() => { const s = BabyMonitor.remoteState(); return { armed: s.armed, listening: s.listening }; })()`);
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    if (win) win.destroy();
+    await js(`(() => { BabyMonitor._test.only(false); return true; })()`).catch(() => {});
+    if (base) {
+      await post("baby", { baby: { armed: false } }).catch(() => {});
+      await post("sentry", { sentry: { shown: false, ntfy: { on: false } } }).catch(() => {});
+      await post("close").catch(() => {});
+    }
+    if (!wasOn) await js(`(async () => { if ((await desktop.remote.status()).on) document.getElementById("remoteToggle").click(); return true; })()`).catch(() => {});
+    ntfy.close();
+  }
+  out.ntfy = ntfyGot.filter((g) => g.title === "Baby monitor").map((g) => g.tags);
+  const r = out;
+  check("Baby monitor: hidden with Sentry, then on from remote recording's page, listening (this computer's microphone, a level shown); a short bump isn't an alert, a second and a half of loud sound is (ntfy told), and its sound clip (from 5 s before until 15 s of quiet, a 16 kHz WAV) plays from the alert",
+    r.hiddenState && r.hiddenState.shown === false && r.badSetting && r.badSetting.error === "Which baby monitor setting?" && r.panel && r.settings && r.on && r.meter &&
+      r.mic && r.mic.heard >= 10 && r.mic.listening && r.mic.level && Number.isFinite(r.mic.level.db) &&
+      r.afterBump === false && r.afterLoud === "loud" && r.event && r.event.sound === "loud" && r.event.seconds >= 1 && /^Baby_.+-sound\.wav$/.test(r.event.audio || "") &&
+      r.wav && r.wav.riff === "RIFF" && r.wav.rate === 16000 && r.wav.bits === 16 && r.wav.seconds >= 20 && r.wav.seconds <= 24 &&
+      /A loud sound/.test(r.alertText || "") && r.played && r.playedSeconds >= 20 && r.ntfy.length >= 1 && r.ntfy[0] === "baby",
+    JSON.stringify({ ...r, ntfy: r.ntfy }));
+  check("…its sound live (Listen live): numbered pieces of 16 kHz PCM, each after the last one had, and the page's Listen; refused once it's off",
+    r.liveOn && r.liveOn.ok && r.live && r.live.status.join() === "200,200" && /^application\/octet-stream; seq=\d+; rate=16000$/.test(r.live.type || "") &&
+      r.live.bytes.every((b) => b > 0 && b % 2 === 0) && r.live.seq[1] > r.live.seq[0] && r.liveButton && r.liveOff === 409,
+    JSON.stringify({ liveOn: r.liveOn, live: r.live, liveButton: r.liveButton, liveOff: r.liveOff }));
+  check("…crying only: MediaPipe's sound classifier (YAMNet) made ready, silence not crying, crying setting it off; every camera's video with an alert; an alert deleted with its files; off",
+    r.crying && r.crying.ok && r.model && r.model.status === "ready" && r.model.silence < 0.2 && r.cryEpisode === "crying" &&
+      r.videoEvent && Array.isArray(r.videoEvent.videos) && r.videoEvent.videos.length >= 1 && r.videoEvent.videos.every((v) => /^Baby_.+-video( \(labels\))?\.(mp4|mkv|webm)$/.test(v)) &&
+      r.beforeDelete && r.beforeDelete.every(Boolean) && r.deleted && r.deleted.ok && r.afterDelete && r.afterDelete.every((x) => !x) &&
+      r.off && r.off.ok && r.offState && r.offState.armed === false && r.offState.listening === false,
+    JSON.stringify({ crying: r.crying, model: r.model, cryEpisode: r.cryEpisode, videoEvent: r.videoEvent, beforeDelete: r.beforeDelete, deleted: r.deleted, afterDelete: r.afterDelete, off: r.off, offState: r.offState, error: r.error }));
+}
+
+// Home Assistant (the user, 2026-11-26: "make the video be able to be linked to home assistant"): each running camera
+// as an MJPEG camera (/api/ha/mjpeg, /api/ha/still: this computer's key as the password where it isn't trusted), its
+// addresses on the page's settings; Sentry's and the baby monitor's alerts to a webhook (a stand-in Home Assistant
+// here) with a signed link to each file, which serves that file and nothing else.
+async function checkHomeAssistant(js) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = {};
+  const got = [];
+  const ha = require("http").createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        got.push({ path: req.url, json: JSON.parse(body) });
+      } catch {
+        got.push({ path: req.url, json: null });
+      }
+      res.end("");
+    });
+  });
+  await new Promise((r) => ha.listen(0, "127.0.0.1", r));
+  const hook = `http://127.0.0.1:${ha.address().port}/api/webhook/hand_tracker_check`;
+  let win = null, wasOn = true, base = "", key = "";
+  const post = (action, extra = {}) => fetch(base + "/api/command", { method: "POST", headers: { "X-Key": key, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...extra }) }).then((r) => r.json());
+  const get = (p) => fetch(base + p, { headers: { "X-Key": key } });
+  const basic = () => ({ Authorization: `Basic ${Buffer.from(`hand-tracker:${key}`).toString("base64")}` });
+  try {
+    const setup = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      let s = await desktop.remote.status();
+      const wasOn = s.on;
+      if (!s.on) document.getElementById("remoteToggle").click();
+      for (let i = 0; i < 50 && !s.on; i++) { await sleep(100); s = await desktop.remote.status(); }
+      return { status: s, wasOn };
+    })()`);
+    wasOn = setup.wasOn;
+    const keyed = (setup.status.urls || []).find((u) => u.keyed);
+    key = keyed ? new URL(keyed.url).hash.replace("#k=", "") : "";
+    base = `http://127.0.0.1:${setup.status.port}`;
+    // The test webcam running.
+    await post("scan");
+    let avail = null;
+    for (let i = 0; i < 100 && !(avail && avail.at && !avail.scanning); i++) {
+      await sleep(200);
+      avail = (await (await get("/api/state")).json()).available;
+    }
+    for (const c of (avail && avail.cameras) || []) await post("pick", { pick: { id: c.id, use: !c.id.startsWith("oak:") && c.present } });
+    await post("mode", { mode: "freeform" });
+    await post("cameras");
+    let st = null;
+    for (let i = 0; i < 150; i++) {
+      st = await (await get("/api/state")).json();
+      if (st.running && (st.cameras || []).length && st.cameras.every((c) => c.fps > 0)) break;
+      await sleep(200);
+    }
+    out.stateHa = st.ha;
+    // A picture, and its live pictures as MJPEG: refused without the password (here, not over Tailscale).
+    const refused = await fetch(`${base}/api/ha/still?i=0`);
+    out.refused = { status: refused.status, ask: refused.headers.get("www-authenticate") };
+    const still = await fetch(`${base}/api/ha/still?i=0`, { headers: basic() });
+    const stillBytes = Buffer.from(await still.arrayBuffer());
+    out.still = { status: still.status, type: still.headers.get("content-type"), jpeg: stillBytes[0] === 0xff && stillBytes[1] === 0xd8, kb: Math.round(stillBytes.length / 1024) };
+    const wrong = await fetch(`${base}/api/ha/still?i=0`, { headers: { Authorization: `Basic ${Buffer.from("hand-tracker:nope").toString("base64")}` } });
+    out.wrongPassword = wrong.status;
+    const ctl = new AbortController();
+    const mjpeg = await fetch(`${base}/api/ha/mjpeg?i=0`, { headers: basic(), signal: ctl.signal });
+    out.mjpegType = mjpeg.headers.get("content-type");
+    let frames = 0, bytes = 0;
+    const reader = mjpeg.body.getReader();
+    const until = Date.now() + 3000;
+    try {
+      while (Date.now() < until) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.length;
+        frames += (Buffer.from(value).toString("latin1").match(/--frame\r\nContent-Type: image\/jpeg/g) || []).length;
+      }
+    } finally {
+      ctl.abort();
+    }
+    out.mjpeg = { frames, kb: Math.round(bytes / 1024) };
+    // The page's settings: the addresses to paste.
+    win = new BrowserWindow({ show: false, width: 420, height: 900, webPreferences: { partition: "check-ha", backgroundThrottling: false } });
+    await win.loadURL(`${base}/#k=${key}`);
+    out.page = await withLimit(win.webContents.executeJavaScript(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      for (let i = 0; i < 100 && document.getElementById("haPanel").hidden; i++) await sleep(100);
+      return document.getElementById("haPanel").hidden ? null : document.getElementById("haCams").innerText + " | " + document.getElementById("haLogin").textContent;
+    })()`), "the remote page, Home Assistant");
+    // Alerts to the webhook: Sentry's settings; a test; then the baby monitor's alert and its clip, with a signed link.
+    out.badHook = await post("sentry", { sentry: { ha: { url: "http://example.com/not-a-webhook" } } });
+    out.setHook = await post("sentry", { sentry: { shown: true, ha: { on: true, url: hook } } });
+    out.test = await post("sentry", { sentry: { ha: { test: true } } });
+    await js(`(() => {
+      const B = BabyMonitor._test;
+      let t = 7e12;
+      const feed = (n, amp) => { for (let k = 0; k < n; k++) { const a = new Float32Array(1600); for (let i = 0; i < 1600; i++) a[i] = amp * Math.sin(i / 3); B.feed(a, (t += 100)); } };
+      B.only(true);
+      feed(300, 0.001); feed(15, 0.2); feed(200, 0.001);
+      return true;
+    })()`);
+    for (let i = 0; i < 100 && !got.some((g) => g.json && g.json.kind === "baby" && g.json.event === "clip"); i++) await sleep(100);
+    const clip = (got.find((g) => g.json && g.json.kind === "baby" && g.json.event === "clip") || {}).json || null;
+    out.got = got.map((g) => g.json && `${g.json.kind}/${g.json.event}`);
+    out.clip = clip;
+    if (clip && clip.sound_url) {
+      const link = new URL(clip.sound_url);
+      const viaLink = await fetch(`${base}${link.pathname}${link.search}`);
+      const wav = Buffer.from(await viaLink.arrayBuffer());
+      out.link = { status: viaLink.status, type: viaLink.headers.get("content-type"), riff: wav.toString("latin1", 0, 4) };
+      const other = new URL(`${base}${link.pathname}${link.search}`);
+      other.searchParams.set("t", "0".repeat(32));
+      out.tampered = (await fetch(other)).status;
+      other.searchParams.set("f", "something-else.wav");
+      other.searchParams.set("t", link.searchParams.get("t"));
+      out.otherFile = (await fetch(other)).status;
+      const ranged = await fetch(`${base}${link.pathname}${link.search}`, { headers: { Range: "bytes=0-3" } });
+      out.range = { status: ranged.status, range: ranged.headers.get("content-range"), bytes: Buffer.from(await ranged.arrayBuffer()).toString("latin1") };
+    }
+  } catch (err) {
+    out.error = String((err && err.stack) || err);
+  } finally {
+    if (win) win.destroy();
+    await js(`(() => { BabyMonitor._test.only(false); return true; })()`).catch(() => {});
+    if (base) {
+      await post("sentry", { sentry: { shown: false, ha: { on: false, url: "" } } }).catch(() => {});
+      await post("close").catch(() => {});
+    }
+    if (!wasOn) await js(`(async () => { if ((await desktop.remote.status()).on) document.getElementById("remoteToggle").click(); return true; })()`).catch(() => {});
+    ha.close();
+  }
+  const r = out;
+  check("Home Assistant: each running camera as an MJPEG camera (a picture, and its pictures as they come), this computer's key the password where it isn't trusted, the addresses on the page's settings",
+    r.stateHa === true && r.refused && r.refused.status === 401 && /^Basic realm=/.test(r.refused.ask || "") && r.still && r.still.status === 200 && r.still.type === "image/jpeg" && r.still.jpeg &&
+      r.wrongPassword === 401 && /^multipart\/x-mixed-replace; boundary=frame$/.test(r.mjpegType || "") && r.mjpeg && r.mjpeg.frames >= 2 &&
+      /MJPEG URL: http:\/\/\S+\/api\/ha\/mjpeg\?i=0/.test(r.page || "") && /Still image URL: http:\/\/\S+\/api\/ha\/still\?i=0/.test(r.page || ""),
+    JSON.stringify({ stateHa: r.stateHa, refused: r.refused, still: r.still, wrongPassword: r.wrongPassword, mjpegType: r.mjpegType, mjpeg: r.mjpeg, page: r.page, error: r.error }));
+  check("…alerts to Home Assistant's webhook (only its own kind of address): a test, the baby monitor's alert and then its clip, with a signed link that serves that file (a part too) and nothing else",
+    r.badHook && r.badHook.error === "Which Sentry setting?" && r.setHook && r.setHook.ok && r.test && r.test.ok &&
+      r.got && r.got[0] === "test/test" && r.got.includes("baby/alert") && r.clip && r.clip.source === "hand_tracker" && r.clip.sound === "loud" && /^Baby_.+-sound\.wav$/.test(r.clip.sound_file || "") &&
+      /\/api\/ha\/file\?f=Baby_.+-sound\.wav&t=[0-9a-f]{32}$/.test(r.clip.sound_url || "") &&
+      r.link && r.link.status === 200 && r.link.type === "audio/wav" && r.link.riff === "RIFF" && r.tampered === 403 && r.otherFile === 403 &&
+      r.range && r.range.status === 206 && /^bytes 0-3\/\d+$/.test(r.range.range || "") && r.range.bytes === "RIFF",
+    JSON.stringify({ badHook: r.badHook, setHook: r.setHook, test: r.test, got: r.got, clip: r.clip, link: r.link, tampered: r.tampered, otherFile: r.otherFile, range: r.range, error: r.error }));
+}
+
+// A video's labels as a layer of their own (the user, 2026-11-26): label-ass.js's lines (moved into a grid's block,
+// later, cut; the steps); label-layers.js noting what's drawn over a picture (mirrored, a Path2D's points, text, a
+// picture over the picture kept on the clean copy, objects apart); electron/label-layers.js making a clip into its
+// .mkv and labelled copy (its take's JSON then listing the .mkv), and making them again when Annotate's steps change.
+async function checkLabelLayers(js) {
+  // 1. The lines.
+  const L = LabelAss;
+  const f = L.frameLines([
+    { k: "line", c: "hands", pts: [10, 20, 30, 40], w: 4, col: "&H88FF00&", a: "&H00&" },
+    { k: "line", c: "hands", pts: [30, 40, 50, 20], w: 4, col: "&H88FF00&", a: "&H00&" },
+    { k: "dot", c: "hands", x: 30, y: 40, r: 3, col: "&H5533FF&", a: "&H00&" },
+    { k: "text", c: "objects", x: 100, y: 50, size: 14, bold: true, an: 1, text: "cat {91%}", col: "&HFFFFFF&", a: "&H00&" },
+  ], 1, 1.04, { w: 320, h: 180, width: 640, height: 360 });
+  const moved = L.move(f.hands, { scale: 0.5, dx: 960, dy: 0, shift: 2, length: 10, clip: [960, 0, 1920, 540] });
+  const steps = L.stepLines({ segments: [
+    { id: "a", start: 0, end: 4, label: "Pick up the part", review: "approved" }, { id: "a.1", parent: "a", start: 1, end: 2, label: "Grip", review: "pending" },
+    { id: "b", start: 4, end: 6, label: "Wrong", review: "rejected" }, { id: "c", start: 6, end: 8, label: "Put it down", review: "pending" },
+  ] }, { shift: 1, length: 8, height: 360 });
+  const back = L.parse(L.file([...f.hands, ...f.objects], { width: 640, height: 360 }));
+  check("Labels as subtitle lines: one line per look (both strokes in one drawing, scaled to the track's size), text in place (without its braces), moved into a grid's block later and cut to it; Annotate's steps (not rejected ones; \"?\" not yet reviewed; sub-steps under)",
+    f.hands.length === 2 && /\\bord4.*\\3c&H88FF00&.*\\p2\}m 40 80 l 120 160 m 120 160 l 200 80$/.test(f.hands[0]) && /\\bord6.*m 120 160 l 121 160$/.test(f.hands[1]) &&
+      f.objects.length === 1 && /^Dialogue: 2,0:00:01\.00,0:00:01\.04,Default,,0,0,0,,\{\\an1\\pos\(200,100\)\\fs32\.2\\b1.*\}cat 91%$/.test(f.objects[0]) &&
+      /^Dialogue: 0,0:00:03\.00,0:00:03\.04,.*\\pos\(960,0\).*\\bord2.*\\clip\(960,0,1920,540\)\}m 20 40 l 60 80/.test(moved[0]) &&
+      steps.length === 4 && /0:00:01\.00,0:00:02\.00,Steps,,0,0,0,,Pick up the part$/.test(steps[0]) && /0:00:02\.00,0:00:03\.00,Steps.*Pick up the part\\N\{\\fs13\\b0\}Grip \?$/.test(steps[1]) &&
+      /0:00:07\.00,0:00:08\.00,Steps,,0,0,0,,Put it down \?$/.test(steps[3]) && !steps.some((l) => /Wrong/.test(l)) &&
+      back.width === 640 && back.height === 360 && back.lines.length === 3 && L.merge(moved, steps)[0] === steps[0] && L.merge(moved, steps).length === 6,
+    JSON.stringify({ f, moved, steps }));
+
+  // 2. What's drawn over a picture, noted while a clip records (here a canvas of the main window's).
+  const page = await js(`(async () => {
+    const c = Object.assign(document.createElement("canvas"), { width: 320, height: 180 });
+    const ctx = c.getContext("2d");
+    const patch = Object.assign(document.createElement("canvas"), { width: 10, height: 10 });
+    patch.getContext("2d").fillStyle = "#ff00ff";
+    patch.getContext("2d").fillRect(0, 0, 10, 10);
+    const got = { hands: [], objects: [] };
+    let closed = null;
+    const sink = { available: async () => true, open: async () => "t1", close: async (id, info) => (closed = info), discard: async () => {},
+      write: async (id, l) => { for (const k of ["hands", "objects"]) if (l[k]) got[k].push(...l[k].split("\\n")); } };
+    LabelLayers.ready(sink);
+    await new Promise((r) => setTimeout(r, 50));
+    const rec = LabelLayers.record(c, sink);
+    const cap = LabelLayers.of(c);
+    for (let i = 0; i < 4; i++) {
+      cap.begin();
+      ctx.save();
+      ctx.clearRect(0, 0, 320, 180);
+      ctx.translate(320, 0);
+      ctx.scale(-1, 1); // (mirrored, as hand-tracker.js draws a selfie camera)
+      ctx.fillStyle = "#204060";
+      ctx.fillRect(0, 0, 320, 180);
+      cap.picture();
+      ctx.strokeStyle = "#00FF88";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(40, 40);
+      ctx.lineTo(120 + i, 120); // (moving, so each frame is new)
+      ctx.stroke();
+      const p = new Path2D();
+      p.arc(120, 120, 6, 0, Math.PI * 2);
+      ctx.fillStyle = ctx.strokeStyle = "#FF3355";
+      ctx.lineWidth = 2;
+      ctx.fill(p);
+      ctx.stroke(p);
+      ctx.restore();
+      ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+      ctx.beginPath();
+      ctx.roundRect(10, 140, 80, 24, 6);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 14px sans-serif";
+      ctx.textBaseline = "middle";
+      ctx.fillText("Left", 16, 152);
+      LabelLayers.category(c, "objects");
+      ctx.strokeStyle = "#ffd43b";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(200, 20, 90, 60);
+      LabelLayers.category(c, "hands");
+      ctx.drawImage(patch, 250, 140); // (a picture over the picture: readable text's)
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    const id = await rec.stop();
+    const at = (cv, x, y) => [...cv.getContext("2d").getImageData(x, y, 1, 1).data].slice(0, 3).join(",");
+    return { id, closed, hands: got.hands, objects: got.objects, cleanLine: at(rec.canvas, 260, 59), stageLine: at(c, 260, 59), cleanPatch: at(rec.canvas, 255, 145),
+      cleanTag: at(rec.canvas, 50, 152), stageBox: at(c, 245, 20), cleanBox: at(rec.canvas, 245, 20) };
+  })()`);
+  const hands = page.hands.join("\n"), objects = page.objects.join("\n");
+  check("While a clip records, what's drawn over its picture is noted as lines (mirrored as drawn; MediaPipe's Path2D points one dot each; a tag's box and text; objects apart) and the clean picture keeps none of it, but a picture drawn over it",
+    page.id === "t1" && page.closed && page.closed.width === 320 && page.closed.height === 180 &&
+      /\\3c&H88FF00&.*\}m 560 80 l 4\d\d 240/.test(hands) && /\\bord7\\shad0\\1a&HFF&\\3c&H5533FF&.*m 400 240 l 401 240/.test(hands) && /\\1c&H000000&\\1a&H66&/.test(hands) &&
+      /\\an4\\pos\(16,152\).*\\b1.*\}Left$/m.test(hands) && /\\3c&H3BD4FF&/.test(objects) && !/3BD4FF/.test(hands) && page.objects.length >= 1 &&
+      ((v) => v[0] < 60 && v[1] > 200)(String(page.stageLine).split(",").map(Number)) && page.cleanLine === "32,64,96" && page.cleanPatch === "255,0,255" && page.cleanTag === "32,64,96" && page.cleanBox === "32,64,96" && page.stageBox !== page.cleanBox,
+    JSON.stringify({ ...page, hands: page.hands.slice(0, 6), objects: page.objects.slice(0, 2) }));
+
+  // 3. A clip made into its .mkv and labelled copy (its take's JSON lists the .mkv), and again with Annotate's steps.
+  const dir = path.join(outDir, "label-layers");
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  const take = "Sam-Smith_Lab-2_Labels_2026-11-26_10-00-00_3s";
+  const clip = path.join(dir, `${take}-video-head.mp4`);
+  spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=0x202020:s=640x360:r=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+    "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip]);
+  fs.writeFileSync(path.join(dir, `${take}.json`), JSON.stringify({ format: "hand-tracker-motion", hands: [], videos: [{ file: path.basename(clip), camera: "Head", role: "head", start_s: 0.5 }] }));
+  const done = [];
+  const layers = new LabelLayers({ folder: () => dir, busy: () => false, onDone: (d) => done.push(d) });
+  const id = await layers.open();
+  const lines = { hands: [], objects: [] };
+  for (let i = 0; i < 90; i++) {
+    const l = L.frameLines([
+      { k: "line", c: "hands", pts: [100, 100, 300, 250], w: 8, col: "&H88FF00&", a: "&H00&" },
+      { k: "line", c: "objects", pts: [400, 150, 560, 150, 560, 300, 400, 300], closed: true, w: 6, col: "&H00FFFF&", a: "&H00&" },
+    ], i / 30, (i + 1) / 30, { w: 640, h: 360, width: 640, height: 360 });
+    lines.hands.push(...l.hands);
+    lines.objects.push(...l.objects);
+  }
+  await layers.write(id, { hands: lines.hands.join("\n"), objects: lines.objects.join("\n") });
+  await layers.close(id, { width: 640, height: 360 });
+  await layers.claim(id, clip, take);
+  await layers.finish({ paths: [clip], json: `${take}.json` });
+  for (let i = 0; i < 240 && !done.length; i++) await sleep(250);
+  const mkv = path.join(dir, `${take}-video-head.mkv`), lab = path.join(dir, `${take}-video-head (labels).mp4`);
+  const px = (file, t, x, y) => [...spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-ss", String(t), "-i", file, "-frames:v", "1", "-vf", `crop=1:1:${x}:${y},format=rgb24`, "-f", "rawvideo", "-"]).stdout];
+  const listed = JSON.parse(fs.readFileSync(path.join(dir, `${take}.json`), "utf8")).videos[0];
+  const s1 = fs.existsSync(mkv) ? await LabelLayers.streamsOf(mkv) : [];
+  const made = { done: done[0], files: fs.readdirSync(dir).sort(), listed, streams: s1.map((s) => `${s.kind}:${s.codec}:${s.title}`),
+    line: px(lab, 1, 200, 175), lineClean: px(mkv, 1, 200, 175), box: px(lab, 1, 480, 150), boxClean: px(mkv, 1, 480, 150) };
+  check("A clip with its labels kept apart becomes <name>.mkv (its picture and sound copied, the labels as tracks: All labels, Hand points, Sentry's boxes) and <name> (labels).mp4 with them drawn in; the clip as recorded goes, and its take's JSON lists the .mkv",
+    made.done && made.done.ok && made.files.join() === [`${take}-video-head (labels).mp4`, `${take}-video-head.mkv`, `${take}.json`].sort().join() &&
+      listed.file === `${take}-video-head.mkv` && listed.labelled === `${take}-video-head (labels).mp4` && listed.start_s === 0.5 &&
+      made.streams.join() === "Video:h264:,Audio:aac:,Subtitle:ass:All labels,Subtitle:ass:Hand points,Subtitle:ass:Sentry's boxes" &&
+      made.line[1] > 200 && made.line[0] < 60 && made.lineClean.every((v) => v < 60) && made.box[0] > 200 && made.box[1] > 200 && made.boxClean.every((v) => v < 60),
+    JSON.stringify(made));
+  // Annotate's steps for the take: the head camera started 0.5 s into it and the steps were made on it (its
+  // primary), so they're at the same times in its own video; a changed file makes them again.
+  done.length = 0;
+  layers.watch(dir);
+  fs.writeFileSync(path.join(dir, `${take}.annotations.json`), JSON.stringify({ format: "hand-tracker-annotations", version: 1,
+    source: { take, videos: [{ camera: "Head", file: `${take}-video-head.mp4`, primary: true }] },
+    segments: [{ id: "s1", start: 0.2, end: 2.8, label: "Tighten the screws", kind: "task", review: "approved", parent: null }, { id: "s2", start: 2.8, end: 3, label: "No", kind: "idle", review: "rejected", parent: null }] }));
+  for (let i = 0; i < 240 && !done.some((d) => d.steps); i++) await sleep(250);
+  const s2 = fs.existsSync(mkv) ? await LabelLayers.streamsOf(mkv) : [];
+  // (the step's words, white on a dark box at the bottom middle: bright pixels there now)
+  const bright = (file, t) => {
+    const g = spawnSync(exporter.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-ss", String(t), "-i", file, "-frames:v", "1", "-vf", "crop=400:60:120:290,format=gray", "-f", "rawvideo", "-"]).stdout;
+    return [...g].filter((v) => v > 200).length;
+  };
+  const own = fs.existsSync(mkv) ? await layers.trackLines(mkv) : { tracks: {} };
+  const again = { done: done.find((d) => d.steps), streams: s2.map((s) => `${s.kind}:${s.title}`), stepText: bright(lab, 1.5), cleanText: bright(mkv, 1.5),
+    steps: (own.tracks.steps || []).map((l) => l.replace(/^Dialogue: \d+,([^,]+),([^,]+),.*,,(.*)$/, "$1-$2 $3")), handsKept: (own.tracks.hands || []).length };
+  check("…and once Annotate's steps for its take are there (or change), its .mkv gets a Steps track (not rejected ones; at the times of the video they were made on) and the labelled copy has them drawn in, the rest kept",
+    again.done && again.streams.join() === "Video:,Audio:,Subtitle:All labels,Subtitle:Hand points,Subtitle:Sentry's boxes,Subtitle:Steps" &&
+      again.steps.join() === "0:00:00.20-0:00:02.80 Tighten the screws" && again.handsKept === 90 && again.stepText > 50 && again.cleanText === 0,
+    JSON.stringify(again));
 }
 
 // Motion files convert to every other format: each of the app's own hand exports (C3D, TRC,

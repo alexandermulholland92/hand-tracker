@@ -161,9 +161,13 @@
   .camlist { margin: 4px 0 0; padding-left: 1.3em; }
   #btDevices button { display: block; width: 100%; margin-top: 6px; text-align: left; }
   #btNetRow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-  #videoPanel .row, #sentryPanel .row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin: 0 0 6px; }
-  #videoPanel .row .grow, #sentryPanel .row .grow { flex: 1 1 auto; }
-  #videoPanel select, #sentryPanel select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
+  #videoPanel .row, #sentryPanel .row, #babyPanel .row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin: 0 0 6px; }
+  #videoPanel .row .grow, #sentryPanel .row .grow, #babyPanel .row .grow { flex: 1 1 auto; }
+  #babyPanel .meter { position: relative; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; margin: 6px 0 10px; }
+  #babyPanel .meter .fill { height: 100%; width: 0; background: #2f9e44; transition: width .1s; }
+  #babyPanel .meter .mark { position: absolute; top: 0; bottom: 0; width: 2px; background: #e03131; left: 0; }
+  #babyPanel .meter.on .fill { background: #e03131; }
+  #videoPanel select, #sentryPanel select, #babyPanel select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
   #sentryPanel .sub { font-size: 13px; color: var(--muted); margin: 2px 0 8px; overflow-wrap: anywhere; }
   #sentryPanel hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
   #sentryNote { margin-bottom: 8px; }
@@ -298,12 +302,40 @@
         <div class="row"><span class="grow">Photo with each alert</span><button type="button" id="sentryNtfyPhoto" class="small" aria-pressed="false">Off</button></div>
         <div class="takebtns"><button type="button" id="sentryTest">Send a test</button><button type="button" id="sentryNewTopic" class="stop">New topic</button></div>
       </div>
+      <div class="row"><span class="grow">Alerts to Home Assistant</span><button type="button" id="sentryHa" class="small" aria-pressed="false">Off</button></div>
+      <div id="sentryHaBox" hidden>
+        <div class="sub">In Home Assistant, make an automation triggered by a <b>Webhook</b> and paste its address here (…/api/webhook/…). Each alert (Sentry's and the baby monitor's) is sent to it as JSON, then again with its clip: <code>kind</code>, <code>event</code>, <code>camera</code>, <code>animal</code>, <code>sound</code>, and links to its photo, video and sound clip (<code>photo_url</code>, <code>video_url</code>, <code>sound_url</code>; their names in <code>photo_file</code>, <code>video_file</code>, <code>sound_file</code>).</div>
+        <div class="join"><input id="sentryHaUrl" type="url" maxlength="400" autocomplete="off" spellcheck="false" placeholder="http://homeassistant:8123/api/webhook/…" aria-label="Home Assistant webhook" /><button type="button" id="sentryHaSave" class="quiet">Save</button></div>
+        <div class="takebtns"><button type="button" id="sentryHaTest">Send a test</button></div>
+      </div>
       <hr />
     </div>
     <div id="sentryAlerts"></div>
     <div id="sentryAlertsNote" class="muted"></div>
     <button type="button" id="sentryDelAll" class="small" hidden>Delete every Sentry photo and video</button>
     </div>
+  </section>
+
+  <!-- The baby monitor (baby-monitor.js): hidden and shown with Sentry's panel. -->
+  <section class="panel" id="babyPanel" aria-labelledby="babyTitle" hidden>
+    <h2><span id="babyTitle" class="grow">Baby monitor</span><button type="button" id="babyBtn" class="small" aria-pressed="false">Off</button><button type="button" id="babyShow" class="small" aria-expanded="false">Settings</button></h2>
+    <div id="babyNote" class="muted"></div>
+    <div id="babyMeter" class="meter" hidden><div class="fill"></div><div class="mark"></div></div>
+    <div id="babySettings" hidden>
+      <div class="row"><span class="grow">Set off by</span><select id="babyTrigger"><option value="loud">Loud sound</option><option value="crying">Crying only</option></select></div>
+      <div class="sub" id="babyTriggerSub"></div>
+      <div class="row"><span class="grow">Sensitivity</span><select id="babySens"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
+      <hr />
+      <div class="row"><span class="grow">Sound clip of each alert</span><button type="button" id="babySound" class="small" aria-pressed="false">Off</button></div>
+      <div class="sub">From a few seconds before it went off until it's been quiet for 15 seconds.</div>
+      <div class="row"><span class="grow">Video from every camera</span><button type="button" id="babyVideo" class="small" aria-pressed="false">Off</button></div>
+      <div class="row"><span class="grow">Listen live</span><button type="button" id="babyListenOn" class="small" aria-pressed="false">Off</button></div>
+      <div class="sub">Alerts come as Sentry's do: as notifications on a phone whose Hand Tracker app gets this device's alerts, and through ntfy (set up in Sentry mode's settings).</div>
+      <hr />
+    </div>
+    <div class="takebtns"><button type="button" id="babyListen" hidden>🔊 Listen</button><button type="button" id="babyTest" class="quiet" hidden>Send a test</button></div>
+    <div id="babyAlerts"></div>
+    <button type="button" id="babyDelAll" class="small" hidden>Delete every baby monitor clip</button>
   </section>
 
   <div id="full" role="dialog" aria-label="One camera, full screen" hidden>
@@ -398,6 +430,16 @@
     <div class="row" id="restartAppRow" hidden><span class="grow">The app on it: closed and opened again (a take being recorded is saved first; the cameras stop: press Start after)</span><button type="button" id="restartAppBtn" class="small">Restart the app</button></div>
     <div class="row" id="rebootRow"><span class="grow">This computer</span><button type="button" id="rebootBtn" class="small">Restart</button><button type="button" id="powerOffBtn" class="small">Turn off</button></div>
     <div id="restartNote" class="sub"></div>
+  </section>
+
+  <!-- Home Assistant (the user, 2026-11-26): each camera as an MJPEG camera there; alerts by Sentry's webhook. -->
+  <section class="panel" id="haPanel" aria-labelledby="haTitle" hidden>
+    <h2 id="haTitle">Home Assistant</h2>
+    <div class="sub">Each camera's live picture as a camera in Home Assistant: under Settings › Devices &amp; services › Add integration, add <b>MJPEG IP Camera</b> once for each camera with these addresses.</div>
+    <div id="haCams"></div>
+    <div class="sub" id="haLogin"></div>
+    <div class="takebtns"><button type="button" id="haCopyKey" class="small" hidden>Copy the password</button></div>
+    <div class="sub">Alerts, with links to their photos and clips (Sentry's and the baby monitor's): Home Assistant's webhook, in Sentry mode's settings.</div>
   </section>
 </main>
 

@@ -30,6 +30,8 @@ const APP_FILES = [
   "video-recorder.js", "readable-text.js", "motion-export.js", "pc-control.js", "oak-source.js", "ops-sessions.js", "rig-live.js", "rig-ble.js", "timing-check.js", "motion-video.js",
   "natnet-parse.js", "stage-overlay.js", "remote-core.js", "phone-link-protocol.js", "phone-link-ui.js", "remote-record-ui.js", "remote.html", "remote-launcher.js", "remote-client.html", "remote-client.js", "bt-link-client.js", "custom-gestures.js", "gestures.js", "phone-control.html", "phone-control.js", "qr-code.js", "video-native.js",
   "video-formats.js", "video-convert.js", "video-origin.js", "video-sync.js", "video-queue.js", "multi-video.js",
+  // (video labels as a layer of their own, the baby monitor and its crying model's loader: 2026-11-26)
+  "label-ass.js", "label-layers.js", "baby-monitor.js", "baby-monitor-worklet.js", "sound-classifier.js", "sound-classifier-worker.js",
   "sentry.js", "camera-video.js", "sentry-models.js", "models/kinds.js", "object-finder.js", "object-finder-worker.js", "second-look.js", "second-look-worker.js", "web-pc.js", "hid-core.js",
   "remote-recording.html", "remote-recording.js", "recording-converter.html", "recording-converter.js",
   "cluster.html", "cluster.js", // (Cluster's own app, on phones too)
@@ -72,6 +74,11 @@ const LIBRARY_FILES = [
   "node_modules/onnxruntime-web/dist/ort.wasm.min.js",
   "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs",
   "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm",
+  // The baby monitor's crying only (sound-classifier-worker.js, loaded only when it's wanted): MediaPipe's audio
+  // tasks, their SIMD build only. Its model (YAMNet) is downloaded the first time.
+  "node_modules/@mediapipe/tasks-audio/audio_bundle.js",
+  "node_modules/@mediapipe/tasks-audio/wasm/audio_wasm_internal.js",
+  "node_modules/@mediapipe/tasks-audio/wasm/audio_wasm_internal.wasm",
   // OCR (readable text in mirrored view): the browser worker only loads the LSTM builds.
   "node_modules/tesseract.js/dist/tesseract.min.js",
   "node_modules/tesseract.js/dist/worker.min.js",

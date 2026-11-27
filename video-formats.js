@@ -6,14 +6,16 @@
  *
  *   VideoFormats.FORMATS                 [{ id, label, detail, wasmDetail?, ext, suffix, group, audio, wasm }]
  *   VideoFormats.outputArgs(id, options) ffmpeg arguments that follow "-i <input>"
- *     options = { fps, retimeFps, constantRate, copyFromWebm, wasm }
+ *     options = { fps, retimeFps, constantRate, copyFromWebm, wasm, labels }
  *       fps           source frame rate (needed by formats with fixed frame rates)
  *       retimeFps     re-time every frame to this rate (clips recorded from a video file)
  *       constantRate  force a constant frame rate (MediaRecorder clips are variable)
  *       copyFromWebm  the input is the app's own VP9 WebM recording: WebM/MKV just copy it
  *       wasm          running in ffmpeg.wasm: quicker settings (it has one core) and VP8
  *                     for WebM (its VP9 encoder crashes)
- *   VideoFormats.IMPORT_ACCEPT           file-picker filter for any video
+ *       labels        a filter drawing the video's labels in ("ass=all.ass", electron/label-layers.js),
+ *                     after any retiming (so the picture is always made again)
+ *   VideoFormats.IMPORT_ACCEPT          file-picker filter for any video
  *   VideoFormats.parseProbe(text)        { duration, fps, width, height, videoCodec, hasAudio } from "ffmpeg -i" output
  */
 
@@ -85,10 +87,12 @@
   function outputArgs(id, options = {}) {
     const f = BY_ID.get(id);
     if (!f) throw new Error(`Unknown format: ${id}`);
-    const { fps = 0, retimeFps = 0, constantRate = false, copyFromWebm = false, wasm = false } = options;
+    const { fps = 0, retimeFps = 0, constantRate = false, copyFromWebm = false, wasm = false, labels = "" } = options;
     const retime = retimeFps > 0 ? `setpts=N/(${retimeFps}*TB)` : "";
     const rate = retimeFps > 0 ? retimeFps : fps;
-    const filters = (...more) => ["-vf", [retime, ...more].filter(Boolean).join(",")];
+    // labels: the labels drawn in (an ass filter, electron/label-layers.js), after any retiming; never copied then.
+    const drawn = labels ? String(labels) : "";
+    const filters = (...more) => ["-vf", [retime, drawn, ...more].filter(Boolean).join(",")];
     const cfr = rate > 0 && (constantRate || retimeFps > 0) ? ["-r", String(Math.round(rate * 1000) / 1000)] : [];
     const std = ["-r", nearestStandardRate(rate || 30)];
     const h264 = (profile) => [
@@ -108,13 +112,13 @@
         break;
       case "mkv":
         // The app's own WebM recordings are VP9, which Matroska holds as-is (original quality).
-        if (copyFromWebm && !retime) return ["-map", "0", "-c", "copy"];
+        if (copyFromWebm && !retime && !drawn) return ["-map", "0", "-c", "copy"];
         video = h264();
         audio = aac;
         break;
       case "webm":
         // Remuxing a WebM recording also adds the duration and seek index MediaRecorder leaves out.
-        if (copyFromWebm && !retime) return ["-map", "0", "-c", "copy"];
+        if (copyFromWebm && !retime && !drawn) return ["-map", "0", "-c", "copy"];
         video = wasm
           ? ["-c:v", "libvpx", "-b:v", "4M", "-crf", "10", "-deadline", "realtime", "-cpu-used", "8", ...filters(EVEN), ...cfr]
           : ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32", "-row-mt", "1", "-deadline", "good", "-cpu-used", "4", ...filters(EVEN), ...cfr];
@@ -127,7 +131,7 @@
       case "gif":
         video = [
           "-vf",
-          `${retime ? retime + "," : ""}fps=15,scale='min(800,iw)':-1:flags=lanczos,split[a][b];` +
+          `${retime ? retime + "," : ""}${drawn ? drawn + "," : ""}fps=15,scale='min(800,iw)':-1:flags=lanczos,split[a][b];` +
             "[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
           "-loop", "0",
         ];

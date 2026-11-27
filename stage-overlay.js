@@ -144,7 +144,13 @@
       const ctx = stage.getContext("2d");
       const unit = Math.max(1, stage.width / 640);
       ctx.save();
-      if (objects && objects.length && display.objects !== false) drawObjects(ctx, objects, display, unit);
+      // (the objects found are a layer of their own, Sentry's boxes, while a clip records its labels so:
+      // label-layers.js; the rest is the hands')
+      if (objects && objects.length && display.objects !== false) {
+        if (global.LabelLayers) global.LabelLayers.category(stage, "objects");
+        drawObjects(ctx, objects, display, unit);
+        if (global.LabelLayers) global.LabelLayers.category(stage, "hands");
+      }
       if (display.focus && far) drawFocus(ctx, unit);
       if (display.box) for (const hand of hands) drawHandBox(ctx, hand, unit);
       ctx.textBaseline = "middle";

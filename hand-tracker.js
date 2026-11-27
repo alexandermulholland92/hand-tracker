@@ -593,6 +593,10 @@
   // size: the picture's own (an OAK camera's side-by-side picture, wider than its frames).
   function drawStage(image, rawLandmarksList, size = null) {
     if (!ctx || !canvasEl) return;
+    // (while a clip records its labels as a layer of their own, label-layers.js keeps the picture clean and
+    // notes what's drawn over it: from here on, a new frame)
+    const layers = global.LabelLayers ? global.LabelLayers.of(canvasEl) : null;
+    if (layers) layers.begin();
     // The picture MediaPipe processed: the video, or its cropped part.
     const { w, h } = size || frameSize();
     if (canvasEl.width !== w || canvasEl.height !== h) {
@@ -607,6 +611,7 @@
       ctx.scale(-1, 1);
     }
     if (image) ctx.drawImage(image, 0, 0, w, h);
+    if (layers) layers.picture();
     // Only the camera image and skeleton are flipped. Text drawn by consumers
     // afterwards (see toCanvasPoint) is in normal orientation, so it stays readable.
 

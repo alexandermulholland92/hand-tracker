@@ -59,7 +59,8 @@
  * video, sound, videoQuality, photo }: whether the take details are needed, whether the OAK cameras' pictures
  * are drawn on its screen, each camera's video with a take, its sound and its quality, and each
  * camera's photo as a take starts),
- * "sentry" (Sentry mode's settings, boxes and on/off: cleanSentry), "oak" (one OAK camera's own
+ * "sentry" (Sentry mode's settings, boxes and on/off: cleanSentry), "baby" (the baby monitor's: cleanBaby),
+ * "oak" (one OAK camera's own
  * settings: cleanOak), "kinect" (one Kinect's own settings: cleanKinect) or "ps4" (one PS4 camera's
  * own settings: cleanPs4).
  * onWantPreviews({ on, focus, light }): a page is (or stopped) looking at the previews; focus: the
@@ -97,6 +98,11 @@ const PORTS_TRIED = 10;
 const PREVIEW_WANTED_MS = 3000; // previews are made while a page asked for one this recently
 const FOCUS_MS = 1500; // a camera stays full screen while a page asked for it this recently
 const NEXT_WAIT_MS = 400; // a preview request waits this long for that camera's next picture
+// The baby monitor's live sound: the last 3 s kept (tenths of a second), sent while a page asked this recently; a
+// request waits this long for more.
+const LISTEN_KEEP = 30;
+const LISTEN_WANTED_MS = 5000;
+const LISTEN_WAIT_MS = 1500;
 const PREVIEW_STALE_MS = 5000; // an older preview isn't shown (that camera stopped)
 const VIDEO_FRESH_MS = 3000; // a camera's video is offered while a picture of it came this recently
 const VIDEO_START_MS = 3000; // a webcam's video, made once asked for: its first picture waited for this long
@@ -120,7 +126,7 @@ function beingUpdated() {
     return false;
   }
 }
-const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "takeDetails", "editTake", "sentry", "oak", "kinect", "ps4", "resetCameras", "restartCamera", "reboot", "powerOff", "restartApp", "upright", "forward", "timing"]);
+const ACTIONS = new Set(["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "wifi", "deleteTakes", "takeDetails", "editTake", "sentry", "baby", "oak", "kinect", "ps4", "resetCameras", "restartCamera", "reboot", "powerOff", "restartApp", "upright", "forward", "timing"]);
 const DETAILS = ["contributor", "location", "task"];
 const DETAIL_CHARS = 200;
 const ROLES = ["", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"]; // (camera-roles.js's)
@@ -133,7 +139,7 @@ const VIDEO_QUALITIES = ["low", "standard", "high", "best"]; // (camera-video.js
 // networks, the takes and a slice of one). The one list: main.js and the Android checks' stand-in
 // use it, and the checks compare RemotePlugin.java's copy (Java can't load this) with it.
 const RIG_HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*):(\d{1,5})$/i;
-const RIG_PATH = /^\/api\/(state|command|imu(\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\?span=(1h|24h|7d)(&after=\d{1,15})?|preview\?i=[0-3](&full=1)?(&after=\d{1,12})?|video\?i=[0-3]&after=\d{1,12}|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12})$/;
+const RIG_PATH = /^\/api\/(state|command|imu(\?name=[A-Za-z0-9%._-]{1,60})?|wifi|takes|history\?span=(1h|24h|7d)(&after=\d{1,15})?|preview\?i=[0-3](&full=1)?(&after=\d{1,12})?|video\?i=[0-3]&after=\d{1,12}|take\?f=[A-Za-z0-9%._~!*'()-]{1,800}&at=\d{1,12}|listen(\?after=\d{1,12})?)$/;
 
 const PAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
@@ -275,10 +281,36 @@ function cleanSentry(s) {
     out.box = { camera: b.camera, cell: b.cell, off: b.off };
   }
   if (s.watchAll === true) out.watchAll = true;
+  // Home Assistant's webhook (sentry.js's homeAssistant): on or off, its address (…/api/webhook/<id>), a test.
+  if (s.ha && typeof s.ha === "object") {
+    const h = {};
+    if (typeof s.ha.on === "boolean") h.on = s.ha.on;
+    if (s.ha.test === true) h.test = true;
+    if (typeof s.ha.url === "string" && (s.ha.url.trim() === "" || (s.ha.url.length <= 400 && /^https?:\/\/[^\s/?#]+\/api\/webhook\/[A-Za-z0-9_-]{1,200}$/i.test(s.ha.url.trim())))) h.url = s.ha.url.trim();
+    if (Object.keys(h).length) out.ha = h;
+  }
   // Alerts deleted, with their photos and videos; or every Sentry photo and video.
   const ids = s.deleteAlerts;
   if (Array.isArray(ids) && ids.length >= 1 && ids.length <= 50 && ids.every((id) => typeof id === "string" && /^\d{1,15}-[a-z0-9]{1,8}$/.test(id))) out.deleteAlerts = [...ids];
   if (s.deleteAll === true) out.deleteAll = true;
+  return Object.keys(out).length ? out : null;
+}
+
+// The baby monitor from the page (baby-monitor.js): on or off, what sets it off (loud sound, or crying only) and how
+// readily, its switches (a sound clip, every camera's video, listening live), the microphone, alerts deleted (with
+// their sound and videos), or every baby monitor clip; a test notification. Only those, each checked.
+const BABY_FLAGS = ["armed", "soundClip", "videoClip", "listen"];
+function cleanBaby(s) {
+  if (!s || typeof s !== "object") return null;
+  const out = {};
+  for (const k of BABY_FLAGS) if (typeof s[k] === "boolean") out[k] = s[k];
+  if (["loud", "crying"].includes(s.trigger)) out.trigger = s.trigger;
+  if (["low", "medium", "high"].includes(s.sensitivity)) out.sensitivity = s.sensitivity;
+  if (typeof s.mic === "string" && s.mic.length <= 200 && /^[\w+/=.:-]*$/.test(s.mic)) out.mic = s.mic;
+  const ids = s.deleteAlerts;
+  if (Array.isArray(ids) && ids.length >= 1 && ids.length <= 50 && ids.every((id) => typeof id === "string" && /^\d{1,15}-[a-z0-9]{1,8}$/.test(id))) out.deleteAlerts = [...ids];
+  if (s.deleteAll === true) out.deleteAll = true;
+  if (s.test === true) out.test = true;
   return Object.keys(out).length ? out : null;
 }
 
@@ -289,14 +321,15 @@ function cleanSentry(s) {
 // and " (2)" if the name was taken; the formats
 // Hand Tracker saves, and a Kinect's "-depth-<role>", "-infrared-<role>", "-colour-<role>" (.mkv),
 // "-sound-<role>", "-sound-beam-<role>" (.wav) with their "-times" (.csv), "-kinect-<role>" (.mcap). Sentry mode's photo and
-// video of a moment are a take too.
-const TAKE_FILE = /^[^/\\:*?"<>|\u0000-\u001f]{1,240}\.(json|csv|bvh|glb|c3d|trc|npz|mcap|webm|mp4|jpg|mkv|wav)$/i;
+// video of a moment are a take too. A clip with its labels as a layer of their own (label-layers.js) is its .mkv
+// and "<name> (labels).mp4"; never a hidden file (what's still being made: .labels-<id>.json, a .part).
+const TAKE_FILE = /^(?!\.)[^/\\:*?"<>|\u0000-\u001f]{1,240}\.(json|csv|bvh|glb|c3d|trc|npz|mcap|webm|mp4|jpg|mkv|wav)$/i;
 const TAKE_SLICE = 2 << 20; // bytes per download request (the apps carry up to 4 MB an answer)
 const MAX_TAKES = 500;
 const EDIT_QUIET_MS = 8000; // a take whose files were written this recently may still be being saved
 const EDIT_MCAP_MAX = 400e6; // an MCAP file read for a take's details (one with its videos can be big)
 const takeOf = (file) =>
-  file.replace(/\.[a-z0-9]+$/i, "").replace(/ \(\d+\)$/, "").replace(/-(depth|infrared|colour|kinect|sound(-beam|-direction)?)-[a-z0-9-]+?(-times)?( \(\d+\))?$/i, "")
+  file.replace(/\.[a-z0-9]+$/i, "").replace(/ \(labels\)$/, "").replace(/ \(\d+\)$/, "").replace(/-(depth|infrared|colour|kinect|sound(-beam|-direction)?)-[a-z0-9-]+?(-times)?( \(\d+\))?$/i, "")
     .replace(/-(video|photo)(-[a-z0-9-]+)?$/i, "").replace(/(-motive)?(-left|-right)?$/, "");
 
 const CRC_TABLE = (() => {
@@ -324,6 +357,13 @@ class Takes {
     this.folder = folder;
     this.edited = new Map(); // take -> when its files were last written by a change of its details here
     this.turn = Promise.resolve(); // changes to the takes (details, deleting), one at a time
+    this.reads = new Map(); // file -> when a page last read some of it (slice)
+  }
+  // Whether a page has read some of this file (its name), or listed it, in the last ms: one may be playing or
+  // downloading it (a clip's recording isn't deleted meanwhile, once its .mkv and labelled copy are made:
+  // electron/label-layers.js).
+  readLately(name, ms = 120000) {
+    return Date.now() - (this.reads.get(String(name)) || 0) < ms;
   }
   // One change at a time: two at once to the same take would rename its files across each other.
   inTurn(change) {
@@ -340,9 +380,21 @@ class Takes {
     } catch {
       return [];
     }
+    // (a clip as recorded whose .mkv and labelled copy are made isn't listed any more, though it's there a while
+    // longer for a page already playing it: electron/label-layers.js's removeAfter)
+    const retired = new Set();
+    for (const e of entries) {
+      if (!e.isFile() || !/^\.labels-[\w-]{1,60}\.json$/.test(e.name)) continue;
+      try {
+        const m = JSON.parse(await fs.promises.readFile(path.join(dir, e.name), "utf8"));
+        if (m && m.removeAfter && typeof m.video === "string") retired.add(path.basename(m.video));
+      } catch {
+        // (gone meanwhile)
+      }
+    }
     const byId = new Map();
     for (const e of entries) {
-      if (!e.isFile() || !TAKE_FILE.test(e.name)) continue;
+      if (!e.isFile() || !TAKE_FILE.test(e.name) || retired.has(e.name)) continue;
       let st;
       try {
         st = await fs.promises.stat(path.join(dir, e.name));
@@ -361,13 +413,23 @@ class Takes {
   }
   async list() {
     const all = await this.all();
-    return { takes: all.slice(0, MAX_TAKES), more: Math.max(0, all.length - MAX_TAKES) };
+    const takes = all.slice(0, MAX_TAKES);
+    // (a page listing them may play or download one of them next: each counts as read now, readLately)
+    const now = Date.now();
+    for (const t of takes) for (const f of t.files || []) this.read(f.name, now);
+    return { takes, more: Math.max(0, all.length - MAX_TAKES) };
+  }
+  read(name, at = Date.now()) {
+    this.reads.delete(name);
+    this.reads.set(name, at);
+    if (this.reads.size > 5000) this.reads.delete(this.reads.keys().next().value);
   }
   // A file of a take, by its name (in the folder itself, nowhere else), from byte at.
   async slice(name, at) {
     if (!TAKE_FILE.test(name) || !Number.isInteger(at) || at < 0) return null;
     let fh;
     try {
+      this.read(name);
       fh = await fs.promises.open(path.join(this.folder(), name), "r");
       const st = await fh.stat();
       if (!st.isFile() || at > st.size) return null; // (past its end: not there)
@@ -443,7 +505,18 @@ class Takes {
     const newest = Math.max(...(await Promise.all(files.map((n) => fs.promises.stat(path.join(dir, n)).then((s) => s.mtimeMs, () => 0)))));
     // (written just now by a change here, not a save: it can be changed again at once)
     const ours = newest <= (this.edited.get(id) || 0);
-    if (busy || (!ours && Date.now() - newest < EDIT_QUIET_MS) || all.some((n) => n.startsWith(`.${id}`) && n.endsWith(".tmp"))) {
+    // (its clips still being made into their .mkv and labelled copy, electron/label-layers.js: their labels waiting,
+    // .labels-<n>.json naming the clip, or being made, .<clip>.part)
+    let making = all.some((n) => n.startsWith(`.${id}`) && /\.(part|labels-lock)$/.test(n));
+    for (const n of making ? [] : all.filter((x) => /^\.labels-[\w-]+\.json$/.test(x))) {
+      try {
+        const m = JSON.parse(await fs.promises.readFile(path.join(dir, n), "utf8"));
+        if (m && typeof m.video === "string" && path.basename(m.video).startsWith(id)) making = true;
+      } catch {
+        // (gone meanwhile: made)
+      }
+    }
+    if (busy || making || (!ours && Date.now() - newest < EDIT_QUIET_MS) || all.some((n) => n.startsWith(`.${id}`) && n.endsWith(".tmp"))) {
       return { ok: false, message: "It's still being saved: try again in a moment." };
     }
     const moves = files.map((n) => [n, next + n.slice(id.length)]);
@@ -663,6 +736,7 @@ class RemoteRecordServer extends EventEmitter {
     this.previewSeq = new Map(); // camera index -> its last picture's number
     this.focusFrom = new Map(); // camera index -> its first picture's number since full screen
     this.previewWaiters = new Set(); // requests waiting for a camera's next picture
+    this.listening = { chunks: [], seq: 0, waiters: new Set(), wanted: false, until: 0, timer: null }; // the baby monitor's sound (listenChunk)
     this.videos = new Map(); // an OAK camera's id -> its H.264: { packets: [{ seq, u, key, data }], seq, at, bytes, overlays, wantUntil, waiters }
     this.watchingVideo = false; // a page is playing a camera's video
     this.videoWantKey = ""; // (the cameras whose video is wanted, as last told)
@@ -795,6 +869,146 @@ class RemoteRecordServer extends EventEmitter {
 
   setState(state) {
     this.state = state && typeof state === "object" ? state : {};
+  }
+
+  // ---------- Home Assistant ----------
+  // HTTP Basic auth (Home Assistant's MJPEG camera can't send X-Key): any username, this computer's key the password.
+  basicOk(req) {
+    const m = /^Basic\s+([A-Za-z0-9+/=]+)$/.exec(String(req.headers.authorization || ""));
+    if (!m || !this.key) return false;
+    const pass = Buffer.from(Buffer.from(m[1], "base64").toString("utf8").replace(/^[^:]*:/, ""));
+    const key = Buffer.from(this.key);
+    return pass.length === key.length && crypto.timingSafeEqual(pass, key);
+  }
+  // A file's signed link's token: only that file, with this computer's key now (a new key ends the links).
+  haToken(name) {
+    return crypto.createHmac("sha256", String(this.key || "")).update(`ha-file:${name}`).digest("hex").slice(0, 32);
+  }
+  haTokenOk(name, t) {
+    if (!this.key || !/^[0-9a-f]{32}$/.test(t)) return false;
+    return crypto.timingSafeEqual(Buffer.from(this.haToken(name)), Buffer.from(t));
+  }
+  // A file's signed link, by the address Home Assistant reaches this computer at: its Tailscale name, else its first
+  // address on the network. -> "" while the server's off
+  haLink(name) {
+    if (!this.server || !name) return "";
+    const st = this.status();
+    const first = (st.urls || []).find((u) => u.kind === "Tailscale") || (st.urls || [])[0];
+    if (!first) return "";
+    const base = first.url.replace(/#.*$/, "").replace(/\/$/, "");
+    return `${base}/api/ha/file?f=${encodeURIComponent(name)}&t=${this.haToken(name)}`;
+  }
+  // A whole file (a video can be asked for a part at a time: Range), its type by its name.
+  sendFile(req, res, file) {
+    let st;
+    try {
+      st = fs.statSync(file);
+    } catch {
+      return this.send(res, 404, { error: "No such file." });
+    }
+    if (!st.isFile()) return this.send(res, 404, { error: "No such file." });
+    const ext = path.extname(file).toLowerCase();
+    const type = { ".mp4": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska", ".jpg": "image/jpeg", ".wav": "audio/wav" }[ext] || "application/octet-stream";
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ""));
+    let start = 0, end = st.size - 1;
+    if (range && (range[1] || range[2])) {
+      if (range[1]) {
+        start = Number(range[1]);
+        end = range[2] ? Math.min(st.size - 1, Number(range[2])) : st.size - 1;
+      } else {
+        start = Math.max(0, st.size - Number(range[2])); // (a suffix: its last n bytes)
+        end = st.size - 1;
+      }
+      if (start > end || start >= st.size) {
+        res.writeHead(416, { "Content-Range": `bytes */${st.size}` });
+        return res.end();
+      }
+    }
+    const partial = !!range && (start > 0 || end < st.size - 1);
+    res.writeHead(partial ? 206 : 200, {
+      "Content-Type": type, "Content-Length": end - start + 1, "Accept-Ranges": "bytes", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+      ...(partial ? { "Content-Range": `bytes ${start}-${end}/${st.size}` } : {}),
+    });
+    if (this.takes) this.takes.read(path.basename(file));
+    fs.createReadStream(file, { start, end }).on("error", () => res.destroy()).pipe(res);
+  }
+  // A camera for Home Assistant: one picture, or its pictures as they come (MJPEG). Previews are made while it's
+  // watched, as for a page; &full=1 asks for the bigger one (that camera full screen).
+  async haCamera(req, res, url) {
+    const i = Number(url.searchParams.get("i") || 0);
+    if (!Number.isInteger(i) || i < 0 || i >= 16) return this.send(res, 400, { error: "Which camera? (i=0 for the first)" });
+    const full = url.searchParams.get("full") === "1";
+    const want = () => {
+      this.wantUntil = Date.now() + PREVIEW_WANTED_MS;
+      if (full) {
+        this.focusUntil = Date.now() + FOCUS_MS;
+        this.setFocus(i);
+      }
+      this.setWanting(true);
+    };
+    if (url.pathname === "/api/ha/still") {
+      want();
+      await this.nextPreview(i, (p) => p && Date.now() - p.at < PREVIEW_STALE_MS, 3000);
+      const p = this.previews.get(i);
+      if (!p || Date.now() - p.at > PREVIEW_STALE_MS) return this.send(res, 503, { error: "That camera isn't running." });
+      return this.send(res, 200, p.jpeg, "image/jpeg");
+    }
+    res.writeHead(200, { "Content-Type": "multipart/x-mixed-replace; boundary=frame", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+    let open = true, last = 0;
+    res.on("close", () => (open = false));
+    while (open) {
+      want();
+      await this.nextPreview(i, (p) => p && p.seq > last, 2000);
+      const p = this.previews.get(i);
+      if (!open || !p || p.seq <= last) continue;
+      last = p.seq;
+      res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${p.jpeg.length}\r\n\r\n`);
+      res.write(p.jpeg);
+      res.write("\r\n");
+    }
+  }
+
+  // ---------- the baby monitor's sound, live (baby-monitor.js: 16 kHz mono 16-bit PCM) ----------
+  // A tenth of a second of it, from the page while someone listens: the last LISTEN_KEEP kept, each numbered; a page
+  // waiting for it is answered. Wanted while a page has asked in the last LISTEN_WANTED_MS ("want-listen" events).
+  listenChunk(data) {
+    if (!data || !data.length || data.length > 64000) return;
+    const l = this.listening;
+    l.chunks.push({ seq: ++l.seq, data: Buffer.from(data) });
+    while (l.chunks.length > LISTEN_KEEP) l.chunks.shift();
+    for (const check of [...l.waiters]) check();
+  }
+  listenWanted() {
+    const l = this.listening;
+    l.until = Date.now() + LISTEN_WANTED_MS;
+    if (!l.wanted) {
+      l.wanted = true;
+      this.emit("want-listen", true);
+    }
+    clearTimeout(l.timer);
+    l.timer = setTimeout(() => {
+      l.wanted = false;
+      this.emit("want-listen", false);
+    }, LISTEN_WANTED_MS);
+  }
+  // The sound after chunk number after (none: the last half second), waiting up to ms for some.
+  async listenAfter(after, ms) {
+    const l = this.listening;
+    const newer = () => l.chunks.filter((c) => c.seq > after);
+    if (!newer().length) {
+      await new Promise((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          l.waiters.delete(check);
+          resolve();
+        };
+        const check = () => newer().length && done();
+        const timer = setTimeout(done, ms);
+        l.waiters.add(check);
+      });
+    }
+    const got = Number.isInteger(after) && after >= 0 ? newer() : l.chunks.slice(-5);
+    return got.length ? { seq: got[got.length - 1].seq, data: Buffer.concat(got.map((c) => c.data)) } : null;
   }
 
   setPreview(i, jpeg) {
@@ -1080,6 +1294,27 @@ class RemoteRecordServer extends EventEmitter {
     if (req.method === "GET" && url.pathname === "/remote-client.js") return this.send(res, 200, this.page("js"), "text/javascript; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/bt-link-client.js") return this.send(res, 200, this.page("bt"), "text/javascript; charset=utf-8");
     if (!url.pathname.startsWith("/api/")) return this.send(res, 404, { error: "Not found" });
+    // ---------- Home Assistant (the user, 2026-11-26: "make the video be able to be linked to home assistant") ----------
+    // An alert's photo or clip by the signed link sent to Home Assistant's webhook with it (haLink): that file only.
+    if (req.method === "GET" && url.pathname === "/api/ha/file") {
+      const f = String(url.searchParams.get("f") || ""), t = String(url.searchParams.get("t") || "");
+      if (!this.takes || !TAKE_FILE.test(f) || !this.haTokenOk(f, t)) return this.send(res, 403, { error: "That link isn't one this computer made." });
+      // (a clip whose labels were made a layer of their own since: its labelled copy, electron/label-layers.js)
+      let file = path.join(this.takes.folder(), f);
+      const labelled = path.join(this.takes.folder(), f.replace(/\.mp4$/i, " (labels).mp4"));
+      if (!fs.existsSync(file) && /\.mp4$/i.test(f) && fs.existsSync(labelled)) file = labelled;
+      return this.sendFile(req, res, file);
+    }
+    // Each camera as Home Assistant's MJPEG camera: its live picture (/api/ha/mjpeg?i=N, as its previews are made) and
+    // one picture (/api/ha/still?i=N); where it isn't trusted (Tailscale), any username and this computer's key as the
+    // password.
+    if (req.method === "GET" && (url.pathname === "/api/ha/mjpeg" || url.pathname === "/api/ha/still")) {
+      if (!this.authorized(req) && !this.basicOk(req)) {
+        res.setHeader("WWW-Authenticate", 'Basic realm="Hand Tracker"');
+        return this.send(res, 401, { error: "This computer's key is the password." });
+      }
+      return this.haCamera(req, res, url);
+    }
     if (!this.authorized(req)) return this.send(res, 401, { error: "This page's key isn't the one Hand Tracker shows now." });
     const address = this.relayed(req) ? "Bluetooth" : String(req.socket.remoteAddress || "").replace(/^::ffff:/, "");
     const wasGone = !this.viewer || this.viewer.gone || this.viewer.address !== address;
@@ -1103,7 +1338,14 @@ class RemoteRecordServer extends EventEmitter {
         const { videoId, videoOnDemand, ...rest } = c;
         return this.videoOf(i) || videoOnDemand === true ? { ...rest, stream: "h264" } : rest;
       }) : this.state.cameras;
-      return this.send(res, 200, { ...this.state, ...(cameras ? { cameras } : {}), host: this.host, wifi: wifiHere ? { allowed: true, ...this.wifi.status() } : null, ...(direct ? { direct } : {}), ...(tailnet ? { tailnet } : {}) });
+      // (Sentry's alerts' videos shown to a page, and the baby monitor's: it may play one next, so each counts as read
+      // now, Takes.readLately)
+      const sentryEvents = this.state.sentry && Array.isArray(this.state.sentry.events) ? this.state.sentry.events : [];
+      if (this.takes) for (const e of sentryEvents) if (e && typeof e.video === "string") this.takes.read(e.video);
+      const babyEvents = this.state.baby && Array.isArray(this.state.baby.events) ? this.state.baby.events : [];
+      if (this.takes) for (const e of babyEvents) for (const v of (e && e.videos) || []) if (typeof v === "string") this.takes.read(v);
+      // (ha: its cameras can be Home Assistant's MJPEG cameras, /api/ha/mjpeg)
+      return this.send(res, 200, { ...this.state, ...(cameras ? { cameras } : {}), host: this.host, ha: true, wifi: wifiHere ? { allowed: true, ...this.wifi.status() } : null, ...(direct ? { direct } : {}), ...(tailnet ? { tailnet } : {}) });
     }
     // A week of CPU, GPU, memory and space readings (room-history.js), for the device settings page's graphs.
     if (req.method === "GET" && url.pathname === "/api/history") {
@@ -1124,6 +1366,17 @@ class RemoteRecordServer extends EventEmitter {
       const data = this.takes && (await this.takes.slice(String(url.searchParams.get("f") || ""), Number(url.searchParams.get("at") || 0)));
       if (!data) return this.send(res, 404, { error: "No such file." });
       return this.send(res, 200, data, "application/octet-stream");
+    }
+    // The baby monitor's sound, live (baby-monitor.js, while its Listen live is on): what came after &after= (a
+    // number), waiting a moment for it; 16 kHz mono 16-bit PCM, its last number in the type (as previews' are).
+    if (req.method === "GET" && url.pathname === "/api/listen") {
+      const baby = this.state && this.state.baby;
+      if (!baby || !baby.armed || !baby.listen) return this.send(res, 409, { error: "The baby monitor isn't listening live." });
+      this.listenWanted();
+      const after = url.searchParams.has("after") ? Number(url.searchParams.get("after")) : -1;
+      const got = await this.listenAfter(Number.isInteger(after) ? after : -1, LISTEN_WAIT_MS);
+      if (!got) return this.send(res, 204, "");
+      return this.send(res, 200, got.data, `application/octet-stream; seq=${got.seq}; rate=16000`);
     }
     if (req.method === "GET" && url.pathname === "/api/preview") {
       const i = Number(url.searchParams.get("i"));
@@ -1218,7 +1471,7 @@ class RemoteRecordServer extends EventEmitter {
         body += chunk;
         if (body.length > 8192) return this.send(res, 413, { error: "Too long" });
       }
-      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null, take = null, sentry = null, oak = null, kinect = null, ps4 = null;
+      let action = "", details = null, camera = null, pick = null, mode = null, settings = null, wifi = null, takes = null, take = null, sentry = null, oak = null, kinect = null, ps4 = null, baby = null;
       try {
         const msg = JSON.parse(body);
         action = String(msg.action || "");
@@ -1231,6 +1484,7 @@ class RemoteRecordServer extends EventEmitter {
         takes = cleanTakes(msg.takes);
         take = cleanTake(msg.take);
         sentry = cleanSentry(msg.sentry);
+        baby = cleanBaby(msg.baby);
         oak = cleanOak(msg.oak);
         kinect = cleanKinect(msg.kinect);
         ps4 = cleanPs4(msg.ps4);
@@ -1244,6 +1498,7 @@ class RemoteRecordServer extends EventEmitter {
       if (action === "mode" && !mode) return this.send(res, 400, { error: "Which mode?" });
       if (action === "settings" && !settings) return this.send(res, 400, { error: "Which setting?" });
       if (action === "sentry" && !sentry) return this.send(res, 400, { error: "Which Sentry setting?" });
+      if (action === "baby" && !baby) return this.send(res, 400, { error: "Which baby monitor setting?" });
       if (action === "oak" && !oak) return this.send(res, 400, { error: "Which OAK camera setting?" });
       if (action === "kinect" && !kinect) return this.send(res, 400, { error: "Which Kinect setting?" });
       if (action === "ps4" && !ps4) return this.send(res, 400, { error: "Which PS4 camera setting?" });
@@ -1278,6 +1533,7 @@ class RemoteRecordServer extends EventEmitter {
       if (mode) extra.mode = mode;
       if (settings) extra.settings = settings;
       if (sentry) extra.sentry = sentry;
+      if (baby) extra.baby = baby;
       if (oak) extra.oak = oak;
       if (kinect) extra.kinect = kinect;
       if (ps4) extra.ps4 = ps4;

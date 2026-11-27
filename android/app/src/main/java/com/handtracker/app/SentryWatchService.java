@@ -205,6 +205,18 @@ public class SentryWatchService extends Service {
                     String host = state.optString("host", rig.replaceAll(":\\d+$", ""));
                     names.put(rig, host);
                     heat(rig, host, state, hot);
+                    // The baby monitor's alerts too (baby-monitor.js: its state's baby.events), as notifications of
+                    // their own.
+                    JSONObject baby = state.optJSONObject("baby");
+                    JSONArray babyEvents = baby == null ? null : baby.optJSONArray("events");
+                    for (int j = babyEvents == null ? -1 : babyEvents.length() - 1; j >= 0; j--) {
+                        JSONObject e = babyEvents.optJSONObject(j);
+                        if (e == null) continue;
+                        String id = rig + "/baby/" + e.optString("id");
+                        if (seen.contains(id)) continue;
+                        seen.add(id);
+                        if (looked.contains(rig)) notifyBaby(rig, host, e, ++notified);
+                    }
                     JSONObject sentry = state.optJSONObject("sentry");
                     if (sentry == null) {
                         looked.add(rig);
@@ -329,6 +341,21 @@ public class SentryWatchService extends Service {
                 .setContentIntent(openPage(id, rigPage(rig)))
                 .build();
         getSystemService(NotificationManager.class).notify(id, n);
+    }
+
+    // The baby monitor's alert: crying, or a loud sound, heard by that device. Tapped: its page in the app.
+    private void notifyBaby(String rig, String host, JSONObject e, int n) {
+        String what = "crying".equals(e.optString("sound")) ? "Crying" : "A loud sound";
+        Notification.Builder b = new Notification.Builder(this, CHANNEL_ALERT)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle("Baby monitor: " + what.toLowerCase(java.util.Locale.ROOT))
+                .setContentText(what + " heard by " + host)
+                .setWhen(e.optLong("at", System.currentTimeMillis()))
+                .setShowWhen(true)
+                .setCategory(Notification.CATEGORY_ALARM)
+                .setAutoCancel(true)
+                .setContentIntent(openPage(100 + (n % 500), rigPage(rig) + "#baby=" + e.optString("id")));
+        getSystemService(NotificationManager.class).notify(1000 + (n % 500), b.build());
     }
 
     // Tapped: the alert's video, on the computer's page in the app (its photo until it's saved).

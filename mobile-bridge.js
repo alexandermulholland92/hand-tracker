@@ -96,13 +96,16 @@
   }
 
   // Sentry mode's photos and videos deleted from Documents/Hand Tracker: the ones named, or
-  // every one there ({ all: true }). Only Sentry's own files (sentry.js names them).
+  // every one there ({ all: true }). Only Sentry's own files (sentry.js names them); with baby: true, the baby
+  // monitor's sound clips and videos instead (baby-monitor.js names them).
   const SENTRY_FILE = /^Sentry_[A-Za-z0-9-]{1,80}_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d(-video)?( \(\d{1,4}\))?\.(jpg|webm|mp4)$/;
-  async function deleteSentry({ names, all } = {}) {
+  const BABY_FILE = /^Baby_[A-Za-z0-9-]{1,80}_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d-(sound|video)( \(\d{1,4}\))?\.(wav|webm|mp4)$/;
+  async function deleteSentry({ names, all, baby } = {}) {
+    const ours = baby === true ? BABY_FILE : SENTRY_FILE;
     let list = [];
     if (all === true) {
       const { files } = await Filesystem.readdir({ path: FOLDER, directory: DIRECTORY }).catch(() => ({ files: [] }));
-      list = (files || []).map((f) => (typeof f === "string" ? f : f.name)).filter((n) => SENTRY_FILE.test(n));
+      list = (files || []).map((f) => (typeof f === "string" ? f : f.name)).filter((n) => ours.test(n));
     } else if (Array.isArray(names)) {
       const plain = (n) => {
         try {
@@ -111,7 +114,7 @@
           return n;
         }
       };
-      list = names.filter((n) => typeof n === "string").map(plain).filter((n) => SENTRY_FILE.test(n)).slice(0, 200);
+      list = names.filter((n) => typeof n === "string").map(plain).filter((n) => ours.test(n)).slice(0, 200);
     }
     let deleted = 0;
     const failed = [];
@@ -841,7 +844,7 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
     // The key, kept: in the Android app's Keystore (Remote), the iPhone app's Keychain (RigServer.swift's own).
     const Secrets = plugin("Remote") || Rig;
     if (!Rig) return null;
-    const listeners = { status: new Set(), wantPreviews: new Set(), command: new Set() };
+    const listeners = { status: new Set(), wantPreviews: new Set(), command: new Set(), wantListen: new Set() };
     for (const name of Object.keys(listeners)) {
       Rig.addListener(name, (data) => {
         for (const cb of listeners[name]) {
@@ -905,6 +908,13 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
       },
       onWantPreviews: on("wantPreviews"),
       onCommand: on("command"),
+      // The baby monitor's sound, live (baby-monitor.js): a tenth of a second of 16 kHz PCM at a time while someone
+      // listens (RigServer's /api/listen; onWant says when); and its screen dimmed while it listens (dim).
+      listen: {
+        write: (bytes) => (typeof Rig.listenChunk === "function" ? Promise.resolve(Rig.listenChunk({ pcm: bytes64(bytes) })).catch(() => {}) : null),
+        onWant: on("wantListen"),
+      },
+      dim: (dimmed) => (typeof Rig.dim === "function" ? Promise.resolve(Rig.dim({ on: !!dimmed })).catch(() => {}) : Promise.resolve()),
       result: (id, result) => Rig.result({ id, result: JSON.stringify(result || {}) }).catch(() => {}),
     };
   }
@@ -920,7 +930,17 @@ var p=(${make.toString()})({dragScrolls:true});p.where=function(sel){var e=docum
     return fromBase64(typeof res.data === "string" ? res.data : "");
   }
 
-  const api = { platform: cap.getPlatform(), saveFiles, share, fetchBytes, chunkBytes: CHUNK_BYTES };
+  // An alert to Home Assistant's webhook (sentry.js's homeAssistant; the user, 2026-11-26): its words as JSON, by the
+  // app's own request. (A phone doesn't serve its files, so there are no links to its photos and clips.)
+  async function haWebhook({ url, payload } = {}) {
+    const http = plugin("CapacitorHttp");
+    if (!http) throw new Error("this app can't reach Home Assistant");
+    if (!/^https?:\/\/[^\s/?#]+\/api\/webhook\/[A-Za-z0-9_-]{1,200}$/i.test(String(url || ""))) throw new Error("That isn't a Home Assistant webhook's address.");
+    const res = await http.request({ url, method: "POST", headers: { "Content-Type": "application/json" }, data: { source: "hand_tracker", ...(payload || {}) }, connectTimeout: 10000, readTimeout: 10000 });
+    return { ok: res.status >= 200 && res.status < 300, status: res.status };
+  }
+
+  const api = { platform: cap.getPlatform(), saveFiles, share, fetchBytes, chunkBytes: CHUNK_BYTES, sentry: { homeAssistant: haWebhook } };
   api.remote = createRigServer();
   api.natnet = createNatNet();
   Object.assign(api, createRemote(), createLink());

@@ -9,6 +9,8 @@
  *   const clip = await VideoRecorder.stop();  // { blob, mimeType, container, duration, width, height, fps, frames }
  *   everyFrame: true keeps every pushed frame (no fps cap) — used when tracking a video
  *   file, so the clip can later be re-timed to the source frame rate.
+ *   onFrame({ index, t, place }): told of each frame recorded, and where the first source went
+ *   (app.js keeps the camera view's labels as a layer of their own so).
  *
  * The browser records WebM (VP9/VP8) where possible; the desktop app converts
  * that master clip to other formats with ffmpeg (see electron/exporter.js).
@@ -61,15 +63,19 @@
   }
 
   // Fit a source inside its cell without distorting it (sources can resize mid-recording).
+  // -> where it went: { s (its scale), dx, dy }, or null
   function drawContained(ctx, src, x, y, w, h) {
-    if (!src.width || !src.height) return;
+    if (!src.width || !src.height) return null;
     const s = Math.min(w / src.width, h / src.height);
     const dw = src.width * s;
     const dh = src.height * s;
     ctx.drawImage(src, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+    return { s, dx: x + (w - dw) / 2, dy: y + (h - dh) / 2 };
   }
 
-  function start({ sources, fps = 30, preferMp4 = false, everyFrame = false }) {
+  // onFrame({ index, t, place }): each frame recorded (index from 0; t, seconds since it started; place, where the
+  // first source went: { s, dx, dy }), for the camera view's labels kept as a layer of their own (app.js).
+  function start({ sources, fps = 30, preferMp4 = false, everyFrame = false, onFrame = null }) {
     if (rec) throw new Error("A recording is already in progress.");
     if (!isSupported()) throw new Error("Video recording isn't supported in this browser.");
     const usable = (sources || []).filter((s) => s && s.width > 0 && s.height > 0);
@@ -100,6 +106,7 @@
       lastFrameAt: -Infinity,
       everyFrame,
       frames: 0,
+      onFrame: typeof onFrame === "function" ? onFrame : null,
     };
     recorder.start(1000); // flush data every second rather than holding it all until stop
     frame();
@@ -116,8 +123,19 @@
     const { ctx, layout } = rec;
     ctx.fillStyle = BACKGROUND;
     ctx.fillRect(0, 0, layout.width, layout.height);
-    for (const cell of layout.cells) drawContained(ctx, cell.src, 0, cell.y, layout.width, cell.h);
+    let place = null;
+    layout.cells.forEach((cell, i) => {
+      const at = drawContained(ctx, cell.src, 0, cell.y, layout.width, cell.h);
+      if (i === 0) place = at;
+    });
     if (rec.track.requestFrame) rec.track.requestFrame();
+    if (rec.onFrame) {
+      try {
+        rec.onFrame({ index: rec.frames - 1, t: (now - rec.startedAt) / 1000, place });
+      } catch {
+        // (the recording goes on)
+      }
+    }
   }
 
   function stop() {

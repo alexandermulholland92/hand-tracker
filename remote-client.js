@@ -773,6 +773,14 @@
     sentryCommand({ ntfy: { server: v } }, false);
   });
   $("sentryTest").addEventListener("click", () => sentryCommand({ ntfy: { test: true } }, false));
+  // Home Assistant's webhook (sentry.js's homeAssistant): on, its address, a test.
+  $("sentryHa").addEventListener("click", () => sentryCommand({ ha: { on: !(sentry && sentry.ha && sentry.ha.on) } }));
+  $("sentryHaSave").addEventListener("click", () => {
+    const v = $("sentryHaUrl").value.trim();
+    if (v && !/^https?:\/\/[^\s/?#]+\/api\/webhook\/[A-Za-z0-9_-]{1,200}$/i.test(v)) return say("That isn't a Home Assistant webhook's address (http://…/api/webhook/…).", true);
+    sentryCommand({ ha: { url: v } }, false);
+  });
+  $("sentryHaTest").addEventListener("click", () => sentryCommand({ ha: { test: true } }, false));
   $("sentryNewTopic").addEventListener("click", () => {
     if (confirm("Make a new topic? Phones subscribed to the old one stop getting alerts until they subscribe to the new one.")) sentryCommand({ ntfy: { newTopic: true } }, false);
   });
@@ -945,6 +953,15 @@
         setToggle("sentryNtfyPhoto", n.photo, sending);
         for (const id of ["sentryTest", "sentryNewTopic", "sentryServerSave"]) $(id).disabled = sending;
       }
+      // (a Hand Tracker from before Home Assistant's webhook doesn't have it)
+      const ha = st.ha && st.ha.can ? st.ha : null;
+      $("sentryHa").closest(".row").hidden = !ha;
+      $("sentryHaBox").hidden = !(ha && ha.on);
+      if (ha) {
+        setToggle("sentryHa", ha.on, sending);
+        if (document.activeElement !== $("sentryHaUrl")) $("sentryHaUrl").value = ha.url || "";
+        for (const id of ["sentryHaSave", "sentryHaTest"]) $(id).disabled = sending;
+      }
     }
     const events = st.events || [];
     for (const e of events) if (e.photo && !sentryPhotos.has(e.photo)) sentryPhoto(e.photo);
@@ -978,6 +995,205 @@
     delAll.textContent = isArmed("all") ? `Tap again to delete them all from ${where}` : "Delete every Sentry photo and video";
   }
 
+  // ---------- Home Assistant (the user, 2026-11-26): each camera as an MJPEG camera there ----------
+  // Its addresses, by the device's Tailscale address where it has one (Home Assistant on pi reaches it so, with no
+  // password); elsewhere any username and this device's key as the password.
+  $("haCopyKey").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(key);
+      say("The password (this device's key) is copied.");
+    } catch {
+      say("It couldn't be copied here.", true);
+    }
+  });
+  function renderHa(s) {
+    const panel = $("haPanel");
+    panel.hidden = !s.ha;
+    if (!s.ha) return;
+    const port = rig ? String(rig).split(":").pop() : location.port || "80";
+    const name = s.tailnet || (rig ? String(rig).replace(/:\d+$/, "") : location.hostname);
+    const base = `http://${name}:${port}`;
+    const cams = (s.cameras || []).map((c, i) => ({ c, i })).filter(({ c }) => c && !c.error);
+    $("haCams").innerHTML = cams.length
+      ? cams.map(({ c, i }) => `<div class="row"><span class="grow"><b>${esc(c.role || c.name || `Camera ${i + 1}`)}</b><br />MJPEG URL: <code>${esc(`${base}/api/ha/mjpeg?i=${i}`)}</code><br />Still image URL: <code>${esc(`${base}/api/ha/still?i=${i}`)}</code></span></div>`).join("")
+      : '<div class="muted">No camera is running: start the cameras, then add them.</div>';
+    $("haLogin").textContent = s.tailnet
+      ? "Over Tailscale (as above) it needs no username or password. Elsewhere on the network: any username, and this device's key as the password."
+      : "Username: anything (hand-tracker, say). Password: this device's key.";
+    $("haCopyKey").hidden = !key || !(navigator.clipboard && navigator.clipboard.writeText);
+  }
+
+  // ---------- the baby monitor (baby-monitor.js): shown and hidden with Sentry's panel ----------
+  // Its switch and settings, how loud the room is (and where it goes off), its alerts (each one's sound clip and
+  // videos to play), and listening live: the computer's sound a moment behind (its /api/listen, 16 kHz PCM).
+  const babyCommand = (c, quiet = true) => command("baby", { baby: c }, { quiet });
+  let baby = null, babySettings = false, live = null;
+  $("babyBtn").addEventListener("click", () => babyCommand({ armed: !(baby && baby.armed) }, false));
+  $("babyShow").addEventListener("click", () => {
+    babySettings = !babySettings;
+    if (state) renderBaby(state);
+  });
+  $("babyTrigger").addEventListener("change", () => babyCommand({ trigger: $("babyTrigger").value }, false));
+  $("babySens").addEventListener("change", () => babyCommand({ sensitivity: $("babySens").value }));
+  $("babySound").addEventListener("click", () => babyCommand({ soundClip: !(baby && baby.soundClip) }));
+  $("babyVideo").addEventListener("click", () => babyCommand({ videoClip: !(baby && baby.videoClip) }, false));
+  $("babyListenOn").addEventListener("click", () => babyCommand({ listen: !(baby && baby.listen) }));
+  $("babyTest").addEventListener("click", () => babyCommand({ test: true }, false));
+  $("babyListen").addEventListener("click", () => (live ? stopLive() : startLive()));
+  let babyDelArmed = "", babyDelAt = 0;
+  const babyArmed = (what) => babyDelArmed === what && Date.now() - babyDelAt < 4000;
+  async function babyDelete(what) {
+    if (!babyArmed(what)) {
+      babyDelArmed = what;
+      babyDelAt = Date.now();
+      if (state) renderBaby(state);
+      setTimeout(() => state && renderBaby(state), 4100);
+      return;
+    }
+    babyDelArmed = "";
+    await babyCommand(what === "all" ? { deleteAll: true } : { deleteAlerts: [what] }, false);
+    loadTakes();
+  }
+  $("babyDelAll").addEventListener("click", () => babyDelete("all"));
+  $("babyAlerts").addEventListener("click", (e) => {
+    const del = e.target.closest("button[data-babydel]");
+    if (del && !del.disabled) babyDelete(del.dataset.babydel);
+    const play = e.target.closest("button[data-play]");
+    if (play) playVideo(play.dataset.play, play.dataset.title || "Baby monitor");
+  });
+
+  // Listening live: each answer the sound after the last one had, played a moment behind (so it's smooth).
+  async function startLive() {
+    if (live) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return say("This browser can't play live sound.", true);
+    const ctx = new AC();
+    await ctx.resume().catch(() => {});
+    const l = (live = { ctx, next: 0, seq: -1, stop: false });
+    if (state) renderBaby(state);
+    let fails = 0;
+    while (!l.stop) {
+      try {
+        const r = await api(`/api/listen${l.seq >= 0 ? `?after=${l.seq}` : ""}`);
+        if (l.stop) break;
+        if (r.status === 200 && r.bytes && r.bytes.length) {
+          fails = 0;
+          const m = /seq=(\d+)/.exec(r.type || "");
+          if (m) l.seq = Number(m[1]);
+          playPcm(l, r.bytes);
+        } else if (r.status === 409) {
+          say("The baby monitor isn't listening live any more.", true);
+          break;
+        } else if (r.status !== 204) {
+          if (++fails > 5) throw new Error(`it answered ${r.status}`);
+          await sleep(500);
+        }
+      } catch (err) {
+        if (++fails > 5) {
+          say(err.auth ? needsKey() : `Listening stopped: ${err.message || err}`, true);
+          break;
+        }
+        await sleep(1000);
+      }
+    }
+    if (live === l) stopLive();
+  }
+  function playPcm(l, bytes) {
+    const n = bytes.length >> 1;
+    if (!n) return;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, n * 2);
+    const buf = l.ctx.createBuffer(1, n, 16000);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) ch[i] = view.getInt16(i * 2, true) / 32768;
+    const src = l.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(l.ctx.destination);
+    const now = l.ctx.currentTime;
+    if (l.next < now + 0.05 || l.next > now + 2) l.next = now + 0.3;
+    src.start(l.next);
+    l.next += buf.duration;
+  }
+  function stopLive() {
+    const l = live;
+    live = null;
+    if (!l) return;
+    l.stop = true;
+    l.ctx.close().catch(() => {});
+    if (state) renderBaby(state);
+  }
+
+  function renderBaby(s) {
+    baby = s.baby || null;
+    const b = baby;
+    const open = !!(b && (b.shown || b.armed));
+    $("babyPanel").hidden = !open;
+    if (!open) {
+      if (live) stopLive();
+      return;
+    }
+    const where = s.host || "the computer";
+    const newer = typeof b.trigger === "string"; // (a Hand Tracker from before the baby monitor has none)
+    setToggle("babyBtn", b.armed, sending);
+    const what = (sound) => (sound === "crying" ? "Crying" : "A loud sound");
+    $("babyNote").textContent = b.note || (b.armed
+      ? b.episode ? `${what(b.episode.sound)} on ${where} now.` : `Listening on ${where}${b.trigger === "crying" ? " for crying" : ""}.`
+      : `Off. On, ${where} listens and tells you when it hears ${b.trigger === "crying" ? "crying" : "a loud sound"}.`);
+    const lv = b.level, meter = $("babyMeter");
+    meter.hidden = !b.armed || !lv;
+    if (lv) {
+      const lo = lv.usual - 10, hi = lv.usual + 40;
+      const at = (x) => `${Math.max(0, Math.min(100, ((x - lo) / (hi - lo)) * 100))}%`;
+      meter.querySelector(".fill").style.width = at(lv.db);
+      meter.querySelector(".mark").style.left = at(lv.over);
+      meter.querySelector(".mark").hidden = b.trigger === "crying";
+      meter.classList.toggle("on", !!b.episode);
+    }
+    $("babyShow").hidden = !newer;
+    $("babyShow").setAttribute("aria-expanded", String(babySettings));
+    $("babyShow").textContent = babySettings ? "Hide" : "Settings";
+    $("babySettings").hidden = !(newer && babySettings);
+    if (newer) {
+      for (const [id, v] of [["babyTrigger", b.trigger], ["babySens", b.sensitivity]]) {
+        if (document.activeElement !== $(id)) $(id).value = String(v);
+        $(id).disabled = sending;
+      }
+      const model = String(b.model || "");
+      $("babyTriggerSub").textContent = b.trigger === "crying"
+        ? `Only crying sets it off: a sound model on ${where} tells it from other sound (its model is downloaded the first time, 4 MB)${model === "loading" ? ": getting it ready…" : /^error/.test(model) ? `: ${model.replace(/^error: /, "")}` : "."}`
+        : "Sound louder than the room usually is (the red mark), for a second or more, sets it off.";
+      setToggle("babySound", b.soundClip, sending);
+      setToggle("babyVideo", b.videoClip, sending);
+      setToggle("babyListenOn", b.listen, sending);
+    }
+    const canListen = !!(b.armed && b.listen);
+    if (live && !canListen) stopLive();
+    $("babyListen").hidden = !canListen;
+    $("babyListen").textContent = live ? "⏹ Stop listening" : "🔊 Listen";
+    $("babyTest").hidden = !(newer && babySettings);
+    $("babyTest").disabled = sending;
+    const events = b.events || [];
+    const p = (n) => String(n).padStart(2, "0");
+    $("babyAlerts").innerHTML = events.length
+      ? events.map((e) => {
+        const t = new Date(e.at);
+        const when = `${t.toLocaleDateString()} ${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}`;
+        const plays = [
+          ...(e.audio ? [`<button type="button" class="small" data-play="${esc(e.audio)}" data-title="${esc(`${what(e.sound)} · ${when}`)}">▶ Sound</button>`] : []),
+          ...(e.videos || []).map((v) => `<button type="button" class="small" data-play="${esc(v)}" data-title="${esc(`${what(e.sound)} · ${when}`)}">▶ ${esc(videoLabel(v) === "Video" ? (/^Baby_([^_]+)_/.exec(v) || [])[1] || "Video" : videoLabel(v))}</button>`),
+        ].join("");
+        const armed = babyArmed(e.id);
+        const del = b.canDelete ? `<button type="button" class="small del${armed ? " armed" : ""}" data-babydel="${esc(e.id)}"${sending ? " disabled" : ""}>${armed ? "Tap again" : "Delete"}</button>` : "";
+        const problem = e.problem ? `<br /><span class="err">${esc(e.problem)}</span>` : "";
+        return `<div class="alert"><div><b>${esc(what(e.sound))}</b>${e.seconds ? ` · ${clock(e.seconds)}` : ""}<div class="meta">${esc(when)}${problem}</div></div><div class="acts">${plays}${del}</div></div>`;
+      }).join("")
+      : '<div class="muted">No alerts yet.</div>';
+    const delAll = $("babyDelAll");
+    delAll.hidden = !b.canDelete || !events.length;
+    delAll.disabled = sending;
+    delAll.classList.toggle("armed", babyArmed("all"));
+    delAll.textContent = babyArmed("all") ? `Tap again to delete them all from ${where}` : "Delete every baby monitor clip";
+  }
+
   // ---------- a video played here: a take's (its ▶ in the takes list) or a Sentry alert's ----------
   // Its file comes a slice at a time, as a download does (whichever way this page reaches the
   // computer; over Bluetooth that's slow, and said), then plays over everything; ✕, Escape or
@@ -985,9 +1201,9 @@
   // played: its take can be downloaded instead.
   const VIDEO_FILE = /\.(mp4|webm)$/i;
   const MAX_PLAY = 600e6;
-  // "<take>-video-wrist-left.mp4" -> "Left wrist"; Sentry's "<take>-video.mp4" -> "Video".
+  // "<take>-video-wrist-left.mp4" (or its copy with the labels drawn in, "… (labels).mp4") -> "Left wrist"; Sentry's "<take>-video.mp4" -> "Video".
   function videoLabel(name) {
-    const role = (/-video-([a-z0-9-]+)(?: \(\d+\))?\.[a-z0-9]+$/i.exec(name) || [])[1];
+    const role = (/-video-([a-z0-9-]+)(?: \(\d+\))?(?: \(labels\))?(?: \(\d+\))?\.[a-z0-9]+$/i.exec(name) || [])[1];
     if (!role) return "Video";
     const known = ROLES.find(([id]) => id.replace(/_/g, "-") === role.toLowerCase());
     return known ? known[1] : role.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase());
@@ -1107,7 +1323,8 @@
     const slow = bt ? " Over Bluetooth this is slow." : "";
     note.textContent = `Loading the video… ${sizeText(size)}${slow}`;
     try {
-      const type = /\.webm$/i.test(name) ? "video/webm" : "video/mp4";
+      // (a baby monitor's sound clip too: a WAV)
+      const type = /\.webm$/i.test(name) ? "video/webm" : /\.wav$/i.test(name) ? "audio/wav" : "video/mp4";
       const blob = await fetchFile(p, name, size, type, (at) => {
         if (!p.stop) note.textContent = `Loading the video… ${Math.min(99, Math.round((at / size) * 100))}% of ${sizeText(size)}${slow}`;
       });
@@ -2420,6 +2637,8 @@
     renderCameras(s);
     renderWifi(s);
     renderSentry(s);
+    renderBaby(s);
+    renderHa(s);
     renderRestart(s);
     $("settingsOpen").hidden = false;
     $("settingsHost").textContent = s.host ? `On ${s.host}.` : "";

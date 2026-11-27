@@ -50,6 +50,8 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "secretSet", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "linkTest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "linkTestWrite", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "listenChunk", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "dim", returnType: CAPPluginReturnPromise),
     ]
 
     static let firstPort = 47821, portsTried = 10
@@ -57,7 +59,11 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
     static let nextWait: TimeInterval = 0.4 // a preview request waits this long for that camera's next picture
     static let viewerGone: TimeInterval = 10, answerTime: TimeInterval = 30
     static let headBytes = 16 * 1024, bodyBytes = 8192
-    static let actions: Set<String> = ["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry", "timing", "restartApp", "upright", "forward"]
+    static let actions: Set<String> = ["cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry", "baby", "timing", "restartApp", "upright", "forward"]
+    // The baby monitor's sound, live (baby-monitor.js): the last listenKeep tenths of a second kept; wanted while a
+    // page asked in the last listenWantedFor; a request waits this long for more.
+    static let listenKeep = 30
+    static let listenWantedFor: TimeInterval = 5, listenWait: TimeInterval = 1.5
     static let roles: Set<String> = ["", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"]
     static let modes: Set<String> = ["ego", "stereo", "freeform"]
     // A picked camera's id: "cam:" and its name here ("cam:Back Camera"), any printable characters
@@ -92,6 +98,12 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
     private var btError = ""
     private var testLink: RigLinkProtocol?
     private var kept: [String: String] = [:] // (when the Keychain won't keep it: this session only)
+    private var listenChunks: [(seq: Int, pcm: Data)] = [] // the baby monitor's sound, numbered
+    private var listenSeq = 0
+    private var listenUntil = Date.distantPast
+    private var listenWanted = false
+    private var brightness: CGFloat? // the screen's, while it's dimmed (dim)
+    private var streaming = Set<ObjectIdentifier>() // connections sending Home Assistant a camera's pictures (MJPEG)
 
     override public func load() {
         hostName = UIDevice.current.name
@@ -214,6 +226,56 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
             lock.lock()
             previews[i] = (jpeg, Date())
             lock.unlock()
+        }
+        call.resolve()
+    }
+
+    // ---------- the baby monitor's sound, live (baby-monitor.js: 16 kHz mono 16-bit PCM) ----------
+    // A tenth of a second of it from the page while someone listens (/api/listen answers what came after a number,
+    // waiting a moment for it); "wantListen" events, { on }, say when someone starts or stops.
+    @objc func listenChunk(_ call: CAPPluginCall) {
+        if let b64 = call.getString("pcm"), b64.count < 100000, let pcm = Data(base64Encoded: b64, options: .ignoreUnknownCharacters), !pcm.isEmpty {
+            lock.lock()
+            listenSeq += 1
+            listenChunks.append((seq: listenSeq, pcm: pcm))
+            if listenChunks.count > Self.listenKeep { listenChunks.removeFirst(listenChunks.count - Self.listenKeep) }
+            lock.unlock()
+        }
+        call.resolve()
+    }
+    private func wantListen() {
+        lock.lock()
+        listenUntil = Date().addingTimeInterval(Self.listenWantedFor)
+        let was = listenWanted
+        listenWanted = true
+        lock.unlock()
+        if !was {
+            tell("wantListen", ["on": true])
+            checkListening(after: Self.listenWantedFor)
+        }
+    }
+    private func checkListening(after: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + after + 0.05) { [weak self] in
+            guard let self = self else { return }
+            self.lock.lock()
+            let left = self.listenUntil.timeIntervalSinceNow
+            if left <= 0 { self.listenWanted = false }
+            self.lock.unlock()
+            if left > 0 { self.checkListening(after: left) } else { self.tell("wantListen", ["on": false]) }
+        }
+    }
+    // The screen dimmed while the baby monitor listens (its black screen over the app), or as it was. The app
+    // keeps the screen awake already while remote recording is on.
+    @objc func dim(_ call: CAPPluginCall) {
+        let on = call.getBool("on") ?? false
+        DispatchQueue.main.async {
+            if on {
+                if self.brightness == nil { self.brightness = UIScreen.main.brightness }
+                UIScreen.main.brightness = 0.02
+            } else if let b = self.brightness {
+                UIScreen.main.brightness = b
+                self.brightness = nil
+            }
         }
         call.resolve()
     }
@@ -646,8 +708,75 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
     private func accept(_ c: NWConnection) {
         c.start(queue: queue)
         read(c, Data())
-        // (A request's answer takes 30 s at most: a command's.)
-        queue.asyncAfter(deadline: .now() + 45) { c.cancel() }
+        // (A request's answer takes 30 s at most: a command's. Home Assistant's MJPEG goes on: streamMjpeg.)
+        queue.asyncAfter(deadline: .now() + 45) { [weak self] in
+            guard let self = self else {
+                c.cancel()
+                return
+            }
+            self.lock.lock()
+            let going = self.streaming.contains(ObjectIdentifier(c))
+            self.lock.unlock()
+            if !going { c.cancel() }
+        }
+    }
+
+    // ---------- Home Assistant (the user, 2026-11-26): each camera as its MJPEG camera ----------
+    // Its pictures as they come (/api/ha/mjpeg?i=N), as electron/remote-record.js sends them; previews are made while
+    // it's watched; with no picture for 30 s it ends (Home Assistant asks again).
+    private func streamMjpeg(_ c: NWConnection, _ i: Int) {
+        lock.lock()
+        streaming.insert(ObjectIdentifier(c))
+        lock.unlock()
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
+        c.send(content: Data(head.utf8), completion: .contentProcessed { [weak self] error in
+            if error != nil {
+                self?.endStream(c)
+                return
+            }
+            self?.nextFrame(c, i, last: Date.distantPast, since: Date())
+        })
+    }
+    private func nextFrame(_ c: NWConnection, _ i: Int, last: Date, since: Date) {
+        lock.lock()
+        wantUntil = Date().addingTimeInterval(Self.previewWanted)
+        let p = previews[i]
+        lock.unlock()
+        setWanting(true)
+        if let p = p, p.at > last {
+            var d = Data("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: \(p.jpeg.count)\r\n\r\n".utf8)
+            d.append(p.jpeg)
+            d.append(Data("\r\n".utf8))
+            c.send(content: d, completion: .contentProcessed { [weak self] error in
+                if error != nil {
+                    self?.endStream(c)
+                    return
+                }
+                self?.nextFrame(c, i, last: p.at, since: Date())
+            })
+        } else if Date().timeIntervalSince(since) > 30 {
+            endStream(c)
+        } else {
+            queue.asyncAfter(deadline: .now() + 0.03) { [weak self] in self?.nextFrame(c, i, last: last, since: since) }
+        }
+    }
+    private func endStream(_ c: NWConnection) {
+        lock.lock()
+        streaming.remove(ObjectIdentifier(c))
+        lock.unlock()
+        c.cancel()
+    }
+    // HTTP Basic auth (Home Assistant's MJPEG camera can't send X-Key): any username, this phone's key the password.
+    private func basicOk(_ r: Request) -> Bool {
+        guard let a = r.headers["authorization"], a.hasPrefix("Basic "),
+              let raw = Data(base64Encoded: String(a.dropFirst(6)).trimmingCharacters(in: .whitespaces)),
+              let up = String(data: raw, encoding: .utf8), let colon = up.firstIndex(of: ":") else { return false }
+        let pass = Array(String(up[up.index(after: colon)...]).utf8)
+        lock.lock()
+        let k = Array(key.utf8)
+        lock.unlock()
+        guard !k.isEmpty, pass.count == k.count else { return false }
+        return zip(pass, k).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0
     }
 
     private func read(_ c: NWConnection, _ got: Data) {
@@ -694,6 +823,14 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
             r.body = want > Self.bodyBytes ? Data(count: Self.bodyBytes + 1) : buf.subdata(in: end..<(end + want))
             r.local = Self.address(c.currentPath?.localEndpoint)
             r.remote = Self.address(c.endpoint)
+            // (Home Assistant's MJPEG camera: its pictures as they come, on this connection)
+            if r.method == "GET" && r.path == "/api/ha/mjpeg" && (self.authorized(r) || self.basicOk(r)) {
+                let i = Int(Self.param(r.query, "i") ?? "0") ?? 0
+                if i >= 0 && i < 16 {
+                    self.streamMjpeg(c, i)
+                    return
+                }
+            }
             let answer = Self.http(self.handle(r))
             c.send(content: answer, completion: .contentProcessed { _ in c.cancel() })
         }
@@ -770,7 +907,7 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
             return Response(code: 200, type: "text/javascript; charset=utf-8", body: js)
         }
         if !r.path.hasPrefix("/api/") { return Self.error(404, "Not found") }
-        if !authorized(r) { return Self.error(401, "This page's key isn't the one Hand Tracker shows now.") }
+        if !authorized(r) && !(r.path.hasPrefix("/api/ha/") && basicOk(r)) { return Self.error(401, "This page's key isn't the one Hand Tracker shows now.") }
         lock.lock()
         let newViewer = viewerAddress != r.remote
         viewerAddress = r.remote
@@ -785,7 +922,61 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
             var st = (try? JSONSerialization.jsonObject(with: Data(s.utf8))) as? [String: Any] ?? [:]
             st["host"] = hostName
             st["wifi"] = NSNull()
+            st["ha"] = true // (its cameras can be Home Assistant's MJPEG cameras: /api/ha/mjpeg)
             return Self.json(200, st)
+        }
+        // One picture of a camera, for Home Assistant (/api/ha/still?i=N).
+        if r.method == "GET" && r.path == "/api/ha/still" {
+            let i = Int(Self.param(r.query, "i") ?? "0") ?? 0
+            guard i >= 0, i < 16 else { return Self.error(400, "Which camera? (i=0 for the first)") }
+            lock.lock()
+            wantUntil = Date().addingTimeInterval(Self.previewWanted)
+            lock.unlock()
+            setWanting(true)
+            var t: TimeInterval = 0
+            while t < 3 {
+                lock.lock()
+                let fresh = previews[i].map { Date().timeIntervalSince($0.at) < Self.previewStale } ?? false
+                lock.unlock()
+                if fresh { break }
+                Thread.sleep(forTimeInterval: 0.03)
+                t += 0.03
+            }
+            lock.lock()
+            let p = previews[i]
+            lock.unlock()
+            guard let pic = p, Date().timeIntervalSince(pic.at) <= Self.previewStale else { return Self.error(503, "That camera isn't running.") }
+            return Response(code: 200, type: "image/jpeg", body: pic.jpeg)
+        }
+        // The baby monitor's sound, live, while its Listen live is on (the page's state says): what came after
+        // &after= (a number), waiting a moment for it; its last number in the type, as electron/remote-record.js does.
+        if r.method == "GET" && r.path == "/api/listen" {
+            lock.lock()
+            let s = stateJson
+            lock.unlock()
+            let st = (try? JSONSerialization.jsonObject(with: Data(s.utf8))) as? [String: Any] ?? [:]
+            guard let b = st["baby"] as? [String: Any], Self.bool(b["armed"]) == true, Self.bool(b["listen"]) == true else {
+                return Self.error(409, "The baby monitor isn't listening live.")
+            }
+            wantListen()
+            let after = Int(Self.param(r.query, "after") ?? "") ?? -1
+            var t: TimeInterval = 0
+            while t < Self.listenWait {
+                lock.lock()
+                let newest = listenChunks.last?.seq ?? -1
+                lock.unlock()
+                if newest >= 0 && newest > after { break }
+                Thread.sleep(forTimeInterval: 0.02)
+                t += 0.02
+            }
+            lock.lock()
+            var list = listenChunks
+            lock.unlock()
+            if after < 0 { list = Array(list.suffix(5)) } else { list = list.filter { $0.seq > after } }
+            guard let last = list.last else { return Response(code: 204, type: Self.jsonType, body: Data()) }
+            var body = Data()
+            for c in list { body.append(c.pcm) }
+            return Response(code: 200, type: "application/octet-stream; seq=\(last.seq); rate=16000", body: body)
         }
         if r.method == "GET" && r.path == "/api/preview" {
             let i = Int(Self.param(r.query, "i") ?? "") ?? -1
@@ -853,6 +1044,8 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         // Sentry mode (sentry.js): checked as the computer checks it (cleanSentry in electron/remote-record.js).
         if let sentry = Self.cleanSentry(msg["sentry"] as? [String: Any]) { cmd["sentry"] = sentry }
+        // The baby monitor (baby-monitor.js): likewise (cleanBaby in electron/remote-record.js).
+        if let baby = Self.cleanBaby(msg["baby"] as? [String: Any]) { cmd["baby"] = baby }
         // The cameras to start (picked, with a role), the mode, and a running camera's role, turn
         // and flip: checked as the computer checks them (electron/remote-record.js).
         if let pk = msg["pick"] as? [String: Any], let pid = pk["id"] as? String, Self.matches(pid, Self.pickId) {
@@ -875,7 +1068,8 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
             : action == "camera" && cmd["camera"] == nil ? "Which camera?"
             : action == "mode" && cmd["mode"] == nil ? "Which mode?"
             : action == "settings" && cmd["settings"] == nil ? "Which setting?"
-            : action == "sentry" && cmd["sentry"] == nil ? "Which Sentry setting?" : nil
+            : action == "sentry" && cmd["sentry"] == nil ? "Which Sentry setting?"
+            : action == "baby" && cmd["baby"] == nil ? "Which baby monitor setting?" : nil
         if let m = missingPart { return Self.error(400, m) }
         let p = Pending()
         lock.lock()
@@ -904,6 +1098,24 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
     // left out or watched again, or every box watched; ntfy's server (a web address), a new topic
     // or a test; alerts deleted (by their ids) or all of Sentry's files. Only those, each checked;
     // nil if there's nothing.
+    // The baby monitor from the page: on or off, what sets it off and how readily, its switches, the microphone,
+    // alerts deleted (by their ids) or all its clips, a test. Only those, each checked; nil if there's nothing.
+    static func cleanBaby(_ s: [String: Any]?) -> [String: Any]? {
+        guard let s = s else { return nil }
+        var out: [String: Any] = [:]
+        for k in ["armed", "soundClip", "videoClip", "listen"] { if let b = bool(s[k]) { out[k] = b } }
+        if let tr = s["trigger"] as? String, ["loud", "crying"].contains(tr) { out["trigger"] = tr }
+        if let sens = s["sensitivity"] as? String, ["low", "medium", "high"].contains(sens) { out["sensitivity"] = sens }
+        if let mic = s["mic"] as? String, mic.count <= 200, matches(mic, "^[A-Za-z0-9_+/=.:-]*$") { out["mic"] = mic }
+        if let ids = s["deleteAlerts"] as? [Any], ids.count >= 1, ids.count <= 50 {
+            let kept = ids.compactMap { $0 as? String }.filter { matches($0, "^[0-9]{1,15}-[a-z0-9]{1,8}$") }
+            if kept.count == ids.count { out["deleteAlerts"] = kept }
+        }
+        if bool(s["deleteAll"]) == true { out["deleteAll"] = true }
+        if bool(s["test"]) == true { out["test"] = true }
+        return out.isEmpty ? nil : out
+    }
+
     static func cleanSentry(_ s: [String: Any]?) -> [String: Any]? {
         guard let s = s else { return nil }
         var out: [String: Any] = [:]
@@ -926,6 +1138,17 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
             out["box"] = ["camera": cam, "cell": cell, "off": off]
         }
         if bool(s["watchAll"]) == true { out["watchAll"] = true }
+        // Home Assistant's webhook (sentry.js's homeAssistant): on or off, its address (…/api/webhook/<id>), a test.
+        if let h = s["ha"] as? [String: Any] {
+            var ha: [String: Any] = [:]
+            if let on = bool(h["on"]) { ha["on"] = on }
+            if bool(h["test"]) == true { ha["test"] = true }
+            if let url = h["url"] as? String {
+                let u = url.trimmingCharacters(in: .whitespaces)
+                if u.isEmpty || (url.count <= 400 && u.range(of: "^https?://[^\\s/?#]+/api/webhook/[A-Za-z0-9_-]{1,200}$", options: [.regularExpression, .caseInsensitive]) != nil) { ha["url"] = u }
+            }
+            if !ha.isEmpty { out["ha"] = ha }
+        }
         // Alerts deleted, with their photos and videos; or every Sentry photo and video.
         if let ids = s["deleteAlerts"] as? [Any], ids.count >= 1, ids.count <= 50 {
             let kept = ids.compactMap { $0 as? String }.filter { matches($0, "^[0-9]{1,15}-[a-z0-9]{1,8}$") }

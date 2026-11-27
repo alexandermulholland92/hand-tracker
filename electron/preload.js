@@ -411,8 +411,36 @@ contextBridge.exposeInMainWorld("desktop", {
       write: (id, data) => ipcRenderer.invoke("clip:write", id, data),
       discard: (id) => ipcRenderer.invoke("clip:discard", id),
     },
+    // A clip's labels as a layer of their own (label-layers.js): open() -> id; write(id, { hands, objects })
+    // (subtitle lines); close(id, { width, height }); discard(id). Saved by saveTake with { labels: id } beside its
+    // clip; finish({ paths, json }) once its take is saved: then its clean picture becomes <name>.mkv with the labels
+    // as tracks, and <name> (labels).mp4 has them drawn in (made in the background: onDone says when, each).
+    labels: {
+      available: () => ipcRenderer.invoke("labels:available"), // -> whether this app can (its ffmpeg)
+      open: () => ipcRenderer.invoke("labels:open"),
+      write: (id, lines) => ipcRenderer.invoke("labels:write", id, lines),
+      close: (id, info) => ipcRenderer.invoke("labels:close", id, info),
+      discard: (id) => ipcRenderer.invoke("labels:discard", id),
+      finish: (job) => ipcRenderer.invoke("labels:finish", job),
+      onDone: (cb) => {
+        const listener = (_event, data) => cb(data);
+        ipcRenderer.on("labels:done", listener);
+        return () => ipcRenderer.removeListener("labels:done", listener);
+      },
+    },
     // Sentry mode's photos and videos deleted from it: { names } or { all: true } -> { deleted, failed }
-    deleteSentry: ({ names, all } = {}) => ipcRenderer.invoke("files:delete-sentry", { names, all }),
+    // (baby: true, the baby monitor's sound clips and videos instead)
+    deleteSentry: ({ names, all, baby } = {}) => ipcRenderer.invoke("files:delete-sentry", { names, all, baby: baby === true }),
+    // The baby monitor's sound, live (baby-monitor.js): a tenth of a second of 16 kHz PCM at a time while someone
+    // listens (remote-record.js's /api/listen); onWant(cb) says when someone starts or stops.
+    listen: {
+      write: (bytes) => ipcRenderer.send("remote:listen-chunk", bytes),
+      onWant: (cb) => {
+        const listener = (_event, on) => cb(on);
+        ipcRenderer.on("remote:want-listen", listener);
+        return () => ipcRenderer.removeListener("remote:want-listen", listener);
+      },
+    },
     onStatus: (cb) => {
       const listener = (_event, data) => cb(data);
       ipcRenderer.on("remote:status", listener);
@@ -467,6 +495,9 @@ contextBridge.exposeInMainWorld("desktop", {
   sentry: {
     ntfy: (req) => ipcRenderer.invoke("sentry:ntfy", req),
     model: (which) => ipcRenderer.invoke("sentry:model", which),
+    // An alert (Sentry's, the baby monitor's) to Home Assistant's webhook: { url, payload, files: { photo, video,
+    // sound } (their names) } -> { ok, status }; each file's signed link added (remote-record.js's haLink).
+    homeAssistant: (job) => ipcRenderer.invoke("ha:webhook", job),
   },
 
   // Cluster's own app (electron/cluster.js): the Pis running Cluster's service.

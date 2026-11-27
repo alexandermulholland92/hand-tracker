@@ -102,7 +102,7 @@ public class RigServerPlugin extends Plugin {
     private static final int HEAD_BYTES = 16 * 1024;
     private static final int BODY_BYTES = 8192;
     private static final Set<String> ACTIONS = new HashSet<>(java.util.Arrays.asList(
-            "cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry", "timing", "restartApp", "upright", "forward"));
+            "cameras", "record", "stop", "close", "details", "camera", "scan", "pick", "mode", "settings", "sentry", "baby", "timing", "restartApp", "upright", "forward"));
     private static final Set<String> ROLES = new HashSet<>(java.util.Arrays.asList("", "head", "chest", "wrist_left", "wrist_right", "north", "south", "east", "west"));
     private static final Set<String> MODES = new HashSet<>(java.util.Arrays.asList("ego", "stereo", "freeform"));
     // A picked camera's id: "cam:" and its name here ("cam:camera 0, facing back"), any printable
@@ -450,6 +450,72 @@ public class RigServerPlugin extends Plugin {
         call.resolve();
     }
 
+    // ---------- the baby monitor's sound, live (baby-monitor.js: 16 kHz mono 16-bit PCM) ----------
+    // A tenth of a second of it at a time from the page while someone listens: the last LISTEN_KEEP kept, each
+    // numbered (/api/listen answers what came after a number, waiting a moment for it). Wanted while a page asked
+    // in the last LISTEN_WANTED_MS ("wantListen" events, { on }).
+    private static final int LISTEN_KEEP = 30;
+    private static final long LISTEN_WANTED_MS = 5000, LISTEN_WAIT_MS = 1500;
+    private final Object listenLock = new Object();
+    private final java.util.ArrayDeque<Object[]> listenChunks = new java.util.ArrayDeque<>(); // { seq (Long), pcm (byte[]) }
+    private long listenSeq = 0;
+    private volatile long listenUntil = 0;
+    private final android.os.Handler listenTimer = new android.os.Handler(android.os.Looper.getMainLooper());
+
+    @PluginMethod
+    public void listenChunk(PluginCall call) {
+        String b64 = call.getString("pcm", "");
+        if (b64 != null && !b64.isEmpty() && b64.length() < 100000) {
+            try {
+                byte[] pcm = Base64.decode(b64, Base64.DEFAULT);
+                synchronized (listenLock) {
+                    listenChunks.addLast(new Object[] { ++listenSeq, pcm });
+                    while (listenChunks.size() > LISTEN_KEEP) listenChunks.removeFirst();
+                    listenLock.notifyAll();
+                }
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        call.resolve();
+    }
+    private void wantListen() {
+        long now = System.currentTimeMillis();
+        boolean was = listenUntil > now;
+        listenUntil = now + LISTEN_WANTED_MS;
+        if (was) return;
+        JSObject o = new JSObject();
+        o.put("on", true);
+        notifyListeners("wantListen", o);
+        listenTimer.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                long left = listenUntil - System.currentTimeMillis();
+                if (left > 0) {
+                    listenTimer.postDelayed(this, left + 50);
+                    return;
+                }
+                JSObject off = new JSObject();
+                off.put("on", false);
+                notifyListeners("wantListen", off);
+            }
+        }, LISTEN_WANTED_MS + 50);
+    }
+
+    // The screen dimmed while the baby monitor listens (its black screen over the app, baby-monitor.js), or as
+    // it was. The app keeps the screen awake already (MainActivity).
+    @PluginMethod
+    public void dim(PluginCall call) {
+        boolean on = Boolean.TRUE.equals(call.getBoolean("on", false));
+        if (getActivity() != null) {
+            getActivity().runOnUiThread(() -> {
+                android.view.WindowManager.LayoutParams lp = getActivity().getWindow().getAttributes();
+                lp.screenBrightness = on ? 0.02f : android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+                getActivity().getWindow().setAttributes(lp);
+            });
+        }
+        call.resolve();
+    }
+
     @PluginMethod
     public void result(PluginCall call) {
         Integer id = call.getInt("id", -1);
@@ -669,6 +735,20 @@ public class RigServerPlugin extends Plugin {
         return host.equals("127.0.0.1");
     }
 
+    // HTTP Basic auth (Home Assistant's MJPEG camera): any username, this phone's key as the password.
+    private boolean basicOk(Request r) {
+        String a = r.headers.getOrDefault("authorization", "");
+        if (!a.startsWith("Basic ")) return false;
+        try {
+            String up = new String(Base64.decode(a.substring(6).trim(), Base64.DEFAULT), StandardCharsets.UTF_8);
+            byte[] pass = up.substring(up.indexOf(':') + 1).getBytes(StandardCharsets.UTF_8);
+            byte[] k = key.getBytes(StandardCharsets.UTF_8);
+            return k.length > 0 && MessageDigest.isEqual(pass, k);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private boolean authorized(Request r) {
         if (r.relayed) return true;
         if (isTailscale(r.localAddress) && isTailscale(r.remoteAddress) && ownHost(r.headers.get("host"))) return true;
@@ -711,7 +791,16 @@ public class RigServerPlugin extends Plugin {
             json(out, 404, error("Not found"));
             return;
         }
-        if (!authorized(r)) {
+        // (Home Assistant's MJPEG camera can't send X-Key: any username, the key as its password, for /api/ha/ only)
+        if (!authorized(r) && !(r.path.startsWith("/api/ha/") && basicOk(r))) {
+            if (r.path.startsWith("/api/ha/")) {
+                byte[] body = error("This phone's key is the password.").toString().getBytes(StandardCharsets.UTF_8);
+                out.write(("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: " + body.length
+                        + "\r\nWWW-Authenticate: Basic realm=\"Hand Tracker\"\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
+                out.write(body);
+                out.flush();
+                return;
+            }
             json(out, 401, error("This page's key isn't the one Hand Tracker shows now."));
             return;
         }
@@ -730,7 +819,95 @@ public class RigServerPlugin extends Plugin {
             }
             st.put("host", Build.MODEL);
             st.put("wifi", JSONObject.NULL);
+            st.put("ha", true); // (its cameras can be Home Assistant's MJPEG cameras: /api/ha/mjpeg)
             json(out, 200, st);
+            return;
+        }
+        // Each camera as Home Assistant's MJPEG camera (the user, 2026-11-26): one picture (/api/ha/still?i=N), or its
+        // pictures as they come (/api/ha/mjpeg?i=N), as electron/remote-record.js serves them. Previews are made while
+        // it's watched; a stream with no picture for 30 s ends (Home Assistant asks again).
+        if ("GET".equals(r.method) && ("/api/ha/still".equals(r.path) || "/api/ha/mjpeg".equals(r.path))) {
+            int i;
+            try {
+                i = Integer.parseInt(String.valueOf(param(r.query, "i")));
+            } catch (NumberFormatException e) {
+                i = 0;
+            }
+            if (i < 0 || i >= 16) {
+                json(out, 400, error("Which camera? (i=0 for the first)"));
+                return;
+            }
+            if ("/api/ha/still".equals(r.path)) {
+                wantUntil = System.currentTimeMillis() + PREVIEW_WANTED_MS;
+                setWanting(true);
+                for (long t = 0; t < 3000; t += 30) {
+                    Frame f = previews.get(i);
+                    if (f != null && System.currentTimeMillis() - f.at < PREVIEW_STALE_MS) break;
+                    Thread.sleep(30);
+                }
+                Frame p = previews.get(i);
+                if (p == null || System.currentTimeMillis() - p.at > PREVIEW_STALE_MS) json(out, 503, error("That camera isn't running."));
+                else send(out, 200, "image/jpeg", p.jpeg, null);
+                return;
+            }
+            out.write("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
+                    .getBytes(StandardCharsets.ISO_8859_1));
+            out.flush();
+            long last = 0, lastSentAt = System.currentTimeMillis();
+            while (System.currentTimeMillis() - lastSentAt < 30000) {
+                wantUntil = System.currentTimeMillis() + PREVIEW_WANTED_MS;
+                setWanting(true);
+                Frame f = previews.get(i);
+                if (f != null && f.at > last) {
+                    last = f.at;
+                    lastSentAt = System.currentTimeMillis();
+                    out.write(("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + f.jpeg.length + "\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
+                    out.write(f.jpeg);
+                    out.write("\r\n".getBytes(StandardCharsets.ISO_8859_1));
+                    out.flush();
+                } else Thread.sleep(30);
+            }
+            return;
+        }
+        // The baby monitor's sound, live, while its Listen live is on (the page's state says): what came after
+        // &after= (a number), waiting a moment for it; its last number in the type, as electron/remote-record.js does.
+        if ("GET".equals(r.method) && "/api/listen".equals(r.path)) {
+            JSONObject st;
+            try {
+                st = new JSONObject(stateJson);
+            } catch (Exception e) {
+                st = new JSONObject();
+            }
+            JSONObject baby = st.optJSONObject("baby");
+            if (baby == null || !baby.optBoolean("armed", false) || !baby.optBoolean("listen", false)) {
+                json(out, 409, error("The baby monitor isn't listening live."));
+                return;
+            }
+            wantListen();
+            long after;
+            try {
+                after = Long.parseLong(String.valueOf(param(r.query, "after")));
+            } catch (NumberFormatException e) {
+                after = -1;
+            }
+            java.io.ByteArrayOutputStream got = new java.io.ByteArrayOutputStream();
+            long seq = -1;
+            synchronized (listenLock) {
+                long until = System.currentTimeMillis() + LISTEN_WAIT_MS;
+                while ((listenChunks.isEmpty() || (after >= 0 && (Long) listenChunks.peekLast()[0] <= after)) && System.currentTimeMillis() < until) {
+                    listenLock.wait(Math.max(1, until - System.currentTimeMillis()));
+                }
+                java.util.List<Object[]> list = new java.util.ArrayList<>(listenChunks);
+                if (after < 0) list = list.subList(Math.max(0, list.size() - 5), list.size());
+                for (Object[] c : list) {
+                    long s = (Long) c[0];
+                    if (after >= 0 && s <= after) continue;
+                    got.write((byte[]) c[1]);
+                    seq = s;
+                }
+            }
+            if (seq < 0) send(out, 204, "application/json; charset=utf-8", new byte[0], null);
+            else send(out, 200, "application/octet-stream; seq=" + seq + "; rate=16000", got.toByteArray(), null);
             return;
         }
         if ("GET".equals(r.method) && "/api/preview".equals(r.path)) {
@@ -812,6 +989,9 @@ public class RigServerPlugin extends Plugin {
             // electron/remote-record.js).
             JSObject sentry = cleanSentry(msg.optJSONObject("sentry"));
             if (sentry != null) cmd.put("sentry", sentry);
+            // The baby monitor (baby-monitor.js): likewise (cleanBaby in electron/remote-record.js).
+            JSObject baby = cleanBaby(msg.optJSONObject("baby"));
+            if (baby != null) cmd.put("baby", baby);
             // The cameras to start (picked, with a role), the mode, and a running camera's role,
             // turn and flip: checked as the computer checks them (electron/remote-record.js).
             JSONObject pk = msg.optJSONObject("pick");
@@ -838,7 +1018,8 @@ public class RigServerPlugin extends Plugin {
                     : action.equals("camera") && !cmd.has("camera") ? "Which camera?"
                     : action.equals("mode") && !cmd.has("mode") ? "Which mode?"
                     : action.equals("settings") && !cmd.has("settings") ? "Which setting?"
-                    : action.equals("sentry") && !cmd.has("sentry") ? "Which Sentry setting?" : null;
+                    : action.equals("sentry") && !cmd.has("sentry") ? "Which Sentry setting?"
+                    : action.equals("baby") && !cmd.has("baby") ? "Which baby monitor setting?" : null;
             if (missingPart != null) {
                 json(out, 400, error(missingPart));
                 return;
@@ -880,6 +1061,34 @@ public class RigServerPlugin extends Plugin {
     // checked; null if there's nothing.
     private static final Pattern NTFY_SERVER = Pattern.compile("^https?://[^\\s/?#]+(/[^\\s?#]*)?$", Pattern.CASE_INSENSITIVE);
     private static final Pattern ALERT_ID = Pattern.compile("^[0-9]{1,15}-[a-z0-9]{1,8}$");
+    private static final Pattern HA_WEBHOOK = Pattern.compile("^https?://[^\\s/?#]+/api/webhook/[A-Za-z0-9_-]{1,200}$", Pattern.CASE_INSENSITIVE);
+    // The baby monitor from the page: on or off, what sets it off and how readily, its switches, the microphone,
+    // alerts deleted (by their ids) or all its clips, a test. Only those, each checked; null if there's nothing.
+    private static final Pattern MIC_ID = Pattern.compile("^[\\w+/=.:-]{0,200}$");
+    static JSObject cleanBaby(JSONObject s) {
+        if (s == null) return null;
+        JSObject out = new JSObject();
+        for (String k : new String[] { "armed", "soundClip", "videoClip", "listen" }) if (s.opt(k) instanceof Boolean) out.put(k, s.optBoolean(k));
+        String trigger = s.optString("trigger", "");
+        if (trigger.equals("loud") || trigger.equals("crying")) out.put("trigger", trigger);
+        String sens = s.optString("sensitivity", "");
+        if (sens.equals("low") || sens.equals("medium") || sens.equals("high")) out.put("sensitivity", sens);
+        if (s.opt("mic") instanceof String && MIC_ID.matcher(s.optString("mic")).matches()) out.put("mic", s.optString("mic"));
+        JSONArray ids = s.optJSONArray("deleteAlerts");
+        if (ids != null && ids.length() >= 1 && ids.length() <= 50) {
+            JSArray list = new JSArray();
+            boolean ok = true;
+            for (int i = 0; i < ids.length(); i++) {
+                Object id = ids.opt(i);
+                if (!(id instanceof String) || !ALERT_ID.matcher((String) id).matches()) ok = false;
+                else list.put(id);
+            }
+            if (ok) out.put("deleteAlerts", list);
+        }
+        if (Boolean.TRUE.equals(s.opt("deleteAll"))) out.put("deleteAll", true);
+        if (Boolean.TRUE.equals(s.opt("test"))) out.put("test", true);
+        return out.length() > 0 ? out : null;
+    }
     static JSObject cleanSentry(JSONObject s) {
         if (s == null) return null;
         JSObject out = new JSObject();
@@ -909,6 +1118,16 @@ public class RigServerPlugin extends Plugin {
             out.put("box", box);
         }
         if (Boolean.TRUE.equals(s.opt("watchAll"))) out.put("watchAll", true);
+        // Home Assistant's webhook (sentry.js's homeAssistant): on or off, its address (…/api/webhook/<id>), a test.
+        JSONObject ha = s.optJSONObject("ha");
+        if (ha != null) {
+            JSObject h = new JSObject();
+            if (ha.opt("on") instanceof Boolean) h.put("on", ha.optBoolean("on"));
+            if (Boolean.TRUE.equals(ha.opt("test"))) h.put("test", true);
+            Object url = ha.opt("url");
+            if (url instanceof String && (((String) url).trim().isEmpty() || (((String) url).length() <= 400 && HA_WEBHOOK.matcher(((String) url).trim()).matches()))) h.put("url", ((String) url).trim());
+            if (h.length() > 0) out.put("ha", h);
+        }
         // Alerts deleted, with their photos and videos; or every Sentry photo and video.
         JSONArray ids = s.optJSONArray("deleteAlerts");
         if (ids != null && ids.length() >= 1 && ids.length() <= 50) {

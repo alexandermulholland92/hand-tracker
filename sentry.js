@@ -140,6 +140,7 @@
       handTracking: false, // the hands tracked while it's on
       photo: true, video: true, sound: true,
       ntfy: { on: false, server: "https://ntfy.sh", topic: "", photo: false },
+      ha: { on: false, url: "" }, // Home Assistant's webhook (homeAssistant)
       excluded: {}, // camera key -> { "3x4": [box numbers, in the camera's own picture] }
     };
   }
@@ -152,6 +153,7 @@
       rows: clamp(s.rows, 1, MAX_ROWS, d.rows), cols: clamp(s.cols, 1, MAX_COLS, d.cols),
       sensitivity: SENSITIVITY[s.sensitivity] ? s.sensitivity : d.sensitivity,
       ntfy: { ...d.ntfy, ...(s.ntfy || {}) },
+      ha: { on: !!(s.ha && s.ha.on), url: s.ha && typeof s.ha.url === "string" ? s.ha.url.slice(0, 400) : "" },
       excluded: s.excluded && typeof s.excluded === "object" ? s.excluded : {},
     };
     if (!cfg.ntfy.topic) cfg.ntfy.topic = newTopic();
@@ -640,14 +642,19 @@
     }
     const at = new Date();
     const name = baseName(v, at);
-    st.session = { lastMovedAt: now, name, at, rec: null, animal };
+    st.session = { lastMovedAt: now, name, at, rec: null, animal, layer: null };
     if (cfg.video) {
       try {
         const canvas = v.canvas();
         if (v.want) v.want(true);
+        // (its labels a layer of their own where this app can, 2026-11-26: the picture recorded clean, the labels
+        // beside it; once saved, <clip>.mkv with them as tracks and "<clip> (labels).mp4" with them drawn in)
+        st.session.layer = labelsSink() && canvas ? global.LabelLayers.record(canvas, labelsSink()) : null;
         // (in the desktop app written to disk as it's recorded, not held in memory: clips run to hundreds of MB)
-        st.session.rec = global.CameraVideo.start({ canvas, fps: videoFps(v.fps ? v.fps() : 0), audio: !!cfg.sound, preferMp4: true, file: clipFile() });
+        st.session.rec = global.CameraVideo.start({ canvas: st.session.layer ? st.session.layer.canvas : canvas, fps: videoFps(v.fps ? v.fps() : 0), audio: !!cfg.sound, preferMp4: true, file: clipFile() });
       } catch (err) {
+        if (st.session.layer) st.session.layer.discard().catch(() => {});
+        st.session.layer = null;
         st.session.videoError = errText(err);
       }
     }
@@ -688,6 +695,8 @@
         .then(() => ev.sent.push("ntfy"))
         .catch((err) => (ev.ntfyError = errText(err)));
     }
+    homeAssistant({ kind: "sentry", event: "alert", id: ev.id, at: ev.at, camera: ev.camera, animal: ev.animal }, { photo: ev.photo && !ev.photo.download ? ev.photo.name : "" })
+      .catch((err) => (ev.haError = errText(err)));
     // (The remote page and the Hand Tracker app read it from remoteState.)
   }
 
@@ -708,13 +717,22 @@
       if (s.event && s.videoError) s.event.videoError = s.videoError;
       return;
     }
+    let labels = null;
     try {
       const clip = await s.rec.stop();
+      labels = s.layer ? await s.layer.stop().catch(() => null) : null;
       if (!clip.size) {
         if (clip.fileId !== null && clipFile()) await clipFile().discard(clip.fileId).catch(() => {});
         throw new Error("nothing was recorded");
       }
-      const saved = await saveFile(s.name, "-video", clip.ext, clip.blob, clip.mimeType, clip.fileId);
+      const saved = await saveFile(s.name, "-video", clip.ext, clip.blob, clip.mimeType, clip.fileId, labels);
+      labels = null; // (saved with it)
+      s.layer = null;
+      // (its clip to Home Assistant too: its link stays good once its labelled copy takes its place)
+      if (!saved.download) {
+        homeAssistant({ kind: "sentry", event: "clip", id: s.event ? s.event.id : `${s.at.getTime()}-v`, at: s.at.getTime(), camera: v ? v.name : key, animal: s.animal || "", seconds: Math.round(clip.duration) },
+          { photo: s.event && s.event.photo && !s.event.photo.download ? s.event.photo.name : "", video: saved.name }).catch(() => {});
+      }
       if (s.event) {
         s.event.video = saved;
         s.event.seconds = Math.round(clip.duration);
@@ -724,7 +742,29 @@
       }
     } catch (err) {
       if (s.event) s.event.videoError = errText(err);
+      if (s.layer && labels === null) await s.layer.discard().catch(() => {});
+      else if (labels && host && host.remote && host.remote.labels) await host.remote.labels.discard(labels).catch(() => {});
     }
+  }
+
+  // A clip's .mkv and labelled copy made (label-layers.js, electron/label-layers.js): its alert shows the labelled
+  // copy (it plays everywhere, an iPhone too), the .mkv kept with it (its clean picture, the labels as tracks).
+  const labelsSink = () => (host && host.remote && host.remote.labels && global.LabelLayers && global.LabelLayers.ready(host.remote.labels) ? host.remote.labels : null);
+  let labelsHeard = false;
+  function hearLabels() {
+    if (labelsHeard || !host || !host.remote || !host.remote.labels || !host.remote.labels.onDone) return;
+    labelsHeard = true;
+    if (global.LabelLayers) global.LabelLayers.ready(host.remote.labels); // (asked now, so it's known by the first clip)
+    host.remote.labels.onDone((d) => {
+      if (!d || !d.ok || !d.from || !d.labelled) return;
+      const base = (p) => String(p).split(/[\\/]/).pop();
+      for (const e of events) {
+        if (e.video && !e.video.download && e.video.name === base(d.from)) {
+          e.video.name = base(d.labelled);
+          e.video.clean = base(d.mkv);
+        }
+      }
+    });
   }
 
   // Alerts deleted, with their photos and videos in the remote recording folder (ids: those
@@ -733,7 +773,7 @@
     const gone = ids ? events.filter((e) => ids.includes(e.id)) : events.slice();
     if (ids && !gone.length) return { ok: false, message: "That alert isn't there any more." };
     const names = [];
-    for (const e of gone) for (const f of [e.photo, e.video]) if (f && !f.download && f.name) names.push(f.name);
+    for (const e of gone) for (const f of [e.photo, e.video]) if (f && !f.download && f.name) names.push(f.name, ...(f.clean ? [f.clean] : []));
     const del = host && host.remote && host.remote.deleteSentry;
     let n = 0;
     if (!ids || names.length) {
@@ -761,12 +801,14 @@
   // -> { name }
   // Where a clip is written as it's recorded (the desktop app's), or null (kept in memory, then saved).
   const clipFile = () => (host && host.remote && host.remote.clip && host.remote.saveTake ? host.remote.clip : null);
-  async function saveFile(baseName, suffix, ext, blob, mimeType, clipId = null) {
+  // (labels: a clip's labels' id, label-layers.js: made into its .mkv and labelled copy once it's saved)
+  async function saveFile(baseName, suffix, ext, blob, mimeType, clipId = null, labels = null) {
     if (host && host.remote && host.remote.saveTake) {
       const data = clipId === null ? new Uint8Array(await blob.arrayBuffer()) : undefined;
-      const res = await host.remote.saveTake({ baseName, files: [{ format: ext, suffix, ext, ...(clipId === null ? { data } : { clipId }), ...(mimeType ? { mimeType } : {}) }] });
+      const res = await host.remote.saveTake({ baseName, files: [{ format: ext, suffix, ext, ...(clipId === null ? { data } : { clipId }), ...(mimeType ? { mimeType } : {}), ...(labels ? { labels } : {}) }] });
       const r = (res.results || [])[0];
       if (!r || !r.ok) throw new Error((r && r.error) || "It couldn't be saved.");
+      if (labels && host.remote.labels) host.remote.labels.finish({ paths: [r.path] }).catch(() => {});
       return { name: r.path.split(/[\\/]/).pop(), dir: res.dir };
     }
     const name = `${baseName}${suffix}.${ext}`;
@@ -804,6 +846,27 @@
     if (!cfg || !cfg.ntfy.on || !cfg.ntfy.topic) return false;
     const server = String(cfg.ntfy.server || "https://ntfy.sh").replace(/\/+$/, "");
     await postNtfy({ server, topic: cfg.ntfy.topic, title, message: `${message}${hostName() ? ` on ${hostName()}` : ""}.`, tags: "fire", priority: 4, click: linkOf() || "" });
+    return true;
+  }
+  // The baby monitor's alerts (baby-monitor.js), through Sentry's ntfy settings while its ntfy is on (whether
+  // Sentry is on or not). -> whether it was sent
+  async function notify({ title, message, tags = "baby", click = "" } = {}) {
+    if (!cfg || !cfg.ntfy.on || !cfg.ntfy.topic) return false;
+    const server = String(cfg.ntfy.server || "https://ntfy.sh").replace(/\/+$/, "");
+    await postNtfy({ server, topic: cfg.ntfy.topic, title: String(title || "Hand Tracker"), message: String(message || ""), tags, priority: 4, click: click || linkOf() || "" });
+    return true;
+  }
+  // An alert to Home Assistant's webhook, while it's on (the user, 2026-11-26: Sentry's and the baby monitor's alert
+  // clips "Webhook"): { kind: "sentry" | "baby", event: "alert" | "clip", id, at, camera, animal, sound, seconds } and
+  // its files' names (photo, video, sound: the desktop app adds each one's signed link, remote-record.js's haLink).
+  // -> whether it was sent
+  async function homeAssistant(words, files = {}, force = false) {
+    if (!cfg || (!cfg.ha.on && !force) || !cfg.ha.url) return false;
+    const send = host && host.sentry && host.sentry.homeAssistant;
+    if (!send) throw new Error("this Hand Tracker can't reach Home Assistant: update it");
+    const payload = { ...words, at: words.at ? new Date(words.at).toISOString() : new Date().toISOString(), host: hostName() || "" };
+    const res = await send({ url: cfg.ha.url, payload, files });
+    if (!res || !res.ok) throw new Error(`Home Assistant answered ${res ? res.status : "nothing"}`);
     return true;
   }
   async function postNtfy(req) {
@@ -891,6 +954,7 @@
       shown: cfg.shown, armed: cfg.armed, rows: cfg.rows, cols: cfg.cols, sensitivity: cfg.sensitivity,
       ignoreAnimals: cfg.ignoreAnimals, trackAnimals: cfg.trackAnimals, animalsMotion: cfg.animalsMotion, handTracking: cfg.handTracking, photo: cfg.photo, video: cfg.video, sound: cfg.sound,
       ntfy: { on: cfg.ntfy.on, server: cfg.ntfy.server, topic: cfg.ntfy.topic, photo: cfg.ntfy.photo },
+      ha: { on: cfg.ha.on, url: cfg.ha.url, can: !!(host && host.sentry && host.sentry.homeAssistant) },
       note: statusText(views),
       canDelete: !!(host && host.remote && host.remote.deleteSentry), // its photos and videos, from the page
       // Each camera's boxes as its preview shows them (mirrored or not): left out, and moving.
@@ -934,6 +998,10 @@
       n.server = serverOnly(n.server, n.topic);
       cfg.ntfy = n;
     }
+    if (c.ha && typeof c.ha === "object") {
+      if (typeof c.ha.on === "boolean") cfg.ha.on = c.ha.on;
+      if (typeof c.ha.url === "string") cfg.ha.url = c.ha.url.trim().slice(0, 400);
+    }
     if (c.box && typeof c.box === "object") {
       const v = safeViews().find((x) => x.index === c.box.camera);
       if (!v) return { ok: false, message: "That camera isn't running." };
@@ -962,6 +1030,15 @@
     save();
     running();
     notifyWants();
+    if (c.ha && c.ha.test === true) {
+      try {
+        if (!cfg.ha.url) return { ok: false, message: "Paste Home Assistant's webhook address first." };
+        await homeAssistant({ kind: "test", event: "test", id: "", at: Date.now(), camera: "Test" }, {}, true);
+        message = "Sent: Home Assistant got it (its automation runs if one uses this webhook).";
+      } catch (err) {
+        return { ok: false, message: `Couldn't send it: ${errText(err)}` };
+      }
+    }
     if (c.ntfy && c.ntfy.test === true) {
       try {
         await sendNtfy({ at: Date.now(), camera: "Test", photo: null, sent: [] }, null);
@@ -978,6 +1055,7 @@
     setPref = opts.setPref || setPref;
     viewsOf = opts.views || viewsOf;
     host = opts.host || null;
+    hearLabels();
     onWantsChange = opts.onWantsChange || onWantsChange;
     onTrackingChange = opts.onTrackingChange || onTrackingChange;
     hostName = opts.hostName || hostName;
@@ -991,8 +1069,9 @@
   }
 
   global.Sentry = {
-    init, wantsMotion, wantsObjects, wantsTracking, remoteState, command, tell,
+    init, wantsMotion, wantsObjects, wantsTracking, remoteState, command, tell, notify, homeAssistant,
     isArmed: () => !!cfg && cfg.armed,
+    isShown: () => !!cfg && cfg.shown, // (the baby monitor is shown and hidden with it)
     videoFps,
     _test: { shrink, blur, moved, levels, turn, turnBox, depthGrid, depthMoved, either, withoutAnimals, animalsOnly, animalSeen, remember, opinion, ntfyMessage, serverOnly, sample, events, per, toCamera, secondText, config: () => cfg },
   };

@@ -6,7 +6,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' data: blob: https://ntfy.sh http://127.0.0.1:47823; worker-src 'self' blob:; object-src 'none'; base-uri 'none'" />
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' data: blob: https://ntfy.sh http://127.0.0.1:47823 https://storage.googleapis.com/mediapipe-models/; worker-src 'self' blob:; object-src 'none'; base-uri 'none'" />
 <title>Hand Tracker</title>
 <!-- The preview a link to the site shows in messages and posts (Open Graph; X's card). -->
 <meta name="description" content="Track both hands from your webcam in real time, right in your browser: a live 3D view, gestures, motion capture export and video recording. Nothing leaves your device." />
@@ -929,6 +929,8 @@
 <script src="node_modules/three/build/three.min.js"></script>
 <script src="node_modules/three/examples/js/controls/OrbitControls.js"></script>
 <script src="node_modules/tesseract.js/dist/tesseract.min.js"></script>
+<script src="label-ass.js"></script>
+<script src="label-layers.js"></script>
 <script src="hand-tracker.js"></script>
 <script src="far-hands.js"></script>
 <script src="robot-motion.js"></script>
@@ -976,6 +978,8 @@
 <script src="object-finder.js"></script>
 <script src="second-look.js"></script>
 <script src="sentry.js"></script>
+<script src="sound-classifier.js"></script>
+<script src="baby-monitor.js"></script>
 <script src="download-menu.js"></script>
 <script src="app.js"></script>
 </body>
