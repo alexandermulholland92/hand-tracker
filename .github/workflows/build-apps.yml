@@ -412,6 +412,8 @@ jobs:
           mkdir -p ftp-shared/shared
           echo 'Hello from the simulated Pi.' > ftp-shared/shared/hello.txt
           PYTHONPATH="$PWD/pyftpdlib-2.2.0" HT_CLUSTER_FTP_FOLDERS="$PWD/ftp-shared/shared" "${{ steps.pi-python.outputs.python-path }}" cluster/node/ht_cluster.py --simulate --port 47830 > cluster-sim.log 2>&1 &
+          # (the simulated Pi answering before the app asks it: started in the background, it takes a few seconds)
+          for i in $(seq 1 60); do curl -s -m 5 -o /dev/null -H "X-HT-Cluster: 1" http://127.0.0.1:47830/api/node && break; sleep 1; done
           for kind in mouse remote converter cluster; do
             extra=""; wait=90
             if [ "$kind" = cluster ]; then

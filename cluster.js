@@ -1949,7 +1949,12 @@
   if (window.__htSelfTest && api.phone) {
     (async () => {
       const target = "127.0.0.1:47830";
-      const found = await api.addPi(target);
+      // (the simulated Pi may still be starting: asked again, a few seconds apart)
+      let found = await api.addPi(target);
+      for (let i = 0; i < 4 && !found.ok; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        found = await api.addPi(target);
+      }
       const set = found.ok ? await api.settings({ target, module: "health", key: "power", value: "wall" }) : {};
       const out = { ok: !!(found.ok && set.status === 200 && set.ok), found, set: set.status };
       // This iPhone in the cluster, where the app has its own Python (the Cluster app's member service,
