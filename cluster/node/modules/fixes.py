@@ -19,6 +19,12 @@ already on the Pi (put in by hand) is taken as it is and shows on.
   Wi-Fi at each start (pi/wifi-autoconnect.sh): the Wi-Fi network the Pi was last on set to join by itself again
     when it starts (its auto-connect switched back on if something turned it off), and joined if the Wi-Fi isn't on
     one; only that network, and never a hotspot (the user, 2026-11-22).
+  Drive reset at restart (pi/drive-reset.sh): a Pi 5's NVMe drive given back as after power-on at the very end of
+    each restart or power-off (its host memory buffer and power saving off, taken off the bus, the PCIe connector
+    held in reset), for a drive the bootloader can't read after a restart while it stays powered (pi, 2026-11-26).
+  microSD fallback (pi/sd-fallback.sh): a Pi 5 that boots from an NVMe drive given its boot files on a microSD card
+    as well (kept up to date), and the bootloader set to use the card when it can't read the drive (the user,
+    2026-11-26: "Make the SD card a fallback"). Only an empty card (or one already its own) is used.
 On: put in, and put in again when a newer build of this service brings a changed script. Off: taken
 away. Neither while Hand Tracker records or saves a take. A fix that didn't go in is tried again an
 hour later, or at once with "Try the fixes again". "Test the Wi-Fi recovery" reloads the Wi-Fi driver
@@ -60,6 +66,12 @@ FIXES = [
     ("wifiAutoconnect", "wifi-autoconnect", "Wi-Fi at each start",
      "Wi-Fi at each start: the network it was last on joins by itself again (auto-connect switched back on if it was off)",
      ["/usr/local/sbin/hand-tracker-wifi-autoconnect", "/etc/systemd/system/hand-tracker-wifi-autoconnect.service"]),
+    ("driveReset", "drive-reset", "Drive reset at restart",
+     "Drive reset at restart: the NVMe drive given back as after power-on at each restart or power-off (for a drive the bootloader can't read after a restart)",
+     ["/usr/lib/systemd/system-shutdown/hand-tracker-drive-reset"]),
+    ("sdFallback", "sd-fallback", "microSD fallback",
+     "microSD fallback: the boot files kept on a microSD card in it, which the bootloader uses when it can't read the NVMe drive",
+     ["/usr/local/sbin/hand-tracker-sd-fallback", "/etc/systemd/system/hand-tracker-sd-fallback.path"]),
 ]
 SETTINGS = [{"key": key, "title": switch, "default": False} for key, _, _, switch, _ in FIXES]
 WIFI = FIXES[0][4]

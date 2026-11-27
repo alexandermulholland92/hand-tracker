@@ -32,7 +32,8 @@ from this project's GitHub "Latest build" release and checks first.
   ht-cluster-root install-libtorrent     Debian's python3-libtorrent (for a download split by pieces: pieces.py)
   ht-cluster-root install-pyftpdlib      Debian's python3-pyftpdlib (the phones' FTP link to this Pi's shared folders: modules/ftp.py)
   ht-cluster-root fix-install FIX        one of the Pi fixes (pi/FIX.sh: wifi-watchdog, tailscale-watchdog,
-                                         network-tuning, freeze-restart, usb-current) set up, as the service's own update
+                                         network-tuning, freeze-restart, usb-current, wifi-autoconnect, drive-reset,
+                                         sd-fallback) set up, as the service's own update
                                          brought it (/opt/ht-cluster/current/fixes, checked against GitHub's list)
   ht-cluster-root fix-remove FIX         that fix taken away (its --remove)
   ht-cluster-root wifi-test              the Wi-Fi recovery's test: the Wi-Fi driver reloaded once, 20 s later
@@ -105,7 +106,8 @@ if WINDOWS:
 SAFE_PATH = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 # The Pi fixes (modules/fixes.py): pi/<name>.sh in the repository, brought with the service's own update
 # into its fixes/ folder.
-FIXES = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current", "wifi-autoconnect")
+FIXES = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current", "wifi-autoconnect",
+         "drive-reset", "sd-fallback")
 # The Cluster page and the files it loads, which the service serves itself (ht_cluster.py PAGE_FILES):
 # from the repository's top folder, brought with the service's own update into its web/ folder. (Named
 # pi-cluster.html and pi-cluster.js before the rename, 2026-11-25: the update to the first build with the new names is

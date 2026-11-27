@@ -120,7 +120,8 @@ def node_files():
     return out
 
 
-FIX_SCRIPTS = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current", "wifi-autoconnect")
+FIX_SCRIPTS = ("wifi-watchdog", "tailscale-watchdog", "network-tuning", "freeze-restart", "usb-current", "wifi-autoconnect",
+               "drive-reset", "sd-fallback")
 
 
 PAGE = ("cluster.html", "cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png")
