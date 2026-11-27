@@ -2401,11 +2401,11 @@ async function checkWebsiteDownloads(js) {
   const s = out.site || {};
   const each = (file, deb) => [`Windows=${file}-1.2.3-portable.exe`, `Mac (Apple chip)=${file}-1.2.3-mac-arm64.dmg`, `Mac (Intel)=${file}-1.2.3-mac-x64.dmg`, `Linux=${deb}_1.2.3_amd64.deb`, `Raspberry Pi=${deb}_1.2.3_arm64.deb`, `Android=${file}-1.2.3.apk`, `iPhone=${file}-1.2.3-ios-unsigned.ipa`];
   const files = [...each("HandTracker", "hand-tracker"), ...each("HandMouse", "hand-mouse"), ...each("RemoteRecording", "remote-recording"), ...each("RecordingConverter", "recording-converter"),
-    ...each("ClusterCall", "cluster-call"), "Chrome, Edge=HandTracker-1.2.3-chrome-extension.zip"];
+    ...each("Cluster", "hand-tracker-cluster"), ...each("ClusterCall", "cluster-call"), "Chrome, Edge=HandTracker-1.2.3-chrome-extension.zip"];
   const shown = (p, title, again, words) => p && p.open && p.menuClosed && p.dialog && p.closed && p.title === title && p.again === again && words.every((w) => p.steps.includes(w));
   check("The website's Download menu (not in the app): each app's file for each device on the Latest build release, named with the website's version (just the release's page without one); picking one shows how to install it on that device",
     !out.error && out.inApp === true && (s.unversioned || []).join() === "https://github.com/alexandermulholland92/hand-tracker/releases/tag/latest-build" &&
-      (s.apps || []).join() === "Hand Tracker,Hand Mouse,Remote Recording,Recording Converter,Cluster Call,Chrome extension" && (s.files || []).join() === files.join() &&
+      (s.apps || []).join() === "Hand Tracker,Hand Mouse,Remote Recording,Recording Converter,Cluster,Cluster Call,Chrome extension" && (s.files || []).join() === files.join() &&
       shown(s.android, "Hand Tracker for Android", "HandTracker-1.2.3.apk", ["HandTracker-1.2.3.apk", "install unknown apps", "Allow restricted settings"]) &&
       shown(s.pi, "Remote Recording for Raspberry Pi", "remote-recording_1.2.3_arm64.deb", ["sudo apt install ./remote-recording_1.2.3_arm64.deb", "Open Remote Recording from the app menu"]) &&
       shown(s.iphone, "Hand Mouse for iPhone and iPad", "HandMouse-1.2.3-ios-unsigned.ipa", ["Sideloadly", "VPN & Device Management", "7 days"]) &&

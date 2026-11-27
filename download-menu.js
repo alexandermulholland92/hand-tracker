@@ -10,12 +10,15 @@
 (function (global) {
   const $ = (id) => document.getElementById(id);
   const RELEASE = "https://github.com/alexandermulholland92/hand-tracker/releases";
-  // name, its files' name, its Linux package's name, whether it has the hand mouse, whether it uses the camera
+  // name, its files' name, its Linux package's name, whether it has the hand mouse, whether it uses the camera, and
+  // whether its Android app is for 64-bit phones only
   const APPS = [
     { name: "Hand Tracker", file: "HandTracker", deb: "hand-tracker", mouse: true, camera: true },
     { name: "Hand Mouse", file: "HandMouse", deb: "hand-mouse", mouse: true, camera: true },
     { name: "Remote Recording", file: "RemoteRecording", deb: "remote-recording", mouse: false, camera: true },
     { name: "Recording Converter", file: "RecordingConverter", deb: "recording-converter", mouse: false, camera: false },
+    // (Cluster on Android: 64-bit phones only, its Python and the rest being built for those)
+    { name: "Cluster", file: "Cluster", deb: "hand-tracker-cluster", mouse: false, camera: false, arm64Only: true },
     { name: "Cluster Call", file: "ClusterCall", deb: "cluster-call", mouse: false, camera: true },
   ];
   // Each device: its label in the menu, the file's name, and how to install it.
@@ -57,7 +60,7 @@
       case "pi":
         return [`${a.name} for Raspberry Pi`, "For a Raspberry Pi 4 or 5 with 64-bit Raspberry Pi OS, or another 64-bit ARM Linux board.", debSteps(a, file)];
       case "android":
-        return [`${a.name} for Android`, "For Android 7.0 or newer.", [
+        return [`${a.name} for Android`, a.arm64Only ? "For a 64-bit Android phone or tablet (most from 2017 on), Android 7.0 or newer." : "For Android 7.0 or newer.", [
           `Open the downloaded ${code(file)} (from the download's notification, or Downloads in the Files app).`,
           "If Android asks, allow your browser (or file manager) to <b>install unknown apps</b>, then tap <b>Install</b>. A newer one installs over the old one.",
           a.mouse
