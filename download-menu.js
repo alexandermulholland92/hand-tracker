@@ -16,6 +16,7 @@
     { name: "Hand Mouse", file: "HandMouse", deb: "hand-mouse", mouse: true, camera: true },
     { name: "Remote Recording", file: "RemoteRecording", deb: "remote-recording", mouse: false, camera: true },
     { name: "Recording Converter", file: "RecordingConverter", deb: "recording-converter", mouse: false, camera: false },
+    { name: "Video Call", file: "VideoCall", deb: "video-call", mouse: false, camera: true },
   ];
   // Each device: its label in the menu, the file's name, and how to install it.
   const DEVICES = [
