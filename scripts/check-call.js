@@ -11,6 +11,7 @@
 const { app, BrowserWindow } = require("electron");
 const fs = require("fs");
 const http = require("http");
+const { spawn, spawnSync } = require("child_process");
 const os = require("os");
 const path = require("path");
 
@@ -42,7 +43,7 @@ app.commandLine.appendSwitch("use-fake-ui-for-media-stream");
 const fakeCamera = require("./fake-camera.js").fakeCameraFile();
 if (fakeCamera) app.commandLine.appendSwitch("use-file-for-fake-video-capture", fakeCamera);
 process.argv.push("--app=call");
-process.env.HT_VIDEO_CALL_SIM = JSON.stringify([{ name: "Desk", port: PORTS[0] }, { name: "Pi", port: PORTS[1] }]);
+process.env.HT_VIDEO_CALL_SIM = JSON.stringify([{ name: "Desk", port: PORTS[0] }, { name: "Pi", port: PORTS[1] }, { name: "Phone", port: 47975, external: true }]);
 process.env.HT_VIDEO_CALL_RIG = "127.0.0.1:47974"; // (the Pi's Hand Tracker: the stand-in below)
 require("../electron/main.js");
 
@@ -105,6 +106,60 @@ function post(port, body, headers = {}) {
     q.on("error", () => resolve({ status: 0 }));
     q.end(data);
   });
+}
+
+
+// The phone's service (VideoCallServer.java) on this computer's Java: compiled, started on port 47975 as "Phone";
+// { lines (what it said), ask(request) -> its answer, stop() }, or null without Java.
+async function startPhone() {
+  const isWin = process.platform === "win32";
+  const home = [process.env.JAVA_HOME, isWin && "C:/Program Files/Android/Android Studio/jbr", !isWin && "/Applications/Android Studio.app/Contents/jbr/Contents/Home", !isWin && path.join(os.homedir(), "android-studio/jbr")]
+    .find((d) => d && fs.existsSync(path.join(d, "bin", isWin ? "javac.exe" : "javac")));
+  if (!home) return null;
+  const bin = (t) => path.join(home, "bin", isWin ? `${t}.exe` : t);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "video-call-java-"));
+  const javac = spawnSync(bin("javac"), ["-nowarn", "-encoding", "UTF-8", "-d", dir, path.join(ROOT, "android/app/src/call/java/com/handtracker/app/VideoCallServer.java"),
+    path.join(__dirname, "jvm/com/handtracker/app/VideoCallHarness.java")], { encoding: "utf8" });
+  if (javac.status !== 0) {
+    check("The phone's Video Call service compiles (VideoCallServer.java)", false, String(javac.stderr || javac.error).slice(0, 800));
+    return null;
+  }
+  const java = spawn(bin("java"), ["-cp", dir, "com.handtracker.app.VideoCallHarness", "47975", "Phone"], { stdio: ["pipe", "pipe", "pipe"] });
+  const lines = [], waiting = [];
+  let buf = "";
+  java.stdout.on("data", (d) => {
+    buf += d;
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (!line) continue;
+      let j = null;
+      try {
+        j = JSON.parse(line);
+      } catch {}
+      if (!j) continue;
+      if (j.reply !== undefined || j.trusted !== undefined || j.hello !== undefined) {
+        const w = waiting.shift();
+        if (w) w(j);
+      } else lines.push(j);
+    }
+  });
+  const ready = await until(() => lines.find((l) => l.ready), 10000);
+  if (!ready) {
+    java.kill();
+    check("The phone's Video Call service starts (VideoCallServer.java)", false, "it didn't say it was ready");
+    return null;
+  }
+  return {
+    lines,
+    ask: (req) => new Promise((resolve) => {
+      waiting.push(resolve);
+      java.stdin.write(JSON.stringify(req) + "\n");
+      setTimeout(() => resolve(null), 15000);
+    }),
+    stop: () => java.kill(),
+  };
 }
 
 app.whenReady().then(async () => {
@@ -249,6 +304,36 @@ app.whenReady().then(async () => {
     await click(A, "hangup");
     const rigClosed = await until(() => rig.commands.includes("close") && !rig.running);
     check("...the call over: Hand Tracker's cameras stopped again (this call started them)", !!rigClosed, rig.commands);
+
+
+    // A phone's Video Call service (VideoCallServer.java: on this computer's Java, VideoCallHarness standing in for the
+    // phone app around it): listed by Desk, told Desk's list of your devices, rung by Desk, and declining back; it
+    // takes anything on your Tailscale network, never a web page.
+    const phone = await startPhone();
+    if (!phone) check("A phone's Video Call service (VideoCallServer.java)", true, "no Java here: skipped");
+    else {
+      await click(A, "refresh");
+      const listedPhone = await until(async () => (await st(A)).devices.find((d) => d.name === "Phone" && d.app));
+      check("Desk lists the phone (its Java service) as ready for calls", !!listedPhone, (await st(A)).devices);
+      const told = await until(() => phone.lines.find((l) => l.announce));
+      check("...and tells the phone your devices (Desk itself first, with its address)", told && told.announce.some((d) => d.name === "Desk" && d.address === `127.0.0.1:${PORTS[0]}` && d.app) && told.announce.some((d) => d.name === "Pi"), told);
+      await callButton(A, "Phone");
+      const offer = await until(() => phone.lines.find((l) => l.signal && l.signal.kind === "offer"));
+      check("Desk calls the phone: its service gets the offer, from Desk, with its description", offer && offer.signal.from.name === "Desk" && /^v=0/.test(offer.signal.sdp) && offer.signal.from.address === `127.0.0.1:${PORTS[0]}`, offer);
+      const sent = await phone.ask({ send: offer ? offer.signal.from.address : "", signal: { kind: "decline", call: offer ? offer.signal.call : "x" } });
+      const declined = await until(async () => ((await st(A)).mode === "idle" ? await st(A) : null));
+      check("...the phone declines: Desk is told", sent && sent.reply && sent.reply.ok && declined && /Phone declined/.test(declined.note), { sent, declined });
+      const trusts = [await phone.ask({ trusted: "100.101.44.120" }), await phone.ask({ trusted: "fd7a:115c:a1e0::1" }), await phone.ask({ trusted: "192.168.1.88" }), await phone.ask({ trusted: "8.8.8.8" })].map((r) => r && r.trusted);
+      check("The phone's service takes anything on your Tailscale network, nothing else", JSON.stringify(trusts) === "[true,true,false,false]", trusts);
+      const pagePost = await post(47975, { kind: "offer", call: "page-call-0002", sdp: "v=0" }, { Origin: "https://example.com" });
+      const formPost = await new Promise((resolve) => {
+        const q = http.request({ host: "127.0.0.1", port: 47975, path: "/vc/signal", method: "POST", headers: { "Content-Type": "text/plain" } }, (r) => resolve(r.statusCode));
+        q.on("error", () => resolve(0));
+        q.end('{"kind":"offer","call":"form-call-0001"}');
+      });
+      check("...never a web page's request, nor anything posted that isn't JSON", pagePost.status === 403 && formPost === 415, { pagePost, formPost });
+      phone.stop();
+    }
 
     // The service itself: a web page refused; only this computer when simulated.
     const page = await post(PORTS[1], { kind: "offer", call: "page-call-0001", sdp: "v=0" }, { Origin: "https://example.com" });

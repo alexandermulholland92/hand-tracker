@@ -447,7 +447,7 @@ jobs:
           cp -R "$app" Payload/
           zip -qr "dist/HandTracker-$version-ios-unsigned.ipa" Payload
           # Hand Mouse, Remote Recording, Recording Converter and Cluster, made from it.
-          for both in mouse:HandMouse remote:RemoteRecording converter:RecordingConverter cluster:Cluster; do
+          for both in mouse:HandMouse remote:RemoteRecording converter:RecordingConverter cluster:Cluster call:VideoCall; do
             extra=""
             [ "${both%%:*}" = cluster ] && extra="--python python-ios/Python.xcframework --ffmpeg build/ffmpeg-ios --ort build/ort-ios --wheels build/ios-wheels --transmission build/transmission-ios --libtorrent build/libtorrent-ios"
             # shellcheck disable=SC2086

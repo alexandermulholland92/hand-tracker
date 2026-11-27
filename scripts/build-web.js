@@ -33,6 +33,7 @@ const APP_FILES = [
   // (video labels as a layer of their own, the baby monitor and its crying model's loader: 2026-11-26)
   "label-ass.js", "label-layers.js", "baby-monitor.js", "baby-monitor-worklet.js", "sound-classifier.js", "sound-classifier-worker.js",
   "theremin.js", // (Theremin mode: 2026-11-27)
+  "video-call.html", "video-call-page.js", // (Video Call: its own app on phones, 2026-11-27)
   "sentry.js", "camera-video.js", "sentry-models.js", "models/kinds.js", "object-finder.js", "object-finder-worker.js", "second-look.js", "second-look-worker.js", "web-pc.js", "hid-core.js",
   "remote-recording.html", "remote-recording.js", "recording-converter.html", "recording-converter.js",
   "cluster.html", "cluster.js", // (Cluster's own app, on phones too)

@@ -25,8 +25,17 @@ public class MainActivity extends BridgeActivity {
         // Cluster has neither either, only its way to the Pis (ClusterPlugin) and its updates of
         // this phone's apps (AppUpdatePlugin).
         boolean cluster = getResources().getBoolean(R.bool.cluster_app);
-        boolean converter = getResources().getBoolean(R.bool.recording_converter) || cluster;
+        // Video Call has only its own (VideoCallPlugin: its calls, in its own code, so by name).
+        boolean call = getResources().getBoolean(R.bool.video_call);
+        boolean converter = getResources().getBoolean(R.bool.recording_converter) || cluster || call;
         registerPlugin(RemotePlugin.class);
+        if (call) {
+            try {
+                registerPlugin(Class.forName("com.handtracker.app.VideoCallPlugin").asSubclass(com.getcapacitor.Plugin.class));
+            } catch (ClassNotFoundException ignored) {
+                // (a build without it)
+            }
+        }
         if (cluster) {
             registerPlugin(ClusterPlugin.class);
             registerPlugin(AppUpdatePlugin.class);
@@ -52,8 +61,8 @@ public class MainActivity extends BridgeActivity {
             registerPlugin(BtLinkPlugin.class);
         }
         super.onCreate(savedInstanceState);
-        // Tracking and recording shouldn't be cut off by the screen timing out.
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // Tracking and recording shouldn't be cut off by the screen timing out. (Video Call: only during a call, its own.)
+        if (!call) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         // A video asked for (a take's ▶, an alert's notification) plays once it has come.
         if (getBridge() != null) getBridge().getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false);
         if (savedInstanceState == null) openPage(getIntent());

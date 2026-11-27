@@ -40,6 +40,8 @@ class HandTrackerViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(FtpPlugin())
         // Remote recording on this device itself (RigServer.swift, RigBluetooth.swift).
         bridge?.registerPluginInstance(RigServerPlugin())
+        // Video Call's calls, for Video Call's own app (RemoteLink.swift's VideoCallPlugin: it listens once its page says hello).
+        bridge?.registerPluginInstance(VideoCallPlugin())
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "-HTSelfTest") {
             let page = i + 1 < args.count ? args[i + 1] : ""

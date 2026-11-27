@@ -2336,12 +2336,13 @@ if (APP.kind === "call") {
     mainWindow.focus();
     if (!sim && Notification.isSupported()) new Notification({ title: `${signal.from.name} is calling`, body: APP.name, silent: true }).show();
   };
-  const devices = sim || [{ name: "" }];
+  // (when simulated, an "external" device is one running elsewhere, a phone's service say: a peer, not served here)
+  const devices = sim ? sim.filter((d) => !d.external) : [{ name: "" }];
   const services = devices.map((d, i) =>
     createVideoCall({
       name: d.name || "",
       version: app.getVersion(),
-      sim: sim ? { name: d.name, port: d.port, peers: sim.filter((_, j) => j !== i).map((p) => ({ name: p.name, address: `127.0.0.1:${p.port}` })) } : null,
+      sim: sim ? { name: d.name, port: d.port, peers: sim.filter((p) => p !== d).map((p) => ({ name: p.name, address: `127.0.0.1:${p.port}` })) } : null,
       onSignal: (signal) => {
         comeUp(i, signal);
         deliver(i, signal);
@@ -2369,6 +2370,9 @@ if (APP.kind === "call") {
         startError = e.code === "EADDRINUSE" ? `Something else on this computer already uses port ${services[0].port()}, so calls can't come in.` : e.message;
       })),
     ringWhenClosed: () => saved().ringWhenClosed !== false,
+    lookAround: () => {
+      if (!sim) services[0].devices().catch(() => {});
+    },
     settings() {
       return { ringWhenClosed: this.ringWhenClosed(), atLogin: autostart.available() ? autostart.get() : null };
     },
@@ -2455,6 +2459,8 @@ function videoCallWindow() {
   }
   videoCall.firstRun();
   videoCall.start();
+  // (your phones told your device list now and then, even with the window closed: electron/video-call.js announce)
+  setInterval(() => videoCall.lookAround(), 5 * 60 * 1000).unref();
 }
 
 app.on("second-instance", () => {

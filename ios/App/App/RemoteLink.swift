@@ -14,10 +14,12 @@
 //       disconnect({ id }); events "notification" { id, characteristic, value }, "disconnected" { id }
 //     One device at a time; each step waits for the one before.
 //   Cluster: Cluster's own app reaching the Pis running Cluster's service (ClusterPlugin, below).
+//   VideoCall: Video Call's own app, its calls (VideoCallPlugin, at the end).
 
 import Foundation
 import Network
 import CoreBluetooth
+import UIKit
 import Capacitor
 
 // ---------- remote recording over the network ----------
@@ -610,5 +612,327 @@ public class BtLinkPlugin: CAPPlugin, CAPBridgedPlugin, CBCentralManagerDelegate
         if let p = peripheral { central?.cancelPeripheralConnection(p) }
         peripheral = nil
         rediscovering = false
+    }
+}
+
+// ---------- Video Call (its own app: scripts/ios-variant.js call) ----------
+// VideoCallPlugin: Video Call on an iPhone or iPad, as VideoCallPlugin.java and VideoCallServer.java are on Android
+// and electron/video-call.js on a computer: its own service on port 47860 (GET /vc/hello, POST /vc/signal, POST
+// /vc/announce), started when its page says hello, kept while the app is open (iOS keeps an app's server only then: an
+// iPhone rings only with the app open, the user's choice, 2026-11-27), and the page's plugin:
+//   hello() -> { me, waiting, settings, shown, error }; devices() -> { devices }; send({ address, signal }) -> its reply
+//   settings({ ringWhenClosed }) -> { ringWhenClosed: false, canRingWhenClosed: false }; inCall({ on }) (the screen
+//   kept on while a call rings or goes on); events "signal" (each call's signal), "shown" ({ on }: the app in front).
+// Who may ask: anything on your Tailscale network (100.64.0.0/10, fd7a:115c:a1e0::/48; a phone can't check whose a
+// device is, the user's choice), never a web page (an Origin header), a POST only as JSON, at most 256 KB.
+@objc(VideoCallPlugin)
+public class VideoCallPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "VideoCallPlugin"
+    public let jsName = "VideoCall"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "hello", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "devices", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "send", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "settings", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "inCall", returnType: CAPPluginReturnPromise),
+    ]
+    static let port: UInt16 = 47860
+    static let bodyBytes = 256 * 1024
+    static let kinds: Set<String> = ["offer", "answer", "decline", "busy", "cancel", "hangup", "state", "join"]
+    private let queue = DispatchQueue(label: "video-call")
+    private let lock = NSLock()
+    private var listener: NWListener?
+    private var wanted = false
+    private var waiting: [[String: Any]] = []
+    private var startError = ""
+
+    override public func load() {
+        NotificationCenter.default.addObserver(self, selector: #selector(active), name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(away), name: UIApplication.willResignActiveNotification, object: nil)
+    }
+
+    @objc private func active() {
+        notifyListeners("shown", data: ["on": true])
+        queue.async {
+            self.lock.lock()
+            let again = self.wanted && self.listener == nil
+            self.lock.unlock()
+            if again { self.listen() }
+        }
+    }
+
+    @objc private func away() {
+        notifyListeners("shown", data: ["on": false])
+    }
+
+    // ---------- listening ----------
+    private func listen() {
+        lock.lock()
+        let has = listener != nil
+        lock.unlock()
+        if has { return }
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true
+        guard let nwPort = NWEndpoint.Port(rawValue: Self.port), let l = try? NWListener(using: params, on: nwPort) else {
+            lock.lock()
+            startError = "Calls can't come in: port \(Self.port) is taken."
+            lock.unlock()
+            return
+        }
+        l.newConnectionHandler = { [weak self] c in self?.accept(c) }
+        l.stateUpdateHandler = { [weak self, weak l] st in
+            guard let self = self, let l = l else { return }
+            if case .failed(let e) = st {
+                self.lock.lock()
+                if self.listener === l { self.listener = nil }
+                self.startError = "Calls can't come in: \(e.localizedDescription)"
+                self.lock.unlock()
+                l.cancel()
+            }
+        }
+        l.start(queue: queue)
+        lock.lock()
+        listener = l
+        startError = ""
+        lock.unlock()
+    }
+
+    static func onTailnet(_ ip: String) -> Bool {
+        let a = ip.replacingOccurrences(of: "::ffff:", with: "")
+        if a.lowercased().hasPrefix("fd7a:115c:a1e0:") { return true }
+        let p = a.split(separator: ".")
+        guard p.count == 4, let x = Int(p[0]), let y = Int(p[1]) else { return false }
+        return x == 100 && y >= 64 && y <= 127
+    }
+
+    static func address(_ e: NWEndpoint?) -> String {
+        guard let e = e, case .hostPort(let host, _) = e else { return "" }
+        var s: String
+        switch host {
+        case .ipv4(let a): s = "\(a)"
+        case .ipv6(let a): s = "\(a)"
+        case .name(let n, _): s = n
+        @unknown default: s = ""
+        }
+        if let pct = s.firstIndex(of: "%") { s = String(s[..<pct]) }
+        return s
+    }
+
+    private func accept(_ c: NWConnection) {
+        c.start(queue: queue)
+        read(c, Data())
+        queue.asyncAfter(deadline: .now() + 20) { c.cancel() }
+    }
+
+    private func read(_ c: NWConnection, _ got: Data) {
+        c.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, complete, error in
+            guard let self = self else {
+                c.cancel()
+                return
+            }
+            var buf = got
+            if let data = data { buf.append(data) }
+            guard let split = buf.range(of: Data("\r\n\r\n".utf8)) else {
+                if buf.count > 16384 || complete || error != nil { c.cancel() } else { self.read(c, buf) }
+                return
+            }
+            let head = String(decoding: buf[buf.startIndex..<split.lowerBound], as: UTF8.self)
+            let lines = head.components(separatedBy: "\r\n")
+            let first = lines[0].split(separator: " ")
+            guard first.count >= 2 else {
+                c.cancel()
+                return
+            }
+            var headers: [String: String] = [:]
+            for line in lines.dropFirst() {
+                guard let colon = line.firstIndex(of: ":") else { continue }
+                headers[line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            }
+            let want = Int(headers["content-length"] ?? "0") ?? -1
+            let bodyStart = split.upperBound
+            let have = buf.distance(from: bodyStart, to: buf.endIndex)
+            if want >= 0 && want <= Self.bodyBytes && have < want {
+                if complete || error != nil { c.cancel() } else { self.read(c, buf) }
+                return
+            }
+            let body = want >= 0 && want <= Self.bodyBytes ? Data(buf[bodyStart..<buf.index(bodyStart, offsetBy: want)]) : Data()
+            var path = String(first[1])
+            if let q = path.firstIndex(of: "?") { path = String(path[..<q]) }
+            let (code, answer) = self.handle(method: String(first[0]), path: path, headers: headers, body: body, tooBig: want > Self.bodyBytes || want < 0, from: Self.address(c.endpoint))
+            let json = (try? JSONSerialization.data(withJSONObject: answer)) ?? Data("{}".utf8)
+            var out = Data("HTTP/1.1 \(code) \(code == 200 ? "OK" : "Error")\r\nContent-Type: application/json\r\nContent-Length: \(json.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
+            out.append(json)
+            c.send(content: out, completion: .contentProcessed { _ in c.cancel() })
+        }
+    }
+
+    private func handle(method: String, path: String, headers: [String: String], body: Data, tooBig: Bool, from: String) -> (Int, [String: Any]) {
+        if headers["origin"] != nil { return (403, ["ok": false, "error": "Not from a web page."]) }
+        if !Self.onTailnet(from) { return (403, ["ok": false, "error": "Only devices on your Tailscale network."]) }
+        if method == "GET" && path == "/vc/hello" {
+            return (200, ["app": "video-call", "name": UIDevice.current.name, "os": "ios"])
+        }
+        guard method == "POST" && (path == "/vc/signal" || path == "/vc/announce") else { return (404, ["ok": false, "error": "Nothing here."]) }
+        if !(headers["content-type"] ?? "").lowercased().hasPrefix("application/json") { return (415, ["ok": false, "error": "JSON only."]) }
+        if tooBig { return (413, ["ok": false, "error": "Too big."]) }
+        guard let j = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else { return (400, ["ok": false, "error": "Not JSON."]) }
+        if path == "/vc/announce" {
+            var devices: [[String: Any]] = []
+            for case let d as [String: Any] in (j["devices"] as? [Any] ?? []) where devices.count < 64 {
+                let address = String((d["address"] as? String ?? "").prefix(80))
+                guard address.range(of: "^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(:\\d{1,5})?$", options: .regularExpression) != nil else { continue }
+                devices.append(["name": String((d["name"] as? String ?? "").prefix(80)), "address": address, "os": String((d["os"] as? String ?? "").prefix(20)), "app": (d["app"] as? Bool) == true])
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: devices) { UserDefaults.standard.set(data, forKey: "videoCallDevices") }
+            return (200, ["ok": true])
+        }
+        guard let signal = Self.signal(j, from: from) else { return (400, ["ok": false, "error": "Not a call's signal."]) }
+        lock.lock()
+        let pageThere = wanted
+        if !pageThere {
+            waiting.append(signal)
+            if waiting.count > 20 { waiting.removeFirst() }
+        }
+        lock.unlock()
+        if pageThere { notifyListeners("signal", data: signal) }
+        return (200, ["ok": true])
+    }
+
+    // A signal as it came, checked and kept to what a signal has (as electron/video-call.js and VideoCallServer.java).
+    static func signal(_ j: [String: Any], from: String) -> [String: Any]? {
+        guard let kind = j["kind"] as? String, kinds.contains(kind), let call = j["call"] as? String,
+              call.range(of: "^[A-Za-z0-9_-]{8,64}$", options: .regularExpression) != nil else { return nil }
+        var s: [String: Any] = ["kind": kind, "call": call]
+        let name = String((j["name"] as? String ?? "").prefix(80))
+        s["from"] = ["address": from, "name": name.isEmpty ? from : name]
+        if let sdp = j["sdp"] {
+            guard let text = sdp as? String, text.count <= 200000 else { return nil }
+            s["sdp"] = text
+        }
+        if let st = j["state"] as? [String: Any] {
+            s["state"] = ["muted": (st["muted"] as? Bool) == true, "camera": (st["camera"] as? Bool) != false]
+        }
+        if let v = j["video"] as? Bool { s["video"] = v }
+        if let members = j["members"] as? [Any] {
+            s["members"] = members.prefix(16).compactMap { m -> [String: Any]? in
+                guard let m = m as? [String: Any] else { return nil }
+                return ["address": String((m["address"] as? String ?? "").prefix(80)), "name": String((m["name"] as? String ?? "").prefix(80))]
+            }
+        }
+        return s
+    }
+
+    // ---------- asking another device's app (plain HTTP over TCP: RigExchange) ----------
+    static func hostPort(_ address: String) -> (String, UInt16) {
+        if let c = address.lastIndex(of: ":"), !address.contains("::"), let p = UInt16(address[address.index(after: c)...]) {
+            return (String(address[..<c]), p)
+        }
+        return (address, port)
+    }
+
+    private func ask(_ address: String, method: String, path: String, json: Data?, seconds: Int, _ done: @escaping ([String: Any]?, String?) -> Void) {
+        let (host, p) = Self.hostPort(address)
+        var head = "\(method) \(path) HTTP/1.1\r\nHost: \(host):\(p)\r\nConnection: close\r\n"
+        if let j = json { head += "Content-Type: application/json\r\nContent-Length: \(j.count)\r\n" }
+        head += "\r\n"
+        var request = Data(head.utf8)
+        if let j = json { request.append(j) }
+        RigExchange(host: host, port: p, request: request, queue: queue, maxBytes: Self.bodyBytes, seconds: seconds).run(connectMs: 3000) { result in
+            switch result {
+            case .success(let a):
+                var reply = (try? JSONSerialization.jsonObject(with: a.body)) as? [String: Any]
+                if a.status >= 400 {
+                    var r = reply ?? [:]
+                    r["ok"] = false
+                    if r["error"] == nil { r["error"] = "It said \(a.status)." }
+                    reply = r
+                }
+                done(reply, nil)
+            case .failure(let e):
+                done(nil, e.message)
+            }
+        }
+    }
+
+    // ---------- the page ----------
+    private func tailscaleAddress() -> String? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            guard let sa = p.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+                let a = String(cString: host)
+                if Self.onTailnet(a) { return a }
+            }
+        }
+        return nil
+    }
+
+    @objc func hello(_ call: CAPPluginCall) {
+        queue.async {
+            self.lock.lock()
+            self.wanted = true
+            let w = self.waiting
+            self.waiting = []
+            self.lock.unlock()
+            self.listen()
+            let ip = self.tailscaleAddress()
+            self.lock.lock()
+            var err = self.startError
+            self.lock.unlock()
+            if ip == nil { err = (err.isEmpty ? "" : err + " ") + "This device isn't on Tailscale: turn Tailscale on to call and be called." }
+            let me: [String: Any] = ["name": UIDevice.current.name, "ips": ip.map { [$0] } ?? []]
+            call.resolve(["me": me, "waiting": w, "settings": ["ringWhenClosed": false, "canRingWhenClosed": false], "shown": true, "error": err])
+        }
+    }
+
+    @objc func devices(_ call: CAPPluginCall) {
+        var list: [[String: Any]] = []
+        if let data = UserDefaults.standard.data(forKey: "videoCallDevices"), let l = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] { list = l }
+        if list.isEmpty {
+            call.resolve(["devices": [Any]()])
+            return
+        }
+        let group = DispatchGroup()
+        var results = list
+        let resultLock = NSLock()
+        for (i, d) in list.enumerated() {
+            group.enter()
+            ask(d["address"] as? String ?? "", method: "GET", path: "/vc/hello", json: nil, seconds: 3) { reply, _ in
+                let isApp = reply?["app"] as? String == "video-call"
+                resultLock.lock()
+                results[i]["app"] = isApp
+                results[i]["online"] = isApp
+                if isApp, let n = reply?["name"] as? String, !n.isEmpty { results[i]["name"] = n }
+                resultLock.unlock()
+                group.leave()
+            }
+        }
+        group.notify(queue: queue) { call.resolve(["devices": results]) }
+    }
+
+    @objc func send(_ call: CAPPluginCall) {
+        let address = call.getString("address") ?? ""
+        var signal: [String: Any] = call.getObject("signal") ?? [:]
+        signal["name"] = UIDevice.current.name
+        guard !address.isEmpty, let json = try? JSONSerialization.data(withJSONObject: signal) else {
+            call.resolve(["ok": false, "error": "Nothing to send."])
+            return
+        }
+        ask(address, method: "POST", path: "/vc/signal", json: json, seconds: 8) { reply, error in
+            if let reply = reply { call.resolve(reply) } else { call.resolve(["ok": false, "error": "That device didn't answer (\(error ?? "no answer"))."]) }
+        }
+    }
+
+    @objc func settings(_ call: CAPPluginCall) {
+        call.resolve(["ringWhenClosed": false, "canRingWhenClosed": false])
+    }
+
+    @objc func inCall(_ call: CAPPluginCall) {
+        let on = call.getBool("on") ?? false
+        DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = on }
+        call.resolve()
     }
 }

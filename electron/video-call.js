@@ -226,9 +226,28 @@ function createVideoCall({ name = "", version = "", port = PORT, sim = null, onS
         .filter((d) => d.address);
     }
     const said = await Promise.all(list.map((d) => (d.online ? hello(d.address) : null)));
-    return list
-      .map((d, i) => ({ ...d, app: !!said[i], ...(said[i] && said[i].name ? { name: said[i].name } : {}) }))
+    const out = list
+      .map((d, i) => ({ ...d, app: !!said[i], ...(said[i] && said[i].name ? { name: said[i].name } : {}), ...(said[i] && said[i].os && !d.os ? { os: said[i].os } : {}) }))
       .sort((a, b) => Number(b.app) - Number(a.app) || Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
+    announce(out).catch(() => {});
+    return out;
+  }
+
+  // Your phones can't ask Tailscale which devices are yours: each phone with Video Call is told the list (this
+  // device first), at most every 5 minutes.
+  const announced = new Map(); // address -> when
+  async function announce(list) {
+    const phones = list.filter((d) => d.app && /^(android|ios)$/i.test(String(d.os)));
+    if (!phones.length) return;
+    const m = await me();
+    const mine = sim ? `127.0.0.1:${sim.port}` : m && (m.ips || []).find((a) => !a.includes(":"));
+    if (!mine) return;
+    const all = [{ name: name || (m && m.name) || "", address: mine, os: sim ? "" : process.platform, app: true }, ...list.map(({ name: n, address, os, app }) => ({ name: n, address, os, app }))];
+    await Promise.all(phones.map(async (p) => {
+      if (Date.now() - (announced.get(p.address) || 0) < 5 * 60 * 1000) return;
+      announced.set(p.address, Date.now());
+      await request(`http://${at(p.address)}/vc/announce`, { method: "POST", body: { devices: all.filter((d) => d.address !== p.address) }, timeout: 4000 }).catch(() => {});
+    }));
   }
 
   async function send(address, signal) {

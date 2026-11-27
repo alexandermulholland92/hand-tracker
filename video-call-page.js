@@ -16,6 +16,9 @@
   const params = new URLSearchParams(location.search);
   const device = Number(params.get("device")) || 0; // (which simulated device this page is, in the checks)
   const desktop = window.desktop && window.desktop.call;
+  // (on a phone: the app's own plugin, VideoCallPlugin.java; an iPhone's, VideoCallPlugin.swift)
+  const cap = window.Capacitor;
+  const phone = !desktop && cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins && cap.Plugins.VideoCall;
   const host = desktop
     ? {
         hello: () => desktop.hello(device),
@@ -26,7 +29,18 @@
         onShown: (cb) => desktop.onShown(cb),
         rig: (what) => (desktop.rig ? desktop.rig(device, what) : null),
       }
-    : null;
+    : phone
+      ? {
+          hello: () => phone.hello(),
+          devices: async () => ((await phone.devices()) || {}).devices || [],
+          send: (address, signal) => phone.send({ address, signal }),
+          settings: (change) => phone.settings(change || {}),
+          onSignal: (cb) => phone.addListener("signal", cb),
+          onShown: (cb) => phone.addListener("shown", (e) => cb(!!(e && e.on))),
+          rig: async () => null, // (no Hand Tracker cameras on a phone)
+          inCall: (on) => phone.inCall({ on }),
+        }
+      : null;
   let shown = false; // (the window in view: told by the app; until then, a camera stays closed)
   const RING_MS = Number(params.get("ringMs")) || 45000;
   const NAMES = { windows: "Windows", linux: "Linux", macos: "Mac", android: "Android", ios: "iPhone", win32: "Windows", darwin: "Mac" };
@@ -283,6 +297,8 @@
 
   // ---------- Calls ----------
   function setMode(mode) {
+    // (a phone: its screen kept on, and the call over the lock screen, only while it rings or goes on)
+    if (host && host.inCall && (mode === "idle") !== (state.mode === "idle")) Promise.resolve(host.inCall(mode !== "idle")).catch(() => {});
     state.mode = mode;
     $("ringing").hidden = mode !== "ringing";
     $("calling").hidden = mode !== "calling";
@@ -631,6 +647,8 @@
     me = hello.me;
     $("me").textContent = me && me.name ? `This device: ${me.name}` : "This device isn't on Tailscale.";
     $("ringClosed").checked = !!(hello.settings && hello.settings.ringWhenClosed);
+    // (an iPhone rings only with the app open: no such choice there)
+    if (hello.settings && hello.settings.canRingWhenClosed === false) $("ringClosed").closest("label").hidden = true;
     if (hello.error) note(hello.error, true);
     await fillDevices();
     navigator.mediaDevices.addEventListener("devicechange", () => fillDevices(true));

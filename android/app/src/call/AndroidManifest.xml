@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Video Call (the "call" flavor): video calls between your own devices over Tailscale. Neither the hand mouse
+     nor remote recording: this phone's control, Sentry mode's alerts and what Cluster asks about recording aren't in
+     it. Its own: the service that keeps it ready for calls in the background (VideoCallService.java, started again
+     after the phone restarts: VideoCallBoot.java); a call's screen comes over the lock screen only while it rings or
+     goes on (VideoCallPlugin.java). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <permission android:name="com.handtracker.permission.APP_STATE" tools:node="remove" />
+    <uses-permission android:name="com.handtracker.permission.APP_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <application>
+        <service android:name=".PhoneControlService" tools:node="remove" />
+        <service android:name=".HandControlService" tools:node="remove" />
+        <service android:name=".SentryWatchService" tools:node="remove" />
+        <receiver android:name=".SentryWatchBoot" tools:node="remove" />
+        <provider android:name=".AppStateProvider" tools:node="remove" />
+        <service
+            android:name=".VideoCallService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Ready for video calls from the user's own devices over their Tailscale network, while the app is in the background" />
+        </service>
+        <receiver
+            android:name=".VideoCallBoot"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

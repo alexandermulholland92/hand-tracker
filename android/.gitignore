@@ -97,6 +97,7 @@ app/src/main/assets/public
 app/src/mouse/assets
 app/src/remote/assets
 app/src/converter/assets
+app/src/call/assets
 app/src/cluster/assets
 app/src/cluster/jniLibs
 
