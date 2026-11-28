@@ -34,6 +34,7 @@ const APP_FILES = [
   "label-ass.js", "label-layers.js", "baby-monitor.js", "baby-monitor-worklet.js", "sound-classifier.js", "sound-classifier-worker.js",
   "theremin.js", // (Theremin mode: 2026-11-27)
   "cluster-call.html", "cluster-call-page.js", // (Cluster Call: its own app on phones, 2026-11-27)
+  "screen-modes.js", // (full screen and picture-in-picture, a call's and a camera's: 2026-11-27)
   "sentry.js", "camera-video.js", "sentry-models.js", "models/kinds.js", "object-finder.js", "object-finder-worker.js", "second-look.js", "second-look-worker.js", "web-pc.js", "hid-core.js",
   "remote-recording.html", "remote-recording.js", "recording-converter.html", "recording-converter.js",
   "cluster.html", "cluster.js", // (Cluster's own app, on phones too)

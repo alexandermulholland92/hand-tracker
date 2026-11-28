@@ -70,6 +70,9 @@
   }
   #callTime { font-variant-numeric: tabular-nums; opacity: 0.7; min-width: 44px; }
   #callNote { position: absolute; left: 16px; bottom: 84px; }
+  /* Picture-in-picture on Android: the whole app small over other apps (screen-modes.js), only the other side's picture */
+  html.pip body { padding: 0; }
+  html.pip #call .bar, html.pip #self, html.pip #remoteName, html.pip #remoteState, html.pip #callNote { display: none !important; }
 </style>
 </head>
 <body>
@@ -115,10 +118,13 @@
     <button id="mute" aria-pressed="false">Mute</button>
     <button id="cameraOff" aria-pressed="false">Camera off</button>
     <select id="callCamera" title="The camera this call sends"></select>
+    <button id="fullBtn" hidden title="The call over the whole screen">Full screen</button>
+    <button id="pipBtn" hidden title="The call in a small window over your other apps, going on while you use them">Picture in picture</button>
     <button class="stop" id="hangup">Hang up</button>
   </div>
 </section>
 
+<script src="screen-modes.js"></script>
 <script src="cluster-call-page.js"></script>
 </body>
 </html>

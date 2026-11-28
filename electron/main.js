@@ -1450,7 +1450,7 @@ function registerRemoteIpc() {
   rigBluetooth = new RigBluetooth({ dataDir: app.getPath("userData"), name: os.hostname(), relay: (r) => remoteRecord.relay(r) });
   remoteRecord = new RemoteRecordServer({
     keyStore,
-    page: (name) => fs.readFileSync(path.join(APP_ROOT, name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : "remote-client.html"), "utf8"),
+    page: (name) => fs.readFileSync(path.join(APP_ROOT, name === "js" ? "remote-client.js" : name === "bt" ? "bt-link-client.js" : name === "screen" ? "screen-modes.js" : "remote-client.html"), "utf8"),
     ask,
     onWantPreviews: (on) => {
       toWindow("remote:want-previews", on);

@@ -3925,8 +3925,19 @@ async function checkRemoteVideo(js) {
       const img = $("fullImg");
       const ok = await until(() => !img.hidden && img.naturalWidth > 0 && img.src.startsWith("blob:"));
       await sleep(1500);
-      const r = { img: !!ok, canvas: !$("fullVideo").hidden, rate: $("fullRate").textContent };
+      return { img: !!ok, canvas: !$("fullVideo").hidden, rate: $("fullRate").textContent };
+    })()`);
+    // Picture-in-picture of that camera (from a tap: a browser asks for one; screen-modes.js): its pictures in a window of
+    // their own over other apps, playing; the camera closed, that window goes too.
+    await withLimit(win.webContents.executeJavaScript(`document.getElementById("fullPip").click(); true`, true), "picture-in-picture");
+    out.pip = await pjs(`(async () => {
+      ${PAGE}
+      const v = await until(() => document.pictureInPictureElement, 6000);
+      await sleep(800);
+      const r = { button: !$("fullPip").hidden, tag: v && v.tagName, live: !!(v && v.srcObject && v.srcObject.getVideoTracks().some((t) => t.readyState === "live")),
+        w: v ? v.videoWidth : 0, playing: !!(v && !v.paused) };
       $("fullClose").click();
+      r.closed = !!(await until(() => !document.pictureInPictureElement, 4000));
       return r;
     })()`);
   } catch (err) {
@@ -3941,7 +3952,9 @@ async function checkRemoteVideo(js) {
       return true;
     })()`).catch(() => {});
   }
-  const p = out.play || {}, t = out.turned || {}, n = out.noHands || {}, pc = out.pictures || {};
+  const p = out.play || {}, t = out.turned || {}, n = out.noHands || {}, pc = out.pictures || {}, pp = out.pip || {};
+  check("A camera full screen in picture-in-picture: its pictures in a window of their own over other apps, playing; the camera closed, that window closes",
+    !out.error && pp.button && pp.tag === "VIDEO" && pp.live && pp.w > 0 && pp.playing && pp.closed, JSON.stringify(pp));
   const fps = (txt) => Number((/(\d+) fps/.exec(txt || "") || [])[1] || 0);
   check("Full screen as video, the whole way: an OAK camera started with its own H.264 is offered as video (its id kept on the computer); the page plays it full screen (WebCodecs) at about the camera's rate, its hands and objects drawn over it, turned with the camera; with hand tracking off, no hands; where it can't decode, its pictures as before",
     !out.error && (out.state || [])[0] && out.state[0].stream === "h264" && !out.state[0].videoId && (out.startedWith || [])[0] === true &&

@@ -3055,10 +3055,27 @@
     try {
       history.pushState({ full: i }, "");
     } catch {}
+    // (full screen: a phone's own, its bars hidden, or the browser's: screen-modes.js)
     const root = document.documentElement;
-    if (root.requestFullscreen) root.requestFullscreen().catch(() => {});
+    if (window.ScreenModes && ScreenModes.canFull()) ScreenModes.setFull(true).catch(() => {});
+    else if (root.requestFullscreen) root.requestFullscreen().catch(() => {});
+    showPipButton();
     runFull(loop);
   }
+  // ---------- one camera over other apps: picture-in-picture (screen-modes.js) ----------
+  // (the user, 2026-11-27: "make a fullscreen mode as well as picture in picture to use over other apps")
+  const visibleFull = () => ($("fullVideo").hidden ? $("fullImg") : $("fullVideo"));
+  const pipFollows = () => window.ScreenModes && ScreenModes.follow(visibleFull());
+  async function showPipButton() {
+    $("fullPip").hidden = !(window.ScreenModes && (await ScreenModes.canPip()));
+  }
+  $("fullPip").addEventListener("click", async (e) => {
+    e.stopPropagation(); // (a tap on the picture goes back to every camera)
+    const el = visibleFull();
+    const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+    const r = await ScreenModes.pip({ source: el, aspect: w && h ? w / h : 16 / 9 });
+    if (!r || !r.ok) $("fullRate").textContent = `Picture in picture didn't start: ${(r && r.error) || "no answer"}`;
+  });
   // Its video where it comes and plays here, else its pictures; the video again once it comes back (its
   // camera started again with new settings, say: a few seconds without it), not sooner than VIDEO_AGAIN_MS
   // after it last stopped.
@@ -3074,6 +3091,7 @@
       }
       $("fullVideo").hidden = true;
       $("fullImg").hidden = false;
+      pipFollows();
       const pictures = { i: loop.i, stop: false };
       const watch = setInterval(() => {
         if (loop.stop || (Date.now() > videoAfter && canPlayVideo(cam()))) pictures.stop = true;
@@ -3087,7 +3105,10 @@
     full.stop = true;
     full = null;
     $("full").hidden = true;
-    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+    if (window.ScreenModes) {
+      if (ScreenModes.inPip()) ScreenModes.leavePip();
+      if (ScreenModes.isFull()) ScreenModes.setFull(false).catch(() => {});
+    } else if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
     if (!fromHistory && history.state && history.state.full !== undefined) history.back();
   }
   window.addEventListener("popstate", () => closeFull(true));
@@ -3307,6 +3328,7 @@
             shownOnce = true;
             canvas.hidden = false;
             $("fullImg").hidden = true;
+            pipFollows();
           }
           frames++;
           counts.shown++;

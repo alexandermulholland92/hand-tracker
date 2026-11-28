@@ -272,6 +272,27 @@ app.whenReady().then(async () => {
     }, 15000);
     check("The camera switched off and back mid-call (no new setting up): its pictures come again", none.tracks === 0 && !!again, { none, before, again });
 
+    // Full screen, and picture-in-picture over other apps (screen-modes.js; the user, 2026-11-27: "make a fullscreen mode
+    // as well as picture in picture to use over other apps").
+    const offered = (await st(A)).screen;
+    check("In a call: Full screen and Picture in picture offered (a computer has both)", offered && offered.fullButton && offered.pipButton, offered);
+    const pipEl = () => A("document.pictureInPictureElement ? document.pictureInPictureElement.id : null");
+    await click(A, "pipBtn");
+    const inPip = await until(async () => ((await st(A)).screen.pip && (await pipEl()) === "remote" ? (await st(A)).screen : null), 8000);
+    check("Picture in picture: the other side's picture in a window of its own over other apps, the call going on",
+      !!inPip && (await st(A)).mode === "in-call", inPip || { screen: (await st(A)).screen, el: await pipEl(), note: await A('document.getElementById("callNote").textContent') });
+    await A("document.exitPictureInPicture().then(() => true, () => false)");
+    const outPip = await until(async () => !(await st(A)).screen.pip && (await pipEl()) === null);
+    check("...and back into the app's window", !!outPip, (await st(A)).screen);
+    await click(A, "fullBtn");
+    const fullOn = await until(async () => (await st(A)).screen.full && (await A('document.getElementById("fullBtn").textContent')) === "Leave full screen");
+    await click(A, "fullBtn");
+    const fullOff = await until(async () => !(await st(A)).screen.full && (await A('document.getElementById("fullBtn").textContent')) === "Full screen");
+    check("Full screen on and off from the call, its button saying which", !!fullOn && !!fullOff, (await st(A)).screen);
+    // (in picture-in-picture as the call ends, below: that window goes with it)
+    await click(A, "pipBtn");
+    await until(async () => (await pipEl()) === "remote", 8000);
+
     // A third device calling one already in a call: busy.
     const busyReply = await post(PORTS[0], { kind: "offer", call: "third-call-0001", sdp: "v=0", name: "Tablet", port: 47973 });
     const busy = await until(() => third.got.find((s) => s.kind === "busy" && s.call === "third-call-0001"));
@@ -285,6 +306,8 @@ app.whenReady().then(async () => {
     });
     const freed = await B("({ preview: !!document.getElementById('preview').srcObject, self: !!document.getElementById('self').srcObject })");
     check("Pi hangs up: both back, Desk told; Pi (hidden) has no camera open any more", ended && /Pi hung up/.test(ended.a) && !freed.preview && !freed.self, { ended, freed });
+    const pipGone = await until(async () => (await pipEl()) === null && !(await st(A)).screen.pip, 5000);
+    check("...and Desk's picture-in-picture window, open as the call ended, closes with it", !!pipGone, { el: await pipEl(), screen: (await st(A)).screen });
 
     // Hand Tracker's camera on the Pi (an OAK, say) as its call's camera: listed, not started just by being chosen,
     // started when the call is answered, its pictures what Desk sees, and stopped after the call.

@@ -124,6 +124,9 @@
   .fullbar { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: linear-gradient(rgba(0, 0, 0, 0.65), transparent); color: #fff; font-size: 14px; }
   #fullName { flex: 1 1 auto; font-weight: 600; }
   #fullRate { opacity: 0.8; }
+  /* Picture-in-picture on Android: the whole app small over other apps (screen-modes.js), only the camera's picture */
+  html.pip .fullbar { display: none; }
+  html.pip #full { cursor: default; }
   .fullbar button { font-size: 18px; line-height: 1; padding: 8px 12px; border-radius: 8px; background: rgba(255, 255, 255, 0.18); }
   /* A single camera takes the whole grid. */
   .grid.one { grid-template-columns: 1fr; }
@@ -342,7 +345,7 @@
 
   <div id="full" role="dialog" aria-label="One camera, full screen" hidden>
     <div id="fullBox"><img id="fullImg" alt="" /><canvas id="fullVideo" hidden></canvas><div class="boxes" id="fullBoxes" hidden></div></div>
-    <div class="fullbar"><span id="fullName"></span><span id="fullRate"></span><button type="button" id="fullClose" aria-label="Back to every camera">✕</button></div>
+    <div class="fullbar"><span id="fullName"></span><span id="fullRate"></span><button type="button" id="fullPip" hidden aria-label="Picture in picture" title="This camera in a small window over your other apps">⧉</button><button type="button" id="fullClose" aria-label="Back to every camera">✕</button></div>
   </div>
 
   <button type="button" id="settingsOpen" class="settingsLink" hidden>Device settings ›</button>
@@ -452,6 +455,7 @@
   <div class="fullbar"><span id="playerName"></span><button type="button" id="playerSave" hidden>Download</button><button type="button" id="playerShare" hidden>Share</button><button type="button" id="playerClose" aria-label="Close the video">✕</button></div>
 </div>
 <script src="bt-link-client.js"></script>
+<script src="screen-modes.js"></script>
 <script src="remote-client.js"></script>
 </body>
 </html>

@@ -42,6 +42,8 @@ class HandTrackerViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(RigServerPlugin())
         // Cluster Call's calls, for Cluster Call's own app (RemoteLink.swift's ClusterCallPlugin: it listens once its page says hello).
         bridge?.registerPluginInstance(ClusterCallPlugin())
+        // Full screen for a call or a camera (ScreenPlugin, below).
+        bridge?.registerPluginInstance(ScreenPlugin())
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "-HTSelfTest") {
             let page = i + 1 < args.count ? args[i + 1] : ""
@@ -413,5 +415,31 @@ public class HandBrowserPlugin: CAPPlugin, CAPBridgedPlugin, WKNavigationDelegat
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         lastError = error.localizedDescription
         tell()
+    }
+}
+
+// Full screen for a call or a camera (screen-modes.js, the user 2026-11-27: "make a fullscreen mode as well as picture in
+// picture to use over other apps"): the status bar hidden, or back (HandTrackerHost passes it to this screen). Picture-in-
+// picture is the page's own here: WebKit's, of a video, playing on over other apps (the app's background audio mode, in
+// Info.plist); the iPhone stops this app's camera meanwhile (an app needs Apple's approval to keep it).
+@objc(ScreenPlugin)
+public class ScreenPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "ScreenPlugin"
+    public let jsName = "Screen"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "fullScreen", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "state", returnType: CAPPluginReturnPromise),
+    ]
+    private var full = false
+
+    @objc func fullScreen(_ call: CAPPluginCall) {
+        let on = call.getBool("on") ?? false
+        full = on
+        bridge?.statusBarVisible = !on
+        call.resolve(["on": on])
+    }
+
+    @objc func state(_ call: CAPPluginCall) {
+        call.resolve(["pipSupported": false, "inPip": false, "fullScreen": full])
     }
 }

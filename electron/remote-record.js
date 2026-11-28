@@ -24,7 +24,7 @@
  *   const remote = new RemoteRecordServer({ keyStore, page: (name) => text, host, ask, onWantPreviews, wifi, hotspot });
  *     wifi: { available(), status() -> { connecting, last }, list() -> { current, networks },
  *             connect(ssid, password) -> { ok, message } } or null; hotspot() -> its address or null
- *     (page("html") / page("js"): remote-client.html / remote-client.js)
+ *     (page("html") / page("js") / page("screen"): remote-client.html / remote-client.js / screen-modes.js)
  *   await remote.start();   // -> status { on, port, addresses: [{ address, kind }], urls: [{ kind, url, keyed }], viewer }
  *   remote.on("status", (s) => …); remote.newKey(); remote.stop();
  *   remote.setState(state); // what the page shows, from the main window (about twice a second)
@@ -1296,6 +1296,8 @@ class RemoteRecordServer extends EventEmitter {
     }
     if (req.method === "GET" && url.pathname === "/remote-client.js") return this.send(res, 200, this.page("js"), "text/javascript; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/bt-link-client.js") return this.send(res, 200, this.page("bt"), "text/javascript; charset=utf-8");
+    // (full screen and picture-in-picture for a camera: screen-modes.js)
+    if (req.method === "GET" && url.pathname === "/screen-modes.js") return this.send(res, 200, this.page("screen"), "text/javascript; charset=utf-8");
     if (!url.pathname.startsWith("/api/")) return this.send(res, 404, { error: "Not found" });
     // ---------- Home Assistant (the user, 2026-11-26: "make the video be able to be linked to home assistant") ----------
     // An alert's photo or clip by the signed link sent to Home Assistant's webhook with it (haLink): that file only.

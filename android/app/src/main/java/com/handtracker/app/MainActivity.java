@@ -1,6 +1,7 @@
 package com.handtracker.app;
 
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.os.Bundle;
 import android.view.WindowManager;
 import android.webkit.WebView;
@@ -29,6 +30,8 @@ public class MainActivity extends BridgeActivity {
         boolean call = getResources().getBoolean(R.bool.cluster_call);
         boolean converter = getResources().getBoolean(R.bool.recording_converter) || cluster || call;
         registerPlugin(RemotePlugin.class);
+        // (every app: full screen and picture-in-picture for its main view, a call or a camera: screen-modes.js)
+        registerPlugin(ScreenPlugin.class);
         if (call) {
             try {
                 registerPlugin(Class.forName("com.handtracker.app.ClusterCallPlugin").asSubclass(com.getcapacitor.Plugin.class));
@@ -81,6 +84,22 @@ public class MainActivity extends BridgeActivity {
                 setEnabled(true);
             }
         });
+    }
+
+    // Picture-in-picture (ScreenPlugin): small by itself as you leave the app, while the page asks for that (Android 12
+    // on does it itself), and the page told when it goes small or comes back.
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        ScreenPlugin screen = ScreenPlugin.current();
+        if (screen != null) screen.onUserLeaveHint(this);
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean inPip, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(inPip, newConfig);
+        ScreenPlugin screen = ScreenPlugin.current();
+        if (screen != null) screen.onPip(inPip);
     }
 
     @Override

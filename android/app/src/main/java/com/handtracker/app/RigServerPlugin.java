@@ -786,8 +786,9 @@ public class RigServerPlugin extends Plugin {
             send(out, 200, "text/html; charset=utf-8", asset("remote-client.html"), CSP);
             return;
         }
-        if ("GET".equals(r.method) && "/remote-client.js".equals(r.path)) {
-            send(out, 200, "text/javascript; charset=utf-8", asset("remote-client.js"), null);
+        if ("GET".equals(r.method) && ("/remote-client.js".equals(r.path) || "/screen-modes.js".equals(r.path))) {
+            // (screen-modes.js: full screen and picture-in-picture for a camera)
+            send(out, 200, "text/javascript; charset=utf-8", asset(r.path.substring(1)), null);
             return;
         }
         if (!r.path.startsWith("/api/")) {

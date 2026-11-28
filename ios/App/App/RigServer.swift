@@ -902,7 +902,7 @@ public class RigServerPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let page = asset("remote-client.html") else { return Self.error(404, "Not found") }
             return Response(code: 200, type: "text/html; charset=utf-8", body: page, csp: Self.csp)
         }
-        if r.method == "GET" && (r.path == "/remote-client.js" || r.path == "/bt-link-client.js") {
+        if r.method == "GET" && (r.path == "/remote-client.js" || r.path == "/bt-link-client.js" || r.path == "/screen-modes.js") {
             guard let js = asset(String(r.path.dropFirst())) else { return Self.error(404, "Not found") }
             return Response(code: 200, type: "text/javascript; charset=utf-8", body: js)
         }

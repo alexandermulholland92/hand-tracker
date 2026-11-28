@@ -470,6 +470,9 @@
     syncButtons();
     setMode("in-call");
     watchCamera();
+    showScreenButtons();
+    // (Android: the call goes small by itself as you leave the app, its buttons there)
+    if (screen) screen.auto(true, { aspect: remoteAspect(), actions: callActions(), onAction: callAction });
     for (const t of local ? local.getVideoTracks() : []) if (t.readyState === "ended") recoverCamera(t);
   }
 
@@ -508,6 +511,12 @@
     const c = call;
     call = null;
     stopTone();
+    if (screen) {
+      screen.auto(false);
+      // (a call that ends while small over other apps: that window goes; full screen ends with it)
+      if (screen.inPip()) screen.leavePip({ toApp: false });
+      if (screen.isFull()) screen.setFull(false).catch(() => {});
+    }
     if (c) {
       clearTimeout(c.timer);
       clearInterval(c.clock);
@@ -573,6 +582,7 @@
     if (local) for (const t of local.getAudioTracks()) t.enabled = !on;
     syncButtons();
     tellState();
+    screenFollows();
   }
 
   function setCameraOff(on) {
@@ -580,6 +590,58 @@
     if (local) for (const t of local.getVideoTracks()) t.enabled = !on;
     syncButtons();
     tellState();
+    screenFollows();
+  }
+
+  // ---------- Full screen, and picture-in-picture over other apps (screen-modes.js) ----------
+  // (the user, 2026-11-27: "make a fullscreen mode as well as picture in picture to use over other apps")
+  const screen = window.ScreenModes || null;
+  const remoteAspect = () => {
+    const v = $("remote");
+    return v.videoWidth && v.videoHeight ? v.videoWidth / v.videoHeight : 16 / 9;
+  };
+  // Its buttons there: each shows how it is now (the microphone crossed out while muted), its title what it does.
+  const callActions = () => [
+    { id: "mute", title: muted ? "Unmute" : "Mute", icon: muted ? "micOff" : "mic" },
+    { id: "camera", title: cameraOff ? "Camera on" : "Camera off", icon: cameraOff ? "cameraOff" : "camera" },
+    { id: "hangup", title: "Hang up", icon: "hangup" },
+  ];
+  function callAction(id) {
+    if (state.mode !== "in-call") return;
+    if (id === "mute") setMuted(!muted);
+    else if (id === "camera") setCameraOff(!cameraOff);
+    else if (id === "hangup") hangup();
+  }
+  function screenFollows() {
+    if (!screen || state.mode !== "in-call") return;
+    screen.update({ actions: callActions() });
+    screen.media({ mic: !muted, camera: !cameraOff });
+  }
+  async function showScreenButtons() {
+    if (!screen) return;
+    $("fullBtn").hidden = !screen.canFull();
+    $("pipBtn").hidden = !(await screen.canPip());
+    syncScreen();
+    screen.media({ mic: !muted, camera: !cameraOff });
+  }
+  function syncScreen() {
+    if (!screen) return;
+    const on = screen.isFull();
+    $("fullBtn").textContent = on ? "Leave full screen" : "Full screen";
+    $("fullBtn").classList.toggle("on", on);
+    $("fullBtn").setAttribute("aria-pressed", String(on));
+  }
+  async function toggleFull() {
+    try {
+      await screen.setFull(!screen.isFull());
+    } catch (e) {
+      $("callNote").textContent = `Full screen didn't start: ${e.message}`;
+    }
+    syncScreen();
+  }
+  async function startPip() {
+    const r = await screen.pip({ source: $("remote"), aspect: remoteAspect(), actions: callActions(), onAction: callAction });
+    if (!r || !r.ok) $("callNote").textContent = `Picture in picture didn't start: ${(r && r.error) || "no answer"}`;
   }
 
   // Another camera for the call (or none): its picture sent in place of the last one's.
@@ -620,6 +682,11 @@
     $("mute").addEventListener("click", () => setMuted(!muted));
     $("cameraOff").addEventListener("click", () => setCameraOff(!cameraOff));
     $("callCamera").addEventListener("change", () => switchCamera($("callCamera").value));
+    if (screen) {
+      $("fullBtn").addEventListener("click", toggleFull);
+      $("pipBtn").addEventListener("click", startPip);
+      screen.onChange(syncScreen);
+    }
     $("camera").addEventListener("change", () => {
       chosen.camera = $("camera").value;
       localStorage.setItem("vc.camera", chosen.camera);
@@ -670,6 +737,7 @@
       note: $("note").textContent,
       devices: list.map((d) => ({ name: d.name, app: d.app, online: d.online })),
       connection: call && call.pc ? call.pc.connectionState : null,
+      screen: screen ? { pip: screen.inPip(), full: screen.isFull(), pipButton: !$("pipBtn").hidden, fullButton: !$("fullBtn").hidden } : null,
     }),
     // What's coming in: video frames decoded, sound packets received (and how loud, 0-1).
     async received() {
