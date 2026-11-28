@@ -14,8 +14,10 @@
  * theremin does with no hand near its loop. The note slides freely, as on a real theremin, or with Snap to
  * notes lands on a key's scale. Its Sound (the user, 2026-11-27: "more ethereal rather than monotonal", "A choice of
  * sounds"): Classic, a theremin's own (nearly a pure sine with a little vibrato, dry, as it first was); Ethereal hall
- * (the default: that voice in a long, airy hall with a soft echo, gliding more slowly between notes, its vibrato
- * swelling as a note is held; the hall rings on a moment after the hand goes); Choir (four voices a few cents apart,
+ * (the default: a breathy voice, less a tone than air blown across a bottle, tuned to the note, over a faint tone of
+ * the note itself (the user, again: "less tonal and more ethereal"), in a long, airy hall with a soft echo, gliding
+ * more slowly between notes, its vibrato swelling as a note is held; the hall rings on a moment after the hand
+ * goes); Choir (four voices a few cents apart,
  * drifting, with a fifth an octave above, softly, in the same hall). Like a real theremin, the right hand plays across
  * the right half of the picture (from the pitch line at its edge to the middle): its whole range within an arm's
  * reach (it was 72% of the picture, which a hand's natural reach covered a third of: "its pitch hardly changes").
@@ -48,12 +50,14 @@
   const RANGES = { low: { from: 36, octaves: 3 }, mid: { from: 48, octaves: 3 }, high: { from: 60, octaves: 3 } };
   const NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
   const DEFAULTS = { style: "theremin", snap: false, key: 0, scale: "major", range: "mid", volume: 0.6, sound: "ethereal" };
-  // Its sounds: each voice's offset (cents), the octave-above voice's level, the glide between notes (s), the vibrato
-  // (its rate, and its depth in cents while the note moves and once it's held), the hall's and the echo's levels, the
-  // dry sound's, and the tone's top (Hz).
+  // Its sounds: each voice's offset (cents), how loud its tone is (tone: 1 unless said), the octave-above voice's level,
+  // its breath (air tuned to the note: its level, how narrowly it's tuned there and an octave up, and how much of the
+  // octave up), the glide between notes (s), the vibrato (its rate, and its depth in cents while the note moves and once
+  // it's held), the hall's and the echo's levels, the dry sound's, and the tone's top (Hz).
   const SOUNDS = {
     classic: { voices: [0], octave: 0, glide: 0.03, vibrato: { hz: 5.5, moving: 6, held: 6 }, hall: 0, echo: 0, dry: 1, top: 3800 },
-    ethereal: { voices: [0], octave: 0.05, glide: 0.09, vibrato: { hz: 5.2, moving: 4, held: 22 }, hall: 0.55, echo: 0.24, dry: 0.78, top: 3200 },
+    ethereal: { voices: [0], tone: 0.22, octave: 0.05, breath: { level: 9, q: [4.5, 8], up: 0.45 }, glide: 0.1, vibrato: { hz: 5.2, moving: 4, held: 22 },
+      hall: 0.62, echo: 0.26, dry: 0.72, top: 4800 },
     choir: { voices: [-11, -4, 3, 10], octave: 0.16, glide: 0.07, vibrato: { hz: 4.8, moving: 5, held: 15 }, hall: 0.65, echo: 0.16, dry: 0.62, top: 2500, warm: true },
   };
   const HELD_S = 0.35; // (a note held this long: its vibrato swells)
@@ -164,6 +168,9 @@
   let master = null, out = null, analyser = null;
   let mixes = 0, sleepTimer = null, sessionWas = null, soundError = "";
   let heldSince = 0, lastNote = null, nowHz = hz(60);
+  let bands = [], noise = null; // (the breath's: its filters, tuned to the note and an octave up; its noise, made once)
+  let breathLevel = null, breathBase = 0; // (and how loud it is: as loud for a low note as a high one)
+  const breathAt = (f) => breathBase * Math.sqrt(440 / Math.max(60, f)); // (a narrow filter lets through less of a low note's air)
   const PLAIN = [0, 1, 0.1, 0.035, 0.015, 0.006]; // (a theremin's: nearly a pure sine, a touch of its 2nd to 5th harmonics)
   const WARM = [0, 1, 0.32, 0.16, 0.08, 0.04, 0.02]; // (a sung "oo")
 
@@ -253,9 +260,17 @@
         for (const n of o.parts || []) n.disconnect();
       } catch {}
     }
+    for (const b of bands) {
+      try {
+        vibratoDepth.disconnect(b.detune);
+        b.disconnect();
+      } catch {}
+    }
     voices = [];
+    bands = [];
+    breathLevel = null;
     const wave = (h) => ctx.createPeriodicWave(new Float32Array(h.length), new Float32Array(h));
-    const each = 1 / Math.sqrt(v.voices.length);
+    const each = (v.tone === undefined ? 1 : v.tone) / Math.sqrt(v.voices.length);
     const add = (cents, level, octave) => {
       const o = ctx.createOscillator();
       o.setPeriodicWave(wave(v.warm && !octave ? WARM : PLAIN));
@@ -286,6 +301,49 @@
     };
     for (const cents of v.voices) add(cents, each, false);
     if (v.octave > 0) add(0, v.octave, true);
+    // Its breath: noise through two narrow filters at the note and an octave up (they follow the note and its vibrato,
+    // as the tone does), its level rising and falling a little, slowly, as a breath does.
+    if (v.breath) {
+      if (!noise) {
+        noise = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+        const d = noise.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      const level = ctx.createGain();
+      breathBase = v.breath.level;
+      level.gain.value = breathAt(nowHz);
+      breathLevel = level;
+      const sway = ctx.createOscillator();
+      sway.frequency.value = 0.21;
+      const swayBy = ctx.createGain();
+      swayBy.gain.value = breathAt(440) * 0.22;
+      sway.connect(swayBy);
+      swayBy.connect(level.gain);
+      [[1, v.breath.q[0], 1], [2, v.breath.q[1], v.breath.up]].forEach(([ratio, q, share]) => {
+        const b = ctx.createBiquadFilter();
+        b.type = "bandpass";
+        b.frequency.value = nowHz * ratio;
+        b.Q.value = q;
+        b.ratio = ratio;
+        vibratoDepth.connect(b.detune);
+        const g = ctx.createGain();
+        g.gain.value = share;
+        src.connect(b);
+        b.connect(g);
+        g.connect(level);
+        bands.push(b);
+        src.parts = [...(src.parts || []), g];
+      });
+      level.connect(tone);
+      src.parts.push(level);
+      sway.parts = [swayBy];
+      src.start();
+      sway.start();
+      voices.push(src, sway);
+    }
     const now = ctx.currentTime;
     vibrato.frequency.setValueAtTime(v.vibrato.hz, now);
     vibratoDepth.gain.setValueAtTime(v.vibrato.moving, now);
@@ -337,6 +395,8 @@
     nowHz = r.hz;
     const glide = settings.snap ? Math.min(0.012, v.glide) : v.glide;
     for (const o of voices) if (o.voice) o.frequency.setTargetAtTime(o.octave ? r.hz * 2 : r.hz, now, glide);
+    for (const b of bands) b.frequency.setTargetAtTime(r.hz * b.ratio, now, glide);
+    if (breathLevel) breathLevel.gain.setTargetAtTime(breathAt(r.hz), now, glide);
     amp.gain.setTargetAtTime(r.volume * r.volume, now, 0.035);
     // A note held (the hand nearly still): its vibrato swells, as a theremin player's does; moving, it's slight.
     const t = performance.now() / 1000;
@@ -681,6 +741,8 @@
       error: () => soundError,
       // (its voices sounding now: the chorus's, the octave's)
       voices: () => voices.filter((o) => o.voice).length,
+      // (its breath's filters, tuned to the note: [their frequencies])
+      breath: () => bands.map((b) => Math.round(b.frequency.value)),
       RANGES, SCALES, SOUNDS, AERIAL,
     },
   };

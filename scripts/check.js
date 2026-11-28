@@ -792,9 +792,11 @@ async function checkTheremin(js, win) {
   const hallNote = await feed([{ side: "Right", cx: 0.3, cy: 0.4 }], 900);
   const ringing = await feed([], 250);
   const after = await js(`new Promise((r) => setTimeout(() => r(Theremin._test.level()), 4500))`);
-  check("Theremin, Ethereal hall: its voice and a soft one an octave above, its note still ringing in the hall a moment after the hand goes, then gone",
-    hallNote && ringing && hallNote.level > 0.02 && ringing.pitch === null && ringing.level > 0.003 && after < 0.002 && (await js("Theremin._test.voices()")) === 2,
-    JSON.stringify({ playing: hallNote && hallNote.level, ringing: ringing && ringing.level, after, voices: await js("Theremin._test.voices()") }));
+  const breath = await js("Theremin._test.breath()");
+  check("Theremin, Ethereal hall: mostly air, tuned to the note and an octave above it, over a faint tone; still ringing in the hall a moment after the hand goes, then gone",
+    hallNote && ringing && hallNote.level > 0.02 && ringing.pitch === null && ringing.level > 0.003 && after < 0.002 && (await js("Theremin._test.voices()")) === 2 &&
+      breath.length === 2 && Math.abs(breath[0] - hallNote.hz) < hallNote.hz * 0.03 && Math.abs(breath[1] - 2 * hallNote.hz) < hallNote.hz * 0.06,
+    JSON.stringify({ playing: hallNote && [hallNote.level, hallNote.hz], ringing: ringing && ringing.level, after, voices: await js("Theremin._test.voices()"), breath }));
   await choose("thereminSound", "choir");
   const choir = await feed([{ side: "Right", cx: 0.3, cy: 0.4 }], 700);
   check("Theremin, Choir: four voices and one an octave above, playing",
