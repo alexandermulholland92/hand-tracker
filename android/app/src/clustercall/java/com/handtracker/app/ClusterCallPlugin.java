@@ -154,7 +154,7 @@ public class ClusterCallPlugin extends Plugin implements ClusterCallService.Page
                 }
                 d.put("app", h != null);
                 d.put("online", h != null || Boolean.TRUE.equals(d.get("online")));
-                if (h != null && h.get("name") instanceof String && !((String) h.get("name")).isEmpty()) d.put("name", h.get("name"));
+                if (h != null && !d.containsKey("to") && h.get("name") instanceof String && !((String) h.get("name")).isEmpty()) d.put("name", h.get("name"));
                 out.add(d);
             }
             Map<String, Object> r = new LinkedHashMap<>();

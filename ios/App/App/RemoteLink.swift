@@ -794,7 +794,10 @@ public class ClusterCallPlugin: CAPPlugin, CAPBridgedPlugin {
             for case let d as [String: Any] in (j["devices"] as? [Any] ?? []) where devices.count < 64 {
                 let address = String((d["address"] as? String ?? "").prefix(80))
                 guard address.range(of: "^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(:\\d{1,5})?$", options: .regularExpression) != nil else { continue }
-                devices.append(["name": String((d["name"] as? String ?? "").prefix(80)), "address": address, "os": String((d["os"] as? String ?? "").prefix(20)), "app": (d["app"] as? Bool) == true])
+                var one: [String: Any] = ["name": String((d["name"] as? String ?? "").prefix(80)), "address": address, "os": String((d["os"] as? String ?? "").prefix(20)), "app": (d["app"] as? Bool) == true]
+                // (a page of hand-tracker.com open on one of your devices, called through it: named in the offer, "to")
+                if let to = d["to"] as? String, to.range(of: "^[A-Za-z0-9_-]{8,64}$", options: .regularExpression) != nil { one["to"] = to }
+                devices.append(one)
             }
             if let data = try? JSONSerialization.data(withJSONObject: devices) { UserDefaults.standard.set(data, forKey: "clusterCallDevices") }
             return (200, ["ok": true])
@@ -918,7 +921,7 @@ public class ClusterCallPlugin: CAPPlugin, CAPBridgedPlugin {
                 resultLock.lock()
                 results[i]["app"] = isApp
                 results[i]["online"] = isApp
-                if isApp, let n = reply?["name"] as? String, !n.isEmpty { results[i]["name"] = n }
+                if isApp, results[i]["to"] == nil, let n = reply?["name"] as? String, !n.isEmpty { results[i]["name"] = n }
                 resultLock.unlock()
                 group.leave()
             }

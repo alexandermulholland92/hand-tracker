@@ -27,6 +27,11 @@
  * http://<that Pi>:47830/ (cluster/node/ht_cluster.py) and says so in a meta tag; browserCluster()
  * below asks that Pi, which passes a request for another Pi on (X-HT-Cluster-To), and a job's results
  * come as one zip, saved by the browser through a one-time link.
+ *
+ * On hand-tracker.com (the user, 2026-11-27: "can you add integrations to the website for cluster and cluster
+ * call?"): the same, through a device with Use from hand-tracker.com on (cluster/node/modules/web.py: its own HTTPS
+ * address on Tailscale, https://<its Tailscale name>:47835, which takes this site's requests). Which device: the link
+ * that module shows (#via=<its address>), remembered here; or its address typed in (websiteCluster()).
  */
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -40,14 +45,55 @@
       if (kept !== null && localStorage.getItem(now) === null) localStorage.setItem(now, kept);
     }
   } catch {}
-  const api = (window.desktop && window.desktop.cluster) || phoneCluster() || browserCluster();
+  const inApp = !!(window.desktop || (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()));
+  const servedByDevice = !!document.querySelector('meta[name="ht-cluster-page"]');
+  const VIA_KEY = "cluster.via"; // (on hand-tracker.com: the device it goes through)
+  const api = (window.desktop && window.desktop.cluster) || phoneCluster() || browserCluster() || websiteCluster();
   const REFRESH_MS = 4000;
 
+  // ---------- on hand-tracker.com: the same as below, through a device that has Use from hand-tracker.com on ----------
+  function viaDevice() {
+    let via = "";
+    const m = /(?:^#|&)via=([^&]+)/.exec(location.hash);
+    try {
+      via = m ? decodeURIComponent(m[1]) : localStorage.getItem(VIA_KEY) || "";
+    } catch {}
+    via = via.trim().replace(/^https:\/\//i, "").replace(/\/+$/, "");
+    if (!/^[A-Za-z0-9.-]{1,200}(:\d{1,5})?$/.test(via)) return "";
+    if (!/:\d+$/.test(via)) via += ":47835"; // (typed without its port)
+    try {
+      localStorage.setItem(VIA_KEY, via);
+    } catch {}
+    return via;
+  }
+  function websiteCluster() {
+    if (inApp || servedByDevice || !/^https?:$/.test(location.protocol)) return null;
+    const via = viaDevice();
+    return via ? browserCluster({ base: `https://${via}`, self: via, served: via.split(".")[0].split(":")[0] }) : null;
+  }
+  // (no device known yet: its address asked for)
+  function askForDevice() {
+    const note = $("note");
+    note.textContent = "On hand-tracker.com, Cluster works through one of your devices on Tailscale: in the Cluster app, ⚙ for a Pi or computer, " +
+      "turn on Use from hand-tracker.com and open the link it shows. Or type that device's Tailscale name here: ";
+    const input = Object.assign(document.createElement("input"), { type: "text", placeholder: "pi.your-tailnet.ts.net", spellcheck: false, autocapitalize: "off" });
+    input.setAttribute("aria-label", "Your device's Tailscale name");
+    const go = Object.assign(document.createElement("button"), { textContent: "Use it" });
+    go.onclick = () => {
+      location.hash = `via=${encodeURIComponent(input.value.trim())}`;
+      location.reload();
+    };
+    input.addEventListener("keydown", (e) => e.key === "Enter" && go.click());
+    note.append(input, " ", go);
+  }
+
   // ---------- in a browser: the page as a Pi served it, the same calls through that Pi ----------
-  function browserCluster() {
+  // (site: on hand-tracker.com, { base: that device's HTTPS address, self, served: its name })
+  function browserCluster(site = null) {
     const meta = document.querySelector('meta[name="ht-cluster-page"]');
-    if (!meta || !/^https?:$/.test(location.protocol)) return null;
-    const SELF = location.host; // (the Pi that served the page: asked directly; the others through it)
+    if (!site && (!meta || !/^https?:$/.test(location.protocol))) return null;
+    const BASE = site ? site.base : "";
+    const SELF = site ? site.self : location.host; // (the Pi that served the page: asked directly; the others through it)
     const KEY = "clusterPis";
     const ASK_MS = 8000;
     const PIECE = 8 << 20; // (a file's piece going to a Pi: the service takes up to 16 MB)
@@ -74,7 +120,7 @@
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), timeoutMs);
       try {
-        const r = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : blob, signal: ctl.signal, cache: "no-store", credentials: "omit" });
+        const r = await fetch(BASE + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : blob, signal: ctl.signal, cache: "no-store", credentials: "omit" });
         if ((r.headers.get("Content-Type") || "").startsWith("application/json")) {
           let j = {};
           try {
@@ -142,7 +188,8 @@
 
     return {
       browser: true,
-      served: meta.content,
+      website: !!site,
+      served: site ? site.served : meta.content,
       list,
       settings: ({ target, module, on, key, value }) => post(target, "/api/settings", { module, ...(typeof on === "boolean" ? { on } : {}), ...(key !== undefined ? { key, value } : {}) }),
       action: ({ target, module, action, args }) => post(target, "/api/action", { module, action, args: args || {} }),
@@ -177,7 +224,7 @@
         if (z.status !== 200 || !z.ok) throw new Error(z.error || "Its results couldn't be packed.");
         const t = await post(SELF, "/api/ticket", { ...(target !== SELF ? { to: target } : {}), path: `/api/jobs/zip-file?job=${encodeURIComponent(job)}&whole=1` });
         if (t.status !== 200 || !t.ok || !/^\/api\/download\?ticket=/.test(t.url || "")) throw new Error(t.error || "The device didn't give a link to save it from.");
-        const a = Object.assign(document.createElement("a"), { href: t.url, download: z.name, hidden: true });
+        const a = Object.assign(document.createElement("a"), { href: BASE + t.url, download: z.name, hidden: true });
         document.body.append(a);
         a.click();
         a.remove();
@@ -575,6 +622,11 @@
     if (st.summary) block.append(el("div", { className: "summary" }, st.summary));
     for (const w of st.warnings || []) block.append(el("div", { className: "warn-line" }, "⚠ " + w));
     if (m.error) block.append(el("div", { className: "warn-line" }, `⚠ ${m.title} had a problem: ${m.error}`));
+    // (a module's link: only to hand-tracker.com, Use from hand-tracker.com's: modules/web.py)
+    if (st.link && /^https:\/\/hand-tracker\.com\//.test(String(st.link.url || ""))) {
+      const a = el("a", { href: st.link.url, target: "_blank", rel: "noopener", textContent: String(st.link.title || st.link.url) });
+      block.append(el("div", { className: "summary" }, a));
+    }
     if (m.name === "rig" && st.cameras && st.cameras.length) block.append(cameraLine(st.cameras));
     if (m.name === "rig" && st.space) block.append(el("div", { className: "cams" }, `Space: ${st.space}`));
     if (m.name === "health" && st.boots && st.boots.length) block.append(bootsBox(st.boots));
@@ -2100,13 +2152,27 @@
 
   if (window.desktop && window.desktop.getInfo) window.desktop.getInfo().then((i) => i && i.version && ($("buildInfo").textContent = `v${i.version}`), () => {});
   if (!api) {
-    $("note").textContent = "Cluster runs in its own app (Cluster), or in a browser on your Tailscale, served by any device of the cluster: http://pi:47830/.";
+    if (!inApp && !servedByDevice && /^https?:$/.test(location.protocol)) askForDevice();
+    else $("note").textContent = "Cluster runs in its own app (Cluster), or in a browser on your Tailscale, served by any device of the cluster: http://pi:47830/.";
     return;
   }
-  // In a browser: which Pi served the page (the others are asked through it).
+  // In a browser: which Pi served the page (the others are asked through it); on hand-tracker.com, which device it
+  // goes through, and another one chosen.
   if (api.browser) {
     $("buildInfo").textContent = `through ${api.served}`;
     $("pickFiles").textContent = "Files from this device…";
+    if (api.website) {
+      const change = Object.assign(document.createElement("a"), { href: "#", textContent: " (another device)" });
+      change.onclick = (e) => {
+        e.preventDefault();
+        try {
+          localStorage.removeItem(VIA_KEY);
+        } catch {}
+        location.hash = "";
+        location.reload();
+      };
+      $("buildInfo").append(change);
+    }
   }
   // On a phone: a Pi set up already, by its Tailscale name (Add a Pi); this phone's apps.
   // (a computer: its own apps, the ones not here to download)

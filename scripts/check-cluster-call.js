@@ -45,6 +45,18 @@ if (fakeCamera) app.commandLine.appendSwitch("use-file-for-fake-video-capture", 
 process.argv.push("--app=clustercall");
 process.env.HT_CLUSTER_CALL_SIM = JSON.stringify([{ name: "Desk", port: PORTS[0] }, { name: "Pi", port: PORTS[1] }, { name: "Phone", port: 47975, external: true }]);
 process.env.HT_CLUSTER_CALL_RIG = "127.0.0.1:47974"; // (the Pi's Hand Tracker: the stand-in below)
+// Use from hand-tracker.com: Desk's HTTPS address, with a certificate for 127.0.0.1 made here (openssl, standing in for
+// Tailscale's); hand-tracker.com stood in for by a server of this folder's pages on WEB_SITE.
+const WEB_SITE = 47976, WEB_PORT = 47977;
+const webCert = (() => {
+  const openssl = [process.env.OPENSSL, "C:/Program Files/Git/mingw64/bin/openssl.exe", "C:/Program Files/Git/usr/bin/openssl.exe", "/usr/bin/openssl", "/opt/homebrew/bin/openssl", "/usr/local/bin/openssl"]
+    .find((p) => p && fs.existsSync(p)) || "openssl";
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cluster-call-web-"));
+  const cert = path.join(dir, "cert.pem"), key = path.join(dir, "key.pem");
+  const r = spawnSync(openssl, ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "2", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { encoding: "utf8" });
+  return r.status === 0 && fs.existsSync(cert) ? { cert, key } : null;
+})();
+if (webCert) process.env.HT_CLUSTER_CALL_WEB = JSON.stringify({ origin: `http://127.0.0.1:${WEB_SITE}`, port: WEB_PORT, ...webCert });
 require("../electron/main.js");
 
 // A stand-in Hand Tracker on the Pi (its rig service): one camera ("North", an OAK say) whose pictures are 320 × 180
@@ -372,6 +384,107 @@ app.whenReady().then(async () => {
       });
       check("...never a web page's request, nor anything posted that isn't JSON", pagePost.status === 403 && formPost === 415, { pagePost, formPost });
       phone.stop();
+    }
+
+    // hand-tracker.com's Cluster Call page in a browser (the user, 2026-11-27: "can you add integrations to the website
+    // for cluster and cluster call?"), through Desk with Use from hand-tracker.com on: it lists your devices, calls one
+    // and is called by one, and calls Desk's own app; Desk's HTTPS address takes only that site's pages.
+    if (!webCert) check("Cluster Call on hand-tracker.com (skipped: no openssl here to make a test certificate)", true);
+    else {
+      const site = http.createServer((req, res) => {
+        const file = new URL(req.url, "http://site").pathname.slice(1) || "cluster-call.html";
+        if (!["cluster-call.html", "cluster-call-page.js", "screen-modes.js", "favicon.png"].includes(file)) {
+          res.writeHead(404);
+          return res.end();
+        }
+        let data = fs.readFileSync(path.join(ROOT, file));
+        // (the page's own rule lets it reach your devices' names on Tailscale; here, Desk's stand-in address)
+        if (file.endsWith(".html")) data = Buffer.from(data.toString("utf8").replace("connect-src 'self' https://*.ts.net:47865;", `connect-src 'self' https://127.0.0.1:${WEB_PORT};`));
+        res.writeHead(200, { "Content-Type": file.endsWith(".html") ? "text/html" : file.endsWith(".js") ? "text/javascript" : "image/png" });
+        res.end(data);
+      });
+      await new Promise((r) => site.listen(WEB_SITE, "127.0.0.1", r));
+      await A(`(() => { const b = document.getElementById("webOn"); b.checked = true; b.dispatchEvent(new Event("change")); return true; })()`);
+      const switched = await until(async () => {
+        const w = (await A("window.desktop.call.settings({})")).web;
+        return w && w.on && /Open hand-tracker\.com/.test(await A('document.getElementById("webLine").textContent')) ? w : null;
+      }, 15000);
+      check("Use from hand-tracker.com, switched on in Desk's app: its HTTPS address, and the link to open there", !!switched && switched.link === `https://hand-tracker.com/cluster-call.html#via=127.0.0.1:${WEB_PORT}`,
+        switched || { settings: await A("window.desktop.call.settings({})"), line: await A('document.getElementById("webLine").textContent') });
+      const { session } = require("electron");
+      const ses = session.fromPartition("cluster-call-website");
+      ses.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === "media"));
+      ses.setPermissionCheckHandler((_wc, permission) => permission === "media");
+      ses.setCertificateVerifyProc((req, cb) => cb(req.hostname === "127.0.0.1" ? 0 : -3)); // (the made-up certificate, as Tailscale's would be trusted)
+      const site2 = new BrowserWindow({ show: false, width: 1000, height: 760, webPreferences: { partition: "cluster-call-website", contextIsolation: true, sandbox: true, backgroundThrottling: false } });
+      await site2.loadURL(`http://127.0.0.1:${WEB_SITE}/cluster-call.html?ringMs=${RING_MS}#via=127.0.0.1:${WEB_PORT}`);
+      const W = (code) => site2.webContents.executeJavaScript(code, true);
+      const listed = await until(async () => {
+        const w = await st(W);
+        return w.web && w.devices.some((d) => d.name === "Desk" && d.app) && w.devices.some((d) => d.name === "Pi" && d.app) ? w : null;
+      }, 15000);
+      check("The page on hand-tracker.com, through Desk: it lists Desk and Pi, ready for calls", !!listed && listed.web.me === "Browser", listed || await st(W));
+      await click(A, "refresh");
+      await click(B, "refresh");
+      const seen = await until(async () => (await st(A)).devices.some((d) => d.web && d.name === "Browser") && (await st(B)).devices.some((d) => d.web && d.name === "Browser"), 15000);
+      check("...and Desk and Pi list it as one of your devices to call", !!seen, { a: (await st(A)).devices, b: (await st(B)).devices });
+
+      // The page calls Pi; both in the call, each receiving the other's pictures; the page hangs up.
+      await callButton(W, "Pi");
+      await until(async () => (await st(B)).mode === "ringing");
+      await click(B, "answer");
+      const webCall = await until(async () => {
+        const [w, b] = [await st(W), await st(B)];
+        return w.mode === "in-call" && b.mode === "in-call" && w.connection === "connected" ? { w, b } : null;
+      }, 20000);
+      const webMedia = await until(async () => {
+        const [w, b] = [await W("window.__clusterCall.received()"), await B("window.__clusterCall.received()")];
+        return w && b && w.frames > 20 && b.frames > 20 ? { w, b } : null;
+      }, 20000);
+      check("The page calls Pi: Pi rings, answers; both in the call, each receiving the other's pictures", !!webCall && !!webMedia,
+        { call: webCall || { w: await st(W), b: await st(B) }, media: webMedia });
+      await click(W, "hangup");
+      const webEnded = await until(async () => ((await st(W)).mode === "idle" && (await st(B)).mode === "idle" ? (await st(B)).note : null));
+      check("...the page hangs up: both back, Pi told", !!webEnded && /Browser hung up/.test(webEnded), webEnded);
+
+      // Pi calls the page; it rings there; answered; Pi hangs up.
+      await callButton(B, "Browser");
+      const rang = await until(async () => (await st(W)).mode === "ringing", 15000);
+      await click(W, "answer");
+      const back = await until(async () => {
+        const [w, b] = [await st(W), await st(B)];
+        return w.mode === "in-call" && b.mode === "in-call" && b.connection === "connected" ? { w, b } : null;
+      }, 20000);
+      await click(B, "hangup");
+      const backEnded = await until(async () => ((await st(W)).mode === "idle" ? (await st(W)).note : null));
+      check("Pi calls the page: it rings there, answered, in the call; Pi hangs up and the page is told", !!rang && !!back && /Pi hung up/.test(backEnded || ""),
+        { rang, back: back || { w: await st(W), b: await st(B) }, backEnded });
+
+      // The page calls Desk's own app (the device it goes through).
+      await callButton(W, "Desk");
+      await until(async () => (await st(A)).mode === "ringing");
+      await click(A, "answer");
+      const home = await until(async () => ((await st(W)).mode === "in-call" && (await st(A)).mode === "in-call" ? true : null), 20000);
+      await click(A, "hangup");
+      const homeEnded = await until(async () => ((await st(W)).mode === "idle" ? (await st(W)).note : null));
+      check("The page calls Desk's own app (the device it goes through): rings, answered, in the call, hung up", !!home && /Desk hung up/.test(homeEnded || ""),
+        { home, homeEnded, a: await st(A), w: await st(W) });
+
+      // Desk's HTTPS address: hand-tracker.com's pages only.
+      const askWeb = (origin, method = "GET") => new Promise((resolve) => {
+        const q = require("https").request({ host: "127.0.0.1", port: WEB_PORT, path: "/vc/web/hello?client=checkcheck01", method, rejectUnauthorized: false,
+          headers: { ...(origin ? { Origin: origin } : {}), ...(method === "OPTIONS" ? { "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type" } : {}) } }, (r) => {
+          r.resume();
+          resolve({ status: r.statusCode, acao: r.headers["access-control-allow-origin"] || null });
+        });
+        q.on("error", (e) => resolve({ status: 0, error: e.message }));
+        q.end();
+      });
+      const [okFirst, other, none] = [await askWeb(`http://127.0.0.1:${WEB_SITE}`, "OPTIONS"), await askWeb("https://evil.example"), await askWeb(undefined)];
+      check("Desk's HTTPS address: the site's page asking first is told yes; another site, or no page at all, is refused",
+        okFirst.status === 204 && okFirst.acao === `http://127.0.0.1:${WEB_SITE}` && other.status === 403 && !other.acao && none.status === 403, { okFirst, other, none });
+      site2.destroy();
+      site.close();
     }
 
     // The service itself: a web page refused; only this computer when simulated.

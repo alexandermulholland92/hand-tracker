@@ -7,7 +7,7 @@
 <!-- Cluster Call (an app of its own: the computer apps' "clustercall" builds, scripts/dist.js --app clustercall): video calls between
      your own devices over Tailscale. The page: cluster-call-page.js; each call set up through electron/cluster-call.js,
      its pictures and sound sent straight between the two apps (WebRTC). -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'self'; base-uri 'none'; form-action 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'self' https://*.ts.net:47865; base-uri 'none'; form-action 'none'" />
 <title>Cluster Call</title>
 <style>
   * { box-sizing: border-box; }
@@ -86,6 +86,8 @@
         <label>Camera <select id="camera"></select></label>
         <label>Microphone <select id="mic"></select></label>
         <label title="Cluster Call opens when you log in, with its window hidden, and keeps going in the background when you close its window, so your other devices can always ring it. Quit it from its icon (beside the clock) to stop calls coming in."><input type="checkbox" id="ringClosed" /> Ring when closed</label>
+        <label id="webLabel" hidden title="This device's own HTTPS address on Tailscale, so hand-tracker.com's Cluster Call page, in a browser on any of your devices, can call and be called through it (Tailscale's HTTPS certificates must be on for your network)."><input type="checkbox" id="webOn" /> Use from hand-tracker.com</label>
+        <div id="webLine" class="sub" hidden></div>
       </div>
     </div>
     <div>

@@ -455,6 +455,97 @@ def raw(port, path, headers=None, method="GET", data=None):
         return e.code, e.headers, e.read()
 
 
+def test_cert(tmp):
+    """A certificate for 127.0.0.1 made here (openssl), standing in for Tailscale's: (cert, key) or None."""
+    openssl = shutil.which("openssl")
+    if not openssl:
+        return None
+    cert, key = os.path.join(tmp, "web-cert.pem"), os.path.join(tmp, "web-key.pem")
+    p = subprocess.run([openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "2",
+                        "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], capture_output=True, text=True)
+    return (cert, key) if p.returncode == 0 and os.path.exists(cert) else None
+
+
+def check_web(tmp, gh, ht):
+    """Use from hand-tracker.com (modules/web.py): off until switched on; then an HTTPS address of its own, which takes
+    the cluster's requests from that site's page (asked first by the browser: CORS) and from nowhere else, and only
+    /api/; closed again when switched off."""
+    import ssl
+    made = test_cert(tmp)
+    if not made:
+        check("Use from hand-tracker.com (skipped: no openssl here to make a test certificate)", True)
+        return
+    cert, key = made
+    site = "https://hand-tracker.test"
+    web_port = free_port()
+    node, port = start_node(tmp, gh, ht, extra=dict(HT_CLUSTER_WEB_CERT=cert, HT_CLUSTER_WEB_KEY=key, HT_CLUSTER_WEB_ORIGIN=site,
+                                                   HT_CLUSTER_WEB_PORT=str(web_port)))
+    ctx = ssl.create_default_context(cafile=cert)
+
+    def web(method="GET", path="/api/node", headers=None, body=None):
+        h = {"Host": "127.0.0.1:%d" % web_port}
+        h.update(headers or {})
+        data = json.dumps(body).encode() if body is not None else None
+        if data is not None:
+            h.setdefault("Content-Type", "application/json")
+        req = urllib.request.Request("https://127.0.0.1:%d%s" % (web_port, path), data=data, method=method, headers=h)
+        try:
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers), e.read()
+
+    def opened():
+        try:
+            socket.create_connection(("127.0.0.1", web_port), timeout=1).close()
+            return True
+        except OSError:
+            return False
+    try:
+        m = module(port, "web")
+        time.sleep(1.5)
+        check("Use from hand-tracker.com is off until it's switched on: no HTTPS address", m.get("on") is False and not opened(), (m, opened()))
+        ask(port, "POST", "/api/settings", {"module": "web", "on": True})
+        check("Switched on, it opens its HTTPS address (with the device's certificate)", bool(wait_for(opened, 20)))
+        st = wait_for(lambda: (module(port, "web").get("status") or {}).get("link"), 10) or {}
+        check("...and says where hand-tracker.com reaches it, with the link to open there",
+              st.get("url") == "https://hand-tracker.com/cluster.html#via=127.0.0.1:%d" % web_port, module(port, "web").get("status"))
+        code, h, _ = web("OPTIONS", headers={"Origin": site, "Access-Control-Request-Method": "POST",
+                                             "Access-Control-Request-Headers": "content-type,x-ht-cluster,x-ht-cluster-to",
+                                             "Access-Control-Request-Private-Network": "true"})
+        allowed = (h.get("Access-Control-Allow-Headers") or "").lower()
+        check("A browser asking first for hand-tracker.com's page is told yes (its headers, and a request to a private address)",
+              code == 204 and h.get("Access-Control-Allow-Origin") == site and "x-ht-cluster" in allowed and "x-ht-cluster-to" in allowed
+              and h.get("Access-Control-Allow-Private-Network") == "true", (code, h))
+        code, h, data = web(headers={"Origin": site, "X-HT-Cluster": "1"})
+        d = json.loads(data or b"{}")
+        check("hand-tracker.com's page reads the device, and may read the answer", code == 200 and h.get("Access-Control-Allow-Origin") == site
+              and any(x.get("name") == "web" for x in d.get("modules", [])), (code, h))
+        code, h, _ = web("POST", "/api/settings", headers={"Origin": site, "X-HT-Cluster": "1"}, body={"module": "health", "key": "power", "value": "battery"})
+        check("...and changes it as the app does", code == 200 and h.get("Access-Control-Allow-Origin") == site, (code, h))
+        code, h, _ = web("OPTIONS", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"})
+        check("Another site's page is told no when its browser asks first", code == 403 and not h.get("Access-Control-Allow-Origin"), (code, h))
+        code, h, _ = web(headers={"Origin": "https://evil.example", "X-HT-Cluster": "1"})
+        check("...and refused if it asks all the same", code == 403 and not h.get("Access-Control-Allow-Origin"), (code, h))
+        code, _, _ = web(headers={"Origin": site})
+        check("A request without the app's header is refused there too", code == 403, code)
+        code, _, _ = web(headers={"Origin": site, "X-HT-Cluster": "1", "Host": "evil.example:%d" % web_port})
+        check("...as is one naming another host", code == 403, code)
+        code, _, _ = web(path="/", headers={"Origin": site})
+        check("Only the cluster's requests are there, not the page", code == 404, code)
+        req = urllib.request.Request("http://127.0.0.1:%d/api/node" % port, method="OPTIONS", headers={"Origin": site, "Access-Control-Request-Method": "GET"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                plain = (r.status, r.headers.get("Access-Control-Allow-Origin"))
+        except urllib.error.HTTPError as e:
+            plain = (e.code, e.headers.get("Access-Control-Allow-Origin"))
+        check("The usual port never tells a web page yes", plain[0] != 204 and not plain[1], plain)
+        ask(port, "POST", "/api/settings", {"module": "web", "on": False})
+        check("Switched off, its HTTPS address closes again", bool(wait_for(lambda: not opened(), 20)))
+    finally:
+        node.terminate()
+
+
 def check_installs(tmp, gh, ht):
     """Hand Tracker's apps on this device (modules/installs.py): which are here and which aren't; one put in from its
     Install button (the root helper's install-app), then listed as here; one that's here already left as it is."""
@@ -641,6 +732,9 @@ def main():
 
     # The Cluster page in a browser
     check_page(tmp, gh, ht)
+
+    # Use from hand-tracker.com: its own HTTPS address
+    check_web(tmp, gh, ht)
 
     # Hand Tracker's apps on this device: the missing ones put in
     check_installs(tmp, gh, ht)

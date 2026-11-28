@@ -11,7 +11,7 @@
      itself (http://<a Pi>:47830/) and passes its requests on to the other Pis (cluster/node/ht_cluster.py). -->
 <!-- (connect-src: 'self', the Pi that served the page in a browser; GitHub's "Latest build", which the
      iPhone app looks at for a newer build itself: cluster.js phoneApps) -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.github.com https://*.ts.net:47835; base-uri 'none'; form-action 'none'" />
 <title>Cluster</title>
 <style>
   * { box-sizing: border-box; }

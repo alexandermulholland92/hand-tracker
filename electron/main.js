@@ -2403,10 +2403,17 @@ if (APP.kind === "clustercall") {
   };
   // (when simulated, an "external" device is one running elsewhere, a phone's service say: a peer, not served here)
   const devices = sim ? sim.filter((d) => !d.external) : [{ name: "" }];
+  // Use from hand-tracker.com (its switch): this device's HTTPS address, its certificate kept here; when simulated,
+  // HT_CLUSTER_CALL_WEB's (the checks: { origin, port, cert, key }), for the first device.
+  let simWeb = null;
+  try {
+    simWeb = process.env.HT_CLUSTER_CALL_WEB ? JSON.parse(process.env.HT_CLUSTER_CALL_WEB) : null;
+  } catch {}
   const services = devices.map((d, i) =>
     createClusterCall({
       name: d.name || "",
       version: app.getVersion(),
+      web: sim ? (i === 0 ? simWeb : null) : { dir: path.join(app.getPath("userData"), "web") },
       sim: sim ? { name: d.name, port: d.port, peers: sim.filter((p) => p !== d).map((p) => ({ name: p.name, address: `127.0.0.1:${p.port}` })) } : null,
       onSignal: (signal) => {
         comeUp(i, signal);
@@ -2439,8 +2446,12 @@ if (APP.kind === "clustercall") {
       if (!sim) services[0].devices().catch(() => {});
     },
     settings() {
-      return { ringWhenClosed: this.ringWhenClosed(), atLogin: autostart.available() ? autostart.get() : null };
+      const web = services[0].webState();
+      return { ringWhenClosed: this.ringWhenClosed(), atLogin: autostart.available() ? autostart.get() : null,
+        ...(sim && !simWeb ? {} : { web: { want: saved().web === true, ...web } }) };
     },
+    // (Use from hand-tracker.com: on as the app starts if it was, and looked at again each hour, its certificate renewed)
+    web: () => (saved().web === true ? services[0].webOn() : services[0].webOff()),
     // (The first time: opened at login too, so it rings after a restart; turned off with Ring when closed.)
     firstRun() {
       const s = saved();
@@ -2467,6 +2478,7 @@ if (APP.kind === "clustercall") {
     pages.set(n, event.sender);
     watch(event.sender);
     await clusterCall.start();
+    if (saved().web === true && n === 0 && !services[0].webState().on) await clusterCall.web().catch(() => {});
     const w = waiting.get(n) || [];
     waiting.delete(n);
     return { me: await services[n].me(), waiting: w, settings: clusterCall.settings(), error: startError, sim: !!sim, shown: shown(BrowserWindow.fromWebContents(event.sender)) };
@@ -2482,7 +2494,12 @@ if (APP.kind === "clustercall") {
     return null;
   });
   handle("call:send", (_e, i, address, signal) => services[index(i)].send(String(address || ""), signal && typeof signal === "object" ? signal : {}));
-  handle("call:settings", (_e, change) => {
+  handle("call:settings", async (_e, change) => {
+    if (change && typeof change.web === "boolean") {
+      save({ ...saved(), web: change.web });
+      await clusterCall.web();
+      return clusterCall.settings();
+    }
     if (change && typeof change.ringWhenClosed === "boolean") {
       save({ ...saved(), ringWhenClosed: change.ringWhenClosed, loginSet: true });
       try {
@@ -2524,6 +2541,8 @@ function clusterCallWindow() {
   }
   clusterCall.firstRun();
   clusterCall.start();
+  clusterCall.web();
+  setInterval(() => clusterCall.web(), 3600 * 1000).unref();
   // (your phones told your device list now and then, even with the window closed: electron/cluster-call.js announce)
   setInterval(() => clusterCall.lookAround(), 5 * 60 * 1000).unref();
 }

@@ -267,6 +267,9 @@ public class ClusterCallServer {
             one.put("address", address);
             one.put("os", clip(d.get("os"), 20));
             one.put("app", Boolean.TRUE.equals(d.get("app")));
+            // (a page of hand-tracker.com open on one of your devices, called through it: named in the offer, "to")
+            String to = clip(d.get("to"), 64);
+            if (CALL_ID.matcher(to).matches()) one.put("to", to);
             out.add(one);
         }
         return out;

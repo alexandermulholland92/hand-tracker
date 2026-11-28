@@ -75,6 +75,7 @@ import secrets
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -103,6 +104,12 @@ PHONE_KEY_FILE = "phone-key"  # (a phone's own key, in its state folder)
 PHONE_TELL_S = 60  # (how often a phone gives its key to the Pis it finds: a Pi new to the cluster learns it then)
 PHONE_OSES = ("android", "ios")  # (Tailscale's names for the phones' systems, lower-cased)
 TS_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
+# Use from hand-tracker.com (modules/web.py): this device's own HTTPS address on Tailscale, for the Cluster page on
+# that site in a browser on this Tailscale account (class Web).
+WEB_PORT = 47835
+WEB_ORIGIN = "https://hand-tracker.com"
+CERT_S = 86400  # (Tailscale's certificate asked for again once a day: it renews it itself before it runs out)
+CERT_RETRY_S = 300  # (and again 5 minutes after it couldn't: not every minute, which Let's Encrypt would hold against it)
 
 
 def _ip(addr):
@@ -191,7 +198,7 @@ class Tailscale:
                     names.update([dns, dns.split(".")[0]])
                 if s.get("HostName"):
                     names.add(str(s["HostName"]).lower())
-                info = {"user": s.get("UserID"), "names": names, "ips": [str(a) for a in s.get("TailscaleIPs") or []]}
+                info = {"user": s.get("UserID"), "names": names, "dns": dns, "ips": [str(a) for a in s.get("TailscaleIPs") or []]}
             except (ValueError, AttributeError):
                 info = None
         with self.lock:
@@ -318,6 +325,120 @@ class Memory(dict):
             pass
 
 
+class Web:
+    """Use from hand-tracker.com (modules/web.py's switch, off unless turned on): this device's own HTTPS address on
+    Tailscale, https://<its Tailscale name>:47835, with Tailscale's certificate for that name (`tailscale cert`: the
+    user turns on HTTPS certificates for the Tailscale network, and on a Pi lets this service's user ask for one,
+    `sudo tailscale set --operator=<user>`). It's for the Cluster page on hand-tracker.com, in a browser on a device of
+    this Tailscale account: the same requests and the same checks as port 47830 (whose they are, the header, this
+    device's name), only /api/ (the page is the site's), and a request from a web page only from that site's (CORS,
+    each one asked first by the browser)."""
+
+    def __init__(self, node):
+        self.node = node
+        self.lock = threading.Lock()
+        self.server = None
+        self.bound = None  # ((address, port) it listens on)
+        self.ctx = None  # (its TLS, with the certificate: a new one takes the old one's place as it's renewed)
+        self.cert_bytes = None
+        self.cert_at = 0
+        self.error = None
+        self.address = None  # ("pi.tail2cb1b5.ts.net:47835": what hand-tracker.com's page asks)
+
+    def origin(self):
+        if self.node.simulate and os.environ.get("HT_CLUSTER_WEB_ORIGIN"):
+            return os.environ["HT_CLUSTER_WEB_ORIGIN"]
+        return WEB_ORIGIN
+
+    def why(self, said, name):
+        """What Tailscale said when it didn't give the certificate, as what to do about it."""
+        low = said.lower()
+        if "access denied" in low or "permission denied" in low:
+            try:
+                import getpass
+                user = getpass.getuser()
+            except Exception:
+                user = os.environ.get("USER") or "your user"
+            return ("Tailscale gives this device's certificate only to its administrator: run this once on %s, then "
+                    "it's taken within 5 minutes: sudo tailscale set --operator=%s" % (self.node.name, user))
+        if "not enabled" in low or "does not support" in low or "not support" in low or "https" in low and "disabled" in low:
+            return ("Tailscale's HTTPS certificates are off for your Tailscale network: turn them on in Tailscale's "
+                    "admin console (DNS, HTTPS Certificates).")
+        return "Tailscale didn't give this device's certificate (%s): %s" % (name, said.splitlines()[-1][:200] if said else "no answer")
+
+    def load(self, cert, key):
+        try:
+            with open(cert, "rb") as f:
+                data = f.read()
+            if self.ctx is not None and data == self.cert_bytes:
+                return None
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            ctx.load_cert_chain(cert, key)
+        except (OSError, ssl.SSLError, ValueError) as e:
+            return "This device's certificate couldn't be read: %s" % e
+        self.ctx, self.cert_bytes = ctx, data
+        return None
+
+    def cert(self, name):
+        """Tailscale's certificate for this device's name (kept in the state folder): None, or why not."""
+        if self.node.simulate:
+            cert, key = os.environ.get("HT_CLUSTER_WEB_CERT"), os.environ.get("HT_CLUSTER_WEB_KEY")
+            return self.load(cert, key) if cert and key else "No certificate while simulated (HT_CLUSTER_WEB_CERT)."
+        folder = os.path.join(self.node.state_dir, "web")
+        os.makedirs(folder, exist_ok=True)
+        cert, key = os.path.join(folder, "cert.pem"), os.path.join(folder, "key.pem")
+        code, out, err = run([tailscale_cmd(), "cert", "--cert-file", cert, "--key-file", key, name], timeout=180)
+        if code != 0:
+            return self.why((err or out or "").strip(), name)
+        return self.load(cert, key)
+
+    def on(self):
+        """Started, or kept going (its certificate asked for again once a day); its error when it can't."""
+        with self.lock:
+            if self.node.simulate:
+                ip, name = "127.0.0.1", "127.0.0.1"
+                port = int(os.environ.get("HT_CLUSTER_WEB_PORT") or WEB_PORT)
+            else:
+                me = self.node.tailscale.me() or {}
+                ip = next((a for a in me.get("ips", []) if ":" not in a), None)
+                name, port = me.get("dns"), WEB_PORT
+                if not ip or not name:
+                    self.error = "This device isn't on Tailscale (or Tailscale hasn't said its name yet)."
+                    return
+            now = time.time()
+            if self.ctx is None or now - self.cert_at > (CERT_RETRY_S if self.error else CERT_S):
+                self.cert_at = now
+                self.error = self.cert(name)
+            if self.ctx is None:
+                return
+            if self.server and self.bound == (ip, port):
+                return
+            self._close()
+            try:
+                server = WebServer((ip, port), WebHandler, self)
+            except OSError as e:
+                self.error = "Its HTTPS address couldn't be opened (port %d): %s" % (port, e)
+                return
+            threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True, name="web").start()
+            self.server, self.bound, self.address = server, (ip, port), "%s:%d" % (name, port)
+            self.node.log("hand-tracker.com's Cluster page reaches this device at https://%s" % self.address)
+
+    def _close(self):
+        if self.server:
+            server, self.server, self.bound = self.server, None, None
+            server.shutdown()
+            server.server_close()
+
+    def off(self):
+        with self.lock:
+            if self.server:
+                self._close()
+                self.node.log("hand-tracker.com's Cluster page no longer reaches this device")
+            self.address = None
+            self.error = None
+
+
 class Module:
     def __init__(self, path):
         name = os.path.splitext(os.path.basename(path))[0]
@@ -368,6 +489,7 @@ class Node:
         self.tailscale = PhoneTailscale(self) if self.phone else Tailscale()
         self.phone_key = self.own_key() if self.phone else None
         self.config = Memory(os.path.join(self.state_dir, "settings.json"))
+        self.web = Web(self)  # (Use from hand-tracker.com: modules/web.py)
         self.memories = {}
         saved = Memory(os.path.join(self.state_dir, "events.json"))
         self.events = collections.deque(saved.get("events") or [], maxlen=KEEP_EVENTS)
@@ -665,6 +787,11 @@ class Node:
                     if trace != last_error:
                         self.log("%s: %s" % (m.name, trace))
                     last_error = trace
+            elif hasattr(m.mod, "off"):  # (turned off, or off from the start: told so each time round, to undo what it did)
+                try:
+                    m.mod.off(self)
+                except Exception:
+                    self.log("%s: %s" % (m.name, traceback.format_exc()))
             m.wake.wait(m.every)
             m.wake.clear()
 
@@ -761,6 +888,15 @@ class Node:
             addr = str(h.client_address[0])
             path = h.path.split("?")[0]
             local = is_loopback(addr)
+            if getattr(h, "web", False):  # (the HTTPS address, for hand-tracker.com: class Web)
+                h.cors = None
+                origin = h.headers.get("Origin")
+                if origin is not None:
+                    if origin != self.web.origin():
+                        return self.send(h, 403, {"error": "Only hand-tracker.com's Cluster page can ask this device from a web page."})
+                    h.cors = origin
+                if not path.startswith("/api/"):
+                    return self.send(h, 404, {"error": "Only the cluster's requests are here: the page is hand-tracker.com's."})
             if not path.startswith("/api/"):
                 return self.page(h, method, addr, local, path)
             if not local and not is_tailscale(addr):
@@ -835,6 +971,27 @@ class Node:
                 m.routes[key](self, h, query)
                 return True
         return False
+
+    def preflight(self, h):
+        """A browser asking first whether hand-tracker.com's page may send a request here (CORS): yes, from this
+        Tailscale account's devices (the HTTPS address only: the other port never says yes)."""
+        h.cors = None
+        addr = str(h.client_address[0])
+        ok = h.headers.get("Origin") == self.web.origin() and (is_tailscale(addr) or (self.simulate and is_loopback(addr)))
+        if not ok or not self.allowed(addr, h):
+            return self.send(h, 403, {"error": "Only hand-tracker.com's Cluster page, on your own Tailscale account's devices."})
+        h.cors = h.headers.get("Origin")
+        try:
+            h.send_response(204)
+            h.send_header("Access-Control-Allow-Methods", "GET, POST, PUT")
+            h.send_header("Access-Control-Allow-Headers", "Content-Type, X-HT-Cluster, X-HT-Cluster-To")
+            h.send_header("Access-Control-Max-Age", "600")
+            if str(h.headers.get("Access-Control-Request-Private-Network") or "").lower() == "true":
+                h.send_header("Access-Control-Allow-Private-Network", "true")
+            h.send_header("Content-Length", "0")
+            h.end_headers()
+        except OSError:
+            pass
 
     def page(self, h, method, addr, local, path):
         """The Cluster page and the files it loads, for a browser on this Tailscale account (never inside
@@ -1085,6 +1242,53 @@ class Server(http.server.ThreadingHTTPServer):
         except (OSError, AttributeError):
             pass
         super().server_bind()
+
+
+class WebHandler(Handler):
+    """A request to the HTTPS address (class Web): the same as the others, and hand-tracker.com's page told it may
+    read the answer (CORS: on each answer to a request from that site's page)."""
+    web = True
+    cors = None
+
+    def end_headers(self):
+        if self.cors:
+            self.send_header("Access-Control-Allow-Origin", self.cors)
+            self.send_header("Access-Control-Expose-Headers", "Content-Disposition")
+            self.send_header("Vary", "Origin")
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        self.node.preflight(self)
+
+
+class WebServer(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 64
+
+    def __init__(self, address, handler, web):
+        self.web = web
+        self.address_family = socket.AF_INET6 if ":" in address[0] else socket.AF_INET
+        super().__init__(address, handler)
+
+    def finish_request(self, request, client_address):
+        # (each connection's TLS handshake in its own thread: a slow one holds up no other)
+        try:
+            request.settimeout(20)
+            tls = self.web.ctx.wrap_socket(request, server_side=True)
+            tls.settimeout(300)
+        except (OSError, ssl.SSLError, AttributeError):
+            try:
+                request.close()
+            except OSError:
+                pass
+            return
+        try:
+            self.RequestHandlerClass(tls, client_address, self)
+        finally:
+            try:
+                tls.close()
+            except OSError:
+                pass
 
 
 def main():

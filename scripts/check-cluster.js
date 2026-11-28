@@ -599,11 +599,22 @@ app.whenReady().then(async () => {
     // results saved from a one-time link; and another site's page can't use the service (a pair of Pis of their own)
     const aPort = await freePort();
     const bPort = await freePort();
+    // (alpha's Use from hand-tracker.com, below: its HTTPS address with a certificate for 127.0.0.1 made here, openssl
+    // standing in for Tailscale's; hand-tracker.com stood in for by a server of this folder's pages)
+    const webPort = await freePort(), sitePort = await freePort();
+    const webCert = (() => {
+      const openssl = [process.env.OPENSSL, "C:/Program Files/Git/mingw64/bin/openssl.exe", "C:/Program Files/Git/usr/bin/openssl.exe", "/usr/bin/openssl", "/opt/homebrew/bin/openssl", "/usr/local/bin/openssl"]
+        .find((f) => f && fs.existsSync(f)) || "openssl";
+      const cert = path.join(tmp, "web-cert.pem"), key = path.join(tmp, "web-key.pem");
+      const r = require("child_process").spawnSync(openssl, ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "2", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { encoding: "utf8" });
+      return r.status === 0 && fs.existsSync(cert) ? { cert, key } : null;
+    })();
     const pair = [["alpha", aPort, bPort], ["beta", bPort, aPort]].map(([name, p, other]) => spawn(py[0], [...py[1], path.join(nodeDir, "ht_cluster.py"), "--simulate", "--port", String(p)], {
       env: {
         ...process.env, HT_CLUSTER_SIM_NAME: name, HT_CLUSTER_SIM_PEERS: `127.0.0.1:${other}`, HT_CLUSTER_STATE: path.join(tmp, `state-${name}`), HT_CLUSTER_JOBS_DIR: path.join(tmp, `jobs-${name}`),
         HT_CLUSTER_HT_URL: `http://127.0.0.1:${ht.address().port}`, HT_CLUSTER_GITHUB_API: `http://127.0.0.1:${gh.address().port}`, HT_CLUSTER_ROOT_HELPER: fakeHelper,
         HT_TEST_HELPER_LOG: path.join(tmp, `helper-${name}.log`), PYTHONDONTWRITEBYTECODE: "1", HT_CLUSTER_SIM_FAST: "1",
+        ...(name === "alpha" && webCert ? { HT_CLUSTER_WEB_CERT: webCert.cert, HT_CLUSTER_WEB_KEY: webCert.key, HT_CLUSTER_WEB_PORT: String(webPort), HT_CLUSTER_WEB_ORIGIN: `http://127.0.0.1:${sitePort}` } : {}),
       },
       stdio: "ignore",
     }));
@@ -667,6 +678,52 @@ app.whenReady().then(async () => {
       const foreign = await other.webContents.executeJavaScript(`fetch("http://127.0.0.1:${aPort}/api/node", { headers: { "X-HT-Cluster": "1" } }).then((r) => "answered " + r.status, (e) => "refused: " + e.message)`, true);
       check("Another site's page can't use the service", /^refused/.test(foreign), foreign);
       other.destroy();
+
+      // On hand-tracker.com (the user, 2026-11-27: "can you add integrations to the website for cluster and cluster call?"):
+      // alpha's Use from hand-tracker.com on, the site's Cluster page lists alpha and beta through it, and a setting
+      // changed on beta from there is made on beta.
+      if (!webCert) check("Cluster on hand-tracker.com (skipped: no openssl here to make a test certificate)", true);
+      else {
+        await ask(aPort, "POST", "/api/settings", { module: "web", on: true });
+        const link = await until(async () => {
+          const m = (await ask(aPort, "GET", "/api/node")).modules.find((x) => x.name === "web");
+          return m && m.status && m.status.link ? m.status.link.url : null;
+        }, 20000);
+        check("Use from hand-tracker.com, switched on for alpha: its HTTPS address and the link to open there", link === `https://hand-tracker.com/cluster.html#via=127.0.0.1:${webPort}`, link);
+        const FILES = ["cluster.html", "cluster.js", "video-formats.js", "sentry-models.js", "models/kinds.js", "favicon.png", "apple-touch-icon.png"];
+        const site = http.createServer((req, res) => {
+          const file = new URL(req.url, "http://site").pathname.slice(1) || "cluster.html";
+          if (!FILES.includes(file)) {
+            res.writeHead(404);
+            return res.end();
+          }
+          let data = fs.readFileSync(path.join(__dirname, "..", file));
+          // (the page's own rule lets it reach your devices' names on Tailscale; here, alpha's stand-in address)
+          if (file.endsWith(".html")) data = Buffer.from(data.toString("utf8").replace("https://*.ts.net:47835", `https://127.0.0.1:${webPort}`));
+          res.writeHead(200, { "Content-Type": file.endsWith(".html") ? "text/html" : file.endsWith(".js") ? "text/javascript" : "image/png" });
+          res.end(data);
+        });
+        await new Promise((r) => site.listen(sitePort, "127.0.0.1", r));
+        const { session } = require("electron");
+        const ses = session.fromPartition("cluster-website");
+        ses.setCertificateVerifyProc((req, cb) => cb(req.hostname === "127.0.0.1" ? 0 : -3)); // (the made-up certificate, as Tailscale's would be trusted)
+        const sitePage = new BrowserWindow({ show: false, width: 1000, height: 900, webPreferences: { partition: "cluster-website" } });
+        await sitePage.loadURL(`http://127.0.0.1:${sitePort}/cluster.html#via=127.0.0.1:${webPort}`);
+        const sjs = (code) => sitePage.webContents.executeJavaScript(code, true);
+        const siteText = () => sjs("document.getElementById('pis').innerText");
+        const listedThere = await until(async () => {
+          const t = await siteText();
+          return /alpha/.test(t) && /beta/.test(t) && (t.match(/CPU/g) || []).length >= 2 && t;
+        }, 30000);
+        check("The Cluster page on hand-tracker.com lists alpha and beta through alpha's HTTPS address", !!listedThere, await siteText());
+        await sjs(`${card("beta")}.querySelector('.top button').click(); null`);
+        await until(() => sjs(`!!${card("beta")}.querySelector('.settings')`));
+        await sjs(`(() => { const s = [...${card("beta")}.querySelectorAll('.settings label')].find((l) => l.textContent.startsWith('Speed')).querySelector('select'); s.value = 'slow'; s.dispatchEvent(new Event('change')); })(); null`);
+        const madeThere = await until(async () => (await speed(bPort)) === "slow");
+        check("...a setting changed there on beta is made on beta (passed on by alpha)", !!madeThere, await speed(bPort));
+        sitePage.destroy();
+        site.close();
+      }
     } finally {
       for (const p of pair) p.kill();
     }

@@ -9,6 +9,13 @@
  *   in a call: hangup; state (muted, camera off), also over the call's own data channel.
  *
  * Only a device that answers rings out (45 s); a call that isn't answered in that time is given up.
+ *
+ * On hand-tracker.com (the user, 2026-11-27: "can you add integrations to the website for cluster and cluster call?"):
+ * the page goes through one of your devices with Use from hand-tracker.com on (electron/cluster-call.js: its own HTTPS
+ * address on Tailscale), which lists your devices for it, passes its signals on, and keeps the ones for it until it
+ * asks (webHost below). Which device: the link that switch shows (#via=<its address>), remembered; or typed in. It
+ * rings only while it's open. A browser page is called through the device it's on: its device list entry names it
+ * (to), and so does each signal to it.
  * window.__clusterCall: what the checks look at.
  */
 (function () {
@@ -19,6 +26,24 @@
   // (on a phone: the app's own plugin, ClusterCallPlugin.java; an iPhone's, ClusterCallPlugin.swift)
   const cap = window.Capacitor;
   const phone = !desktop && cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins && cap.Plugins.ClusterCall;
+  // (on hand-tracker.com: through one of your devices; none known yet, its address asked for: askForDevice())
+  const VIA_KEY = "clusterCall.via";
+  const onWebsite = !desktop && !(cap && cap.isNativePlatform && cap.isNativePlatform()) && /^https?:$/.test(location.protocol);
+  function viaDevice() {
+    let via = "";
+    const m = /(?:^#|&)via=([^&]+)/.exec(location.hash);
+    try {
+      via = m ? decodeURIComponent(m[1]) : localStorage.getItem(VIA_KEY) || "";
+    } catch {}
+    via = via.trim().replace(/^https:\/\//i, "").replace(/\/+$/, "");
+    if (!/^[A-Za-z0-9.-]{1,200}(:\d{1,5})?$/.test(via)) return "";
+    if (!/:\d+$/.test(via)) via += ":47865"; // (typed without its port)
+    try {
+      localStorage.setItem(VIA_KEY, via);
+    } catch {}
+    return via;
+  }
+  const via = onWebsite ? viaDevice() : "";
   const host = desktop
     ? {
         hello: () => desktop.hello(device),
@@ -40,7 +65,63 @@
           rig: async () => null, // (no Hand Tracker cameras on a phone)
           inCall: (on) => phone.inCall({ on }),
         }
-      : null;
+      : via
+        ? webHost(`https://${via}`)
+        : null;
+
+  // The page on hand-tracker.com, through that device: its id (kept in this browser), its signals picked up as they come.
+  function webHost(base) {
+    let id = "";
+    try {
+      id = localStorage.getItem("clusterCall.client") || "";
+    } catch {}
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(id)) {
+      id = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
+      try {
+        localStorage.setItem("clusterCall.client", id);
+      } catch {}
+    }
+    const ask = async (method, path, body) => {
+      const r = await fetch(`${base}${path}${path.includes("?") ? "&" : "?"}client=${id}`, {
+        method, cache: "no-store", credentials: "omit",
+        headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined,
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `It answered ${r.status}.`);
+      return j;
+    };
+    const listeners = [];
+    let seq = 0, polling = false;
+    async function poll() {
+      if (polling) return;
+      polling = true;
+      for (;;) {
+        try {
+          const r = await ask("GET", `/vc/web/inbox?after=${seq}`);
+          seq = Number(r.seq) || seq;
+          for (const sig of r.signals || []) for (const cb of listeners) cb(sig);
+        } catch {
+          await new Promise((r) => setTimeout(r, 3000));
+          await ask("GET", "/vc/web/hello").catch(() => {}); // (the device started again, say: hello again)
+        }
+      }
+    }
+    return {
+      web: true,
+      base,
+      hello: async () => {
+        const h = await ask("GET", "/vc/web/hello");
+        poll();
+        return { me: h.me, home: h.home, settings: { canRingWhenClosed: false }, shown: !document.hidden };
+      },
+      devices: async () => (await ask("GET", "/vc/web/devices")).devices || [],
+      send: (address, signal) => ask("POST", "/vc/web/send", { address, signal }).catch((e) => ({ ok: false, error: e.message })),
+      settings: async () => ({ canRingWhenClosed: false }),
+      onSignal: (cb) => listeners.push(cb),
+      onShown: (cb) => document.addEventListener("visibilitychange", () => cb(!document.hidden)),
+      rig: async () => null,
+    };
+  }
   let shown = false; // (the window in view: told by the app; until then, a camera stays closed)
   const RING_MS = Number(params.get("ringMs")) || 45000;
   const NAMES = { windows: "Windows", linux: "Linux", macos: "Mac", android: "Android", ios: "iPhone", win32: "Windows", darwin: "Mac" };
@@ -388,7 +469,7 @@
 
   async function startCall(d) {
     if (state.mode !== "idle" || !host) return;
-    const c = { id: newId(), peer: { address: d.address, name: d.name }, outgoing: true };
+    const c = { id: newId(), peer: { address: d.address, name: d.name, ...(d.to ? { to: d.to } : {}) }, outgoing: true };
     call = c;
     $("callee").textContent = d.name;
     setMode("calling");
@@ -404,13 +485,13 @@
       await c.pc.setLocalDescription(await c.pc.createOffer());
       await gathered(c.pc);
       if (call !== c) return;
-      const r = await host.send(d.address, { kind: "offer", call: c.id, sdp: c.pc.localDescription.sdp, video: local.getVideoTracks().length > 0 });
+      const r = await tell(c.peer, { kind: "offer", call: c.id, sdp: c.pc.localDescription.sdp, video: local.getVideoTracks().length > 0 });
       if (call !== c) return;
       if (!r || !r.ok) return end(`${d.name} couldn't be called: ${(r && r.error) || "no answer"}`, true);
       playTone("ringback");
       c.timer = setTimeout(() => {
         if (call !== c || state.mode !== "calling") return;
-        host.send(c.peer.address, { kind: "cancel", call: c.id });
+        tell(c.peer, { kind: "cancel", call: c.id });
         end(`${d.name} didn't answer.`);
       }, RING_MS);
     } catch (e) {
@@ -418,9 +499,12 @@
     }
   }
 
+  // A signal to a call's other side: one that's a browser page (to) named in each.
+  const tell = (peer, signal) => host.send(peer.address, peer.to ? { ...signal, to: peer.to } : signal);
+
   function cancelCall() {
     if (!call || state.mode !== "calling") return;
-    host.send(call.peer.address, { kind: "cancel", call: call.id });
+    tell(call.peer, { kind: "cancel", call: call.id });
     end("");
   }
 
@@ -440,12 +524,12 @@
       await c.pc.setLocalDescription(await c.pc.createAnswer());
       await gathered(c.pc);
       if (call !== c) return;
-      const r = await host.send(c.peer.address, { kind: "answer", call: c.id, sdp: c.pc.localDescription.sdp });
+      const r = await tell(c.peer, { kind: "answer", call: c.id, sdp: c.pc.localDescription.sdp });
       if (!r || !r.ok) return end(`${c.peer.name} couldn't be reached: ${(r && r.error) || "no answer"}`, true);
       inCall(c);
     } catch (e) {
       if (call === c) {
-        host.send(c.peer.address, { kind: "hangup", call: c.id });
+        tell(c.peer, { kind: "hangup", call: c.id });
         end(`The call couldn't start: ${e.message}`, true);
       }
     }
@@ -453,7 +537,7 @@
 
   function decline() {
     if (!call || state.mode !== "ringing") return;
-    host.send(call.peer.address, { kind: "decline", call: call.id });
+    tell(call.peer, { kind: "decline", call: call.id });
     end("");
   }
 
@@ -503,7 +587,7 @@
 
   function hangup() {
     if (!call) return;
-    host.send(call.peer.address, { kind: "hangup", call: call.id });
+    tell(call.peer, { kind: "hangup", call: call.id });
     end("Call ended.");
   }
 
@@ -540,7 +624,7 @@
     if (!s || !s.kind) return;
     const same = call && call.id === s.call;
     if (s.kind === "offer") {
-      if (state.mode !== "idle") return host.send(s.from.address, { kind: "busy", call: s.call });
+      if (state.mode !== "idle") return tell(s.from, { kind: "busy", call: s.call });
       call = { id: s.call, peer: s.from, offer: s.sdp };
       $("caller").textContent = s.from.name;
       setMode("ringing");
@@ -700,8 +784,16 @@
       const s = await host.settings({ ringWhenClosed: $("ringClosed").checked });
       if (s && s.error) note(s.error, true);
     });
+    if ($("webOn")) {
+      $("webOn").addEventListener("change", async () => {
+        showWebSwitch({ want: $("webOn").checked });
+        const s = await host.settings({ web: $("webOn").checked });
+        showWebSwitch(s && s.web);
+      });
+    }
     if (!host) {
-      note("Cluster Call works in its app (and soon in a browser on your tailnet).", true);
+      if (onWebsite) askForDevice();
+      else note("Cluster Call works in its app, or on hand-tracker.com in a browser on your Tailscale network.", true);
       return;
     }
     host.onSignal((s) => onSignal(s).catch(() => {}));
@@ -712,7 +804,22 @@
     const hello = await host.hello();
     shown = !!hello.shown;
     me = hello.me;
-    $("me").textContent = me && me.name ? `This device: ${me.name}` : "This device isn't on Tailscale.";
+    $("me").textContent = host.web
+      ? `${(me && me.name) || "This browser"}, through ${(hello.home && hello.home.name) || host.base.replace(/^https:\/\//, "")} · rings only while this page is open`
+      : me && me.name ? `This device: ${me.name}` : "This device isn't on Tailscale.";
+    if (host.web) {
+      const other = Object.assign(document.createElement("a"), { href: "#", textContent: " (through another device)" });
+      other.onclick = (e) => {
+        e.preventDefault();
+        try {
+          localStorage.removeItem(VIA_KEY);
+        } catch {}
+        location.hash = "";
+        location.reload();
+      };
+      $("me").append(other);
+    }
+    showWebSwitch(hello.settings && hello.settings.web);
     $("ringClosed").checked = !!(hello.settings && hello.settings.ringWhenClosed);
     // (an iPhone rings only with the app open: no such choice there)
     if (hello.settings && hello.settings.canRingWhenClosed === false) $("ringClosed").closest("label").hidden = true;
@@ -727,6 +834,38 @@
     }, 30000);
   }
 
+  // (no device known to go through yet, on hand-tracker.com: its address asked for)
+  function askForDevice() {
+    const n = $("note");
+    n.className = "note";
+    n.textContent = "On hand-tracker.com, Cluster Call works through one of your computers or Pis on Tailscale: in its Cluster Call app, " +
+      "turn on Use from hand-tracker.com and open the link it shows. Or type that device's Tailscale name here: ";
+    const input = Object.assign(document.createElement("input"), { type: "text", placeholder: "pi.your-tailnet.ts.net", spellcheck: false, autocapitalize: "off" });
+    input.setAttribute("aria-label", "Your device's Tailscale name");
+    const go = Object.assign(document.createElement("button"), { textContent: "Use it" });
+    go.onclick = () => {
+      location.hash = `via=${encodeURIComponent(input.value.trim())}`;
+      location.reload();
+    };
+    input.addEventListener("keydown", (e) => e.key === "Enter" && go.click());
+    n.append(input, " ", go);
+  }
+
+  // A computer's Use from hand-tracker.com switch (electron/cluster-call.js): its HTTPS address, the link to open, or why not.
+  function showWebSwitch(w) {
+    const label = $("webLabel");
+    if (!label) return;
+    label.hidden = !w;
+    if (!w) return;
+    $("webOn").checked = !!w.want;
+    const line = $("webLine");
+    line.hidden = !w.want;
+    line.replaceChildren();
+    if (w.error) line.append(`⚠ ${w.error}`);
+    else if (w.link) line.append(Object.assign(document.createElement("a"), { href: w.link, target: "_blank", rel: "noopener", textContent: "Open hand-tracker.com/cluster-call.html" }), ` (through https://${w.address})`);
+    else if (w.want) line.append("Turning on…");
+  }
+
   window.__clusterCall = {
     state: () => ({
       mode: state.mode,
@@ -735,7 +874,8 @@
       cameraOff,
       remote: call && call.remoteState ? { ...call.remoteState } : null,
       note: $("note").textContent,
-      devices: list.map((d) => ({ name: d.name, app: d.app, online: d.online })),
+      devices: list.map((d) => ({ name: d.name, app: d.app, online: d.online, ...(d.to ? { web: true } : {}) })),
+      web: host && host.web ? { base: host.base, me: me && me.name } : null,
       connection: call && call.pc ? call.pc.connectionState : null,
       screen: screen ? { pip: screen.inPip(), full: screen.isFull(), pipButton: !$("pipBtn").hidden, fullButton: !$("fullBtn").hidden } : null,
     }),
