@@ -306,6 +306,14 @@ app.whenReady().then(async () => {
     check("...the call over: Hand Tracker's cameras stopped again (this call started them)", !!rigClosed, rig.commands);
 
 
+    // Each computer app's own page is in what's packaged (package.json's build files; these checks run from the folder,
+    // where every file is there: Cluster Call's own page was missing from its packages until 2026-11-27, a blank window).
+    const packaged = require("../package.json").build.files;
+    const mainSource = fs.readFileSync(path.join(ROOT, "electron/main.js"), "utf8");
+    const pages = [...mainSource.matchAll(/^\s+\w+: \{ name: "[^"]+", page: "([^"]+)"/gm)].map((m) => m[1]);
+    check("Each computer app's page is packaged with it (Cluster Call's too)", pages.includes("cluster-call.html") && pages.every((p) => packaged.includes(p)),
+      pages.filter((p) => !packaged.includes(p)));
+
     // Android lets the phone app send its signals at all: plain HTTP, which it refuses unless the app says so (this
     // computer's Java has no such rule, so the run below can't show it: every signal from a real phone was refused,
     // "Cleartext HTTP traffic not permitted", 2026-11-27).

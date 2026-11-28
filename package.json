@@ -89,6 +89,7 @@
       "remote.html",
       "remote-client.html",
       "cluster.html",
+      "cluster-call.html",
       "favicon.png",
       "apple-touch-icon.png",
       "*.js",
