@@ -518,6 +518,9 @@ contextBridge.exposeInMainWorld("desktop", {
     settings: (change) => ipcRenderer.invoke("cluster:settings", change),
     action: (what) => ipcRenderer.invoke("cluster:action", what),
     forget: (name) => ipcRenderer.invoke("cluster:forget", name),
+    // This computer's apps -> [{ kind, name, here, version, file, url }]; getApp(url): that one downloaded by the browser.
+    apps: () => ipcRenderer.invoke("cluster:apps"),
+    getApp: (url) => ipcRenderer.invoke("cluster:get-app", url),
     // Jobs: files (or a model) picked on this computer -> [{ path, name, size }]; a folder to save
     // results in; upload({ target, job, files }) and download({ target, job, dir }), each telling
     // onProgress(cb) how it's going.

@@ -203,4 +203,11 @@ set("CFBundleDisplayName", own.name);
 set("CFBundleName", own.name);
 set("NSCameraUsageDescription", own.camera);
 if (own.microphone) set("NSMicrophoneUsageDescription", own.microphone);
+// Its own link name (handtracker-<its kind>; Hand Tracker's own, handtracker-full, is in ios/App/App/Info.plist), so
+// Cluster can tell which of the apps are on this iPhone (iOS lets an app ask only about the names it lists:
+// LSApplicationQueriesSchemes; the user, 2026-11-27: "add a download link for all not downloaded apps from the cluster
+// app").
+const json = (key, value) => execFileSync("plutil", ["-replace", key, "-json", JSON.stringify(value), plist]);
+json("CFBundleURLTypes", [{ CFBundleURLName: own.id, CFBundleURLSchemes: [`handtracker-${kind}`] }]);
+if (kind === "cluster") json("LSApplicationQueriesSchemes", ["full", ...Object.keys(APPS)].map((k) => `handtracker-${k}`));
 console.log(`${own.name}: ${path.relative(process.cwd(), app)} (${own.id})`);

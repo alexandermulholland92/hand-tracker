@@ -212,6 +212,13 @@ if job in ("fix-install", "fix-remove"):
         print(json.dumps({"ok": True, "fix": name, "said": "Removed." + (" Restart this Pi for it to take effect." if name == "usb-current" else "")}))
 elif job == "wifi-test":
     print(json.dumps({"ok": True, "in": 0}))
+elif job == "install-app":  # (modules/installs.py: the app noted as here, as dpkg would then say)
+    p = os.environ.get("HT_CLUSTER_SIM_APPS")
+    have = [x for x in open(p).read().split(",") if x] if p and os.path.exists(p) else []
+    if p:
+        with open(p, "w") as f:
+            f.write(",".join(have + [sys.argv[2]]))
+    print(json.dumps({"ok": True, "asset": sys.argv[2] + "_1.1.0_arm64.deb"}))
 elif job == "install-hand-tracker":
     with open(os.environ["HT_CLUSTER_SIM_HT"], "w") as f:
         json.dump({"commit": os.environ["HT_TEST_NEW"], "installedAt": time.time()}, f)
@@ -448,6 +455,34 @@ def raw(port, path, headers=None, method="GET", data=None):
         return e.code, e.headers, e.read()
 
 
+def check_installs(tmp, gh, ht):
+    """Hand Tracker's apps on this device (modules/installs.py): which are here and which aren't; one put in from its
+    Install button (the root helper's install-app), then listed as here; one that's here already left as it is."""
+    apps = os.path.join(tmp, "sim-apps.txt")
+    with open(apps, "w") as f:
+        f.write("hand-tracker,cluster-call")
+    node, port = start_node(tmp, gh, ht, extra=dict(HT_CLUSTER_SIM_APPS=apps))
+    try:
+        st = wait_for(lambda: (module(port, "installs").get("status") or {}).get("apps"), 15) and module(port, "installs")["status"]
+        here = [a["slug"] for a in (st or {}).get("apps", []) if a["here"]]
+        check("Hand Tracker's apps: the ones here and the ones not, each of the six",
+              bool(st) and len(st["apps"]) == 6 and here == ["hand-tracker", "cluster-call"] and st.get("canInstall") is True
+              and st["summary"].startswith("Not here yet: Hand Mouse, Remote Recording, Recording Converter, Cluster."), st)
+        names = [a["name"] for a in module(port, "installs").get("actions", [])]
+        check("...each with its Install button (the page shows only the ones not here)", "install-hand-mouse" in names and "install-cluster-call" in names, names)
+        code, d = ask(port, "POST", "/api/action", {"module": "installs", "action": "install-hand-mouse"})
+        check("...Install puts it in from the latest build (the root helper's install-app)", code == 200 and "Putting in Hand Mouse" in str(d.get("message")), (code, d))
+        done = wait_for(lambda: "install-app hand-mouse" in " ".join(helper_lines(tmp)) and any(
+            a["slug"] == "hand-mouse" and a["here"] for a in (module(port, "installs").get("status") or {}).get("apps", [])), 20)
+        st = module(port, "installs").get("status") or {}
+        check("...then it's listed as here", bool(done) and "Hand Mouse" not in st.get("summary", "") and not st.get("doing"), st)
+        code, d = ask(port, "POST", "/api/action", {"module": "installs", "action": "install-cluster-call"})
+        check("...one that's here already is left as it is", code == 200 and "here already" in str(d.get("message"))
+              and "install-app cluster-call" not in " ".join(helper_lines(tmp)), (code, d))
+    finally:
+        node.terminate()
+
+
 def check_page(tmp, gh, ht):
     """The Cluster page in a browser: the Pi serves it itself (only its own files, never in another site's
     frame), passes the page's requests for another Pi of the cluster on, and gives one-time download links."""
@@ -606,6 +641,9 @@ def main():
 
     # The Cluster page in a browser
     check_page(tmp, gh, ht)
+
+    # Hand Tracker's apps on this device: the missing ones put in
+    check_installs(tmp, gh, ht)
 
     # The real root helper's downloads (as a user other than root: pointed at the stand-in GitHub)
     loader = importlib.machinery.SourceFileLoader("ht_cluster_root", os.path.join(NODE, "ht-cluster-root"))

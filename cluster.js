@@ -578,6 +578,9 @@
     if (m.name === "rig" && st.cameras && st.cameras.length) block.append(cameraLine(st.cameras));
     if (m.name === "rig" && st.space) block.append(el("div", { className: "cams" }, `Space: ${st.space}`));
     if (m.name === "health" && st.boots && st.boots.length) block.append(bootsBox(st.boots));
+    if (m.name === "installs" && (st.apps || []).some((x) => x.here)) {
+      block.append(el("div", { className: "cams" }, `Here: ${st.apps.filter((x) => x.here).map((x) => (x.version ? `${x.name} ${x.version}` : x.name)).join(", ")}`));
+    }
     const buttons = (m.actions || []).filter((a) => !a.hidden && actionMakesSense(m, a));
     if (live && buttons.length) {
       block.append(el("div", { className: "buttons" }, buttons.map((a) => {
@@ -596,6 +599,8 @@
     if (m.name === "rig" && a.name === "restart") return st.app === "running" && st.answering;
     if (m.name === "downloads" && a.name === "getLibtorrent") return st.ready && !st.home && st.pieces === false;
     if (m.name === "downloads" && a.name === "getTransmission") return st.ready === false && !st.home;
+    // (Hand Tracker's apps, modules/installs.py: only the ones not on that device, where it can put them in, one at a time)
+    if (m.name === "installs" && a.name.startsWith("install-")) return !!st.canInstall && !st.doing && (st.apps || []).some((x) => `install-${x.slug}` === a.name && !x.here);
     return true;
   }
 
@@ -1655,6 +1660,102 @@
   // iPhone: an app can't install apps there, so only the notice, for a build with Cluster's iPhone
   // app in it; installing stays with AltServer.
   const RELEASE = "https://api.github.com/repos/alexandermulholland92/hand-tracker/releases/tags/latest-build";
+  // ---------- this computer's apps (Cluster's own app on a computer: electron/main.js ourApps) ----------
+  // Hand Tracker's apps that aren't on this computer yet (the user, 2026-11-27: "add a download link for all not
+  // downloaded apps from the cluster app"), each with its download: the Latest build release's file for this system and
+  // processor, saved by the browser, then opened or installed as the website's Download menu says (a computer's app
+  // can't put another in for you). Offered until Not now, and again once another is missing.
+  function desktopApps() {
+    const D = window.desktop && window.desktop.cluster;
+    if (!D || !D.apps) return;
+    const st = { apps: [], error: "", looked: 0 };
+    const remember = (k, v) => {
+      try {
+        if (v === undefined) return localStorage.getItem(k);
+        localStorage.setItem(k, v);
+      } catch {}
+      return null;
+    };
+    const how = navigator.platform && /Win/i.test(navigator.platform)
+      ? "Each is one file: open it from your Downloads (Windows may ask: More info, then Run anyway)."
+      : navigator.platform && /Mac/i.test(navigator.platform)
+        ? "Open the downloaded .dmg and drag the app into Applications (the first time: System Settings, Privacy & Security, Open Anyway)."
+        : "Install each downloaded .deb with: sudo apt install ./<its file> (from your Downloads).";
+    async function look() {
+      try {
+        st.apps = (await D.apps()) || [];
+        st.error = "";
+      } catch (e) {
+        st.error = `Couldn't see this computer's apps: ${(e && e.message) || e}`;
+      }
+      st.looked = Date.now();
+      show();
+    }
+    const get = (list) => {
+      for (const a of list) D.getApp(a.url);
+      say(`Downloading ${list.map((a) => a.name).join(", ")} in your browser. ${how}`);
+    };
+    function show() {
+      const notice = $("appNotice");
+      const box = $("phoneAppsBox");
+      const btn = $("phoneAppsBtn");
+      const absent = st.apps.filter((a) => !a.here);
+      const key = absent.map((a) => a.kind).sort().join(",");
+      const offer = absent.length > 0 && remember("clusterAbsentSeen") !== key;
+      btn.hidden = false;
+      btn.title = "Hand Tracker's apps on this computer, and the ones not here yet to download";
+      btn.textContent = absent.length ? `This computer's apps (${absent.length} not here)` : "This computer's apps";
+      btn.className = offer ? "main" : "";
+      notice.hidden = !offer || !box.hidden;
+      if (offer) {
+        const go = el("button", { className: "main", textContent: absent.length === 1 ? `Download ${absent[0].name}` : "Download them" });
+        go.onclick = () => get(absent);
+        const see = el("button", { textContent: "See all" });
+        see.onclick = () => {
+          box.hidden = false;
+          show();
+        };
+        const later = el("button", { textContent: "Not now" });
+        later.onclick = () => {
+          remember("clusterAbsentSeen", key);
+          show();
+        };
+        notice.replaceChildren(el("div", {}, `Not on this computer yet: ${absent.map((a) => a.name).join(", ")}.`), el("div", { className: "buttons" }, go, see, later));
+      }
+      if (box.hidden) return;
+      const close = el("button", { textContent: "Close" });
+      close.onclick = () => {
+        box.hidden = true;
+        show();
+      };
+      const rows = st.apps.map((a) => {
+        let button = null;
+        if (!a.here) {
+          button = el("button", { textContent: "Download" });
+          button.onclick = () => get([a]);
+        }
+        return el("div", { className: "app-row" },
+          el("div", { className: "what" }, el("b", {}, a.name), ` — ${a.here ? `on this computer${a.version ? ` (${a.version})` : ""}` : `not on this computer · ${a.file}`}`),
+          button);
+      });
+      box.replaceChildren(...[
+        el("div", { className: "top" }, el("span", { className: "name" }, "This computer's apps"), el("span", { className: "sub" }, "from the Latest build"), close),
+        st.error ? el("div", { className: "warn-line" }, "⚠ " + st.error) : null,
+        ...rows,
+        el("div", { className: "hint" }, `${how} On Windows, an app counts as here once it's been opened on this computer.`),
+      ].filter(Boolean));
+    }
+    $("phoneAppsBtn").onclick = () => {
+      $("phoneAppsBox").hidden = !$("phoneAppsBox").hidden;
+      show();
+      if (!$("phoneAppsBox").hidden) look();
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && Date.now() - st.looked > 60000) look();
+    });
+    look();
+  }
+
   function phoneApps() {
     const cap = window.Capacitor;
     const U = cap && cap.Plugins && cap.Plugins.AppUpdates;
@@ -1687,6 +1788,19 @@
     };
 
     async function look(github = true) {
+      if (ios && cap.Plugins && cap.Plugins.Cluster && cap.Plugins.Cluster.installedApps) {
+        try {
+          const here = ((await cap.Plugins.Cluster.installedApps()) || {}).apps || {};
+          const built = document.querySelector('meta[name="hand-tracker-build"]');
+          const v = (built && built.dataset.version) || "1.1.0";
+          const IPHONE_APPS = [["full", "Hand Tracker", "HandTracker"], ["mouse", "Hand Mouse", "HandMouse"], ["remote", "Remote Recording", "RemoteRecording"],
+            ["converter", "Recording Converter", "RecordingConverter"], ["cluster", "Cluster", "Cluster"], ["clustercall", "Cluster Call", "ClusterCall"]];
+          st.iphone = IPHONE_APPS.map(([kind, name, file]) => ({ kind, name, here: kind === "cluster" || here[kind] === true, file: `${file}-${v}-ios-unsigned.ipa`,
+            url: `https://github.com/alexandermulholland92/hand-tracker/releases/download/latest-build/${file}-${v}-ios-unsigned.ipa` }));
+        } catch {
+          st.iphone = null;
+        }
+      }
       if (U) {
         try {
           const a = await U.apps();
@@ -1741,7 +1855,8 @@
         say(`${st.recording} is recording or saving a take: the apps update by themselves once it stops.`, true);
         return;
       }
-      if (!confirm(`Update ${names(pkgs)} to ${build()}? Android may ask before each.${self ? " Cluster updates itself last and closes then: open it again afterwards." : ""}`)) return;
+      const fresh = pkgs.every((p) => !(st.apps.find((a) => a.pkg === p) || {}).installed); // (none here yet: put on)
+      if (!confirm(`${fresh ? "Install" : "Update"} ${names(pkgs)}${fresh ? ` (${build()})` : ` to ${build()}`}? Android may ask before each.${self ? " Cluster updates itself last and closes then: open it again afterwards." : ""}`)) return;
       st.busy = true;
       for (const p of pkgs) st.line[p] = { text: "Waiting its turn…" };
       show();
@@ -1771,7 +1886,15 @@
       const box = $("phoneAppsBox");
       if (ios) {
         const fresh = !!(st.latest && mine() && st.latest.commit !== mine() && remember("clusterSeenBuild") !== st.latest.commit);
-        notice.hidden = !fresh;
+        // (the apps not on this iPhone: each with its download, the Latest build's .ipa, put on as before, with
+        // AltStore or a computer's Sideloadly; the user, 2026-11-27: "add a download link for all not downloaded apps")
+        const absent = (st.iphone || []).filter((a) => !a.here);
+        const absentKey = absent.map((a) => a.kind).sort().join(",");
+        const offerAbsent = !fresh && absent.length > 0 && remember("clusterAbsentSeen") !== absentKey;
+        $("phoneAppsBtn").hidden = !st.iphone;
+        $("phoneAppsBtn").textContent = absent.length ? `This iPhone's apps (${absent.length} not here)` : "This iPhone's apps";
+        $("phoneAppsBtn").className = offerAbsent ? "main" : "";
+        notice.hidden = !(fresh || offerAbsent) || !box.hidden;
         if (fresh) {
           const ok = el("button", { textContent: "OK" });
           ok.onclick = () => {
@@ -1779,15 +1902,52 @@
             show();
           };
           notice.replaceChildren(el("div", {}, `A newer build of the apps is out (${build()}). Install it with AltServer, as before.`), el("div", { className: "buttons" }, ok));
+        } else if (offerAbsent) {
+          const see = el("button", { className: "main", textContent: "See them" });
+          see.onclick = () => {
+            box.hidden = false;
+            show();
+          };
+          const later = el("button", { textContent: "Not now" });
+          later.onclick = () => {
+            remember("clusterAbsentSeen", absentKey);
+            show();
+          };
+          notice.replaceChildren(el("div", {}, `Not on this iPhone yet: ${absent.map((a) => a.name).join(", ")}. Each can be downloaded here, then put on with AltStore (or a computer's Sideloadly), as before.`),
+            el("div", { className: "buttons" }, see, later));
         }
+        if (box.hidden || !st.iphone) return;
+        const close = el("button", { textContent: "Close" });
+        close.onclick = () => {
+          box.hidden = true;
+          show();
+        };
+        const rows = st.iphone.map((a) => {
+          let link = null;
+          if (!a.here) {
+            link = el("a", { href: a.url, target: "_blank", rel: "noopener", textContent: "Download" });
+            link.className = "button-link";
+          }
+          return el("div", { className: "app-row" }, el("div", { className: "what" }, el("b", {}, a.name), ` — ${a.here ? "on this iPhone" : `not on this iPhone · ${a.file}`}`), link);
+        });
+        box.replaceChildren(...[
+          el("div", { className: "top" }, el("span", { className: "name" }, "This iPhone's apps"), el("span", { className: "sub" }, "from the Latest build"), close),
+          ...rows,
+          el("div", { className: "hint" }, "An iPhone app can't put another on: download its .ipa here, then open it with AltStore (or put it on from a computer with Sideloadly or AltServer), as hand-tracker.com's Download menu says."),
+        ]);
         return;
       }
       const older = st.apps.filter(newer);
       const absent = st.apps.filter(missing);
+      // (the apps not on this phone yet, offered until Not now: again once another is missing; the user, 2026-11-27:
+      // "add a download link for all not downloaded apps from the cluster app")
+      const absentKey = absent.map((a) => a.pkg).sort().join(",");
+      const offerAbsent = absent.length > 0 && remember("clusterAbsentSeen") !== absentKey;
+      const counts = [older.length ? `${older.length} newer` : "", absent.length ? `${absent.length} not here` : ""].filter(Boolean).join(", ");
       $("phoneAppsBtn").hidden = false;
-      $("phoneAppsBtn").textContent = older.length ? `This phone's apps (${older.length} newer)` : "This phone's apps";
-      $("phoneAppsBtn").className = older.length ? "main" : "";
-      notice.hidden = !older.length || !box.hidden;
+      $("phoneAppsBtn").textContent = counts ? `This phone's apps (${counts})` : "This phone's apps";
+      $("phoneAppsBtn").className = older.length || offerAbsent ? "main" : "";
+      notice.hidden = !(older.length || offerAbsent) || !box.hidden;
       if (older.length) {
         const go = el("button", { className: "main", textContent: older.length === 1 ? "Update it" : "Update them", disabled: st.busy });
         go.onclick = () => update(older.map((a) => a.pkg));
@@ -1801,6 +1961,16 @@
           : asking.length ? ` Android asks once before Cluster updates ${asking.map((a) => a.name).join(", ")}: tap Update.${asking.length < older.length ? " The others update by themselves on Wi-Fi." : ""}`
             : " They update by themselves on Wi-Fi, usually within a few hours, or now with Update.";
         notice.replaceChildren(el("div", {}, `Newer builds of this phone's apps are out (${build()}): ${older.map((a) => a.name).join(", ")}.${how}`), el("div", { className: "buttons" }, go, see));
+      } else if (offerAbsent) {
+        const go = el("button", { className: "main", textContent: absent.length === 1 ? `Install ${absent[0].name}` : "Install them", disabled: st.busy });
+        go.onclick = () => update(absent.map((a) => a.pkg));
+        const later = el("button", { textContent: "Not now" });
+        later.onclick = () => {
+          remember("clusterAbsentSeen", absentKey);
+          show();
+        };
+        notice.replaceChildren(el("div", {}, `Not on this phone yet: ${absent.map((a) => a.name).join(", ")}. Cluster can install ${absent.length === 1 ? "it" : "them"} from the latest build (${build()}).`),
+          el("div", { className: "buttons" }, go, later));
       }
       if (box.hidden) return;
       const again = el("button", { textContent: "Look again", disabled: st.busy });
@@ -1846,6 +2016,12 @@
         $("phoneAppsBox").hidden = !$("phoneAppsBox").hidden;
         show();
         if (!$("phoneAppsBox").hidden && !st.busy) look(Date.now() - st.looked > 60000);
+      };
+    }
+    if (ios) {
+      $("phoneAppsBtn").onclick = () => {
+        $("phoneAppsBox").hidden = !$("phoneAppsBox").hidden;
+        show();
       };
     }
     // (back from Android's settings or its question: the apps again; GitHub again after a day)
@@ -1933,6 +2109,8 @@
     $("pickFiles").textContent = "Files from this device…";
   }
   // On a phone: a Pi set up already, by its Tailscale name (Add a Pi); this phone's apps.
+  // (a computer: its own apps, the ones not here to download)
+  if (window.desktop && window.desktop.cluster) desktopApps();
   if (api.phone) {
     phoneApps();
     $("pickFiles").textContent = "Files from this phone…";

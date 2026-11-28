@@ -209,7 +209,20 @@ public class ClusterPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "request", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "save", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "installedApps", returnType: CAPPluginReturnPromise),
     ]
+
+    // Which of the project's apps are on this iPhone: each answers to its own link name (handtracker-<kind>: scripts/
+    // ios-variant.js), which iOS lets Cluster ask about (its LSApplicationQueriesSchemes). -> { apps: { kind: true|false } }
+    @objc func installedApps(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            var apps: [String: Bool] = [:]
+            for kind in ["full", "mouse", "remote", "converter", "cluster", "clustercall"] {
+                if let url = URL(string: "handtracker-\(kind)://") { apps[kind] = UIApplication.shared.canOpenURL(url) }
+            }
+            call.resolve(["apps": apps])
+        }
+    }
 
     static let PORT = 47830
     static let TARGET = "^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*)(:(\\d{1,5}))?$"

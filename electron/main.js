@@ -408,6 +408,64 @@ function handle(channel, fn) {
   });
 }
 
+// ---------- The apps on this computer (the user, 2026-11-27: "add a download link for all not downloaded apps from the
+// cluster app") ----------
+// Each packaged app notes itself as it starts (%APPDATA%/Hand Tracker Apps/seen.json, and its macOS and Linux
+// counterparts): on Windows, where the apps are single files run where they're saved, that's how Cluster (here, and
+// a Windows PC's Cluster service: cluster/node/modules/installs.py) knows which are on it. Not from the source folder
+// or the checks (not packaged).
+const OUR_APPS = [
+  { kind: "full", name: "Hand Tracker", file: "HandTracker", deb: "hand-tracker" },
+  { kind: "mouse", name: "Hand Mouse", file: "HandMouse", deb: "hand-mouse" },
+  { kind: "remote", name: "Remote Recording", file: "RemoteRecording", deb: "remote-recording" },
+  { kind: "converter", name: "Recording Converter", file: "RecordingConverter", deb: "recording-converter" },
+  { kind: "cluster", name: "Cluster", file: "Cluster", deb: "hand-tracker-cluster" },
+  { kind: "clustercall", name: "Cluster Call", file: "ClusterCall", deb: "cluster-call" },
+];
+const seenFile = () => path.join(app.getPath("appData"), "Hand Tracker Apps", "seen.json");
+function readSeen() {
+  try {
+    const s = JSON.parse(fs.readFileSync(seenFile(), "utf8"));
+    return s && typeof s === "object" ? s : {};
+  } catch {
+    return {};
+  }
+}
+app.whenReady().then(() => {
+  if (!app.isPackaged) return;
+  try {
+    const seen = readSeen();
+    seen[APP.kind] = { version: app.getVersion(), at: new Date().toISOString() };
+    fs.mkdirSync(path.dirname(seenFile()), { recursive: true });
+    fs.writeFileSync(seenFile(), JSON.stringify(seen, null, 1));
+  } catch {}
+});
+// The apps for this computer: each here or not, and where to download it (the Latest build release's file for this
+// system and processor, as the website's Download menu names them).
+async function ourApps() {
+  const v = require("../package.json").version; // (the release's files are named with it; from the folder, app.getVersion() is Electron's)
+  const RELEASE = "https://github.com/alexandermulholland92/hand-tracker/releases/download/latest-build/";
+  const arm = process.arch === "arm64";
+  const fileOf = (a) => (process.platform === "win32" ? `${a.file}-${v}-portable.exe` : process.platform === "darwin" ? `${a.file}-${v}-mac-${arm ? "arm64" : "x64"}.dmg` : `${a.deb}_${v}_${arm ? "arm64" : "amd64"}.deb`);
+  let here = {};
+  if (process.platform === "linux") {
+    const out = await new Promise((resolve) => require("child_process").execFile("dpkg-query", ["-W", "-f", "${Package} ${db:Status-Status} ${Version}\n", ...OUR_APPS.map((a) => a.deb)], { timeout: 15000 }, (_err, stdout) => resolve(String(stdout || ""))));
+    for (const line of out.split("\n")) {
+      const [pkg, state, version] = line.trim().split(/\s+/);
+      const a = OUR_APPS.find((x) => x.deb === pkg);
+      if (a && state === "installed") here[a.kind] = version || "";
+    }
+  } else if (process.platform === "darwin") {
+    for (const a of OUR_APPS) {
+      if (["/Applications", path.join(os.homedir(), "Applications")].some((d) => fs.existsSync(path.join(d, `${a.name}.app`)))) here[a.kind] = "";
+    }
+  } else {
+    for (const [kind, s] of Object.entries(readSeen())) here[kind] = (s && s.version) || "";
+  }
+  here[APP.kind] = here[APP.kind] || v; // (this one, here whatever it's run from)
+  return OUR_APPS.map((a) => ({ kind: a.kind, name: a.name, here: a.kind in here, version: here[a.kind] || "", file: fileOf(a), url: RELEASE + fileOf(a) }));
+}
+
 // ---------- Cluster (its own app): the Pis running Cluster's service (cluster.js) ----------
 if (APP.kind === "cluster") {
   const { Cluster } = require("./cluster");
@@ -417,6 +475,13 @@ if (APP.kind === "cluster") {
   handle("cluster:settings", (_e, change) => theCluster().settings(change));
   handle("cluster:action", (_e, what) => theCluster().action(what));
   handle("cluster:forget", (_e, name) => theCluster().forget(name));
+  // This computer's apps, and one not here downloaded through the browser (only the Latest build release's files).
+  handle("cluster:apps", () => ourApps());
+  handle("cluster:get-app", (_e, url) => {
+    if (!/^https:\/\/github\.com\/alexandermulholland92\/hand-tracker\/releases\/download\/latest-build\/[A-Za-z0-9._-]+$/.test(String(url || ""))) return false;
+    shell.openExternal(String(url));
+    return true;
+  });
   // Jobs: files from this computer (only ones picked here are sent), and a job's results saved here.
   const picked = new Set();
   const pick = async (event, options) => {

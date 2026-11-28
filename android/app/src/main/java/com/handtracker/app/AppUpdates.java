@@ -70,6 +70,7 @@ final class AppUpdates {
             {"com.handtracker.mouse", "Hand Mouse", "HandMouse"},
             {"com.handtracker.remote", "Remote Recording", "RemoteRecording"},
             {"com.handtracker.converter", "Recording Converter", "RecordingConverter"},
+            {"com.handtracker.clustercall", "Cluster Call", "ClusterCall"}, // (2026-11-27: offered to phones without it too)
             {"com.handtracker.cluster", "Cluster", "Cluster", "PiCluster"},
     };
     // (the apps that record: they say whether they're recording, AppStateProvider.java)

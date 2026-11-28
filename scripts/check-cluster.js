@@ -218,6 +218,24 @@ app.whenReady().then(async () => {
     const buttons = await js("[...document.querySelectorAll('#pis button')].map((b) => b.textContent)");
     check("...and its button", buttons.includes("Poke it"), buttons);
     check("The updates module's buttons are there", buttons.includes("Check for updates") && buttons.includes("Restart this device"), buttons);
+    // Hand Tracker's apps on the Pi (modules/installs.py): an Install button only for each one not there.
+    const installButtons = buttons.filter((b) => /^Install /.test(b));
+    check("The Pi's missing apps each have an Install button (none for one it has)",
+      installButtons.length > 0 && installButtons.every((b) => ["Install Hand Tracker", "Install Hand Mouse", "Install Remote Recording", "Install Recording Converter", "Install Cluster", "Install Cluster Call"].includes(b)),
+      installButtons);
+    // This computer's apps: Cluster here, each of the others with a download of this system's file.
+    const mine = await until(() => js(`(async () => {
+      const list = await window.desktop.cluster.apps();
+      document.getElementById("phoneAppsBtn").click();
+      await new Promise((r) => setTimeout(r, 600));
+      return { list, btn: document.getElementById("phoneAppsBtn").textContent, box: document.getElementById("phoneAppsBox").textContent };
+    })()`));
+    const fileRe = process.platform === "win32" ? /-1\.\d+\.\d+-portable\.exe$/ : process.platform === "darwin" ? /-mac-(arm64|x64)\.dmg$/ : /_(amd64|arm64)\.deb$/;
+    check("This computer's apps: Cluster here, the others not yet, each with a download of this system's file from the Latest build",
+      !!mine && mine.list.length === 6 && mine.list.find((a) => a.kind === "cluster").here && mine.list.filter((a) => !a.here).every((a) => fileRe.test(a.file)
+        && a.url.startsWith("https://github.com/alexandermulholland92/hand-tracker/releases/download/latest-build/")) && /This computer's apps/.test(mine.btn) && /not on this computer/.test(mine.box),
+      mine);
+    await js(`document.getElementById("phoneAppsBox").hidden = true; true`);
 
     // ⚙: a module turned off; another's setting changed
     await js("[...document.querySelectorAll('#pis button')].find((b) => b.textContent === '⚙').click(); null");

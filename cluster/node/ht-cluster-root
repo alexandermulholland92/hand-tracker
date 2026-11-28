@@ -6,6 +6,8 @@ It takes nothing from that account but the job's name: whatever it installs, it 
 from this project's GitHub "Latest build" release and checks first.
 
   ht-cluster-root install-hand-tracker   the latest build's Hand Tracker .deb for this Pi, put in
+  ht-cluster-root install-app APP        another of the project's apps from the latest build, put in (APP: hand-mouse,
+                                         remote-recording, recording-converter, hand-tracker-cluster, cluster-call)
   ht-cluster-root update-cluster         the latest build's cluster/node files, into /opt/ht-cluster (with the
                                          Cluster page's files, which the service serves itself, in web/)
   ht-cluster-root page                   the Cluster page's files for the version of the service that's here,
@@ -245,6 +247,41 @@ def install_hand_tracker():
         json.dump({"commit": rel["commit"], "asset": asset["name"], "updated": asset.get("updated_at"), "digest": digest, "at": time.time()}, f)
     os.chmod(RECORD + ".new", 0o644)
     os.replace(RECORD + ".new", RECORD)
+    return {"commit": rel["commit"], "asset": asset["name"]}
+
+
+# The project's other apps a Pi can have (their .deb packages, each named as its app: scripts/dist.js), put in from
+# Cluster's page (modules/installs.py). Hand Tracker itself is install-hand-tracker's.
+APPS = ("hand-mouse", "remote-recording", "recording-converter", "hand-tracker-cluster", "cluster-call")
+
+
+def install_app(app):
+    """One of APPS from the latest build, for this Pi's processor: checked against GitHub's size and SHA-256, then put in
+    (as Hand Tracker is: apt, its package's own name checked first)."""
+    if app not in APPS:
+        raise Failed("Apps: " + ", ".join(APPS))
+    rel = release()
+    a = arch()
+    asset = next((x for x in rel.get("assets") or [] if re.fullmatch(r"%s_[^_]+_%s\.deb" % (re.escape(app), re.escape(a)), str(x.get("name") or ""))), None)
+    if not asset:
+        raise Failed("The latest build has no %s for %s." % (app, a))
+    digest = str(asset.get("digest") or "")
+    os.makedirs(CACHE, exist_ok=True)
+    path = os.path.join(CACHE, app + ".deb")
+    download(str(asset["browser_download_url"]), path, asset.get("size"), digest[7:] if digest.startswith("sha256:") else None)
+    try:
+        code, out, err = run(["dpkg-deb", "-f", path, "Package"], 60)
+        if code != 0 or out.strip() != app:
+            raise Failed("That download isn't %s's package." % app)
+        run(["dpkg", "--configure", "-a"], 1800, {"DEBIAN_FRONTEND": "noninteractive"})  # (one left half done before, finished first)
+        code, out, err = apt(["install", "-y", "-q", "--reinstall",
+                              "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold", path],
+                             1800, {"DEBIAN_FRONTEND": "noninteractive"})
+        if code != 0:
+            raise Failed("It didn't go in: %s" % apt_why(out, err))
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
     return {"commit": rel["commit"], "asset": asset["name"]}
 
 
@@ -988,7 +1025,8 @@ def wifi_test():
 
 # name: (what it does, how many words after it: 0, or None for "as many as it checks itself", which lock).
 # (Transmission's jobs have a lock of their own: they don't wait behind a long system update.)
-JOBS = {"install-hand-tracker": (install_hand_tracker, 0, "updates"), "update-cluster": (update_cluster, 0, "updates"),
+JOBS = {"install-hand-tracker": (install_hand_tracker, 0, "updates"), "install-app": (install_app, 1, "updates"),
+        "update-cluster": (update_cluster, 0, "updates"),
         "verify-cluster": (verify_cluster, 0, "updates"),
         "page": (fetch_page, 0, "updates"),
         "os-check": (os_check, 0, "updates"), "os-upgrade": (os_upgrade, 0, "updates"), "reboot": (reboot, 0, "updates"),
