@@ -12,7 +12,13 @@
  *     index finger are the volume (pinched shut, silent).
  * With no hand for the note it's silent; with no hand for the volume it plays at full volume, as a real
  * theremin does with no hand near its loop. The note slides freely, as on a real theremin, or with Snap to
- * notes lands on a key's scale. Its tone: a theremin's, nearly a pure sine with a little vibrato.
+ * notes lands on a key's scale. Its Sound (the user, 2026-11-27: "more ethereal rather than monotonal", "A choice of
+ * sounds"): Classic, a theremin's own (nearly a pure sine with a little vibrato, dry, as it first was); Ethereal hall
+ * (the default: that voice in a long, airy hall with a soft echo, gliding more slowly between notes, its vibrato
+ * swelling as a note is held; the hall rings on a moment after the hand goes); Choir (four voices a few cents apart,
+ * drifting, with a fifth an octave above, softly, in the same hall). Like a real theremin, the right hand plays across
+ * the right half of the picture (from the pitch line at its edge to the middle): its whole range within an arm's
+ * reach (it was 72% of the picture, which a hand's natural reach covered a third of: "its pitch hardly changes").
  *
  * Its sound goes into recordings started while it's on: camera-video.js's clips (remote recording's takes,
  * Sentry mode's clips), mixed with their microphone's sound or as their only sound, and the Record card's
@@ -41,11 +47,20 @@
   // The notes played, as MIDI numbers (60 = middle C): three octaves up from the lowest.
   const RANGES = { low: { from: 36, octaves: 3 }, mid: { from: 48, octaves: 3 }, high: { from: 60, octaves: 3 } };
   const NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
-  const DEFAULTS = { style: "theremin", snap: false, key: 0, scale: "major", range: "mid", volume: 0.6 };
+  const DEFAULTS = { style: "theremin", snap: false, key: 0, scale: "major", range: "mid", volume: 0.6, sound: "ethereal" };
+  // Its sounds: each voice's offset (cents), the octave-above voice's level, the glide between notes (s), the vibrato
+  // (its rate, and its depth in cents while the note moves and once it's held), the hall's and the echo's levels, the
+  // dry sound's, and the tone's top (Hz).
+  const SOUNDS = {
+    classic: { voices: [0], octave: 0, glide: 0.03, vibrato: { hz: 5.5, moving: 6, held: 6 }, hall: 0, echo: 0, dry: 1, top: 3800 },
+    ethereal: { voices: [0], octave: 0.05, glide: 0.09, vibrato: { hz: 5.2, moving: 4, held: 22 }, hall: 0.55, echo: 0.24, dry: 0.78, top: 3200 },
+    choir: { voices: [-11, -4, 3, 10], octave: 0.16, glide: 0.07, vibrato: { hz: 4.8, moving: 5, held: 15 }, hall: 0.65, echo: 0.16, dry: 0.62, top: 2500, warm: true },
+  };
+  const HELD_S = 0.35; // (a note held this long: its vibrato swells)
 
   // Where hands play, in the picture (0-1: x across, unmirrored, so 0 is the player's right-hand side for a
   // camera facing them; y down):
-  const AERIAL = { near: 0.03, far: 0.75 }; // the pitch line at x 0: the right hand's nearest part this far from it
+  const AERIAL = { near: 0.03, far: 0.45 }; // the pitch line at x 0: the right hand's nearest part this far from it
   const LOOP = { quiet: 0.88, loud: 0.4 }; // the left hand's palm this high: silent .. full ("theremin", "distance")
   const UP = { low: 0.88, high: 0.12 }; // the palm this high: the lowest .. the highest note ("updown", "onehand")
   const UP_VOLUME = { low: 0.88, high: 0.35 }; // the left palm this high: silent .. full ("updown")
@@ -54,7 +69,6 @@
   const PINCH = { shut: 0.2, open: 0.95 }; // thumb tip to index tip, in palm lengths: silent .. full
   const HOLD = 0.25; // semitones further a snapped note must be passed before the next one takes over
   const LEVEL = 0.32; // the loudest it plays (of the most a speaker takes), at the Volume slider's top
-  const VIBRATO = { hz: 5.5, cents: 6 };
   const PALM = [0, 5, 9, 13, 17];
 
   const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -143,42 +157,142 @@
   }
 
   // ---------- Sound ----------
-  let ctx = null, osc = null, amp = null, master = null, out = null, analyser = null;
+  // voices (one per offset, and the octave above) -> tone -> amp (what the hands ask for) -> dry, the hall (a made-up
+  // reverberation of a big room) and the echo -> master (the Volume slider) -> out. The hall and the echo come after
+  // the hands' volume, so they ring on as a note ends.
+  let ctx = null, voices = [], vibrato = null, vibratoDepth = null, tone = null, amp = null, dry = null, hallSend = null, echoSend = null;
+  let master = null, out = null, analyser = null;
   let mixes = 0, sleepTimer = null, sessionWas = null, soundError = "";
+  let heldSince = 0, lastNote = null, nowHz = hz(60);
+  const PLAIN = [0, 1, 0.1, 0.035, 0.015, 0.006]; // (a theremin's: nearly a pure sine, a touch of its 2nd to 5th harmonics)
+  const WARM = [0, 1, 0.32, 0.16, 0.08, 0.04, 0.02]; // (a sung "oo")
+
+  // A big room's reverberation, made up: noise, a little darker as it goes, dying away over about 3 s; a slightly
+  // different one in each ear.
+  function hallImpulse(seconds = 3.2) {
+    const rate = ctx.sampleRate, n = Math.floor(rate * seconds);
+    const buf = ctx.createBuffer(2, n, rate);
+    for (let c = 0; c < 2; c++) {
+      const d = buf.getChannelData(c);
+      let lp = 0;
+      for (let i = 0; i < n; i++) {
+        const t = i / n;
+        lp += (Math.random() * 2 - 1 - lp) * (0.55 - 0.35 * t);
+        d[i] = lp * Math.pow(1 - t, 2.4) * (i < rate * 0.012 ? i / (rate * 0.012) : 1);
+      }
+    }
+    return buf;
+  }
 
   function build() {
     const AC = global.AudioContext || global.webkitAudioContext;
     if (!AC) throw new Error("This browser can't make sound (it has no Web Audio).");
     ctx = new AC({ latencyHint: "interactive" });
-    osc = ctx.createOscillator();
-    // (Nearly a pure sine, as a theremin's is, with a touch of its 2nd to 5th harmonics.)
-    osc.setPeriodicWave(ctx.createPeriodicWave(new Float32Array([0, 0, 0, 0, 0, 0]), new Float32Array([0, 1, 0.1, 0.035, 0.015, 0.006])));
-    osc.frequency.value = hz(60);
-    const lfo = ctx.createOscillator();
-    lfo.frequency.value = VIBRATO.hz;
-    const depth = ctx.createGain();
-    depth.gain.value = VIBRATO.cents;
-    lfo.connect(depth);
-    depth.connect(osc.detune);
-    const tone = ctx.createBiquadFilter();
+    vibrato = ctx.createOscillator();
+    vibratoDepth = ctx.createGain();
+    vibrato.connect(vibratoDepth);
+    tone = ctx.createBiquadFilter();
     tone.type = "lowpass";
-    tone.frequency.value = 3800;
     tone.Q.value = 0.3;
     amp = ctx.createGain(); // what the hands ask for
     amp.gain.value = 0;
     master = ctx.createGain(); // the Volume slider
     master.gain.value = LEVEL * settings.volume;
+    dry = ctx.createGain();
+    // The hall: a moment's pause (the room's far walls), then its reverberation.
+    hallSend = ctx.createGain();
+    const preDelay = ctx.createDelay(0.2);
+    preDelay.delayTime.value = 0.035;
+    const hall = ctx.createConvolver();
+    hall.buffer = hallImpulse();
+    // The echo: one a third of a second on in one ear, another later in the other, each repeat softer and darker.
+    echoSend = ctx.createGain();
+    const merge = ctx.createChannelMerger(2);
+    for (const [i, t] of [[0, 0.33], [1, 0.47]]) {
+      const d = ctx.createDelay(1);
+      d.delayTime.value = t;
+      const fb = ctx.createGain();
+      fb.gain.value = 0.38;
+      const dark = ctx.createBiquadFilter();
+      dark.type = "lowpass";
+      dark.frequency.value = 2200;
+      echoSend.connect(d);
+      d.connect(dark);
+      dark.connect(fb);
+      fb.connect(d);
+      dark.connect(merge, 0, i);
+    }
     out = ctx.createGain();
     analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
-    osc.connect(tone);
     tone.connect(amp);
-    amp.connect(master);
+    amp.connect(dry);
+    amp.connect(hallSend);
+    amp.connect(echoSend);
+    dry.connect(master);
+    hallSend.connect(preDelay);
+    preDelay.connect(hall);
+    hall.connect(master);
+    merge.connect(master);
     master.connect(out);
     out.connect(ctx.destination);
     out.connect(analyser);
-    osc.start();
-    lfo.start();
+    vibrato.start();
+    voice(settings.sound);
+  }
+
+  // A sound's voices, in place of the last one's (the note carried on), and its hall, echo and vibrato.
+  function voice(name) {
+    if (!ctx) return;
+    const v = SOUNDS[name] || SOUNDS[DEFAULTS.sound];
+    for (const o of voices) {
+      try {
+        o.stop();
+        o.disconnect();
+        if (o.voice) vibratoDepth.disconnect(o.detune);
+        for (const n of o.parts || []) n.disconnect();
+      } catch {}
+    }
+    voices = [];
+    const wave = (h) => ctx.createPeriodicWave(new Float32Array(h.length), new Float32Array(h));
+    const each = 1 / Math.sqrt(v.voices.length);
+    const add = (cents, level, octave) => {
+      const o = ctx.createOscillator();
+      o.setPeriodicWave(wave(v.warm && !octave ? WARM : PLAIN));
+      o.frequency.value = octave ? nowHz * 2 : nowHz;
+      o.detune.value = cents;
+      vibratoDepth.connect(o.detune);
+      const g = ctx.createGain();
+      g.gain.value = level;
+      o.connect(g);
+      g.connect(tone);
+      o.start();
+      o.voice = true;
+      o.octave = octave;
+      o.parts = [g];
+      voices.push(o);
+      // (a chorus's voices drift a little against each other, each at its own slow rate)
+      if (v.voices.length > 1 && !octave) {
+        const drift = ctx.createOscillator();
+        drift.frequency.value = 0.11 + Math.random() * 0.2;
+        const by = ctx.createGain();
+        by.gain.value = 5;
+        drift.connect(by);
+        by.connect(o.detune);
+        drift.start();
+        drift.parts = [by];
+        voices.push(drift);
+      }
+    };
+    for (const cents of v.voices) add(cents, each, false);
+    if (v.octave > 0) add(0, v.octave, true);
+    const now = ctx.currentTime;
+    vibrato.frequency.setValueAtTime(v.vibrato.hz, now);
+    vibratoDepth.gain.setValueAtTime(v.vibrato.moving, now);
+    tone.frequency.setValueAtTime(v.top, now);
+    dry.gain.setTargetAtTime(v.dry, now, 0.05);
+    hallSend.gain.setTargetAtTime(v.hall, now, 0.05);
+    echoSend.gain.setTargetAtTime(v.echo, now, 0.05);
   }
 
   // Phones: on an iPhone the page's sound would follow the ring/silent switch; asked for as media playback, it
@@ -214,12 +328,22 @@
   function setParams(r) {
     if (!ctx) return;
     const now = ctx.currentTime;
+    const v = SOUNDS[settings.sound] || SOUNDS[DEFAULTS.sound];
     if (r.pitch === null) {
       amp.gain.setTargetAtTime(0, now, 0.08);
+      lastNote = null;
       return;
     }
-    osc.frequency.setTargetAtTime(r.hz, now, settings.snap ? 0.012 : 0.03);
+    nowHz = r.hz;
+    const glide = settings.snap ? Math.min(0.012, v.glide) : v.glide;
+    for (const o of voices) if (o.voice) o.frequency.setTargetAtTime(o.octave ? r.hz * 2 : r.hz, now, glide);
     amp.gain.setTargetAtTime(r.volume * r.volume, now, 0.035);
+    // A note held (the hand nearly still): its vibrato swells, as a theremin player's does; moving, it's slight.
+    const t = performance.now() / 1000;
+    if (lastNote === null || Math.abs(r.note - lastNote) > 0.2) heldSince = t;
+    lastNote = r.note;
+    const held = t - heldSince > HELD_S;
+    vibratoDepth.gain.setTargetAtTime(held ? v.vibrato.held : v.vibrato.moving, now, held ? 0.45 : 0.08);
   }
 
   function update(hands, { mirror = true, aspect = 16 / 9 } = {}) {
@@ -292,12 +416,14 @@
     ui.scale.value = settings.scale;
     ui.range.value = settings.range;
     ui.volume.value = String(Math.round(settings.volume * 100));
+    if (ui.sound) ui.sound.value = settings.sound;
   }
 
   function choose(key, value) {
     settings[key] = value;
     playing = null;
     if (key === "volume" && master) master.gain.setTargetAtTime(LEVEL * value, ctx.currentTime, 0.05);
+    if (key === "sound") voice(value);
     if (savePref) savePref("theremin", { ...settings });
     syncUi();
   }
@@ -311,6 +437,7 @@
       scale: SCALES[saved.scale] ? saved.scale : DEFAULTS.scale,
       range: RANGES[saved.range] ? saved.range : DEFAULTS.range,
       volume: typeof saved.volume === "number" && saved.volume >= 0 && saved.volume <= 1 ? saved.volume : DEFAULTS.volume,
+      sound: SOUNDS[saved.sound] ? saved.sound : DEFAULTS.sound,
     };
     savePref = setPref;
     const $ = (id) => document.getElementById(id);
@@ -322,7 +449,7 @@
     ui = {
       toggle, stage, layer, options: $("thereminOptions"), style: $("thereminStyle"), snap: $("thereminSnap"),
       keyLabel: $("thereminKeyLabel"), key: $("thereminKey"), scaleLabel: $("thereminScaleLabel"), scale: $("thereminScale"),
-      range: $("thereminRange"), volume: $("thereminVolume"), note: $("thereminNote"),
+      range: $("thereminRange"), volume: $("thereminVolume"), note: $("thereminNote"), sound: $("thereminSound"),
     };
     toggle.addEventListener("click", () => setOn(!on));
     ui.style.addEventListener("change", () => choose("style", STYLES.includes(ui.style.value) ? ui.style.value : DEFAULTS.style));
@@ -331,6 +458,7 @@
     ui.scale.addEventListener("change", () => choose("scale", SCALES[ui.scale.value] ? ui.scale.value : DEFAULTS.scale));
     ui.range.addEventListener("change", () => choose("range", RANGES[ui.range.value] ? ui.range.value : DEFAULTS.range));
     ui.volume.addEventListener("input", () => choose("volume", clamp01(Number(ui.volume.value) / 100)));
+    if (ui.sound) ui.sound.addEventListener("change", () => choose("sound", SOUNDS[ui.sound.value] ? ui.sound.value : DEFAULTS.sound));
     syncUi();
   }
 
@@ -551,7 +679,9 @@
       state: () => (ctx ? ctx.state : "none"),
       mixes: () => mixes,
       error: () => soundError,
-      RANGES, SCALES,
+      // (its voices sounding now: the chorus's, the octave's)
+      voices: () => voices.filter((o) => o.voice).length,
+      RANGES, SCALES, SOUNDS, AERIAL,
     },
   };
 })(typeof window !== "undefined" ? window : globalThis);

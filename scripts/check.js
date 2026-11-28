@@ -716,6 +716,13 @@ async function checkTheremin(js, win) {
   const on = await js(`({ text: document.getElementById("thereminToggle").textContent, bar: document.getElementById("thereminOptions").hidden, layer: document.getElementById("thereminLayer").hidden, playing: Theremin.playing(), state: Theremin._test.state(), error: Theremin._test.error() })`);
   check("Theremin mode: on with its switch, its sound running, its options and guides shown", on.playing && on.state === "running" && !on.bar && !on.layer && on.text === "Theremin: ON", JSON.stringify(on));
 
+  // Its sound: Ethereal hall unless chosen otherwise (the user, 2026-11-27: "more ethereal rather than monotonal"); the
+  // checks below on Classic (no hall ringing on), the other two after.
+  const soundStart = await js(`({ chosen: Theremin._test.settings().sound, menu: [...document.getElementById("thereminSound").options].map((o) => o.value) })`);
+  check("Theremin: its Sound is Ethereal hall unless chosen otherwise, with Classic and Choir to choose",
+    soundStart.chosen === "ethereal" && soundStart.menu.join() === "classic,ethereal,choir", JSON.stringify(soundStart));
+  await choose("thereminSound", "classic");
+
   // Like a real theremin: the right hand nearer the pitch line (the player's right: the picture's x 0) plays higher;
   // the left hand lower, quieter; no left hand, full volume.
   await choose("thereminStyle", "theremin");
@@ -730,6 +737,12 @@ async function checkTheremin(js, win) {
     JSON.stringify({ quiet: quiet && [quiet.volume, quiet.level], loud: loud && [loud.volume, loud.level] }));
   const none = await feed([], 700);
   check("...with no hands it's silent", none && none.pitch === null && none.level < 0.004 && /right hand/i.test(none.readout), JSON.stringify(none && { level: none.level, readout: none.readout }));
+  // Its whole range within an arm's reach: from the middle of the picture to its edge (it was 72% of the picture,
+  // of which a hand's natural reach covered a third: "its pitch hardly changes", 2026-11-27).
+  const atEdge = await feed([{ side: "Right", cx: 0.08, cy: 0.5 }]);
+  const atMiddle = await feed([{ side: "Right", cx: 0.6, cy: 0.5 }]); // (its nearest finger at about the middle)
+  check("...its whole range between the picture's middle and its edge (the hand's nearest finger): its three octaves apart",
+    atEdge && atMiddle && atEdge.hz > atMiddle.hz * Math.pow(2, 2.9), JSON.stringify({ edge: atEdge && atEdge.hz, middle: atMiddle && atMiddle.hz }));
 
   // Both hands up and down.
   await choose("thereminStyle", "updown");
@@ -771,8 +784,23 @@ async function checkTheremin(js, win) {
     set.snap && keyShown && inScale && notes.every((n) => n && n.readout.startsWith("♪ " + Theremin_nameOf(n.note))), JSON.stringify(notes.map((n) => n && [n.note, Math.round(n.hz), n.readout])));
   await choose("thereminSnap", false);
   const remembered = await js(`(JSON.parse(localStorage.getItem("hand-tracker:prefs")) || {}).theremin || null`);
-  check("Theremin: its choices are remembered (not its switch)", remembered && remembered.style === "updown" && remembered.key === 9 && remembered.scale === "minorPentatonic" && remembered.snap === false && !("on" in remembered),
+  check("Theremin: its choices are remembered (not its switch)", remembered && remembered.style === "updown" && remembered.key === 9 && remembered.scale === "minorPentatonic" && remembered.snap === false && remembered.sound === "classic" && !("on" in remembered),
     JSON.stringify(remembered));
+
+  // Ethereal hall: its note rings on in the hall after the hand goes, then dies away; Choir: its voices together.
+  await choose("thereminSound", "ethereal");
+  const hallNote = await feed([{ side: "Right", cx: 0.3, cy: 0.4 }], 900);
+  const ringing = await feed([], 250);
+  const after = await js(`new Promise((r) => setTimeout(() => r(Theremin._test.level()), 4500))`);
+  check("Theremin, Ethereal hall: its voice and a soft one an octave above, its note still ringing in the hall a moment after the hand goes, then gone",
+    hallNote && ringing && hallNote.level > 0.02 && ringing.pitch === null && ringing.level > 0.003 && after < 0.002 && (await js("Theremin._test.voices()")) === 2,
+    JSON.stringify({ playing: hallNote && hallNote.level, ringing: ringing && ringing.level, after, voices: await js("Theremin._test.voices()") }));
+  await choose("thereminSound", "choir");
+  const choir = await feed([{ side: "Right", cx: 0.3, cy: 0.4 }], 700);
+  check("Theremin, Choir: four voices and one an octave above, playing",
+    choir && choir.level > 0.02 && (await js("Theremin._test.voices()")) === 5, JSON.stringify({ level: choir && choir.level, voices: await js("Theremin._test.voices()") }));
+  await feed([], 300);
+  await choose("thereminSound", "classic");
 
   // Its sound in recordings: the Record card's video and a camera clip without the microphone, each with a hand playing.
   const recorded = await js(`(async () => {
