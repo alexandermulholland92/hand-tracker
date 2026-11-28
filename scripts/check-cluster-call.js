@@ -306,6 +306,14 @@ app.whenReady().then(async () => {
     check("...the call over: Hand Tracker's cameras stopped again (this call started them)", !!rigClosed, rig.commands);
 
 
+    // Android lets the phone app send its signals at all: plain HTTP, which it refuses unless the app says so (this
+    // computer's Java has no such rule, so the run below can't show it: every signal from a real phone was refused,
+    // "Cleartext HTTP traffic not permitted", 2026-11-27).
+    const manifest = fs.readFileSync(path.join(ROOT, "android/app/src/clustercall/AndroidManifest.xml"), "utf8");
+    const server = fs.readFileSync(path.join(ROOT, "android/app/src/clustercall/java/com/handtracker/app/ClusterCallServer.java"), "utf8");
+    check("The phone app may send plain HTTP (its signals), and only to devices on Tailscale",
+      /<application[^>]*android:usesCleartextTraffic="true"/.test(manifest) && /onTailnet\(host\)/.test(server));
+
     // A phone's Cluster Call service (ClusterCallServer.java: on this computer's Java, ClusterCallHarness standing in for the
     // phone app around it): listed by Desk, told Desk's list of your devices, rung by Desk, and declining back; it
     // takes anything on your Tailscale network, never a web page.

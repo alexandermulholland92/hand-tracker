@@ -370,8 +370,14 @@ public class ClusterCallServer {
         }
     }
 
+    // Plain HTTP (each app's service: no certificate between your own devices), which Android lets this app use
+    // (usesCleartextTraffic, src/clustercall/AndroidManifest.xml: without it every signal was refused as "Cleartext HTTP
+    // traffic not permitted", 2026-11-27): only to a device on Tailscale (this computer's own address too, for the checks).
     private static Object request(String url, String body, int timeout) throws IOException {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        URL u = new URL(url);
+        String host = u.getHost();
+        if (!"http".equals(u.getProtocol()) || !(onTailnet(host) || "127.0.0.1".equals(host))) throw new IOException("not a device on Tailscale");
+        HttpURLConnection c = (HttpURLConnection) u.openConnection();
         c.setConnectTimeout(timeout);
         c.setReadTimeout(timeout);
         if (body != null) {

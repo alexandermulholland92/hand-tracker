@@ -10,7 +10,9 @@
     <uses-permission android:name="com.handtracker.permission.APP_STATE" tools:node="remove" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <application>
+    <!-- (plain HTTP, its signals to your other devices' apps over Tailscale: ClusterCallServer.request() sends to Tailscale
+         addresses only. Without it Android refused each one, "Cleartext HTTP traffic not permitted", 2026-11-27.) -->
+    <application android:usesCleartextTraffic="true" tools:replace="android:usesCleartextTraffic">
         <service android:name=".PhoneControlService" tools:node="remove" />
         <service android:name=".HandControlService" tools:node="remove" />
         <service android:name=".SentryWatchService" tools:node="remove" />
